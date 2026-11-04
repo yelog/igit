@@ -1,7 +1,7 @@
 //! Lay out the visible DAG once. A rail has two endpoints regardless of how
 //! many rows it crosses; terminal width and the cursor do not enter the layout.
 mod render;
-pub(in crate::log) use render::NodeGlyphs;
+pub(in crate::log) use render::{NodeGlyphs, Window as GraphWindow};
 
 use super::Rev;
 use std::collections::{BTreeSet, HashMap};

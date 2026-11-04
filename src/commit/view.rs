@@ -6,6 +6,7 @@ use crate::{
         button_style, clipped as fit, diff_line, repo_tint, BLUE, DIM, EDGE, GREEN, INK, PANEL,
         RED, SELECT, TAG,
     },
+    ui::selection::{TextLayout, TextSelection, Wrap},
 };
 use ratatui::{
     layout::{Constraint, Layout, Margin, Rect},
@@ -29,7 +30,9 @@ fn count(n: usize, noun: &str) -> String {
 }
 fn file_line(icons: IconMode, change: &backend::Change, width: usize) -> Line<'static> {
     // Keep both porcelain columns (e.g. MM), and use the version being committed for the tint.
-    let color = if change.conflict {
+    let color = if change.ignored() {
+        DIM
+    } else if change.conflict {
         RED
     } else {
         match if change.staged() {
@@ -48,7 +51,11 @@ fn file_line(icons: IconMode, change: &backend::Change, width: usize) -> Line<'s
     if width > 3 {
         line.push_span(" ");
         let name = change.label();
-        let (glyph, tint) = icons.file(&change.path);
+        let (glyph, tint) = if change.directory() {
+            (icons.folder(false), DIM)
+        } else {
+            icons.file(&change.path)
+        };
         if width - 3 > name.width() + glyph.width() {
             line.push_span(Span::styled(glyph, fg(tint)));
             line.push_span(" ");
@@ -78,8 +85,9 @@ impl CommitPanel {
             Hit::Repo(r) => fg(repo_tint(r)),
             Hit::Amend if self.amend.contains(&self.repo) => fg(BLUE),
             Hit::TogglePreview if self.preview_open => fg(BLUE).bg(TAG),
-            Hit::Directories if self.group_by_directory => fg(BLUE).bg(TAG),
-            Hit::Status if self.show_status => fg(BLUE).bg(TAG),
+            Hit::ViewOptions if self.view_menu.is_some() => fg(BLUE).bg(TAG),
+            Hit::Directories if self.options.directories => fg(BLUE).bg(TAG),
+            Hit::Status if self.options.status => fg(BLUE).bg(TAG),
             Hit::UndoCheck if self.last_check.is_empty() => fg(Color::DarkGray),
             _ => fg(DIM),
         };
@@ -232,7 +240,7 @@ impl CommitPanel {
             .files
             .iter()
             .filter(|v| {
-                !v.change.conflict
+                v.change.selectable()
                     && !c.scope.contains(&v.root)
                     && self.checks.get(&v.key) == Some(&true)
             })
@@ -280,16 +288,15 @@ impl CommitPanel {
             (Icon::Undo, Hit::UndoCheck),
             (Icon::Move, Hit::Move),
             (Icon::Add, Hit::New),
-            (Icon::Preview, Hit::TogglePreview),
-            (Icon::Tree, Hit::Directories),
-            (Icon::Status, Hit::Status),
+            (Icon::Preview, Hit::ViewOptions),
+            (Icon::Diff, Hit::TogglePreview),
             (Icon::ExpandAll, Hit::Expand(true)),
             (Icon::CollapseAll, Hit::Expand(false)),
         ] {
-            let glyph = self.icons.glyph(icon);
-            if matches!(action, Hit::Directories | Hit::Expand(true)) {
+            let label = self.icons.glyph(icon);
+            if matches!(action, Hit::ViewOptions | Hit::Expand(true)) {
                 let divider = self.icons.glyph(Icon::Divider);
-                if divider.width() + glyph.width() + 2 > usize::from(bar.right().saturating_sub(x))
+                if divider.width() + label.width() + 2 > usize::from(bar.right().saturating_sub(x))
                 {
                     break;
                 }
@@ -297,7 +304,7 @@ impl CommitPanel {
                 word(f, Rect::new(x, bar.y, w, 1), divider, fg(EDGE));
                 x += w;
             }
-            self.hit_button(f, bar, &mut x, glyph, action);
+            self.hit_button(f, bar, &mut x, label, action);
         }
         x
     }
@@ -371,6 +378,7 @@ impl CommitPanel {
         let key = self.active().map_or("", |r| r.id.as_str());
         if key != self.diff_key {
             self.diff_key = key.to_owned();
+            self.diff_selection.reset();
             self.diff_scroll = 0;
             self.diff_text = file
                 .map(|i| {
@@ -407,7 +415,9 @@ impl CommitPanel {
         };
         if let Some(i) = file {
             let v = &self.files[i];
-            let source = if v.change.conflict {
+            let source = if v.change.ignored() {
+                "Ignored · read-only".to_owned()
+            } else if v.change.conflict {
                 "Conflict".to_owned()
             } else if v.change.xy == *b"??" {
                 "Untracked".to_owned()
@@ -427,7 +437,11 @@ impl CommitPanel {
                 );
             }
             let repo = &c.repos[v.root];
-            let (file_icon, tint) = self.icons.file(&v.change.path);
+            let (file_icon, tint) = if v.change.directory() {
+                (self.icons.folder(false), DIM)
+            } else {
+                self.icons.file(&v.change.path)
+            };
             let details = vec![Line::from(vec![
                 Span::styled(
                     format!("{} {}  /  ", self.icons.repo(repo.submodule), repo.name),
@@ -440,13 +454,22 @@ impl CommitPanel {
                 f,
                 body,
                 &mut self.diff_scroll,
+                &mut self.diff_selection,
                 details,
-                self.diff_text.lines().count(),
-                self.diff_text.lines().map(diff_line),
+                self.diff_text.split('\n').map(diff_line),
             );
         } else {
-            let (checked, eligible) = self.check_counts(row);
-            let locked = row.files.len() - eligible;
+            let (checked, _) = self.check_counts(row);
+            let conflicts = row
+                .files
+                .iter()
+                .filter(|&&i| self.files[i].change.conflict)
+                .count();
+            let ignored = row
+                .files
+                .iter()
+                .filter(|&&i| self.files[i].change.ignored())
+                .count();
             let mut meta = vec![
                 Span::styled(format!("{}  ", row.label), bold(INK)),
                 Span::styled(
@@ -454,10 +477,16 @@ impl CommitPanel {
                     fg(DIM),
                 ),
             ];
-            if locked > 0 {
+            if conflicts > 0 {
                 meta.push(Span::styled(
-                    format!(" · {}", count(locked, "conflict")),
+                    format!(" · {}", count(conflicts, "conflict")),
                     fg(RED),
+                ));
+            }
+            if ignored > 0 {
+                meta.push(Span::styled(
+                    format!(" · {ignored} ignored · read-only"),
+                    fg(DIM),
                 ));
             }
             if let Kind::Repo(r) = row.kind {
@@ -472,6 +501,15 @@ impl CommitPanel {
                     format!("Worktree  {}", super::display_path(&c.repos[*r].path)),
                     fg(DIM),
                 )),
+                Kind::Directory(path) if !self.options.modules => {
+                    details.push(Line::styled(
+                        format!(
+                            "Workspace  {}",
+                            super::display_path(&super::tree::directory_root(c).join(path))
+                        ),
+                        fg(DIM),
+                    ));
+                }
                 Kind::Directory(path) => {
                     let root = self.files[row.files[0]].root;
                     details.push(Line::from(vec![
@@ -493,8 +531,8 @@ impl CommitPanel {
                     f,
                     body,
                     &mut self.diff_scroll,
+                    &mut self.diff_selection,
                     details,
-                    1,
                     std::iter::once(Line::styled("No changes in this changelist.", fg(DIM))),
                 );
                 return;
@@ -502,7 +540,6 @@ impl CommitPanel {
             let groups = row
                 .files
                 .chunk_by(|a, b| self.files[*a].root == self.files[*b].root);
-            let n_lines = row.files.len() + groups.clone().count();
             let lines = groups
                 .flat_map(|files| {
                     let root = self.files[files[0]].root;
@@ -530,7 +567,14 @@ impl CommitPanel {
                         ])
                     }
                 });
-            preview_body(f, body, &mut self.diff_scroll, details, n_lines, lines);
+            preview_body(
+                f,
+                body,
+                &mut self.diff_scroll,
+                &mut self.diff_selection,
+                details,
+                lines,
+            );
         }
     }
 }
@@ -540,43 +584,27 @@ fn preview_body<'a>(
     f: &mut Frame,
     area: Rect,
     scroll: &mut u16,
+    selection: &mut TextSelection,
     details: Vec<Line<'a>>,
-    n: usize,
     content: impl Iterator<Item = Line<'a>>,
 ) {
     let width = usize::from(area.width);
     if width == 0 {
         return;
     }
-    let mut header = vec![];
+    let mut layout = TextLayout::default();
     for line in details {
-        if line.width() <= width {
-            header.push(line);
-        } else {
-            let mut wrapped = Line::default();
-            let mut used = 0;
-            for g in line.styled_graphemes(Style::default()) {
-                let w = g.symbol.width();
-                if used + w > width {
-                    header.push(std::mem::take(&mut wrapped));
-                    used = 0;
-                }
-                wrapped.push_span(Span::styled(g.symbol.to_owned(), g.style));
-                used += w;
-            }
-            header.push(wrapped);
-        }
+        layout.push(line, area.width, Wrap::Character);
     }
-    header.push(Line::styled("─".repeat(width), fg(EDGE)));
-    let max = (header.len() + n)
+    layout.decoration(Line::styled("─".repeat(width), fg(EDGE)));
+    for line in content {
+        layout.push(line, area.width, Wrap::Clip);
+    }
+    let max = layout
+        .rows
+        .len()
         .saturating_sub(usize::from(area.height))
         .min(u16::MAX as usize);
     *scroll = (*scroll).min(max as u16);
-    let lines = header
-        .into_iter()
-        .chain(content)
-        .skip(usize::from(*scroll))
-        .take(usize::from(area.height))
-        .collect::<Vec<_>>();
-    f.render_widget(Paragraph::new(lines), area);
+    selection.render(f, area, layout, usize::from(*scroll), 0);
 }

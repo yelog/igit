@@ -1,8 +1,8 @@
 //! The controls and text in a single Changes row share the same cell geometry.
-use super::{display_path, Change, CommitPanel, Context, Kind, Row, NEW};
+use super::{display_path, Change, CommitPanel, Context, Kind, Row, IGNORED, NEW};
 use crate::ui::{
     icons::Icon,
-    idea::{clipped, repo_tint, BLUE, CHECK, CONFLICT, DIM, INK},
+    idea::{clipped, clipped_path, repo_tint, BLUE, CHECK, CONFLICT, DIM, INK},
 };
 use ratatui::{
     layout::Rect,
@@ -16,6 +16,7 @@ const TAG: Color = Color::Rgb(44, 45, 51);
 const ADDED: Color = Color::Rgb(110, 191, 124);
 const UNTRACKED: Color = Color::Rgb(240, 140, 134);
 const DELETED: Color = Color::Rgb(205, 154, 135);
+const FOLDER: Color = Color::Rgb(197, 173, 121);
 
 struct Control {
     glyph: &'static str,
@@ -46,6 +47,9 @@ fn pad_to(line: &mut Line<'static>, column: u16) {
 }
 
 fn file_style(change: &Change) -> Style {
+    if change.ignored() {
+        return Style::new().fg(DIM);
+    }
     if change.conflict {
         return Style::new().fg(CONFLICT).bold();
     }
@@ -77,38 +81,7 @@ fn parent_hint(repo: &str, path: &Path, width: usize) -> String {
         Some(parent) => format!("{repo}/{}", display_path(parent)),
         None => repo,
     };
-    if hint.width() <= width {
-        return hint;
-    }
-    // First try whole trailing directories (e.g. …/lang/es_MX). If even the
-    // last directory is too wide, keep its tail without splitting a grapheme.
-    if width == 0 {
-        return String::new();
-    }
-    let mut left = width - 1;
-    let mut start = hint.len();
-    for (slash, _) in hint.rmatch_indices('/') {
-        let len = hint[slash..start].width();
-        if len > left {
-            break;
-        }
-        left -= len;
-        start = slash;
-    }
-    if start == hint.len() {
-        let last = hint.rsplit('/').next().unwrap_or("");
-        let span = Span::raw(last);
-        let glyphs: Vec<_> = span.styled_graphemes(Style::new()).collect();
-        for glyph in glyphs.iter().rev() {
-            let len = glyph.symbol.width();
-            if len > left {
-                break;
-            }
-            left -= len;
-            start -= glyph.symbol.len();
-        }
-    }
-    format!("…{}", &hint[start..])
+    clipped_path(hint, width)
 }
 
 impl CommitPanel {
@@ -191,7 +164,7 @@ impl CommitPanel {
                     let file = &self.files[i];
                     let change = &file.change;
                     let mut room = usize::from(cells.body.width);
-                    if self.show_status || mono || change.conflict {
+                    if self.options.status || mono || change.conflict {
                         let xy = String::from_utf8_lossy(&change.xy);
                         let status = if room == 1 {
                             xy.trim().chars().take(1).collect()
@@ -209,16 +182,22 @@ impl CommitPanel {
                         }
                         room = usize::from(width) - line.width();
                     }
-                    let (icon, color) = self.icons.file(&change.path);
+                    let (icon, color) = if change.directory() {
+                        (self.icons.folder(false), FOLDER)
+                    } else {
+                        self.icons.file(&change.path)
+                    };
                     let icon_width = icon.width() + 1;
-                    if room >= row.label.width() + icon_width {
+                    if room >= row.label.width() + icon_width
+                        || (change.directory() && room >= icon_width + row.label.width().min(3))
+                    {
                         line.push_span(Span::styled(icon, Style::new().fg(color)));
                         line.push_span(" ");
                         room -= icon_width;
                     }
                     line.push_span(Span::styled(filename(&row.label, room), file_style(change)));
                     let room = usize::from(width) - line.width();
-                    if !self.group_by_directory && room >= 3 {
+                    if !self.options.directories && room >= 3 {
                         let hint = parent_hint(&c.repos[file.root].name, &change.path, room - 1);
                         line.push_span(Span::styled(format!(" {hint}"), Style::new().fg(DIM)));
                     }
@@ -231,18 +210,26 @@ impl CommitPanel {
                         _ => row.label.clone(),
                     };
                     let (glyph, color) = match row.kind {
-                        Kind::Repo(root) => {
-                            (self.icons.repo(c.repos[root].submodule), repo_tint(root))
-                        }
+                        Kind::Repo(root) => (
+                            if c.repos[root].submodule {
+                                self.icons.repo(true)
+                            } else {
+                                self.icons.folder(!self.fold.contains(&row.id))
+                            },
+                            repo_tint(root),
+                        ),
                         Kind::Directory(_) => {
-                            (self.icons.folder(!self.fold.contains(&row.id)), DIM)
+                            (self.icons.folder(!self.fold.contains(&row.id)), FOLDER)
                         }
                         Kind::Group if row.label == NEW => {
                             (self.icons.glyph(Icon::Untracked), UNTRACKED)
                         }
+                        Kind::Group if row.label == IGNORED => {
+                            (self.icons.glyph(Icon::Locked), DIM)
+                        }
                         _ => (self.icons.glyph(Icon::Changes), DIM),
                     };
-                    if room >= glyph.width() + 1 + label.width() {
+                    if room >= glyph.width() + 1 + label.width().min(3) {
                         line.push_span(Span::styled(glyph, Style::new().fg(color)));
                         line.push_span(" ");
                     }
@@ -377,7 +364,7 @@ mod tests {
             .row_line(&row, &c, 80, false)
             .to_string()
             .ends_with(&format!("{glyph} package.json moss-web")));
-        p.group_by_directory = true;
+        p.options.directories = true;
         assert!(p
             .row_line(&row, &c, 80, false)
             .to_string()
@@ -417,7 +404,7 @@ mod tests {
                 .iter()
                 .all(|s| s.style.bg.is_none() && s.style.fg.is_none()));
         }
-        p.show_status = true;
+        p.options.status = true;
         let row = leaf(&p, 1);
         assert!(p
             .row_line(&row, &c, 72, false)
@@ -495,6 +482,40 @@ mod tests {
                     }
                 }
                 p.fold.remove(&group.id);
+            }
+        }
+    }
+
+    #[test]
+    fn folders_keep_their_open_or_closed_icon_when_their_name_is_clipped() {
+        let (mut p, c) = fixture();
+        let directory = Row {
+            id: "directory".into(),
+            label: "a-very-long-directory-name".into(),
+            depth: 2,
+            files: vec![0],
+            kind: Kind::Directory("src".into()),
+        };
+        let repo = Row {
+            id: "repo".into(),
+            label: "a-very-long-repository-name".into(),
+            depth: 1,
+            files: vec![0],
+            kind: Kind::Repo(0),
+        };
+        for mode in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
+            p.icons = mode;
+            for row in [&directory, &repo] {
+                for open in [false, true] {
+                    if open {
+                        p.fold.remove(&row.id);
+                    } else {
+                        p.fold.insert(row.id.clone());
+                    }
+                    let line = p.row_line(row, &c, 28, false);
+                    assert!(line.spans.iter().any(|s| s.content == mode.folder(open)));
+                    assert!(line.width() <= 28);
+                }
             }
         }
     }

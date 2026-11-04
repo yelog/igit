@@ -1,6 +1,9 @@
 pub(crate) mod clipboard;
+pub(crate) mod help;
 pub(crate) mod icons;
 pub(crate) mod idea;
+pub(crate) mod key_sequence;
+pub(crate) mod selection;
 use crate::core::Context;
 use anyhow::Result;
 use crossterm::event::Event;
@@ -40,6 +43,9 @@ pub trait Panel {
     }
     fn editing(&self) -> bool {
         false
+    }
+    fn selected_text(&self) -> Option<&str> {
+        None
     }
     fn help(&self) -> &'static str;
     fn confirm(&mut self, _token: &str, _c: &Context) -> Action {

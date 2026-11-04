@@ -1,4 +1,5 @@
 use super::*;
+mod text_selection;
 use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
 use unicode_width::UnicodeWidthStr;
@@ -74,7 +75,7 @@ fn fixture(icons: IconMode) -> (PushPanel, Context) {
             .collect(),
         checked: [0].into(),
         preview: Preview {
-            tree: FileTree::new(&files),
+            tree: FileTree::new(&files, Grouping::default()),
             files,
             body: "master → origin:master".into(),
             summary: "master → origin:master".into(),
@@ -124,6 +125,103 @@ fn click(p: &mut PushPanel, c: &Context, row: Rect) {
         }),
         c,
     );
+}
+
+#[test]
+fn push_group_by_menu_supports_mouse_and_keys_without_checking_a_root() {
+    for icons in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
+        for (width, height) in [(44, 12), (80, 24), (120, 36)] {
+            let (mut p, c) = fixture(icons);
+            let initial = draw(&mut p, &c, width, height);
+            let eye = p
+                .hits
+                .iter()
+                .find(|(_, h)| matches!(h, Hit::GroupBy))
+                .unwrap()
+                .0;
+            assert_eq!(
+                text_at(&initial, eye).split_whitespace().next(),
+                Some(icons.glyph(Icon::Preview))
+            );
+            if width == 80 {
+                click(&mut p, &c, eye);
+            } else {
+                key(&mut p, &c, KeyCode::Char('o'));
+            }
+            let buf = draw(&mut p, &c, width, height);
+            assert!(p.editing(), "Group By must capture input");
+            let item = |buf: &Buffer, label: &str| {
+                let needle = format!("{} {label}", icons.check(true));
+                (0..height)
+                    .find_map(|y| {
+                        let row = Rect::new(0, y, width, 1);
+                        text_at(buf, row).contains(&needle).then(|| {
+                            Rect::new(find_text(buf, row, &needle), y, needle.width() as u16, 1)
+                        })
+                    })
+                    .unwrap_or_else(|| panic!("{needle} missing at {width}×{height}"))
+            };
+            item(&buf, "Directory");
+            let repo = item(&buf, "Repository");
+            item(&buf, "Module");
+            let popup = p
+                .hits
+                .iter()
+                .find(|(_, h)| matches!(h, Hit::MenuSurface))
+                .unwrap()
+                .0;
+            click(&mut p, &c, Rect::new(popup.x, popup.bottom() - 1, 1, 1));
+            assert!(p.editing() && !p.show_details);
+            click(&mut p, &c, repo);
+            key(&mut p, &c, KeyCode::Char('j'));
+            key(&mut p, &c, KeyCode::Char(' ')); // Module
+            key(&mut p, &c, KeyCode::Home);
+            key(&mut p, &c, KeyCode::Enter); // Directory
+            let buf = draw(&mut p, &c, width, height);
+            for label in ["Directory", "Repository", "Module"] {
+                let unchecked = format!("{} {label}", icons.check(false));
+                assert!((0..height)
+                    .any(|y| text_at(&buf, Rect::new(0, y, width, 1)).contains(&unchecked)));
+            }
+            key(&mut p, &c, KeyCode::Esc);
+            assert!(!p.editing());
+            assert_eq!(p.focus, usize::from(width == 80));
+            assert_eq!(p.selected(), Some((0, None)));
+            assert_eq!(p.checked, BTreeSet::from([0]));
+            assert_eq!(p.preview.tree.visible.len(), p.preview.files.len());
+            assert!(p
+                .preview
+                .tree
+                .visible
+                .iter()
+                .all(|&id| matches!(p.preview.tree.nodes[id].kind, Kind::File(_))));
+            assert!(!p.show_details);
+        }
+    }
+}
+
+#[test]
+fn flat_rows_show_distinct_parent_paths_and_their_original_status() {
+    let (mut p, c) = fixture(IconMode::Ascii);
+    key(&mut p, &c, KeyCode::Char('o'));
+    key(&mut p, &c, KeyCode::Enter);
+    key(&mut p, &c, KeyCode::Esc);
+    for width in [80, 150] {
+        let buf = draw(&mut p, &c, width, 24);
+        for (name, status) in [("en_US", "M"), ("zh_CN", "A")] {
+            let row = p.hits.iter().find_map(|(r, h)| match *h {
+                Hit::File(i) if matches!(p.preview.tree.nodes[p.preview.tree.visible[i]].kind, Kind::File(file)
+                    if p.preview.files[file].path == Path::new(&format!("src/locales/{name}/system.ts"))) => Some(*r),
+                _ => None,
+            }).unwrap();
+            let line = text_at(&buf, row);
+            assert!(
+                line.contains(&format!("system.ts {status}")) && line.contains(name),
+                "{line}"
+            );
+            assert_eq!(buf[(find_text(&buf, row, name), row.y)].fg, MUTED);
+        }
+    }
 }
 
 #[test]
@@ -261,7 +359,7 @@ fn file_tree_mouse_keyboard_scrolling_and_pane_cycle_keep_push_selection() {
             previous: None,
             status: b'M',
         }));
-        p.preview.tree = FileTree::new(&p.preview.files);
+        p.preview.tree = FileTree::new(&p.preview.files, p.grouping);
         draw(&mut p, &c, 80, 24);
         key(&mut p, &c, KeyCode::Tab);
         assert_eq!(p.focus, 1);

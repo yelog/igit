@@ -1,5 +1,6 @@
 //! Cell geometry and colours for the IDEA Git tool window.
 use super::*;
+use display::Column;
 use unicode_width::UnicodeWidthStr;
 
 pub(crate) use crate::ui::idea::{clipped, repo_tint, BLUE, DIM, EDGE, INK, PANEL, SELECT};
@@ -12,6 +13,15 @@ const PURPLE: Color = Color::Rgb(176, 137, 222);
 
 pub(super) fn fg(c: Color) -> Style {
     Style::default().fg(c)
+}
+pub(super) fn ref_color(kind: model::RefKind) -> Color {
+    use model::RefKind::*;
+    match kind {
+        Head => GOLD,
+        Local | Current => GREEN,
+        Remote => PURPLE,
+        Tag => Color::Rgb(220, 166, 94),
+    }
 }
 fn lane(t: usize) -> Color {
     const C: [Color; 6] = [
@@ -93,6 +103,17 @@ pub(super) fn toolbar_field(
     icons: IconMode,
     clearable: bool,
 ) -> Option<Rect> {
+    toolbar_field_with_suffix(f, r, text, editing, icons, clearable, 0)
+}
+fn toolbar_field_with_suffix(
+    f: &mut Frame,
+    r: Rect,
+    text: &str,
+    editing: bool,
+    icons: IconMode,
+    clearable: bool,
+    suffix_width: u16,
+) -> Option<Rect> {
     if r.is_empty() {
         return None;
     }
@@ -108,7 +129,7 @@ pub(super) fn toolbar_field(
     if r.width < 3 {
         return None;
     }
-    let mut area = one(r.x + 1, r.y, r.width - 2);
+    let mut area = one(r.x + 1, r.y, (r.width - 2).saturating_sub(suffix_width));
     let close = icons.glyph(Icon::Close);
     let clear = (clearable && area.width >= cells(close) + 3)
         .then(|| take_right(&mut area, cells(close) + 1));
@@ -147,8 +168,7 @@ pub(super) fn toolbar_field(
 }
 struct Badge {
     label: String,
-    icon: Icon,
-    color: Color,
+    kinds: Vec<model::RefKind>,
     paired: bool,
 }
 impl Badge {
@@ -190,12 +210,6 @@ fn decorations(rev: &model::Rev, hist: &History, options: &display::Options) -> 
         if kind == Remote && paired.contains(name) {
             continue;
         }
-        let color = match kind {
-            Head | Current => GOLD,
-            Local => GREEN,
-            Remote => PURPLE,
-            Tag => Color::Rgb(220, 166, 94),
-        };
         let upstream = matches!(kind, Local | Current)
             .then(|| hist.remote_upstream(rev.root, name))
             .flatten()
@@ -212,16 +226,19 @@ fn decorations(rev: &model::Rev, hist: &History, options: &display::Options) -> 
         } else {
             name.to_owned()
         };
+        let mut kinds = Vec::with_capacity(3);
+        if upstream.is_some() {
+            kinds.push(Remote);
+        }
+        if kind == Current {
+            // HEAD points to this local branch; neither reference replaces the other.
+            kinds.extend([Local, Head]);
+        } else {
+            kinds.push(kind);
+        }
         result.push(Badge {
             label,
-            icon: match kind {
-                Head => Icon::Head,
-                Current => Icon::Current,
-                Local => Icon::Branch,
-                Remote => Icon::Remote,
-                Tag => Icon::Tag,
-            },
-            color,
+            kinds,
             paired: upstream.is_some(),
         });
     }
@@ -455,12 +472,14 @@ impl LogPanel {
         } else {
             (a.width / 4).clamp(13, 32)
         };
-        let field = take(&mut a, field_w);
         let input = self
             .editor
             .as_ref()
             .filter(|(control, _)| control.field() == Field::Text);
         let editing = input.is_some();
+        let show_options = two || area.width >= 77 || editing;
+        let suffix_width = if show_options { 6 } else { 0 };
+        let field = take(&mut a, field_w + suffix_width);
         let text = if let Some((_, s)) = input {
             s
         } else if self.filter.query.is_empty() {
@@ -468,22 +487,26 @@ impl LogPanel {
         } else {
             &self.filter.query
         };
-        let clear = toolbar_field(
+        let clear = toolbar_field_with_suffix(
             f,
             field,
             text,
             editing,
             self.icons,
             !self.filter.query.is_empty() && !editing,
+            suffix_width,
         );
         self.hit(field, Hit::Filter(Toolbar(Field::Text)));
         if let Some(clear) = clear {
             self.hit(clear, Hit::Clear(Field::Text));
         }
-        if two || area.width >= 77 || editing {
-            let reg = take(&mut a, 3);
+        if show_options {
+            // Keep both matching options inside the field's background and right edge.
+            let mut inner = one(field.x + 1, field.y, field.width.saturating_sub(2));
+            let mut suffix = take_right(&mut inner, suffix_width);
+            let reg = take(&mut suffix, 3);
             self.button(f, reg, ".* ", self.regex, Hit::ToggleRegex);
-            let case = take(&mut a, 3);
+            let case = take(&mut suffix, 3);
             self.button(f, case, "Cc ", self.case_sensitive, Hit::ToggleCase);
         }
         if two {
@@ -565,6 +588,157 @@ impl LogPanel {
             1
         }
     }
+    fn draw_message_column(&self, f: &mut Frame, mut line: Rect, rev: &model::Rev, selected: bool) {
+        let tags = if self.show_labels {
+            decorations(rev, &self.hist, &self.options)
+        } else {
+            Vec::new()
+        };
+        // IDEA uses an outline label for every reference, distinguished by colour.
+        let marker = self.icons.glyph(Icon::Tag);
+        let marker_width = marker.width() + 1;
+        let full = tags
+            .iter()
+            .map(|b| b.label.width() + b.kinds.len() * marker_width + 1)
+            .sum::<usize>();
+        let tag_width = if full == 0 || line.width < 14 {
+            0
+        } else {
+            let spare = usize::from(line.width).saturating_sub(rev.subject.width() + 2);
+            // Keep the first reference's complete set of identities, even when its name is clipped.
+            let minimum = tags.first().map_or(0, |b| {
+                b.kinds.len() * marker_width + usize::from(!b.label.is_empty())
+            });
+            full.min(
+                spare
+                    .max(usize::from(line.width / 3))
+                    .max(minimum)
+                    .min(usize::from(line.width)),
+            ) as u16
+        };
+        let tag_area = if self.options.refs_left {
+            take(&mut line, tag_width)
+        } else {
+            take_right(&mut line, tag_width)
+        };
+        let subject = line;
+        let title = clipped(
+            &rev.subject,
+            usize::from(subject.width.saturating_sub(u16::from(tag_width > 0))),
+        );
+        f.render_widget(Paragraph::new(Line::from(subject_spans(&title))), subject);
+        if tag_width > 0 {
+            let mut spans = Vec::new();
+            let mut left = usize::from(tag_width);
+            for badge in tags {
+                let prefix = badge.kinds.len() * marker_width;
+                if left < prefix {
+                    break;
+                }
+                for &kind in &badge.kinds {
+                    spans.push(Span::styled(format!("{marker} "), fg(ref_color(kind))));
+                }
+                let t = badge.fit(left - prefix);
+                let used = t.width() + prefix;
+                spans.push(Span::styled(t, fg(if selected { INK } else { DIM })));
+                left -= used;
+                if left > 0 {
+                    spans.push(Span::raw(" "));
+                    left -= 1;
+                }
+            }
+            let refs = Paragraph::new(Line::from(spans));
+            f.render_widget(
+                if self.options.refs_left {
+                    refs
+                } else {
+                    refs.right_aligned()
+                },
+                tag_area,
+            );
+        }
+    }
+
+    fn draw_graph_column(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        n: usize,
+        window: model::GraphWindow,
+    ) {
+        let glyphs = self.node_glyphs.for_icons(self.icons);
+        let cells = self.graph.cells_with_edges(
+            n,
+            window,
+            glyphs,
+            self.hist.revs[self.visible[n]].is_head_tip(),
+            self.options.long_edges,
+        );
+        let mut spans = Vec::with_capacity(cells.len());
+        for (x, (ch, tint, target)) in cells.into_iter().take(usize::from(area.width)).enumerate() {
+            if let Some(target) = target {
+                self.hit(one(area.x + x as u16, area.y, 1), Hit::GraphJump(target));
+            }
+            spans.push(Span::styled(
+                ch.to_string(),
+                fg(if glyphs.is_continuation(ch) {
+                    DIM
+                } else {
+                    lane(tint)
+                }),
+            ));
+        }
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
+    }
+
+    fn draw_log_column(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        col: Column,
+        n: usize,
+        graph_window: Option<model::GraphWindow>,
+    ) {
+        let rev = &self.hist.revs[self.visible[n]];
+        let width = usize::from(area.width.saturating_sub(1));
+        let (text, style) = match col {
+            Column::Graph => {
+                if let Some(window) = graph_window {
+                    self.draw_graph_column(f, area, n, window);
+                }
+                return;
+            }
+            Column::Message => return self.draw_message_column(f, area, rev, n == self.cursor),
+            Column::Author => (clipped(&rev.author, width), Style::default()),
+            Column::Hash => (rev.oid.chars().take(width).collect(), fg(DIM)),
+            Column::Date => {
+                let mut value = if self.options.commit_timestamp {
+                    self.hist.display_date(rev)
+                } else {
+                    self.hist.display_author_date(rev)
+                };
+                if area.width < 18 {
+                    if let Some((_, short)) = value.split_once('/') {
+                        value = short.replace(',', "");
+                    }
+                    value = value.replace("Yesterday", "Yest.");
+                }
+                (clipped(&value, width), Style::default())
+            }
+            Column::Signature => {
+                let (label, status) = self.hist.signature(rev);
+                let color = match status {
+                    'G' => GREEN,
+                    'B' | 'R' => Color::LightRed,
+                    'U' | 'X' | 'Y' => GOLD,
+                    _ => DIM,
+                };
+                (clipped(label, width), fg(color))
+            }
+        };
+        f.render_widget(Paragraph::new(text).style(style), area);
+    }
+
     fn draw_graph(&mut self, f: &mut Frame, area: Rect, c: &Context) {
         let tools = self.graph_toolbar(f, area, c).min(area.height);
         let errors = self
@@ -620,22 +794,26 @@ impl LogPanel {
         }
         let has_scroll = self.visible.len() > avail;
         let w = area.width.saturating_sub(u16::from(has_scroll));
-        let mut auth_width = if self.options.author && w >= 54 {
+        let show_graph = self.options.shows(Column::Graph);
+        let show_message = self.options.shows(Column::Message);
+        // Without the expanding message column, try full metadata widths first.
+        let fits = |threshold| !show_message || w >= threshold;
+        let mut auth_width = if self.options.shows(Column::Author) && fits(54) {
             self.visible[start..end]
                 .iter()
                 .map(|&i| self.hist.revs[i].author.width())
                 .max()
                 .unwrap_or(0)
-                .clamp(4, if w >= 95 { 13 } else { 8 }) as u16
+                .clamp(4, if fits(95) { 13 } else { 8 }) as u16
                 + 1
         } else {
             0
         };
-        let mut date_width = if !self.options.date {
+        let mut date_width = if !self.options.shows(Column::Date) {
             0
-        } else if w >= 72 {
+        } else if fits(72) {
             18
-        } else if w >= 49 {
+        } else if fits(49) {
             12
         } else {
             0
@@ -660,14 +838,19 @@ impl LogPanel {
             0
         };
         let stripe_width = icon_width + root_width;
-        let mut hash_width = if self.options.hash && w >= 40 { 9 } else { 0 };
-        let mut signature_width = if self.options.signature && w >= 40 {
+        let mut hash_width = if self.options.shows(Column::Hash) && fits(40) {
+            9
+        } else {
+            0
+        };
+        let mut signature_width = if self.options.shows(Column::Signature) && fits(40) {
             10
         } else {
             0
         };
         // Keep at least a short subject and graph when optional columns compete.
-        let budget = w.saturating_sub(stripe_width + 18);
+        let reserved = 4 * u16::from(show_graph) + 14 * u16::from(show_message);
+        let budget = w.saturating_sub(stripe_width + reserved);
         if auth_width + date_width + hash_width + signature_width > budget {
             auth_width = auth_width.min(5);
         }
@@ -688,18 +871,40 @@ impl LogPanel {
         }
         let remaining =
             w.saturating_sub(stripe_width + auth_width + date_width + hash_width + signature_width);
-        let graph_window = self.graph.window(
-            start..end,
-            self.cursor,
-            usize::from((remaining / 3).max(4)),
-            self.graph_origin,
-        );
-        self.graph_origin = graph_window.first;
-        let glyphs = self.node_glyphs.for_icons(self.icons);
+        let graph_window = show_graph.then(|| {
+            let budget = if show_message {
+                (remaining / 3).max(4)
+            } else {
+                remaining.saturating_sub(1)
+            };
+            self.graph.window(
+                start..end,
+                self.cursor,
+                usize::from(budget),
+                self.graph_origin,
+            )
+        });
+        let graph_width = graph_window.map_or(0, |window| {
+            self.graph_origin = window.first;
+            (window.width() + 1).min(usize::from(remaining)) as u16
+        });
+        let columns = self.options.columns.map(|(col, visible)| {
+            let width = match col {
+                Column::Author => auth_width,
+                Column::Hash => hash_width,
+                Column::Date => date_width,
+                Column::Signature => signature_width,
+                Column::Graph => graph_width,
+                Column::Message => remaining - graph_width,
+            };
+            (col, if visible { width } else { 0 })
+        });
         for n in start..end {
-            let rev = &self.hist.revs[self.visible[n]];
             let y = area.y + tools + (n - start) as u16;
             let row = one(area.x, y, w);
+            // Graph jumps take precedence over the enclosing commit row.
+            self.hit(row, Hit::Commit(n));
+            let rev = &self.hist.revs[self.visible[n]];
             let selected = n == self.cursor;
             let bg = if selected {
                 SELECT
@@ -741,155 +946,14 @@ impl LogPanel {
                 .style(fg(repo_tint(rev.root))),
                 stripe,
             );
-            let author = take(&mut line, auth_width);
-            if author.width > 0 {
-                f.render_widget(
-                    Paragraph::new(clipped(&rev.author, author.width.saturating_sub(1).into())),
-                    author,
-                );
-            }
-            let date = take(&mut line, date_width);
-            if date.width > 0 {
-                let mut value = if self.options.commit_timestamp {
-                    self.hist.display_date(rev)
-                } else {
-                    self.hist.display_author_date(rev)
-                };
-                if date.width < 18 {
-                    if let Some((_, short)) = value.split_once('/') {
-                        value = short.replace(',', "");
-                    }
-                    value = value.replace("Yesterday", "Yest.");
+            for (col, width) in columns {
+                let mut cell = take(&mut line, width);
+                if col == Column::Message && line.width > 0 {
+                    // Leave a gutter before the next column, even after a long title or a ref badge.
+                    cell.width = cell.width.saturating_sub(1);
                 }
-                f.render_widget(
-                    Paragraph::new(clipped(&value, date.width.saturating_sub(1).into())),
-                    date,
-                );
-            }
-            let hash = take(&mut line, hash_width);
-            if hash.width > 0 {
-                f.render_widget(
-                    Paragraph::new(
-                        rev.oid
-                            .chars()
-                            .take(hash.width.saturating_sub(1).into())
-                            .collect::<String>(),
-                    )
-                    .style(fg(DIM)),
-                    hash,
-                );
-            }
-            let signature = take(&mut line, signature_width);
-            if signature.width > 0 {
-                let (label, status) = self.hist.signature(rev);
-                let color = match status {
-                    'G' => GREEN,
-                    'B' | 'R' => Color::LightRed,
-                    'U' | 'X' | 'Y' => GOLD,
-                    _ => DIM,
-                };
-                f.render_widget(
-                    Paragraph::new(clipped(label, signature.width.saturating_sub(1).into()))
-                        .style(fg(color)),
-                    signature,
-                );
-            }
-            let graph = take(&mut line, graph_window.width() as u16 + 1);
-            let graph_cells = self.graph.cells_with_edges(
-                n,
-                graph_window,
-                glyphs,
-                rev.is_head_tip(),
-                self.options.long_edges,
-            );
-            let shortcuts: Vec<_> = graph_cells
-                .iter()
-                .enumerate()
-                .filter_map(|(x, (_, _, target))| target.map(|n| (x, n)))
-                .collect();
-            let spans = graph_cells
-                .into_iter()
-                .map(|(ch, t, _)| {
-                    Span::styled(
-                        ch.to_string(),
-                        fg(if glyphs.is_continuation(ch) {
-                            DIM
-                        } else {
-                            lane(t)
-                        }),
-                    )
-                })
-                .collect::<Vec<_>>();
-            f.render_widget(Paragraph::new(Line::from(spans)), graph);
-            let tags = if self.show_labels {
-                decorations(rev, &self.hist, &self.options)
-            } else {
-                Vec::new()
-            };
-            let full = tags
-                .iter()
-                .map(|b| {
-                    b.label.width()
-                        + self.icons.glyph(b.icon).width()
-                        + 2
-                        + usize::from(b.paired) * (self.icons.glyph(Icon::Remote).width() + 1)
-                })
-                .sum::<usize>();
-            let tag_width = if full == 0 || line.width < 14 {
-                0
-            } else {
-                let spare = usize::from(line.width).saturating_sub(rev.subject.width() + 2);
-                full.min(spare.max(usize::from(line.width / 3))) as u16
-            };
-            let tag_area = if self.options.refs_left {
-                take(&mut line, tag_width)
-            } else {
-                take_right(&mut line, tag_width)
-            };
-            let subject = line;
-            let title = clipped(
-                &rev.subject,
-                usize::from(subject.width.saturating_sub(u16::from(tag_width > 0))),
-            );
-            f.render_widget(Paragraph::new(Line::from(subject_spans(&title))), subject);
-            if tag_width > 0 {
-                let mut spans = Vec::new();
-                let mut left = usize::from(tag_width);
-                for badge in tags {
-                    let marker = self.icons.glyph(badge.icon);
-                    let remote = self.icons.glyph(Icon::Remote);
-                    let prefix = marker.width() + 1;
-                    if left < prefix {
-                        break;
-                    }
-                    if badge.paired && left >= remote.width() + 1 + prefix + 3 {
-                        spans.push(Span::styled(format!("{remote} "), fg(PURPLE)));
-                        left -= remote.width() + 1;
-                    }
-                    spans.push(Span::styled(format!("{marker} "), fg(badge.color)));
-                    let t = badge.fit(left - prefix);
-                    let used = t.width() + prefix;
-                    spans.push(Span::styled(t, fg(if selected { INK } else { DIM })));
-                    left -= used;
-                    if left > 0 {
-                        spans.push(Span::raw(" "));
-                        left -= 1;
-                    }
-                }
-                let refs = Paragraph::new(Line::from(spans));
-                f.render_widget(
-                    if self.options.refs_left {
-                        refs
-                    } else {
-                        refs.right_aligned()
-                    },
-                    tag_area,
-                );
-            }
-            self.hit(row, Hit::Commit(n));
-            for (x, target) in shortcuts {
-                if x < usize::from(graph.width) {
-                    self.hit(one(graph.x + x as u16, graph.y, 1), Hit::GraphJump(target));
+                if cell.width > 0 {
+                    self.draw_log_column(f, cell, col, n, graph_window);
                 }
             }
         }

@@ -1,4 +1,6 @@
 mod backend;
+mod display;
+mod keymap;
 mod rows;
 mod tree;
 mod view;
@@ -9,7 +11,9 @@ use crate::{
     ui::{
         icons::{Icon, IconMode},
         idea::{BLUE, DIM as MUTED, INK as FG, PANEL, SELECT as SEL},
-        inside, Action, Panel,
+        inside,
+        selection::{self, TextLayout, TextSelection, Wrap as TextWrap},
+        Action, Panel,
     },
 };
 use anyhow::{bail, Result};
@@ -71,6 +75,8 @@ enum Hit {
     Refresh,
     UndoCheck,
     TogglePreview,
+    ViewOptions,
+    ViewItem(display::Item),
     Directories,
     Status,
     Expand(bool),
@@ -94,6 +100,7 @@ impl Hit {
             Self::Move => "Move to changelist  m",
             Self::New => "New changelist  n",
             Self::TogglePreview => "Show or hide preview  v",
+            Self::ViewOptions => "View Options  o",
             Self::Directories => "Group by directory  t",
             Self::Status => "Show Git status columns  s",
             Self::Expand(true) => "Expand all  Z",
@@ -114,8 +121,8 @@ pub struct CommitPanel {
     files: Vec<File>,
     checks: BTreeMap<String, bool>,
     fold: BTreeSet<String>,
-    group_by_directory: bool,
-    show_status: bool,
+    options: display::Options,
+    view_menu: Option<display::Menu>,
     preview_open: bool,
     stacked: bool,
     hover: Option<&'static str>,
@@ -136,9 +143,12 @@ pub struct CommitPanel {
     diff: Rect,
     dragged: Option<(usize, bool)>,
     edit_view: (Rect, u16, u16),
+    edit_follow: bool,
     diff_key: String,
     diff_text: String,
     diff_scroll: u16,
+    diff_selection: TextSelection,
+    message_selection: TextSelection,
     plans: Vec<Plan>,
     push: bool,
     move_to: usize,
@@ -150,6 +160,7 @@ pub struct CommitPanel {
 }
 const DEF: &str = "Changes";
 const NEW: &str = "Unversioned Files";
+const IGNORED: &str = "Ignored Files";
 fn display_path(p: &Path) -> String {
     p.to_string_lossy()
         .replace('\n', "↵")
@@ -209,7 +220,7 @@ impl CommitPanel {
             .filter(|f| {
                 c.scope.contains(&f.root)
                     && self.checks.get(&f.key) == Some(&true)
-                    && !f.change.conflict
+                    && f.change.selectable()
             })
             .collect()
     }
@@ -240,7 +251,7 @@ impl CommitPanel {
         self.last_check.clear();
         for &i in &row.files {
             let f = &self.files[i];
-            if !f.change.conflict {
+            if f.change.selectable() {
                 let was = self.checks.get(&f.key) == Some(&true);
                 if was != (checked < eligible) {
                     self.last_check.push((f.key.clone(), was));
@@ -288,10 +299,19 @@ impl CommitPanel {
             .cloned()
             .unwrap_or_default();
         self.caret = self.buf.len();
+        self.message_selection.reset();
+        self.edit_view = (Rect::default(), 0, 0);
+        self.edit_follow = true;
         self.edit = Some(Edit::Message);
         self.focus = Focus::Message
     }
     fn move_menu(&mut self) {
+        if self
+            .active()
+            .is_none_or(|r| r.files.iter().all(|&i| self.files[i].change.ignored()))
+        {
+            return;
+        }
         self.move_to = 0;
         self.move_names = std::iter::once(DEF.to_string())
             .chain(self.saved.groups.iter().cloned())
@@ -307,7 +327,11 @@ impl CommitPanel {
             }
             Some(Edit::Group) => {
                 let n = self.buf.trim();
-                if n.is_empty() || n == DEF || n == NEW || self.saved.groups.iter().any(|v| v == n)
+                if n.is_empty()
+                    || n == DEF
+                    || n == NEW
+                    || n == IGNORED
+                    || self.saved.groups.iter().any(|v| v == n)
                 {
                     bail!("请输入唯一的分组名称")
                 }
@@ -321,7 +345,7 @@ impl CommitPanel {
                     .unwrap_or(DEF.into());
                 for i in self.active().map(|r| r.files.clone()).unwrap_or_default() {
                     let f = &mut self.files[i];
-                    if f.change.xy != *b"??" {
+                    if f.change.xy != *b"??" && !f.change.ignored() {
                         f.group = g.clone();
                         self.saved.membership.insert(f.key.clone(), g.clone());
                     }
@@ -468,6 +492,24 @@ impl CommitPanel {
         }
     }
     pub(crate) fn hover_at(&mut self, x: u16, y: u16) -> bool {
+        if self.edit.is_some() {
+            return false;
+        }
+        if let Some(menu) = &mut self.view_menu {
+            let item = self.hits.iter().rev().find_map(|(r, h)| {
+                if inside(*r, x, y) {
+                    if let Hit::ViewItem(item) = h {
+                        return Some(*item);
+                    }
+                }
+                None
+            });
+            return item.is_some_and(|item| {
+                let changed = menu.row != item as usize;
+                menu.row = item as usize;
+                changed
+            });
+        }
         let new = self
             .hits
             .iter()
@@ -490,14 +532,23 @@ impl CommitPanel {
                 // is still in the focus cycle. The eye always opens it there.
                 self.preview_open =
                     !self.preview_open || (self.stacked && self.focus != Focus::Diff);
+                if !self.preview_open {
+                    self.diff_selection.reset();
+                }
                 self.focus = if self.preview_open && self.stacked {
                     Focus::Diff
                 } else {
                     Focus::Tree
                 };
             }
-            Hit::Directories => self.set_directory_grouping(!self.group_by_directory, c),
-            Hit::Status => self.show_status = !self.show_status,
+            Hit::ViewOptions => self.toggle_view_menu(),
+            Hit::ViewItem(item) => {
+                if let Err(e) = self.toggle_view_item(item, c) {
+                    return err(e);
+                }
+            }
+            Hit::Directories => self.set_directory_grouping(!self.options.directories, c),
+            Hit::Status => self.options.status = !self.options.status,
             Hit::Expand(expanded) => self.set_all_expanded(expanded, c),
             Hit::New => {
                 self.buf.clear();
@@ -565,11 +616,19 @@ impl Panel for CommitPanel {
         let mut files = vec![];
         let mut errors = vec![];
         for (r, repo) in c.repos.iter().enumerate() {
-            match backend::status(&repo.path) {
+            let changes = backend::status(&repo.path).and_then(|mut changes| {
+                if self.options.ignored {
+                    changes.extend(backend::ignored(&repo.path)?);
+                }
+                Ok(changes)
+            });
+            match changes {
                 Ok(ch) => {
                     for change in ch {
                         let key = format!("{}:{}", rid(c, r), keypart(&change.path));
-                        let group = if change.xy == *b"??" {
+                        let group = if change.ignored() {
+                            IGNORED.into()
+                        } else if change.xy == *b"??" {
                             NEW.into()
                         } else {
                             self.saved
@@ -580,7 +639,7 @@ impl Panel for CommitPanel {
                         };
                         self.checks
                             .entry(key.clone())
-                            .or_insert(group == DEF && !change.conflict);
+                            .or_insert(group == DEF && change.selectable());
                         files.push(File {
                             root: r,
                             key,
@@ -597,6 +656,7 @@ impl Panel for CommitPanel {
         self.last_click = None;
         self.dragged = None;
         self.diff_key.clear();
+        self.diff_selection.reset();
         self.sync(c);
         if !self
             .files
@@ -617,11 +677,7 @@ impl Panel for CommitPanel {
         }
     }
     fn draw(&mut self, f: &mut Frame, a: Rect, c: &Context) {
-        self.poll_ai();
-        self.draw_workbench(f, a, c);
-        if self.edit.is_some() {
-            self.draw_edit(f, a, c)
-        }
+        self.draw_with_cursor(f, a, c, true);
     }
     fn tick(&mut self, _c: &Context) -> Action {
         let pending = self.ai_pending.is_some();
@@ -637,10 +693,26 @@ impl Panel for CommitPanel {
         }
     }
     fn editing(&self) -> bool {
-        self.edit.is_some()
+        self.edit.is_some() || self.view_menu.is_some()
+    }
+    fn selected_text(&self) -> Option<&str> {
+        if self.view_menu.is_some() {
+            return None;
+        }
+        if matches!(self.edit, Some(Edit::Message)) {
+            self.message_selection.selected_text()
+        } else if self.edit.is_none()
+            && self.preview_open
+            && self.focus == Focus::Diff
+            && self.active().is_some_and(|r| r.id == self.diff_key)
+        {
+            self.diff_selection.selected_text()
+        } else {
+            None
+        }
     }
     fn help(&self) -> &'static str {
-        "Space check · Enter/v preview · t directories · i message · c review · ? keys"
+        "Space check · Enter/v preview · o view options · i message · c review · ? keys"
     }
     fn confirm(&mut self, t: &str, c: &Context) -> Action {
         match t {
@@ -650,8 +722,38 @@ impl Panel for CommitPanel {
         }
     }
     fn event(&mut self, e: &Event, c: &Context) -> Action {
+        if matches!(e, Event::Key(k) if k.kind == crossterm::event::KeyEventKind::Release) {
+            return Action::None;
+        }
+        if matches!(e, Event::FocusLost) {
+            self.diff_selection.clear();
+            self.message_selection.clear();
+        }
+        if let Some(action) = self.view_menu_event(e, c) {
+            return action;
+        }
         if self.edit.is_some() {
             return self.edit_event(e, c);
+        }
+        if self.active().is_none_or(|r| r.id != self.diff_key) {
+            self.diff_selection.reset();
+        }
+        if self.focus == Focus::Diff && self.preview_open {
+            if let Some(action) = self.diff_selection.key(e, true) {
+                return action;
+            }
+        }
+        if let Event::Mouse(m) = e {
+            if let Some(action) = self
+                .preview_open
+                .then(|| self.diff_selection.mouse(m))
+                .flatten()
+            {
+                self.focus = Focus::Diff;
+                self.dragged = None;
+                self.last_click = None;
+                return action;
+            }
         }
         if !matches!(e, Event::Mouse(m) if matches!(m.kind, M::Down(MouseButton::Left) | M::Up(MouseButton::Left)))
         {
@@ -686,8 +788,12 @@ impl Panel for CommitPanel {
                             }
                         });
                         if let Some(g) = target {
-                            if g == NEW || file.change.xy == *b"??" {
-                                return err("未跟踪文件独立分组，仅跟踪文件可移组");
+                            if g == NEW
+                                || g == IGNORED
+                                || file.change.xy == *b"??"
+                                || file.change.ignored()
+                            {
+                                return err("未跟踪和忽略文件独立分组，仅跟踪文件可移组");
                             }
                             self.saved.membership.insert(file.key.clone(), g.clone());
                             self.files[i].group = g;
@@ -818,6 +924,7 @@ impl Panel for CommitPanel {
                     }
                 }
                 K::Char('t') => return self.launch(Hit::Directories, c),
+                K::Char('o') => return self.launch(Hit::ViewOptions, c),
                 K::Char('s') => return self.launch(Hit::Status, c),
                 K::Char('v') => return self.launch(Hit::TogglePreview, c),
                 K::Char('u') => return self.launch(Hit::UndoCheck, c),
@@ -876,7 +983,19 @@ impl Panel for CommitPanel {
     }
 }
 impl CommitPanel {
-    fn draw_edit(&mut self, f: &mut Frame, a: Rect, c: &Context) {
+    pub(crate) fn draw_with_cursor(&mut self, f: &mut Frame, a: Rect, c: &Context, cursor: bool) {
+        self.poll_ai();
+        self.draw_workbench(f, a, c);
+        if self.diff.is_empty() {
+            self.diff_selection.reset();
+        }
+        if self.edit.is_some() {
+            self.draw_edit(f, a, c, cursor);
+        }
+        self.draw_view_menu(f, a);
+    }
+
+    fn draw_edit(&mut self, f: &mut Frame, a: Rect, c: &Context, cursor: bool) {
         let h = (a.height.saturating_sub(2)).min(17);
         let w = a.width.saturating_sub(4).min(86);
         let area = Rect::new(a.x + (a.width - w) / 2, a.y + (a.height - h) / 2, w, h);
@@ -900,7 +1019,7 @@ impl CommitPanel {
         if inn.height < 3 {
             return;
         }
-        let hint=match ed{Edit::Group=>"新分组名称 · Enter 保存 · Esc 取消",Edit::Message=>"输入说明 · Enter 换行 · Ctrl-S / F2 保存 · Esc 取消",Edit::Move=>"j/k 选择组 · Enter 应用 · Esc 取消",Edit::AISettings=>"三行依次为：完整 HTTP(S) chat/completions URL、模型、提示词。Token: IGIT_LLM_API_KEY",Edit::AIDraft=>"逐仓候选（保存将替换对应说明；Esc 放弃）"};
+        let hint=match ed{Edit::Group=>"新分组名称 · Enter 保存 · Esc 取消",Edit::Message=>"拖选松开即复制 · Shift+方向键选择 · Enter 换行 · Ctrl-A 全选",Edit::Move=>"j/k 选择组 · Enter 应用 · Esc 取消",Edit::AISettings=>"三行依次为：完整 HTTP(S) chat/completions URL、模型、提示词。Token: IGIT_LLM_API_KEY",Edit::AIDraft=>"逐仓候选（保存将替换对应说明；Esc 放弃）"};
         word(f, slice(inn, 0), hint, Style::default().fg(MUTED));
         let text = Rect::new(inn.x, inn.y + 1, inn.width, inn.height - 2);
         if matches!(ed, Edit::Move) {
@@ -952,14 +1071,59 @@ impl CommitPanel {
                 lines.push(Line::from(line));
                 at += line.len() + 1
             }
-            let off = cr.saturating_sub(text.height.saturating_sub(1));
-            let hor = col.saturating_sub(text.width.saturating_sub(1));
+            let (off, hor) = if matches!(ed, Edit::Message) {
+                let (_, old_y, old_x) = self.edit_view;
+                if self.edit_follow {
+                    (
+                        old_y
+                            .min(cr)
+                            .max(cr.saturating_sub(text.height.saturating_sub(1))),
+                        old_x
+                            .min(col)
+                            .max(col.saturating_sub(text.width.saturating_sub(1))),
+                    )
+                } else {
+                    (
+                        old_y.min(
+                            (lines.len().saturating_sub(usize::from(text.height)))
+                                .min(u16::MAX as usize) as u16,
+                        ),
+                        old_x.min(
+                            lines
+                                .iter()
+                                .map(Line::width)
+                                .max()
+                                .unwrap_or(0)
+                                .saturating_sub(usize::from(text.width.saturating_sub(1)))
+                                .min(u16::MAX as usize) as u16,
+                        ),
+                    )
+                }
+            } else {
+                (
+                    cr.saturating_sub(text.height.saturating_sub(1)),
+                    col.saturating_sub(text.width.saturating_sub(1)),
+                )
+            };
             self.edit_view = (text, off, hor);
-            f.render_widget(Paragraph::new(lines).scroll((off, hor)), text);
-            f.set_cursor_position((
-                text.x + col.saturating_sub(hor),
-                text.y + cr.saturating_sub(off),
-            ))
+            if matches!(ed, Edit::Message) {
+                self.message_selection.render(
+                    f,
+                    text,
+                    TextLayout::plain(&self.buf, text.width, TextWrap::Clip),
+                    usize::from(off),
+                    usize::from(hor),
+                );
+            } else {
+                f.render_widget(Paragraph::new(lines).scroll((off, hor)), text);
+            }
+            if cursor && cr >= off && cr - off < text.height && col >= hor && col - hor < text.width
+            {
+                f.set_cursor_position((
+                    text.x + col.saturating_sub(hor),
+                    text.y + cr.saturating_sub(off),
+                ));
+            }
         }
         let foot = slice(inn, inn.height - 1);
         let mut x = foot.x;
@@ -972,6 +1136,49 @@ impl CommitPanel {
         self.hit_button(f, foot, &mut x, "Cancel Esc", Hit::EditCancel);
     }
     fn edit_event(&mut self, e: &Event, c: &Context) -> Action {
+        if matches!(self.edit, Some(Edit::Message)) {
+            self.message_selection.sync_source(&self.buf);
+            if matches!(e, Event::Key(_) | Event::Paste(_)) {
+                self.edit_follow = true;
+            }
+            if let Some(action) = self.message_selection.key(e, false) {
+                if matches!(e, Event::Key(k) if k.code == K::Char('a') && k.modifiers == Mod::CONTROL)
+                {
+                    self.caret = self.message_selection.head();
+                }
+                return action;
+            }
+            if let Event::Mouse(m) = e {
+                if matches!(m.kind, M::ScrollUp | M::ScrollDown)
+                    && inside(self.edit_view.0, m.column, m.row)
+                {
+                    self.edit_view.1 = self
+                        .edit_view
+                        .1
+                        .saturating_add_signed(if m.kind == M::ScrollUp { -3 } else { 3 });
+                    self.edit_follow = false;
+                    return Action::None;
+                }
+                if let Some(action) = self.message_selection.mouse(m) {
+                    self.caret = self.message_selection.head();
+                    self.edit_follow = false;
+                    if m.kind == M::Drag(MouseButton::Left) {
+                        let (a, off, hor) = &mut self.edit_view;
+                        if m.row < a.y {
+                            *off = off.saturating_sub(1);
+                        } else if m.row >= a.bottom() {
+                            *off = off.saturating_add(1);
+                        }
+                        if m.column < a.x {
+                            *hor = hor.saturating_sub(1);
+                        } else if m.column >= a.right() {
+                            *hor = hor.saturating_add(1);
+                        }
+                    }
+                    return action;
+                }
+            }
+        }
         if let Event::Mouse(m) = e {
             if m.kind == M::Down(MouseButton::Left) {
                 if let Some((_, h)) = self
@@ -1031,6 +1238,7 @@ impl CommitPanel {
                 } else {
                     s.clone()
                 };
+                self.remove_message_selection();
                 self.buf.insert_str(self.caret, &s);
                 self.caret += s.len()
             }
@@ -1069,18 +1277,36 @@ impl CommitPanel {
             }
             return Action::None;
         }
+        let navigation = matches!(
+            k.code,
+            K::Left | K::Right | K::Up | K::Down | K::Home | K::End
+        );
+        let shift = k.modifiers.contains(Mod::SHIFT);
+        if matches!(self.edit, Some(Edit::Message)) {
+            if matches!(k.code, K::Char(_) | K::Enter | K::Backspace | K::Delete)
+                && !k.modifiers.intersects(Mod::CONTROL | Mod::ALT)
+            {
+                let removed = self.remove_message_selection();
+                if removed && matches!(k.code, K::Backspace | K::Delete) {
+                    return Action::None;
+                }
+            } else if navigation && !shift {
+                if let Some(range) = self.message_selection.range() {
+                    self.message_selection.clear();
+                    if matches!(k.code, K::Left | K::Right) {
+                        self.caret = if k.code == K::Left {
+                            range.start
+                        } else {
+                            range.end
+                        };
+                        return Action::None;
+                    }
+                }
+            }
+        }
         let pos = self.caret.min(self.buf.len());
-        let prev = self.buf[..pos]
-            .char_indices()
-            .last()
-            .map(|(i, _)| i)
-            .unwrap_or(pos);
-        let next = pos
-            + self.buf[pos..]
-                .chars()
-                .next()
-                .map(|c| c.len_utf8())
-                .unwrap_or(0);
+        let prev = selection::previous(&self.buf, pos);
+        let next = selection::next(&self.buf, pos);
         match k.code {
             K::Char(ch) if !k.modifiers.intersects(Mod::CONTROL | Mod::ALT) => {
                 self.buf.insert(pos, ch);
@@ -1104,7 +1330,7 @@ impl CommitPanel {
             K::Up | K::Down => {
                 let start = self.buf[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
                 let right = pos + self.buf[pos..].find('\n').unwrap_or(self.buf.len() - pos);
-                let idx = self.buf[start..pos].chars().count();
+                let column = unicode_width::UnicodeWidthStr::width(&self.buf[start..pos]);
                 let (s, e) = if k.code == K::Up && start > 0 {
                     let e = start - 1;
                     (self.buf[..e].rfind('\n').map(|i| i + 1).unwrap_or(0), e)
@@ -1117,15 +1343,30 @@ impl CommitPanel {
                 } else {
                     return Action::None;
                 };
-                self.caret = s + self.buf[s..e]
-                    .char_indices()
-                    .nth(idx)
-                    .map(|(i, _)| i)
-                    .unwrap_or(e - s)
+                self.caret = s + selection::at_column(&self.buf[s..e], column);
             }
             _ => {}
         }
+        if navigation && matches!(self.edit, Some(Edit::Message)) {
+            if shift {
+                self.message_selection.extend(pos, self.caret);
+            } else {
+                self.message_selection.clear();
+            }
+        }
         Action::None
+    }
+
+    fn remove_message_selection(&mut self) -> bool {
+        if matches!(self.edit, Some(Edit::Message)) {
+            if let Some(range) = self.message_selection.range() {
+                self.caret = range.start;
+                self.buf.replace_range(range, "");
+                self.message_selection.clear();
+                return true;
+            }
+        }
+        false
     }
 }
 impl CommitPanel {

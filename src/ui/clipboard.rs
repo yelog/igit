@@ -6,6 +6,18 @@ use std::{
 };
 
 pub(crate) fn copy(text: &str) -> Result<()> {
+    #[cfg(test)]
+    if CAPTURE.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some(items) = c.as_mut() {
+            items.push(text.to_owned());
+            true
+        } else {
+            false
+        }
+    }) {
+        return Ok(());
+    }
     let candidates: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
         &[("pbcopy", &[])]
     } else if cfg!(windows) {
@@ -25,6 +37,30 @@ pub(crate) fn copy(text: &str) -> Result<()> {
         }
     }
     bail!("无法写入系统剪贴板（{}）", failures.join("；"))
+}
+
+// Shell integration tests exercise the real dispatch without touching the user's
+// clipboard or changing process-global environment variables in parallel tests.
+#[cfg(test)]
+thread_local! { static CAPTURE: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) }; }
+
+#[cfg(test)]
+pub(crate) struct CopyCapture;
+#[cfg(test)]
+impl CopyCapture {
+    pub fn start() -> Self {
+        CAPTURE.with(|c| *c.borrow_mut() = Some(vec![]));
+        Self
+    }
+    pub fn texts(&self) -> Vec<String> {
+        CAPTURE.with(|c| c.borrow().clone().unwrap())
+    }
+}
+#[cfg(test)]
+impl Drop for CopyCapture {
+    fn drop(&mut self) {
+        CAPTURE.with(|c| *c.borrow_mut() = None);
+    }
 }
 
 fn copy_with(command: &mut Command, text: &str) -> Result<()> {

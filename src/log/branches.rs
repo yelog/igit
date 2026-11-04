@@ -116,6 +116,10 @@ pub(super) struct Menu {
 }
 
 impl Menu {
+    pub(super) fn text_entry(&self) -> bool {
+        self.level == Level::Select
+    }
+
     pub(super) fn open(hist: &History, filter: &Filter, c: &Context) -> Result<Self> {
         let file = c.state_dir.join("branch-favorites.json");
         let starred = match fs::read(&file) {

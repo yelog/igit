@@ -1,4 +1,5 @@
 use super::*;
+mod text_selection;
 use crate::core::{git, Repo};
 use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
@@ -71,6 +72,229 @@ fn row_area(p: &CommitPanel, name: &str) -> Rect {
             _ => None,
         })
         .unwrap()
+}
+
+#[test]
+fn view_options_menu_keeps_checks_and_blocks_underlying_actions_in_all_icon_modes() {
+    use super::display::Item;
+    let (_d, c) = fixture();
+    for mode in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
+        for (width, height) in [(44, 12), (80, 24), (120, 36)] {
+            let mut p = CommitPanel {
+                icons: mode,
+                ..Default::default()
+            };
+            p.refresh(&c).unwrap();
+            let checks = p.checks.clone();
+            let mut t = Terminal::new(TestBackend::new(width, height)).unwrap();
+            draw(&mut p, &mut t, &c);
+            let eye = p
+                .hits
+                .iter()
+                .find(|(_, h)| matches!(h, Hit::ViewOptions))
+                .unwrap()
+                .0;
+            assert_eq!(
+                read(t.backend().buffer(), eye).trim(),
+                mode.glyph(Icon::Preview)
+            );
+            click(&mut p, &c, eye.x + 1, eye.y);
+            draw(&mut p, &mut t, &c);
+            assert!(p.editing());
+            let menu = p.view_menu.as_ref().unwrap().area;
+            assert!(menu.right() <= width && menu.bottom() <= height);
+            let text = read(t.backend().buffer(), menu);
+            for label in [
+                "Group By",
+                "Directory",
+                "Module",
+                "Show",
+                "Ignored Files",
+                "Git Status",
+            ] {
+                assert!(text.contains(label), "{width}x{height}: {text}");
+            }
+            // The menu border sits over tree rows and must not browse or toggle them.
+            let cursor = p.cursor;
+            click(&mut p, &c, menu.x, menu.y + 1);
+            key(&mut p, &c, K::Char('c'));
+            assert_eq!(p.cursor, cursor);
+            assert!(p.plans.is_empty() && p.edit.is_none());
+            key(&mut p, &c, K::Char(' '));
+            assert!(p.options.directories);
+            draw(&mut p, &mut t, &c);
+            let modules = p
+                .hits
+                .iter()
+                .find(|(_, h)| matches!(h, Hit::ViewItem(Item::Module)))
+                .unwrap()
+                .0;
+            assert!(p.hover_at(modules.x + 2, modules.y));
+            key(&mut p, &c, K::Enter);
+            assert!(!p.options.modules);
+            assert!(!p.view.iter().any(|r| matches!(r.kind, Kind::Repo(_))));
+            draw(&mut p, &mut t, &c);
+            key(&mut p, &c, K::Esc);
+            assert!(!p.editing());
+            assert_eq!(p.checks, checks);
+        }
+    }
+}
+
+#[test]
+fn showing_ignored_files_preserves_checks_undo_and_git_contents() {
+    use super::display::Item;
+    let (_d, c) = fixture();
+    let repo = &c.repos[0].path;
+    fs::write(repo.join(".gitignore"), "cache/\n*.log\n").unwrap();
+    fs::create_dir(repo.join("cache")).unwrap();
+    fs::write(repo.join("cache/private.txt"), "never commit this marker").unwrap();
+    fs::write(repo.join("app.log"), "never commit this marker").unwrap();
+    let before = git(repo, &["ls-files", "--stage"]).unwrap();
+    let mut p = CommitPanel::default();
+    p.refresh(&c).unwrap();
+    p.toggle(0);
+    let checks = p.checks.clone();
+    let undo = p.last_check.clone();
+    p.toggle_view_item(Item::Ignored, &c).unwrap();
+    assert_eq!(p.checks, checks);
+    assert_eq!(p.last_check, undo);
+    let i = p.view.iter().position(|r| r.label == IGNORED).unwrap();
+    assert_eq!(p.check_counts(&p.view[i]), (0, 0));
+    for &f in &p.view[i].files {
+        p.checks.insert(p.files[f].key.clone(), true); // A stale historical check is still excluded.
+    }
+    p.toggle(i);
+    assert!(p.selection(&c).is_empty());
+    p.cursor = i;
+    key(&mut p, &c, K::Char('m'));
+    assert!(p.edit.is_none());
+    p.toggle_view_item(Item::Ignored, &c).unwrap();
+    assert!(!p.view.iter().any(|r| r.label == IGNORED));
+    key(&mut p, &c, K::Char('u'));
+    assert_eq!(p.selection(&c).len(), 2);
+    assert_eq!(git(repo, &["ls-files", "--stage"]).unwrap(), before);
+    assert_eq!(
+        fs::read_to_string(repo.join("cache/private.txt")).unwrap(),
+        "never commit this marker"
+    );
+}
+
+#[test]
+fn regrouped_commit_keeps_the_selected_index_version_and_unselected_staged_file() {
+    use super::display::Item;
+    let (_d, c) = fixture();
+    let repo = &c.repos[0].path;
+    git(repo, &["config", "user.name", "Fixture"]).unwrap();
+    git(repo, &["config", "user.email", "fixture@invalid"]).unwrap();
+    git(repo, &["config", "core.hooksPath", "/dev/null"]).unwrap();
+    git(repo, &["config", "commit.gpgSign", "false"]).unwrap();
+    git(
+        repo,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "-qm",
+            "base",
+        ],
+    )
+    .unwrap();
+    let selected = "src/界面/model/page.rs";
+    let unselected = "src/界面/view/page.rs";
+    fs::write(repo.join(selected), "selected index version\n").unwrap();
+    fs::write(repo.join(unselected), "unselected index version\n").unwrap();
+    git(repo, &["add", "--", selected, unselected]).unwrap();
+    fs::write(repo.join(selected), "selected working version\n").unwrap();
+    fs::write(repo.join(".gitignore"), "cache/\n").unwrap();
+    fs::create_dir(repo.join("cache")).unwrap();
+    fs::write(repo.join("cache/private.txt"), "ignored marker\n").unwrap();
+    let mut p = CommitPanel::default();
+    p.refresh(&c).unwrap();
+    let unselected_row = p
+        .view
+        .iter()
+        .position(|r| {
+            r.file()
+                .is_some_and(|i| p.files[i].change.path == Path::new(unselected))
+        })
+        .unwrap();
+    p.toggle(unselected_row);
+    for item in [Item::Directory, Item::Module, Item::Ignored, Item::Status] {
+        p.toggle_view_item(item, &c).unwrap();
+    }
+    p.saved.drafts.insert(rid(&c, 0), "selected".into());
+    let Action::Confirm { body, .. } = p.review(&c, false).unwrap() else {
+        panic!("expected review");
+    };
+    assert!(body.contains("selected index version"));
+    assert!(
+        !body.contains("selected working version")
+            && !body.contains("unselected index version")
+            && !body.contains("ignored marker")
+    );
+    assert!(matches!(p.confirm("commit", &c), Action::Committed { repos, .. } if repos == [0]));
+    assert_eq!(
+        git(repo, &["show", &format!("HEAD:{selected}")]).unwrap(),
+        "selected index version"
+    );
+    assert_eq!(
+        git(repo, &["show", &format!(":{unselected}")]).unwrap(),
+        "unselected index version"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.join(selected)).unwrap(),
+        "selected working version\n"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.join("cache/private.txt")).unwrap(),
+        "ignored marker\n"
+    );
+    assert_eq!(
+        git(
+            repo,
+            &[
+                "-c",
+                "core.quotepath=false",
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                "HEAD"
+            ]
+        )
+        .unwrap(),
+        selected
+    );
+}
+
+#[test]
+fn ungrouped_directory_preview_uses_the_repo_root_when_launched_in_a_subdirectory() {
+    use super::display::Item;
+    let (_d, mut c) = fixture();
+    c.workspace = c.repos[0].path.join("src/界面");
+    let mut p = CommitPanel::default();
+    p.refresh(&c).unwrap();
+    p.toggle_view_item(Item::Module, &c).unwrap();
+    p.toggle_view_item(Item::Directory, &c).unwrap();
+    p.cursor = p
+        .view
+        .iter()
+        .position(|r| matches!(&r.kind, Kind::Directory(path) if path == Path::new("src/界面")))
+        .unwrap();
+    key(&mut p, &c, K::Char('v'));
+    let mut t = Terminal::new(TestBackend::new(120, 36)).unwrap();
+    draw(&mut p, &mut t, &c);
+    let preview: String = read(t.backend().buffer(), p.diff)
+        .split_whitespace()
+        .collect();
+    assert!(preview.contains(&format!(
+        "Workspace{}",
+        c.repos[0].path.join("src/界面").display()
+    )));
+    assert_eq!(p.selection(&c).len(), 2);
 }
 
 #[test]

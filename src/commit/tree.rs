@@ -1,4 +1,4 @@
-use super::{display_path, keypart, CommitPanel, Context, DEF, NEW};
+use super::{display_path, keypart, CommitPanel, Context, DEF, IGNORED, NEW};
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
@@ -44,6 +44,15 @@ fn repo_id(root: usize, group: &str) -> String {
 
 fn directory_id(repo_id: &str, path: &Path) -> String {
     format!("d:{}:{repo_id}", keypart(path))
+}
+
+pub(super) fn directory_root(c: &Context) -> &Path {
+    c.repos
+        .iter()
+        .map(|repo| repo.path.as_path())
+        .filter(|path| c.workspace.starts_with(path))
+        .min_by_key(|path| path.components().count())
+        .unwrap_or(&c.workspace)
 }
 
 // Keep native path components for identity; only convert them to text for display.
@@ -92,9 +101,13 @@ impl Directory<'_> {
 impl CommitPanel {
     fn file_row(&self, i: usize, depth: u16) -> Row {
         let file = &self.files[i];
+        let mut label = display_path(Path::new(file.change.path.file_name().unwrap_or_default()));
+        if file.change.directory() {
+            label.push('/');
+        }
         Row {
             id: file.key.clone(),
-            label: display_path(Path::new(file.change.path.file_name().unwrap_or_default())),
+            label,
             depth,
             files: vec![i],
             kind: Kind::File(i),
@@ -102,31 +115,46 @@ impl CommitPanel {
     }
 
     pub(super) fn set_directory_grouping(&mut self, enabled: bool, c: &Context) {
-        if self.group_by_directory == enabled {
+        self.set_grouping(enabled, self.options.modules, c);
+    }
+
+    pub(super) fn set_module_grouping(&mut self, enabled: bool, c: &Context) {
+        self.set_grouping(self.options.directories, enabled, c);
+    }
+
+    fn set_grouping(&mut self, directories: bool, modules: bool, c: &Context) {
+        if self.options.directories == directories && self.options.modules == modules {
             return;
         }
+        // Find the closest surviving row, then reveal only its ancestors in the
+        // new layout. Other directories and repositories retain their folds.
+        let mut candidates = vec![];
         if let Some(row) = self.active() {
-            match &row.kind {
-                Kind::File(i) if enabled => {
-                    let file = &self.files[*i];
-                    let repo = repo_id(file.root, &file.group);
-                    for parent in file.change.path.ancestors().skip(1) {
-                        self.fold.remove(&directory_id(&repo, parent));
-                    }
+            candidates.push((self.cursor, row.id.clone()));
+            let mut depth = row.depth;
+            for (i, row) in self.view[..self.cursor].iter().enumerate().rev() {
+                if row.depth < depth {
+                    candidates.push((i, row.id.clone()));
+                    depth = row.depth;
                 }
-                Kind::Directory(_) if !enabled => {
-                    // The flat list has no directory row; keep the same repository and changelist.
-                    if let Some(i) = self.view[..self.cursor]
-                        .iter()
-                        .rposition(|r| matches!(r.kind, Kind::Repo(_)))
-                    {
-                        self.cursor = i;
-                    }
-                }
-                _ => {}
             }
         }
-        self.group_by_directory = enabled;
+        self.options.directories = directories;
+        self.options.modules = modules;
+        let all = self.rows_with_folds(c, &BTreeSet::new());
+        for (old, id) in candidates {
+            if let Some(i) = all.iter().position(|r| r.id == id) {
+                self.cursor = old;
+                let mut depth = all[i].depth;
+                for row in all[..i].iter().rev() {
+                    if row.depth < depth {
+                        self.fold.remove(&row.id);
+                        depth = row.depth;
+                    }
+                }
+                break;
+            }
+        }
         self.sync(c);
     }
 
@@ -162,6 +190,7 @@ impl CommitPanel {
         for group in std::iter::once(DEF)
             .chain(self.saved.groups.iter().map(String::as_str))
             .chain(std::iter::once(NEW))
+            .chain(self.options.ignored.then_some(IGNORED))
         {
             let mut repos: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
             for (i, file) in self.files.iter().enumerate() {
@@ -169,23 +198,8 @@ impl CommitPanel {
                     repos.entry(file.root).or_default().push(i);
                 }
             }
-            if group == NEW && repos.is_empty() {
+            if (group == NEW || group == IGNORED) && repos.is_empty() {
                 continue;
-            }
-            if !self.group_by_directory {
-                for members in repos.values_mut() {
-                    members.sort_by_cached_key(|&i| {
-                        let path = &self.files[i].change.path;
-                        (
-                            path.file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_lowercase(),
-                            path.parent(),
-                            path.as_os_str(),
-                        )
-                    });
-                }
             }
             let id = format!("g:{group}");
             let open = !folds.contains(&id);
@@ -197,6 +211,17 @@ impl CommitPanel {
                 kind: Kind::Group,
             });
             if !open {
+                continue;
+            }
+            if !self.options.modules {
+                self.append_files(
+                    c,
+                    repos.into_values().flatten().collect(),
+                    &format!("w:{group}"),
+                    1,
+                    folds,
+                    &mut rows,
+                );
                 continue;
             }
             for (r, members) in repos {
@@ -212,25 +237,63 @@ impl CommitPanel {
                 if !open {
                     continue;
                 }
-                if !self.group_by_directory {
-                    rows.extend(members.into_iter().map(|i| self.file_row(i, 2)));
-                    continue;
-                }
-                let mut root = Directory::default();
-                for i in members {
-                    let mut dir = &mut root;
-                    if let Some(parent) = self.files[i].change.path.parent() {
-                        for name in parent {
-                            dir = dir.children.entry(name).or_default();
-                            dir.members.push(i);
-                        }
-                    }
-                    dir.leaves.push(i);
-                }
-                root.append(self, folds, &mut rows, &id, Path::new(""), 2);
+                self.append_files(c, members, &id, 2, folds, &mut rows);
             }
         }
         rows
+    }
+
+    fn append_files(
+        &self,
+        c: &Context,
+        mut members: Vec<usize>,
+        id: &str,
+        depth: u16,
+        folds: &BTreeSet<String>,
+        rows: &mut Vec<Row>,
+    ) {
+        if !self.options.directories {
+            members.sort_by_cached_key(|&i| {
+                let file = &self.files[i];
+                let path = &file.change.path;
+                (
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_lowercase(),
+                    path.parent(),
+                    &c.repos[file.root].path,
+                    path.as_os_str(),
+                )
+            });
+            rows.extend(members.into_iter().map(|i| self.file_row(i, depth)));
+            return;
+        }
+        let paths: Vec<_> = members
+            .into_iter()
+            .map(|i| {
+                let file = &self.files[i];
+                let repo = &c.repos[file.root].path;
+                let prefix = if self.options.modules {
+                    Path::new("")
+                } else {
+                    repo.strip_prefix(directory_root(c)).unwrap_or(repo)
+                };
+                (i, prefix.join(&file.change.path))
+            })
+            .collect();
+        let mut root = Directory::default();
+        for (i, path) in &paths {
+            let mut dir = &mut root;
+            if let Some(parent) = path.parent() {
+                for name in parent {
+                    dir = dir.children.entry(name).or_default();
+                    dir.members.push(*i);
+                }
+            }
+            dir.leaves.push(*i);
+        }
+        root.append(self, folds, rows, id, Path::new(""), depth);
     }
 
     pub(super) fn check_counts(&self, row: &Row) -> (usize, usize) {
@@ -238,7 +301,7 @@ impl CommitPanel {
         let mut eligible = 0;
         for &i in &row.files {
             let file = &self.files[i];
-            if !file.change.conflict {
+            if file.change.selectable() {
                 eligible += 1;
                 checked += usize::from(self.checks.get(&file.key) == Some(&true));
             }
@@ -383,6 +446,57 @@ mod tests {
         panel.set_directory_grouping(false, &c);
         assert_eq!(panel.active().unwrap().id, file_key);
         assert_eq!(panel.checks, checks);
+    }
+
+    #[test]
+    fn module_and_directory_options_preserve_selection_identity_and_scope() {
+        let (_d, mut c, mut panel) = fixture();
+        panel.cursor = file_row(&panel, 1, "pkg/src/view/shared.rs");
+        panel.toggle(panel.cursor);
+        let active = panel.active().unwrap().id.clone();
+        let checks = panel.checks.clone();
+        for modules in [false, true] {
+            panel.set_module_grouping(modules, &c);
+            for directories in [true, false] {
+                panel.set_directory_grouping(directories, &c);
+                assert_eq!(panel.active().unwrap().id, active);
+                assert_eq!(panel.checks, checks);
+                assert_eq!(
+                    panel.view.iter().any(|r| matches!(r.kind, Kind::Repo(_))),
+                    modules
+                );
+                assert_eq!(
+                    panel
+                        .view
+                        .iter()
+                        .any(|r| matches!(r.kind, Kind::Directory(_))),
+                    directories
+                );
+                let leaves: BTreeSet<_> = panel.view.iter().filter_map(Row::file).collect();
+                assert_eq!(leaves.len(), panel.files.len());
+                if directories && !modules {
+                    assert!(panel.view.iter().any(|r| matches!(
+                        &r.kind, Kind::Directory(p) if p == Path::new("lib/pkg/src/model")
+                    )));
+                }
+            }
+        }
+        c.scope.remove(&1);
+        panel.set_module_grouping(false, &c);
+        panel.set_directory_grouping(true, &c);
+        assert!(panel
+            .view
+            .iter()
+            .flat_map(|r| &r.files)
+            .all(|&i| panel.files[i].root == 0));
+        assert!(panel.selection(&c).iter().all(|f| f.root == 0));
+        c.scope.insert(1);
+        panel.refresh(&c).unwrap();
+        assert_eq!(panel.checks, checks);
+        assert_eq!(
+            panel.check_counts(&panel.view[file_row(&panel, 1, "pkg/src/view/shared.rs")]),
+            (0, 1)
+        );
     }
 
     #[test]

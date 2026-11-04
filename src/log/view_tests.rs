@@ -1,5 +1,8 @@
 //! Exercise the rendered cells and actual input dispatch together.
 mod branch_menu;
+mod column_order;
+mod reference_badges;
+mod text_selection;
 use super::tests::{commit, finish_preview, git, init};
 use super::*;
 use crossterm::event::{KeyEvent, MouseEvent};
@@ -36,9 +39,15 @@ fn render(p: &mut LogPanel, t: &mut Terminal<TestBackend>, c: &Context) {
     t.draw(|f| p.draw(f, f.area(), c)).unwrap();
 }
 fn row_text(t: &Terminal<TestBackend>, r: Rect) -> String {
-    (r.x..r.right())
-        .map(|x| t.backend().buffer()[(x, r.y)].symbol())
-        .collect()
+    let mut text = String::new();
+    let mut x = r.x;
+    while x < r.right() {
+        let symbol = t.backend().buffer()[(x, r.y)].symbol();
+        text.push_str(symbol);
+        // A wide glyph covers the following cell, even if TestBackend still stores its old value.
+        x = x.saturating_add(cells(symbol).max(1));
+    }
+    text
 }
 
 fn navigation_history() -> (tempfile::TempDir, Context, LogPanel) {
@@ -400,7 +409,7 @@ fn view_options_entry_and_columns_support_keyboard_and_pointer() {
             let mut t = Terminal::new(TestBackend::new(width, 24)).unwrap();
             render(&mut p, &mut t, &c);
             let eye = target(&p, |h| matches!(h, Hit::ViewOptions));
-            assert!(row_text(&t, eye).contains(mode.glyph(Icon::Preview)));
+            assert_eq!(row_text(&t, eye).trim(), mode.glyph(Icon::Preview));
             click_at(&mut p, eye, &c);
             render(&mut p, &mut t, &c);
             assert!(p.editing());
@@ -435,10 +444,10 @@ fn view_options_entry_and_columns_support_keyboard_and_pointer() {
                 assert!(r.right() <= width && r.bottom() <= 24);
             }
             key(&mut p, K::Enter, Mods::NONE, &c);
-            assert!(!p.options.author);
+            assert!(!p.options.shows(Column::Author));
             key(&mut p, K::Down, Mods::NONE, &c);
             key(&mut p, K::Char(' '), Mods::NONE, &c);
-            assert!(p.options.hash);
+            assert!(p.options.shows(Column::Hash));
             key(&mut p, K::Esc, Mods::NONE, &c);
             assert!(p.view_menu.is_some());
             key(&mut p, K::Esc, Mods::NONE, &c);
@@ -515,7 +524,9 @@ fn view_options_change_rendered_roots_references_and_columns_without_changing_se
     );
     assert_eq!(p.rev().unwrap().oid, selected);
     key(&mut p, K::Char('t'), Mods::CONTROL, &c);
-    assert!(p.options.hash && p.options.root_names && !p.options.date);
+    assert!(
+        p.options.shows(Column::Hash) && p.options.root_names && !p.options.shows(Column::Date)
+    );
     key(&mut p, K::Char('['), Mods::NONE, &c);
     assert_eq!(p.rev().unwrap().oid, selected);
 }
@@ -671,8 +682,24 @@ fn view_options_long_edges_restore_rails_and_shortcut_arrows_jump_to_the_real_en
     p.rebuild_visible(None).unwrap();
     let mut t = Terminal::new(TestBackend::new(120, 36)).unwrap();
     render(&mut p, &mut t, &c);
+    let old = target(&p, |h| matches!(h, Hit::GraphJump(21)));
+    assert_eq!(row_text(&t, old), "v");
+    p.toggle_view_menu();
+    p.view_menu_hit(display::MenuHit::MoveColumn(display::Column::Graph, 1), &c)
+        .unwrap();
+    p.toggle_view_menu();
+    render(&mut p, &mut t, &c);
     let down = target(&p, |h| matches!(h, Hit::GraphJump(21)));
+    assert!(down.x > old.x && down.y == old.y);
     assert_eq!(row_text(&t, down), "v");
+    click_at(&mut p, old, &c);
+    assert_eq!(p.cursor, 2, "former arrow only selects its row");
+    view_column(&mut p, display::Column::Graph, &c);
+    render(&mut p, &mut t, &c);
+    assert!(!p.hits.iter().any(|(_, h)| matches!(h, Hit::GraphJump(_))));
+    view_column(&mut p, display::Column::Graph, &c);
+    render(&mut p, &mut t, &c);
+    assert_eq!(target(&p, |h| matches!(h, Hit::GraphJump(21))), down);
     let middle = target(&p, |h| matches!(h, Hit::Commit(10)));
     assert_eq!(t.backend().buffer()[(down.x, middle.y)].symbol(), " ");
     click_at(&mut p, down, &c);

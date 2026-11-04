@@ -1,8 +1,20 @@
 //! Commit-list motion uses the last rendered height, including toolbar/error rows.
 use super::*;
+use crate::ui::key_sequence::KeySequence;
 use crossterm::event::KeyEvent;
 
 impl LogPanel {
+    pub(crate) fn key_sequence(&self) -> Option<KeySequence> {
+        if self.focus != Pane::Graph || self.editing() {
+            return None;
+        }
+        match self.key_prefix {
+            Some('g') => Some(KeySequence::LogGoto),
+            Some('y') => Some(KeySequence::LogYank),
+            _ => None,
+        }
+    }
+
     pub(crate) fn cancel_key_sequence(&mut self) {
         self.key_prefix = None;
     }

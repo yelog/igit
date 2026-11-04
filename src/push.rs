@@ -1,4 +1,6 @@
+mod display;
 mod files;
+mod keymap;
 mod submodules;
 mod view;
 #[cfg(test)]
@@ -8,17 +10,18 @@ use crate::{
     ui::{
         icons::{Icon, IconMode},
         idea::{checkbox, GREEN, RED},
+        selection::{TextLayout, TextSelection, Wrap as TextWrap},
         *,
     },
 };
 use anyhow::{bail, Result};
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
-use files::{Change, FileTree, Kind};
+use files::{Change, FileTree, Group, Grouping, Kind};
 use ratatui::{
     layout::{Constraint as C, Direction, Layout, Rect},
     style::{Modifier, Style},
-    text::{Line, Span, Text},
-    widgets::{Clear, Paragraph, Wrap},
+    text::{Line, Span},
+    widgets::{Clear, Paragraph},
     Frame,
 };
 use std::{
@@ -70,7 +73,7 @@ enum Report {
     Row(usize, Result<(), String>),
     Done,
 }
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 enum Hit {
     Row(usize),
     Check(usize),
@@ -79,6 +82,9 @@ enum Hit {
     File(usize),
     FileFold(usize),
     FoldAll(bool),
+    GroupBy,
+    MenuSurface,
+    Group(Group),
     Details,
     Send,
     Retry,
@@ -99,8 +105,11 @@ pub struct PushPanel {
     offset: usize,
     focus: usize,
     preview: Preview,
+    grouping: Grouping,
+    group_menu: Option<Group>,
     show_details: bool,
     detail_off: u16,
+    detail_selection: TextSelection,
     target_edit: Option<(usize, String)>,
     hits: Vec<(Rect, Hit)>,
     zones: Vec<Rect>,
@@ -351,6 +360,7 @@ impl PushPanel {
         self.rows().get(self.pos).copied()
     }
     fn inspect(&mut self, c: &Context) {
+        self.detail_selection.reset();
         self.preview = Preview::default();
         self.detail_off = 0;
         let Some((i, sub)) = self.selected() else {
@@ -363,6 +373,9 @@ impl PushPanel {
         if !e.error.is_empty() {
             self.preview.body = e.error.clone();
             self.preview.summary = e.error.clone();
+            return;
+        }
+        if sub.is_none() && e.n == 0 {
             return;
         }
         let selected = sub.and_then(|k| e.logs.get(k));
@@ -449,12 +462,15 @@ impl PushPanel {
             desc
         };
         self.preview = Preview {
-            tree: FileTree::new(&files),
+            tree: FileTree::new(&files, self.grouping),
             files,
             body: summary.clone(),
             summary,
             is_patch: false,
         };
+        if self.show_details {
+            self.inspect_file(c);
+        }
     }
     fn open_file(&mut self, c: &Context) {
         let Some((i, k)) = self.selected() else {
@@ -547,6 +563,7 @@ impl PushPanel {
         self.detail_off = 0;
     }
     fn inspect_file(&mut self, c: &Context) {
+        self.detail_selection.reset();
         if self.preview.tree.file_index().is_some() {
             self.open_file(c);
         } else {
@@ -737,10 +754,21 @@ impl PushPanel {
 }
 impl Panel for PushPanel {
     fn help(&self) -> &'static str {
-        "j/k move · h/l fold · Enter diff · d details · [/] fold all · Space check root · t target · p push · Tab/F6 pane"
+        if self.group_menu.is_some() {
+            "Group By · j/k select · Space/Enter toggle · Esc close"
+        } else {
+            "j/k move · h/l fold · o group by · Enter diff · d details · [/] fold all · Space check root · t target · p push · Tab/F6 pane"
+        }
     }
     fn editing(&self) -> bool {
-        self.target_edit.is_some()
+        self.target_edit.is_some() || self.group_menu.is_some()
+    }
+    fn selected_text(&self) -> Option<&str> {
+        if !self.editing() && self.show_details && self.focus == 2 {
+            self.detail_selection.selected_text()
+        } else {
+            None
+        }
     }
     fn refresh(&mut self, c: &Context) -> Result<()> {
         let old = self.reseed.is_none().then(|| self.selected()).flatten();
@@ -783,6 +811,15 @@ impl Panel for PushPanel {
         self.draw_panel(f, a, c);
     }
     fn event(&mut self, e: &Event, c: &Context) -> Action {
+        if matches!(e, Event::Key(k) if k.kind == crossterm::event::KeyEventKind::Release) {
+            return Action::None;
+        }
+        if matches!(e, Event::FocusLost) {
+            self.detail_selection.clear();
+        }
+        if self.group_menu_event(e, c) {
+            return Action::None;
+        }
         if let Some((id, t)) = &mut self.target_edit {
             let id = *id;
             match e {
@@ -826,6 +863,21 @@ impl Panel for PushPanel {
             }
             return Action::None;
         }
+        if self.show_details && self.focus == 2 {
+            if let Some(action) = self.detail_selection.key(e, true) {
+                return action;
+            }
+        }
+        if let Event::Mouse(m) = e {
+            if let Some(action) = self
+                .show_details
+                .then(|| self.detail_selection.mouse(m))
+                .flatten()
+            {
+                self.focus = 2;
+                return action;
+            }
+        }
         let mut key = None;
         let mut hit = None;
         match e {
@@ -836,14 +888,7 @@ impl Panel for PushPanel {
                     self.focus = i
                 }
                 match m.kind {
-                    MouseEventKind::Down(MouseButton::Left) => {
-                        hit = self
-                            .hits
-                            .iter()
-                            .rev()
-                            .find(|(r, _)| inside(*r, x, y))
-                            .map(|z| z.1.clone())
-                    }
+                    MouseEventKind::Down(MouseButton::Left) => hit = self.hit_at(x, y),
                     MouseEventKind::ScrollDown => key = Some(KeyCode::Down),
                     MouseEventKind::ScrollUp => key = Some(KeyCode::Up),
                     _ => {}
@@ -873,6 +918,8 @@ impl Panel for PushPanel {
                     }
                 }
                 Hit::Details => self.toggle_details(c),
+                Hit::GroupBy => self.group_menu = Some(Group::Directory),
+                Hit::MenuSurface | Hit::Group(_) => (),
                 Hit::Check(i) => self.toggle(i),
                 Hit::Fold(i) => {
                     if !self.expanded.remove(&i) {
@@ -937,6 +984,7 @@ impl Panel for PushPanel {
                 KeyCode::Char('v') => self.follow_tags = !self.follow_tags,
                 KeyCode::Char('x') => self.skip_hooks = !self.skip_hooks,
                 KeyCode::Char('d') => self.toggle_details(c),
+                KeyCode::Char('o') => self.group_menu = Some(Group::Directory),
                 KeyCode::Esc if self.show_details => {
                     self.show_details = false;
                     self.focus = 1;
@@ -1239,9 +1287,41 @@ mod tests {
         assert_eq!(p.preview.body, p.preview.summary);
         assert!(!p.preview.body.contains("rename from"));
 
+        p.preview.tree.fold_all(false);
+        select(&mut p, "src/b/index.vue");
+        let patch = p.preview.body.clone();
+        p.detail_off = 3;
+        let key = |p: &mut PushPanel, code| {
+            p.event(
+                &Event::Key(crossterm::event::KeyEvent::new(code, KeyModifiers::NONE)),
+                &c,
+            );
+        };
+        key(&mut p, KeyCode::Char('o'));
+        for _ in Group::ALL {
+            key(&mut p, KeyCode::Char(' '));
+            key(&mut p, KeyCode::Down);
+        }
+        key(&mut p, KeyCode::Esc);
+        assert_eq!(p.preview.tree.visible.len(), 5);
+        assert_eq!(
+            p.preview.files[p.preview.tree.file_index().unwrap()].path,
+            Path::new("src/b/index.vue")
+        );
+        assert_eq!((p.preview.body.as_str(), p.detail_off), (patch.as_str(), 3));
+        select(&mut p, "src/a/index.vue");
+        assert!(
+            p.preview.body.contains("+first updated") && !p.preview.body.contains("second updated")
+        );
+
         p.pos = 1; // The individual outgoing commit has the same five statuses.
         p.inspect(&c);
         assert_eq!(p.preview.files.len(), 5);
+        assert_eq!(p.preview.tree.visible.len(), 5);
+        assert!(p
+            .preview
+            .body
+            .contains("diff --git a/dev/compose.yaml b/dev/compose.yaml"));
         select(&mut p, "src/renamed.ts");
         assert!(p.preview.body.contains("rename from old.ts"));
         assert_eq!(p.checked, BTreeSet::from([0]));
@@ -1256,6 +1336,7 @@ mod tests {
         );
         p.refresh(&c).unwrap();
         assert!(p.preview.files.iter().all(|f| f.status == b'A'));
+        assert_eq!(p.preview.tree.visible.len(), p.preview.files.len());
         select(&mut p, "src/a/index.vue");
         assert!(p
             .preview

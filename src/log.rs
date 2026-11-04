@@ -3,6 +3,7 @@ mod branches;
 mod display;
 mod filters;
 mod inspector;
+mod keymap;
 mod model;
 mod navigation;
 mod paths;
@@ -14,7 +15,9 @@ use crate::{
     core::Context,
     ui::{
         icons::{Icon, IconMode},
-        inside, Action, Panel,
+        inside,
+        selection::{TextLayout, TextSelection, Wrap},
+        Action, Panel,
     },
 };
 use anyhow::Result;
@@ -99,7 +102,6 @@ enum Hit {
     Refresh,
     Dropdown(DropdownHit),
     FileFold(bool),
-    Branches,
     NewTab,
     CloseTab,
     Tab(usize),
@@ -135,6 +137,7 @@ struct DiffView {
     y: usize,
     x: u16,
     waiting_for_files: bool,
+    selection: TextSelection,
 }
 pub struct LogPanel {
     pub(crate) icons: IconMode,
@@ -177,6 +180,8 @@ pub struct LogPanel {
     right: u16,
     inspector_split: u16,
     drag: Option<Divider>,
+    info_selection: TextSelection,
+    info_click: Option<(Rect, Hit)>,
     last: Option<(Instant, Pane, usize)>,
     limit: usize,
 }
@@ -223,6 +228,8 @@ impl Default for LogPanel {
             right: 26,
             inspector_split: 65,
             drag: None,
+            info_selection: TextSelection::default(),
+            info_click: None,
             last: None,
             limit: 160,
         }
@@ -438,10 +445,6 @@ impl LogPanel {
                 self.focus = Pane::Files;
                 self.file_fold_all(v);
             }
-            Hit::Branches => {
-                self.focus = Pane::Info;
-                self.toggle_branches();
-            }
             Hit::Clear(k) => self.clear_field(k, c)?,
             Hit::ToggleRegex | Hit::ToggleCase => self.toggle_match_mode(hit)?,
             Hit::ToggleRefs => {
@@ -517,6 +520,15 @@ impl Panel for LogPanel {
     fn editing(&self) -> bool {
         self.editor.is_some() || self.diff.is_some() || self.view_menu.is_some()
     }
+    fn selected_text(&self) -> Option<&str> {
+        if let Some(diff) = &self.diff {
+            diff.selection.selected_text()
+        } else if self.editor.is_none() && self.view_menu.is_none() && self.focus == Pane::Info {
+            self.info_selection.selected_text()
+        } else {
+            None
+        }
+    }
     fn help(&self) -> &'static str {
         "j/k 浏览 · gg/G 首/末 · H/M/L 屏顶/中/底 · Ctrl-F/B 整页 · Ctrl-D/U 半页 · yy/ym/ya 复制 · Tab/h/l 切栏 · / 搜索 · b/a/d/p 筛选 · o 显示选项 · x 清筛选 · + 更多 · Enter Diff · Ctrl-T/W Log 页签"
     }
@@ -528,11 +540,14 @@ impl Panel for LogPanel {
             return;
         }
         self.draw_layout(f, a, c);
+        if !self.areas.iter().any(|(_, p)| *p == Pane::Info) {
+            self.info_selection.reset();
+        }
         if self.editor.is_some() {
             self.draw_editor(f, a, c);
         }
         self.draw_view_menu(f, a);
-        if let Some(d) = &self.diff {
+        if let Some(d) = &mut self.diff {
             let p = popup(a, a.width.saturating_sub(4), a.height.saturating_sub(2));
             f.render_widget(Clear, p);
             let b = boxof(
@@ -546,8 +561,6 @@ impl Panel for LogPanel {
                 let lines = d
                     .lines
                     .iter()
-                    .skip(d.y)
-                    .take(h as usize)
                     .map(|s| {
                         Line::styled(
                             s.as_str(),
@@ -563,9 +576,16 @@ impl Panel for LogPanel {
                         )
                     })
                     .collect::<Vec<_>>();
-                f.render_widget(
-                    Paragraph::new(lines).scroll((0, d.x)),
+                let mut layout = TextLayout::default();
+                for line in lines {
+                    layout.push(line, ar.width, Wrap::Clip);
+                }
+                d.selection.render(
+                    f,
                     Rect::new(ar.x, ar.y, ar.width, h),
+                    layout,
+                    d.y,
+                    usize::from(d.x),
                 );
                 self.bar(
                     f,
@@ -579,6 +599,23 @@ impl Panel for LogPanel {
         }
     }
     fn event(&mut self, e: &Event, c: &Context) -> Action {
+        if matches!(e, Event::FocusLost) {
+            self.info_selection.clear();
+            self.info_click = None;
+            if let Some(d) = &mut self.diff {
+                d.selection.clear();
+            }
+        }
+        let selection_action = if let Some(d) = &mut self.diff {
+            d.selection.key(e, true)
+        } else if self.editor.is_none() && self.view_menu.is_none() && self.focus == Pane::Info {
+            self.info_selection.key(e, true)
+        } else {
+            None
+        };
+        if let Some(action) = selection_action {
+            return action;
+        }
         let mut action = Action::None;
         if self.editing()
             || matches!(e, Event::Paste(_) | Event::Resize(_, _) | Event::FocusLost)
@@ -588,6 +625,40 @@ impl Panel for LogPanel {
         }
         let answer = (|| -> Result<()> {
             if let Event::Mouse(m) = e {
+                let selection_action = if let Some(d) = &mut self.diff {
+                    d.selection.mouse(m)
+                } else if self.editor.is_none() && self.view_menu.is_none() {
+                    self.info_selection.mouse(m)
+                } else {
+                    None
+                };
+                if let Some(selected_action) = selection_action {
+                    if self.diff.is_none() {
+                        self.focus = Pane::Info;
+                        if m.kind == M::Down(MouseButton::Left) {
+                            self.info_click = self
+                                .hits
+                                .iter()
+                                .rev()
+                                .find(|(r, h)| {
+                                    inside(*r, m.column, m.row) && matches!(h, Hit::Parent(_))
+                                })
+                                .cloned();
+                        } else if m.kind == M::Up(MouseButton::Left) {
+                            if let Some((r, hit)) = self.info_click.take() {
+                                if matches!(selected_action, Action::None)
+                                    && inside(r, m.column, m.row)
+                                {
+                                    self.click(hit, c)?;
+                                }
+                            }
+                        } else if m.kind == M::Drag(MouseButton::Left) {
+                            self.info_click = None;
+                        }
+                    }
+                    action = selected_action;
+                    return Ok(());
+                }
                 if let M::Down(button) = m.kind {
                     self.mouse_down(button, m.column, m.row, c)?;
                 } else if m.kind == M::Moved {
@@ -749,7 +820,6 @@ impl Panel for LogPanel {
                         self.open_diff(c)?
                     }
                 }
-                K::Char(' ') if self.focus == Pane::Info => self.toggle_branches(),
                 K::Char(' ') if self.focus == Pane::Refs => self.activate_ref(c)?,
                 K::Esc => self.focus = Pane::Graph,
                 _ => {}

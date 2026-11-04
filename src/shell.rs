@@ -5,8 +5,10 @@ use crate::{
     merge::MergePanel,
     push::PushPanel,
     ui::{
+        help::{global_section, HelpContent, HelpEvent, HelpSection, HelpState},
         icons::{Icon, IconMode},
         idea::{button_style, checkbox, repo_tint, TAG},
+        key_sequence::{KeySequence, KeySequencePicker, SequenceEvent},
         *,
     },
 };
@@ -15,7 +17,7 @@ use crossterm::{
     cursor::Show,
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -33,7 +35,7 @@ use std::{
     env,
     io::{self, IsTerminal},
     path::PathBuf,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use unicode_width::UnicodeWidthStr;
 const NAMES: [&str; 4] = ["Log", "Commit", "Push", "Merge"];
@@ -46,14 +48,17 @@ const HELP: &str = "Usage: igit [OPTIONS] [DIRECTORY]  (alias: ig)
   -h, --help                 show this help
   -V, --version              print version
 
-1 Log   2 Commit   3 Push   4 Merge   r repositories   ? help   q quit
+1 Log   2 Commit   3 Push   4 Merge   r repositories   ? / F1 help   q quit
 Runs Git on your local working trees; mutations require a reviewed confirmation.";
 enum Popup {
     Scope {
         picked: BTreeSet<usize>,
         row: usize,
     },
-    Help,
+    Help {
+        state: HelpState,
+        origin: Option<Box<Popup>>,
+    },
     Menu {
         row: usize,
     },
@@ -86,6 +91,7 @@ struct Shell {
     tools: Vec<(Rect, u8)>,
     pop_hits: Vec<(Rect, usize)>,
     mode_active: bool,
+    key_picker: KeySequencePicker,
 }
 impl Shell {
     fn new(ctx: Context, icons: IconMode) -> Self {
@@ -105,6 +111,7 @@ impl Shell {
             tools: vec![],
             pop_hits: vec![],
             mode_active: false,
+            key_picker: KeySequencePicker::default(),
         };
         s.log.icons = icons;
         s.commit.icons = icons;
@@ -121,7 +128,41 @@ impl Shell {
             _ => &self.merge,
         }
     }
+    fn key_sequence(&self) -> Option<KeySequence> {
+        if self.pop.is_some() || self.ctx.repos.is_empty() {
+            return None;
+        }
+        match self.tab {
+            0 => self.log.key_sequence(),
+            3 => self.merge.key_sequence(),
+            _ => None,
+        }
+    }
+    fn cancel_key_sequences(&mut self) {
+        self.log.cancel_key_sequence();
+        self.merge.cancel_key_sequence();
+        self.key_picker = KeySequencePicker::default();
+    }
+    fn panel_event(&mut self, ev: &Event) {
+        let before = self.key_sequence();
+        let action = match self.tab {
+            0 => self.log.event(ev, &self.ctx),
+            1 => self.commit.event(ev, &self.ctx),
+            2 => self.push.event(ev, &self.ctx),
+            _ => self.merge.event(ev, &self.ctx),
+        };
+        self.action(action);
+        let after = self.key_sequence();
+        if after != before || after.is_some() && matches!(ev, Event::Key(_)) {
+            self.key_picker = if after.is_some() {
+                KeySequencePicker::pending(Instant::now())
+            } else {
+                KeySequencePicker::default()
+            };
+        }
+    }
     fn refresh(&mut self) {
+        self.cancel_key_sequences();
         let r = match self.tab {
             0 => self.log.refresh(&self.ctx),
             1 => {
@@ -145,7 +186,7 @@ impl Shell {
         }
     }
     fn go(&mut self, n: usize) {
-        self.log.cancel_key_sequence();
+        self.cancel_key_sequences();
         self.tab = n.min(3);
         self.msg.clear();
         self.refresh()
@@ -164,6 +205,7 @@ impl Shell {
             }
             Action::Go(n) => self.go(n),
             Action::Confirm { title, body, token } => {
+                self.cancel_key_sequences();
                 self.pop = Some(Popup::Confirm {
                     title,
                     body,
@@ -208,7 +250,7 @@ impl Shell {
         self.action(a)
     }
     fn quit_box(&mut self) {
-        self.log.cancel_key_sequence();
+        self.cancel_key_sequences();
         if self.push.busy() {
             self.notice("远端操作进行中，请等待结果后退出".into());
             return;
@@ -223,7 +265,7 @@ impl Shell {
         })
     }
     fn global(&mut self, n: u8) {
-        self.log.cancel_key_sequence();
+        self.cancel_key_sequences();
         match n {
             0 => {
                 self.ctx.repos.iter_mut().for_each(Repo::refresh_branch);
@@ -232,7 +274,7 @@ impl Shell {
                     row: 0,
                 })
             }
-            1 => self.pop = Some(Popup::Help),
+            1 => self.open_help(),
             2 => self.pop = Some(Popup::Menu { row: 0 }),
             3 => self.quit_box(),
             4 => self.pop = Some(Popup::Journal),
@@ -242,6 +284,93 @@ impl Shell {
             }
             _ => (),
         }
+    }
+    fn help_content(&self) -> HelpContent {
+        match self.pop.as_ref() {
+            Some(Popup::Scope { .. }) => HelpContent::new(
+                HelpSection::new(
+                    "Roots / 仓库范围",
+                    &[
+                        ("j", "选择下一个仓库"),
+                        ("k", "选择上一个仓库"),
+                        ("Space", "勾选或取消当前仓库"),
+                        ("a", "勾选全部仓库"),
+                        ("F5", "刷新仓库分支信息"),
+                        ("Enter", "应用仓库范围"),
+                        ("Esc", "取消修改，保留原仓库范围"),
+                    ],
+                ),
+                vec![],
+            ),
+            Some(Popup::Confirm { .. }) => HelpContent::new(
+                HelpSection::new(
+                    "审查 / 确认操作",
+                    &[
+                        ("j", "向下滚动审查正文"),
+                        ("k", "向上滚动审查正文"),
+                        ("Tab", "切换 Cancel 与 Confirm"),
+                        ("Enter", "执行当前选中的按钮"),
+                        ("y", "确认审查中的操作"),
+                        ("n", "取消审查，返回原面板"),
+                        ("Esc", "取消审查，返回原面板"),
+                    ],
+                ),
+                vec![],
+            ),
+            Some(Popup::Menu { .. }) => HelpContent::new(
+                HelpSection::new(
+                    "Actions / 动作列表",
+                    &[
+                        ("j", "选择下一个动作"),
+                        ("k", "选择上一个动作"),
+                        ("Enter", "执行选中的动作"),
+                        ("Esc", "关闭动作列表"),
+                    ],
+                ),
+                vec![],
+            ),
+            Some(Popup::Open { .. }) => HelpContent::new(
+                HelpSection::new(
+                    "工作区 / 路径输入",
+                    &[
+                        ("Backspace", "删除目录输入的末尾字符"),
+                        ("Ctrl-u", "清空目录输入"),
+                        ("Enter", "打开或重新扫描当前输入的目录"),
+                        ("Esc", "取消打开工作区"),
+                    ],
+                ),
+                vec![],
+            ),
+            Some(Popup::Journal) => HelpContent::new(
+                HelpSection::new("Console / 会话消息", &[("Enter", "关闭会话消息")]),
+                vec![],
+            ),
+            Some(Popup::Help { .. }) => unreachable!("help content describes the origin"),
+            None => {
+                let mut content = match self.tab {
+                    0 => self.log.keymap(),
+                    1 => self.commit.keymap(),
+                    2 => self.push.keymap(),
+                    _ => self.merge.keymap(),
+                };
+                if !self.panel().editing() {
+                    content.sections.push(global_section());
+                }
+                content
+            }
+        }
+    }
+    fn open_help(&mut self) {
+        if matches!(self.pop, Some(Popup::Help { .. })) {
+            return;
+        }
+        self.cancel_key_sequences();
+        let content = self.help_content();
+        let origin = self.pop.take().map(Box::new);
+        self.pop = Some(Popup::Help {
+            state: HelpState::new(content),
+            origin,
+        });
     }
     fn menu_action(&mut self, row: usize) {
         match row {
@@ -258,6 +387,28 @@ impl Shell {
         }
     }
     fn pop_event(&mut self, ev: &Event) {
+        if matches!(self.pop, Some(Popup::Help { .. })) {
+            if let Some(Popup::Help { mut state, origin }) = self.pop.take() {
+                match state.event(ev) {
+                    HelpEvent::Keep => self.pop = Some(Popup::Help { state, origin }),
+                    HelpEvent::Close => self.pop = origin.map(|popup| *popup),
+                    HelpEvent::Run(command) => {
+                        self.pop = origin.map(|popup| *popup);
+                        if self.help_content().context() != state.content.context() {
+                            self.open_help();
+                            self.notice("原区域的状态已变化，请重新选择快捷键".into());
+                        } else if let Some(events) = command.events() {
+                            for event in events {
+                                self.dispatch(&event);
+                            }
+                        } else {
+                            self.notice("无法执行此快捷键".into());
+                        }
+                    }
+                }
+            }
+            return;
+        }
         let key = if let Event::Key(k) = ev {
             Some(k.code)
         } else {
@@ -410,13 +561,7 @@ impl Shell {
                 }
                 Some(Popup::Open { path })
             }
-            Popup::Help => {
-                if hit.is_some() || key == Some(KeyCode::Char('?')) || key == Some(KeyCode::Enter) {
-                    None
-                } else {
-                    Some(Popup::Help)
-                }
-            }
+            Popup::Help { .. } => unreachable!("help events are handled above"),
             Popup::Journal => {
                 if hit.is_some() || key == Some(KeyCode::Enter) {
                     None
@@ -429,6 +574,10 @@ impl Shell {
     fn prepare_header_click(&mut self) -> bool {
         if self.tab == 0 {
             self.log.dismiss_filter_dropdown();
+        } else if self.tab == 1 {
+            self.commit.dismiss_view_menu();
+        } else if self.tab == 2 {
+            self.push.dismiss_group_menu();
         }
         !self.panel().editing()
     }
@@ -436,9 +585,32 @@ impl Shell {
         if matches!(ev,Event::Key(k) if k.kind==KeyEventKind::Release) {
             return;
         }
+        if matches!(ev, Event::Key(k) if k.code == KeyCode::F(1))
+            && !matches!(self.pop, Some(Popup::Help { .. }))
+        {
+            self.open_help();
+            return;
+        }
         if self.pop.is_some() {
             self.pop_event(ev);
             return;
+        }
+        if let Some(sequence) = self.key_sequence() {
+            match self.key_picker.event(ev, sequence) {
+                SequenceEvent::Handled => return,
+                SequenceEvent::Cancel => {
+                    self.cancel_key_sequences();
+                    return;
+                }
+                SequenceEvent::Run(suffix) => {
+                    self.panel_event(&Event::Key(KeyEvent::new(
+                        KeyCode::Char(suffix),
+                        KeyModifiers::NONE,
+                    )));
+                    return;
+                }
+                SequenceEvent::Pass => (),
+            }
         }
         if self.tab <= 1
             && matches!(
@@ -465,7 +637,9 @@ impl Shell {
                 }
                 if let Some((_, n)) = self.tools.iter().find(|(r, _)| inside(*r, m.column, m.row)) {
                     let n = *n;
-                    if self.prepare_header_click() {
+                    if n == 1 {
+                        self.open_help();
+                    } else if self.prepare_header_click() {
                         self.global(n)
                     }
                     return;
@@ -510,24 +684,19 @@ impl Shell {
             if k.modifiers.contains(KeyModifiers::CONTROL)
                 && k.code == KeyCode::Char('c')
                 && !editing
+                && self.panel().selected_text().is_none()
             {
                 self.quit_box();
                 return;
             }
         }
-        let a = match self.tab {
-            0 => self.log.event(ev, &self.ctx),
-            1 => self.commit.event(ev, &self.ctx),
-            2 => self.push.event(ev, &self.ctx),
-            _ => self.merge.event(ev, &self.ctx),
-        };
-        self.action(a)
+        self.panel_event(ev)
     }
     fn poll(&mut self) -> bool {
-        let mut change = false;
+        let mut change = self.key_picker.poll(Instant::now());
         if self.tab == 0 {
             match self.log.poll_preview(&self.ctx) {
-                Ok(redraw) => change = redraw,
+                Ok(redraw) => change |= redraw,
                 Err(e) => {
                     self.notice(format!("Log: {e:#}"));
                     change = true;
@@ -549,11 +718,14 @@ impl Shell {
     }
     fn poll_timeout(&self) -> Duration {
         const IDLE: Duration = Duration::from_millis(150);
-        if self.tab == 0 {
+        let timeout = if self.tab == 0 {
             self.log.preview_wakeup().unwrap_or(IDLE).min(IDLE)
         } else {
             IDLE
-        }
+        };
+        self.key_picker
+            .wakeup(Instant::now())
+            .map_or(timeout, |remaining| remaining.min(timeout))
     }
     fn draw_header(&mut self, f: &mut Frame, area: Rect, log_window: bool) {
         const LOG_CONTEXT_WIDTH: u16 = 20; // Git, a Log page, and its × / + / › controls.
@@ -667,7 +839,8 @@ impl Shell {
         if self.tab == 0 {
             self.log.draw(f, body, &self.ctx);
         } else {
-            self.commit.draw(f, body, &self.ctx);
+            self.commit
+                .draw_with_cursor(f, body, &self.ctx, self.pop.is_none());
         }
         self.mode_active = self.panel().editing();
         if notice > 0 {
@@ -679,6 +852,7 @@ impl Shell {
     }
     fn draw(&mut self, f: &mut Frame) {
         let a = f.area();
+        self.key_picker.clear_geometry();
         self.tabs = [Rect::default(); NAMES.len()];
         self.tools.clear();
         self.pop_hits.clear();
@@ -700,6 +874,18 @@ impl Shell {
             self.draw_workbench(f, a);
         }
         self.draw_header(f, Rect::new(a.x, a.y, a.width, 2), log_window);
+        if let Some(sequence) = self.key_sequence() {
+            let footer = if self.tab <= 1 {
+                u16::from(!self.msg.is_empty())
+            } else {
+                2
+            };
+            self.key_picker.draw(
+                f,
+                Rect::new(a.x, a.y + 2, a.width, a.height - 2 - footer),
+                sequence,
+            );
+        }
         self.draw_popup(f, a);
     }
     fn draw_workbench(&mut self, f: &mut Frame, a: Rect) {
@@ -750,6 +936,10 @@ impl Shell {
         self.tools.push((qr, 3));
     }
     fn draw_popup(&mut self, f: &mut Frame, a: Rect) {
+        if let Some(Popup::Help { state, .. }) = self.pop.as_mut() {
+            state.draw(f, a, self.icons);
+            return;
+        }
         let Some(pop) = self.pop.as_ref() else { return };
         let h = match pop {
             Popup::Scope { .. } => self.ctx.repos.len().saturating_add(5).min(24) as u16,
@@ -762,7 +952,7 @@ impl Shell {
         }
         .min(a.height - 2)
         .max(5);
-        let w = if matches!(pop, Popup::Help | Popup::Confirm { .. } | Popup::Journal) {
+        let w = if matches!(pop, Popup::Confirm { .. } | Popup::Journal) {
             90
         } else {
             72
@@ -771,7 +961,7 @@ impl Shell {
         let p = Rect::new(a.x + (a.width - w) / 2, a.y + (a.height - h) / 2, w, h);
         let title = match pop {
             Popup::Scope { .. } => "Workspace roots",
-            Popup::Help => "IGit · 操作指南",
+            Popup::Help { .. } => "IGit · 快捷键",
             Popup::Confirm { title, .. } => title,
             Popup::Menu { .. } => "Actions",
             Popup::Journal => "Session console",
@@ -854,11 +1044,7 @@ impl Shell {
                     (" Enter Apply ", self.ctx.repos.len(), true),
                 ])
             }
-            Popup::Help => {
-                let extra=match self.tab{0=>"单击提交联动右栏；双击文件/Enter 查看 Diff；拖线调宽高。\nB/I 左/右栏 · o 显示选项 · [/] 换 Log 页\nyy 完整ID · ym 完整消息 · ya 姓名与邮箱\n文本输入 Alt-R 正则、Alt-C 大小写；详情 Space 展开分支。",1=>"单击浏览；双击文件或 Enter 看补丁；v 预览，Esc 返回。\nt 目录分组 · s 双列状态 · z/Z 全收/展开 · u 撤销上次勾选\nn 建组 · m 移组 · [/] 换仓 · a Amend · A/S AI 说明/设置 · P 提交后预览推送",2=>"p 审查推送，t 编辑远端:分支，f 获取远端，R 仅重试失败，v 切换跟随标签，x 切换 hooks。",_=>"结果在中央编辑；确认解决一个文件不会自动继续整个 merge/rebase。"};
-                f.render_widget(Paragraph::new(format!("{}\n\n{}\n\n{}\n\n1–4   Log / Commit / Push / Merge\nr     Roots: j/k 移动，Space 勾选，Enter 应用\n:     打开动作列表（可切换/重新扫描工作区）\nF5    刷新面板   ·   q 退出\nEsc   关闭当前浮层或退出输入",NAMES[self.tab],self.panel().help(),extra)).wrap(Wrap{trim:false}),body);
-                controls.push((" Close / Esc ", usize::MAX, true))
-            }
+            Popup::Help { .. } => unreachable!("help is rendered above"),
             Popup::Journal => {
                 let text = self
                     .journal
@@ -1018,9 +1204,10 @@ pub fn run() -> Result<()> {
             match &e {
                 Event::Mouse(m) if m.kind == MouseEventKind::Moved => {
                     dirty = app.pop.is_none()
+                        && !app.key_picker.contains(m.column, m.row)
                         && match app.tab {
                             0 => app.log.hover_menu_at(m.column, m.row),
-                            1 if !app.commit.editing() => app.commit.hover_at(m.column, m.row),
+                            1 => app.commit.hover_at(m.column, m.row),
                             _ => false,
                         };
                 }
@@ -1058,6 +1245,12 @@ fn parse_icons(value: &str) -> Result<IconMode> {
         .parse()
         .map_err(|reason: &str| anyhow::anyhow!("Invalid --icons value '{value}': {reason}"))
 }
+
+#[cfg(test)]
+mod key_sequence_tests;
+
+#[cfg(test)]
+mod help_tests;
 
 #[cfg(test)]
 mod tests {

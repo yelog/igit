@@ -1,10 +1,11 @@
 //! The selected commit's paths and metadata. Tree selection refers to a visible row,
 //! while a leaf retains the exact index of the byte path returned by Git.
 use super::{
-    cells, fg, fold_slot, model, repo_tint, Hit, Icon, LogPanel, Pane, BLUE, DIM, EDGE, GOLD, INK,
-    PANEL, SELECT,
+    cells, fg, fold_slot, model, ref_color, repo_tint, Hit, Icon, IconMode, LogPanel, Pane, BLUE,
+    DIM, EDGE, GOLD, INK, PANEL, SELECT,
 };
 use crate::core::{Context, Repo};
+use crate::ui::selection::{TextLayout, Wrap};
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
@@ -82,7 +83,6 @@ pub(super) struct Inspector {
     file_offset: usize,
     info_pos: usize,
     info_max: usize,
-    all_branches: bool,
 }
 
 impl Inspector {
@@ -264,10 +264,6 @@ impl LogPanel {
         s.info_pos = s.info_pos.saturating_add_signed(d).min(s.info_max);
     }
 
-    pub(super) fn toggle_branches(&mut self) {
-        self.inspector.all_branches = !self.inspector.all_branches;
-    }
-
     fn inspector_button(
         &mut self,
         f: &mut Frame,
@@ -400,19 +396,18 @@ impl LogPanel {
                 _ => BLUE,
             };
             let slot = fold_slot(self.icons, None);
-            let room = width.saturating_sub(line.width() + file.status.width() + 1);
+            let room = width.saturating_sub(line.width());
             if room >= slot.width() + icon.width() + 5 {
                 line.push_span(slot);
             }
             if room >= icon.width() + 3 {
                 line.push_span(Span::styled(format!("{icon} "), fg(tint)));
             }
-            let space = width.saturating_sub(line.width() + file.status.width() + 1);
+            let space = width.saturating_sub(line.width());
             line.push_span(Span::styled(
                 fit(&model::plain(name), space, true),
                 fg(color),
             ));
-            line.push_span(Span::styled(format!(" {}", file.status), fg(DIM)));
             return line;
         }
         let open = !s.folded.contains(&id) && node.end > id + 1;
@@ -468,166 +463,49 @@ impl LogPanel {
     }
 }
 
-struct InfoRow<'a> {
-    text: Line<'a>,
-    // The only links are parent hashes and the branch expander; the rest is plain text.
-    link: Option<(usize, usize, Hit)>,
-}
-
-struct InfoLines<'a> {
+struct InfoLines {
     width: usize,
-    rows: Vec<InfoRow<'a>>,
+    layout: TextLayout,
+    links: Vec<(usize, usize, usize, Hit)>,
 }
 
-impl<'a> InfoLines<'a> {
-    fn push(&mut self, text: impl Into<Line<'a>>) {
+impl InfoLines {
+    fn push<'a>(&mut self, text: impl Into<Line<'a>>) {
         self.add(text.into(), None);
     }
 
     // Pass the first cell of the link on its logical line. Wrapping and mouse hits use the
     // same physical rows, including after scrolling, continuation lines and wide characters.
-    fn add(&mut self, line: Line<'a>, link: Option<(usize, Hit)>) {
-        let width = self.width;
-        if width == 0 {
-            return;
-        }
-        let link_part = |offset: usize, len: usize| {
-            let (start, hit) = link.as_ref()?;
-            let left = start.saturating_sub(offset);
-            (left < len).then(|| (left, len - left, hit.clone()))
-        };
-        if line.width() <= width {
-            self.rows.push(InfoRow {
-                link: link_part(0, line.width()),
-                text: line,
-            });
-            return;
-        }
-        let mut offset = 0;
-        let cells: Vec<_> = line
-            .styled_graphemes(Style::default())
-            .map(|g| {
-                let start = offset;
-                let w = g.symbol.width();
-                offset += w;
-                (g, start, w)
-            })
-            .collect();
-        let mut start = 0;
-        while start < cells.len() {
-            let mut end = start;
-            let mut used = 0;
-            let mut has_text = false;
-            let mut word_break = None;
-            while let Some((g, _, w)) = cells.get(end) {
-                if used + w > width {
-                    break;
+    fn add(&mut self, line: Line<'_>, link: Option<(usize, Hit)>) {
+        let rows = self.layout.push(line, self.width as u16, Wrap::Word);
+        if let Some((start, hit)) = link {
+            for i in rows {
+                let row = &self.layout.rows[i];
+                let left = start.saturating_sub(row.column);
+                if left < row.line.width() {
+                    self.links
+                        .push((i, left, row.line.width() - left, hit.clone()));
                 }
-                used += w;
-                end += 1;
-                if g.symbol.trim().is_empty() {
-                    if has_text {
-                        word_break = Some(end);
-                    }
-                } else {
-                    has_text = true;
-                }
-            }
-            if end == start {
-                // A two-cell grapheme cannot fit in a one-cell viewport.
-                self.rows.push(InfoRow {
-                    text: Line::styled("…", cells[start].0.style),
-                    link: link_part(cells[start].1, 1),
-                });
-                start += 1;
-                continue;
-            }
-            if end < cells.len() && !cells[end].0.symbol.trim().is_empty() {
-                end = word_break.unwrap_or(end);
-            }
-            let mut last = end;
-            if end < cells.len() {
-                while last > start + 1 && cells[last - 1].0.symbol.trim().is_empty() {
-                    last -= 1;
-                }
-            }
-            let mut spans: Vec<Span<'static>> = vec![];
-            for (g, _, _) in &cells[start..last] {
-                if let Some(span) = spans.last_mut().filter(|span| span.style == g.style) {
-                    span.content.to_mut().push_str(g.symbol);
-                } else {
-                    spans.push(Span::styled(g.symbol.to_owned(), g.style));
-                }
-            }
-            let text = Line::from(spans);
-            self.rows.push(InfoRow {
-                link: link_part(cells[start].1, text.width()),
-                text,
-            });
-            start = end;
-            while start < cells.len() && cells[start].0.symbol.trim().is_empty() {
-                start += 1;
             }
         }
     }
 
-    fn branches(&mut self, branches: &'a [String], expanded: bool) {
-        let Some(first) = branches.first() else {
+    fn branches(&mut self, branches: &[(model::RefKind, String)], icons: IconMode) {
+        if branches.is_empty() {
             self.push(Line::styled("In no branches", fg(DIM)));
             return;
-        };
+        }
         let n = branches.len();
-        let prefix = format!("In {n} branch{}: ", if n == 1 { "" } else { "es" });
-        if n == 1 && prefix.width() + first.width() <= self.width {
-            self.push(format!("{prefix}{first}"));
-            return;
-        }
-        let action = if expanded { "Show less" } else { "Show all" };
-        let link = Span::styled(action, fg(BLUE));
-        let preview = if expanded {
-            String::new()
-        } else {
-            // A wide terminal should not turn a repository with thousands of refs into
-            // one enormous preview string; the full list remains available on demand.
-            let mut text = branches
-                .iter()
-                .take(4)
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join(", ");
-            if n > 4 {
-                text.push_str(", …");
-            }
-            text
-        };
-        let inline = self.width >= prefix.width() + action.width() + if expanded { 0 } else { 6 };
-        let space = if inline {
-            self.width
-                .saturating_sub(prefix.width() + action.width() + 1)
-        } else {
-            (self.width * 2).saturating_sub(prefix.width())
-        };
-        let mut heading = Line::styled(prefix.trim_end().to_owned(), fg(INK));
-        if !expanded && space > 0 {
-            heading.push_span(Span::raw(" "));
-            heading.push_span(Span::styled(fit(&preview, space, false), fg(INK)));
-        }
-        if inline {
-            heading.push_span(Span::raw(" "));
-            let start = heading.width();
-            heading.push_span(link);
-            self.add(heading, Some((start, Hit::Branches)));
-        } else {
-            self.push(heading);
-            self.add(Line::from(link), Some((0, Hit::Branches)));
-        }
-        if expanded {
-            for branch in branches {
-                self.push(Line::from(vec![
-                    Span::styled("  ", fg(DIM)),
-                    Span::styled(branch.as_str(), fg(INK)),
-                ]));
-            }
+        self.push(Line::styled(
+            format!("In {n} branch{}:", if n == 1 { "" } else { "es" }),
+            fg(INK),
+        ));
+        let marker = icons.glyph(Icon::Tag);
+        for (kind, branch) in branches {
+            self.push(Line::from(vec![
+                Span::styled(format!("{marker} "), fg(ref_color(*kind))),
+                Span::styled(branch.as_str(), fg(INK)),
+            ]));
         }
     }
 }
@@ -638,18 +516,19 @@ fn info_lines<'a>(
     submodule: bool,
     width: usize,
     roomy: bool,
-) -> Vec<InfoRow<'a>> {
+) -> InfoLines {
     let detail = &panel.details;
     let mut out = InfoLines {
         width,
-        rows: vec![],
+        layout: TextLayout::default(),
+        links: vec![],
     };
     out.push(Line::styled(
         rev.subject.as_str(),
         fg(INK).add_modifier(Modifier::BOLD),
     ));
     if roomy {
-        out.push("");
+        out.layout.decoration(Line::raw(""));
     }
     let mut identity = Line::from(vec![
         Span::styled(
@@ -676,7 +555,7 @@ fn info_lines<'a>(
     if let Some(message) = panel.preview.message() {
         out.push(Line::styled(message, fg(DIM)));
     } else {
-        out.branches(&detail.branches, panel.inspector.all_branches);
+        out.branches(&detail.branches, panel.icons);
     }
     if !detail.body.is_empty() {
         out.push("");
@@ -702,40 +581,56 @@ fn info_lines<'a>(
             );
         }
     }
-    out.rows
+    out
 }
 
 impl LogPanel {
     pub(super) fn draw_info(&mut self, f: &mut Frame, area: Rect, c: &Context) {
         if area.is_empty() {
+            self.info_selection.reset();
             return;
         }
         f.render_widget(Block::default().style(fg(INK).bg(PANEL)), area);
-        let Some(rev) = self.rev() else { return };
+        let Some(rev) = self.rev() else {
+            self.info_selection.reset();
+            return;
+        };
         let pad = u16::from(area.width >= 12);
         let width = area.width - pad * 2;
-        let rows = info_lines(
+        let info = info_lines(
             self,
             rev,
             c.repos.get(rev.root).is_some_and(|r| r.submodule),
             usize::from(width),
             area.height >= 9,
         );
-        let max = rows.len().saturating_sub(usize::from(area.height));
+        let max = info
+            .layout
+            .rows
+            .len()
+            .saturating_sub(usize::from(area.height));
         let offset = self.inspector.info_pos.min(max);
         let mut links = Vec::new();
-        for (i, row) in rows
-            .into_iter()
-            .skip(offset)
-            .take(usize::from(area.height))
-            .enumerate()
-        {
-            let r = Rect::new(area.x + pad, area.y + i as u16, width, 1);
-            f.render_widget(Paragraph::new(row.text), r);
-            if let Some((start, len, hit)) = row.link {
-                links.push((Rect::new(r.x + start as u16, r.y, len as u16, 1), hit));
+        for (row, start, len, hit) in info.links {
+            if row >= offset && row - offset < usize::from(area.height) {
+                links.push((
+                    Rect::new(
+                        area.x + pad + start as u16,
+                        area.y + (row - offset) as u16,
+                        len as u16,
+                        1,
+                    ),
+                    hit,
+                ));
             }
         }
+        self.info_selection.render(
+            f,
+            Rect::new(area.x + pad, area.y, width, area.height),
+            info.layout,
+            offset,
+            0,
+        );
         self.hits.extend(links);
         self.inspector.info_pos = offset;
         self.inspector.info_max = max;
@@ -784,13 +679,13 @@ mod tests {
             body: "The extended description of this revision.\n第二行含有 🌱 和中文".into(),
             email: "lp@example.invalid".into(),
             branches: [
-                "HEAD",
-                "main",
-                "origin/main",
-                "release/older",
-                "feature/用户",
+                (model::RefKind::Head, "HEAD"),
+                (model::RefKind::Current, "main"),
+                (model::RefKind::Remote, "origin/main"),
+                (model::RefKind::Local, "release/older"),
+                (model::RefKind::Local, "feature/用户"),
             ]
-            .map(str::to_owned)
+            .map(|(kind, name)| (kind, name.to_owned()))
             .into(),
         };
         p.inspector = Inspector::new(&p.details.files);
@@ -879,7 +774,9 @@ mod tests {
                 .find(|(_, hit)| matches!(hit, Hit::File(n) if panel.file_is_leaf(*n)))
                 .unwrap()
                 .0;
-            assert!(text_at(terminal.backend().buffer(), row).contains("TS invalid-�.ts M"));
+            assert!(text_at(terminal.backend().buffer(), row)
+                .trim_end()
+                .ends_with("TS invalid-�.ts"));
         }
         assert_eq!(panel.details.files[panel.file_index().unwrap()].raw, raw);
         for (close, icon) in [(true, "[-]"), (false, "[+]")] {
@@ -900,7 +797,63 @@ mod tests {
     }
 
     #[test]
-    fn wrapped_details_keep_branches_and_each_scrolled_parent_clickable_at_the_visible_text() {
+    fn branch_details_always_show_every_tag_with_the_commit_list_colours() {
+        use crate::ui::Panel;
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        for mode in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
+            for width in [24, 80] {
+                for count in [0, 1, 5] {
+                    let (mut p, c) = fixture(&[]);
+                    p.icons = mode;
+                    p.focus = Pane::Info;
+                    p.details.branches.truncate(count);
+                    let mut terminal = Terminal::new(TestBackend::new(width, 36)).unwrap();
+                    terminal.draw(|f| p.draw_info(f, f.area(), &c)).unwrap();
+                    let lines = (0..36)
+                        .map(|y| text_at(terminal.backend().buffer(), Rect::new(0, y, width, 1)))
+                        .collect::<Vec<_>>();
+                    let text = lines.join("\n");
+                    assert!(!text.contains("Show all") && !text.contains("Show less"));
+                    let heading = match count {
+                        0 => "In no branches",
+                        1 => "In 1 branch:",
+                        _ => "In 5 branches:",
+                    };
+                    assert!(text.contains(heading), "{mode:?}, {width} columns");
+                    let marker = mode.glyph(Icon::Tag);
+                    for (kind, name) in &p.details.branches {
+                        let row = format!("{marker} {name}");
+                        let y = lines.iter().position(|line| line.trim() == row).unwrap() as u16;
+                        let expected = match kind {
+                            model::RefKind::Head => GOLD,
+                            model::RefKind::Local | model::RefKind::Current => {
+                                Color::Rgb(97, 168, 112)
+                            }
+                            model::RefKind::Remote => Color::Rgb(176, 137, 222),
+                            model::RefKind::Tag => unreachable!(),
+                        };
+                        let buf = terminal.backend().buffer();
+                        assert_eq!(buf[(1, y)].symbol(), marker);
+                        assert_eq!(buf[(1, y)].fg, expected);
+                        assert_eq!(buf[(1 + cells(marker) + 1, y)].fg, INK);
+                    }
+                    p.event(
+                        &Event::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
+                        &c,
+                    );
+                    terminal.draw(|f| p.draw_info(f, f.area(), &c)).unwrap();
+                    let after = (0..36)
+                        .map(|y| text_at(terminal.backend().buffer(), Rect::new(0, y, width, 1)))
+                        .collect::<Vec<_>>();
+                    assert_eq!(after, lines, "Space must not collapse the branches");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wrapped_details_show_all_branches_and_keep_each_scrolled_parent_clickable() {
         let (mut p, c) = fixture(&[]);
         p.icons = crate::ui::icons::IconMode::Unicode;
         let mut terminal = Terminal::new(TestBackend::new(27, 5)).unwrap();
@@ -910,21 +863,12 @@ mod tests {
         };
         draw(&mut p, &mut terminal);
         assert!(text_at(terminal.backend().buffer(), Rect::new(0, 0, 27, 1)).contains("修复界面"));
-        let mut expanded = false;
-        for _ in 0..=p.inspector.info_max {
-            if let Some((r, _)) = p.hits.iter().find(|(_, h)| matches!(h, Hit::Branches)) {
-                assert_eq!(text_at(terminal.backend().buffer(), *r), "Show all");
-                p.toggle_branches();
-                expanded = true;
-                break;
-            }
-            p.scroll_info(1);
-            draw(&mut p, &mut terminal);
-        }
-        assert!(expanded);
-        draw(&mut p, &mut terminal);
         let mut saw_last_branch = false;
         for _ in 0..=p.inspector.info_max {
+            for y in 0..5 {
+                let line = text_at(terminal.backend().buffer(), Rect::new(0, y, 27, 1));
+                assert!(!line.contains("Show all") && !line.contains("Show less"));
+            }
             if (0..5).any(|y| {
                 text_at(terminal.backend().buffer(), Rect::new(0, y, 27, 1))
                     .contains("feature/用户")

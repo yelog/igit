@@ -77,7 +77,10 @@ fn log_tips_include_tags_remotes_and_detached_head_but_not_stash_snapshots() {
         .iter()
         .all(|r| h.on_head(r) == [base.as_str(), detached.as_str()].contains(&r.oid.as_str())));
     let detached_rev = h.revs.iter().find(|r| r.oid == detached).unwrap();
-    assert_eq!(details(&p, detached_rev).unwrap().branches, ["HEAD"]);
+    assert_eq!(
+        details(&p, detached_rev).unwrap().branches,
+        [(RefKind::Head, "HEAD".into())]
+    );
 
     // It is reachability, not the stash commit's subject, which decides inclusion.
     let stash_index = g(&p, &["rev-parse", "stash^2"]);
@@ -101,7 +104,7 @@ fn log_tips_include_tags_remotes_and_detached_head_but_not_stash_snapshots() {
         .unwrap()
         .branches
         .iter()
-        .any(|b| b == "HEAD"));
+        .any(|(kind, _)| *kind == RefKind::Head));
 }
 
 #[test]
@@ -234,13 +237,30 @@ fn reads_tracking_and_containing_branches_including_ancestors_across_a_filter_ga
         assert_eq!(h.on_head(r), r.oid != side);
         let d = details(&p, r).unwrap();
         if r.oid == base {
-            assert_eq!(d.branches, ["HEAD", "main", "review", "origin/main"]);
+            assert_eq!(
+                d.branches,
+                [
+                    (RefKind::Head, "HEAD"),
+                    (RefKind::Current, "main"),
+                    (RefKind::Local, "review"),
+                    (RefKind::Remote, "origin/main"),
+                ]
+                .map(|(kind, name)| (kind, name.to_owned()))
+            );
         } else if r.oid == tip {
-            assert_eq!(d.branches, ["HEAD", "main"]);
+            assert_eq!(
+                d.branches,
+                [(RefKind::Head, "HEAD"), (RefKind::Current, "main")]
+                    .map(|(kind, name)| (kind, name.to_owned()))
+            );
             assert_eq!(d.email, "t@example.invalid");
             assert_eq!(d.body, "First line.\nSecond line.");
         } else {
-            assert_eq!(d.branches, ["review", "origin/main"]);
+            assert_eq!(
+                d.branches,
+                [(RefKind::Local, "review"), (RefKind::Remote, "origin/main")]
+                    .map(|(kind, name)| (kind, name.to_owned()))
+            );
         }
     }
 }
@@ -413,8 +433,8 @@ fn reference_badges_keep_namespaces_for_slash_names_and_same_short_names() {
     assert!(badges.contains(&(RefKind::Remote, "origin/review")));
     assert!(badges.contains(&(RefKind::Tag, "origin/review")));
     let containing = details(&p, &rev).unwrap().branches;
-    assert!(containing.iter().any(|s| s == "heads/origin/review"));
-    assert!(containing.iter().any(|s| s == "remotes/origin/review"));
+    assert!(containing.contains(&(RefKind::Local, "heads/origin/review".into())));
+    assert!(containing.contains(&(RefKind::Remote, "remotes/origin/review".into())));
     g(&p, &["checkout", "--detach", "-q"]);
     let rev = revisions(&p, 0, &Filter::default(), &all_tips(), 1)
         .unwrap()
@@ -422,6 +442,10 @@ fn reference_badges_keep_namespaces_for_slash_names_and_same_short_names() {
     assert!(rev
         .decorations()
         .any(|badge| badge == (RefKind::Head, "HEAD")));
+    let containing = details(&p, &rev).unwrap().branches;
+    assert!(containing.contains(&(RefKind::Head, "HEAD".into())));
+    assert!(containing.contains(&(RefKind::Local, "main".into())));
+    assert!(!containing.iter().any(|(kind, _)| *kind == RefKind::Current));
 }
 
 #[test]

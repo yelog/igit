@@ -1,12 +1,15 @@
 //! Three-way merge editor. The working file is untouched until Apply is confirmed.
 mod engine;
+mod keymap;
 use self::engine::*;
 use crate::{
     core::Context,
     ui::{
         icons::{Icon, IconMode},
         idea::{button_style, repo_tint, CONFLICT, GREEN},
-        inside, pane, Action, Panel, ACCENT, BG, FG, MUTED, SEL,
+        inside,
+        key_sequence::KeySequence,
+        pane, Action, Panel, ACCENT, BG, FG, MUTED, SEL,
     },
 };
 use anyhow::{Context as _, Result};
@@ -175,6 +178,22 @@ fn offset_glyphs(line: &str, offset: usize) -> String {
         .collect()
 }
 impl MergePanel {
+    /// Shared cancellation for Shell overlays and the panel's input transitions.
+    pub(crate) fn cancel_key_sequence(&mut self) {
+        self.prefix = None;
+    }
+
+    pub(crate) fn key_sequence(&self) -> Option<KeySequence> {
+        if self.doc.is_none() || self.edit.is_some() {
+            return None;
+        }
+        match self.prefix {
+            Some('[') => Some(KeySequence::MergePrevious),
+            Some(']') => Some(KeySequence::MergeNext),
+            _ => None,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)] // Geometry, command, enabled state, and emphasis are independent.
     fn button(
         &mut self,
@@ -936,6 +955,7 @@ impl MergePanel {
 }
 impl Panel for MergePanel {
     fn refresh(&mut self, c: &Context) -> Result<()> {
+        self.cancel_key_sequence();
         let mut items = vec![];
         let mut errors = vec![];
         for &i in &c.scope {
@@ -1036,6 +1056,12 @@ impl Panel for MergePanel {
         }
     }
     fn event(&mut self, e: &Event, c: &Context) -> Action {
+        if self.editing()
+            || matches!(e, Event::Paste(_) | Event::Resize(_, _) | Event::FocusLost)
+            || matches!(e, Event::Mouse(m) if m.kind != MouseEventKind::Moved)
+        {
+            self.cancel_key_sequence();
+        }
         if let Event::Mouse(m) = e {
             match m.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
@@ -1153,13 +1179,15 @@ impl Panel for MergePanel {
         let n = self.doc.as_ref().unwrap().chunks.len();
         let op = match k.code {
             K::Esc | K::Char('f') => Hit::List,
-            K::Char('[') | K::Char(']') => {
+            K::Char('[' | ']') if !k.modifiers.intersects(M::CONTROL | M::ALT) => {
                 if let K::Char(c) = k.code {
                     self.prefix = Some(c)
                 }
                 return Action::None;
             }
-            K::Char('c') if prev.is_some() => Hit::Next(if prev == Some(']') { 1 } else { -1 }),
+            K::Char('c') if prev.is_some() && !k.modifiers.intersects(M::CONTROL | M::ALT) => {
+                Hit::Next(if prev == Some(']') { 1 } else { -1 })
+            }
             K::Char('a') => Hit::Auto,
             K::Char('u') => Hit::Undo,
             K::Char('b') => Hit::Both,

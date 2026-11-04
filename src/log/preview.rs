@@ -64,6 +64,8 @@ impl Preview {
 
 impl LogPanel {
     pub(super) fn request_preview(&mut self, delay: Duration) {
+        self.info_selection.reset();
+        self.info_click = None;
         self.preview.generation += 1;
         self.preview.due = self.rev().map(|_| Instant::now() + delay);
         self.preview.error = None;
@@ -157,7 +159,7 @@ mod tests {
         assert!(!p.poll_preview(&c).unwrap());
         old.send(Ok((
             Details {
-                branches: vec!["obsolete".into()],
+                branches: vec![(model::RefKind::Local, "obsolete".into())],
                 ..Default::default()
             },
             Inspector::default(),
@@ -166,8 +168,8 @@ mod tests {
         assert!(!p.poll_preview(&c).unwrap());
         assert!(p.details.branches.is_empty());
         finish_preview(&mut p, &c);
-        assert!(p.details.branches.iter().any(|b| b == "new-ref"));
-        assert!(!p.details.branches.iter().any(|b| b == "obsolete"));
+        assert!(p.details.branches.iter().any(|(_, b)| b == "new-ref"));
+        assert!(!p.details.branches.iter().any(|(_, b)| b == "obsolete"));
 
         p.refresh(&c).unwrap();
         let old = hold_reply(&mut p);

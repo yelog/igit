@@ -66,7 +66,7 @@ glyphs! {
     Merge       => cod::COD_GIT_MERGE, "⋈", "M";
     Branch      => oct::OCT_GIT_BRANCH, "├", "B";
     Remote      => cod::COD_REMOTE, "⇄", "R";
-    Tag         => cod::COD_TAG, "◇", "#";
+    Tag         => oct::OCT_TAG, "◇", "#";
     Head        => cod::COD_TARGET, "◉", "@";
     Current     => cod::COD_LOCATION, "●", "*";
     Favorite    => cod::COD_STAR_FULL, "★", "*";
@@ -80,8 +80,6 @@ glyphs! {
     Move        => cod::COD_ARROW_SWAP, "⇄", "<>";
     Add         => cod::COD_ADD, "+", "+";
     Preview     => cod::COD_EYE, "◉", "V";
-    Tree        => cod::COD_LIST_TREE, "▤", "T";
-    Status      => md::MD_LIST_STATUS, "≡", "XY";
     ExpandAll   => cod::COD_EXPAND_ALL, "⊞", "[+]";
     CollapseAll => cod::COD_COLLAPSE_ALL, "⊟", "[-]";
     Previous    => cod::COD_CHEVRON_LEFT, "‹", "<";

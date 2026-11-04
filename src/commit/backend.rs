@@ -17,7 +17,16 @@ pub struct Change {
 }
 impl Change {
     pub fn staged(&self) -> bool {
-        self.xy[0] != b' ' && self.xy[0] != b'?'
+        self.xy[0] != b' ' && self.xy[0] != b'?' && !self.ignored()
+    }
+    pub fn ignored(&self) -> bool {
+        self.xy == *b"!!"
+    }
+    pub fn selectable(&self) -> bool {
+        !self.conflict && !self.ignored()
+    }
+    pub fn directory(&self) -> bool {
+        self.path.as_os_str().as_encoded_bytes().ends_with(b"/")
     }
     pub fn label(&self) -> String {
         super::display_path(&self.path)
@@ -146,6 +155,32 @@ pub fn status(repo: &Path) -> Result<Vec<Change>> {
     changes.retain(|x| x.xy != *b"??" || !staged.contains(&x.path));
     Ok(changes)
 }
+pub fn ignored(repo: &Path) -> Result<Vec<Change>> {
+    // Keep ignored build/dependency directories as single entries instead of
+    // walking their contents. Git supplies the trailing slash and native bytes.
+    let paths = g(
+        repo,
+        None,
+        &[
+            "--no-optional-locks",
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            "-z",
+        ],
+    )?;
+    Ok(paths
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| Change {
+            path: PathBuf::from(raw(p)),
+            xy: *b"!!",
+            conflict: false,
+        })
+        .collect())
+}
 fn git_path(repo: &Path, n: &str) -> Result<PathBuf> {
     let mut b = g(
         repo,
@@ -181,28 +216,56 @@ fn change_idx(repo: &Path, path: &Path, args: &[&str], file: &Path) -> Result<Ve
     aa.push(file.as_os_str());
     checked(run(repo, Some(path), &aa, None)?)
 }
-// Even a literal Git pathspec matches a directory's descendants. Keep its
-// exact depth: for "src/node", exclude "*/*/**". Unlike excluding "src/node/",
-// this also keeps the entry itself when it is an initialized submodule.
+// A literal Git pathspec also matches descendants. Intersect it with an
+// escaped path glob requiring a nonempty child. The leading **/ prevents Git
+// from treating the exclusion as an explicit path inside a submodule; the
+// literal include still limits everything to the selected path and children.
 fn exact_path(repo: &Path, idx: Option<&Path>, args: &[&str], file: &Path) -> Result<Vec<u8>> {
     let mut include = OsString::from(":(top,literal)");
     include.push(file);
-    let exclude = format!(
-        ":(top,exclude,glob){}**",
-        "*/".repeat(file.components().count())
-    );
-    checked(
-        cmd(repo, idx)
-            .env_remove("GIT_LITERAL_PATHSPECS")
-            .env_remove("GIT_GLOB_PATHSPECS")
-            .env_remove("GIT_NOGLOB_PATHSPECS")
-            .env_remove("GIT_ICASE_PATHSPECS")
-            .args(args)
-            .arg("--")
-            .arg(include)
-            .arg(exclude)
-            .output()?,
-    )
+    let index_read = args.first() == Some(&"ls-files");
+    let mut exclude = b":(top,exclude,glob)**/".to_vec();
+    for &byte in file.as_os_str().as_encoded_bytes() {
+        if matches!(byte, b'*' | b'?' | b'[' | b']' | b'\\') {
+            exclude.push(b'\\');
+        }
+        exclude.push(byte);
+    }
+    exclude.extend_from_slice(b"/**/*");
+    let mut command = cmd(repo, idx);
+    command
+        .env_remove("GIT_LITERAL_PATHSPECS")
+        .env_remove("GIT_GLOB_PATHSPECS")
+        .env_remove("GIT_NOGLOB_PATHSPECS")
+        .env_remove("GIT_ICASE_PATHSPECS")
+        .args(args)
+        .arg("--")
+        .arg(include);
+    if !index_read {
+        command.arg(raw(&exclude));
+    }
+    let output = checked(command.output()?)?;
+    if !index_read {
+        return Ok(output);
+    }
+    // Filter NUL-delimited index records by native path, including all stages.
+    // This also handles a selected deletion whose path is now a directory.
+    let staged = args.contains(&"--stage");
+    Ok(output
+        .split(|&b| b == 0)
+        .filter(|record| {
+            let path = if staged {
+                record
+                    .iter()
+                    .position(|&b| b == b'\t')
+                    .map(|tab| &record[tab + 1..])
+            } else {
+                Some(*record)
+            };
+            path == Some(file.as_os_str().as_encoded_bytes())
+        })
+        .flat_map(|record| record.iter().copied().chain(std::iter::once(0)))
+        .collect())
 }
 fn base_tree(repo: &Path, head: Option<&str>) -> Result<String> {
     if let Some(h) = head {
@@ -357,8 +420,10 @@ fn check_sources(repo: &Path, files: &[Change]) -> Result<()> {
         .map(|x| (x.path.clone(), x))
         .collect();
     if files.iter().any(|f| {
-        live.get(&f.path)
-            .is_none_or(|x| x.conflict || x.staged() != f.staged())
+        !f.selectable()
+            || live
+                .get(&f.path)
+                .is_none_or(|x| x.conflict || x.staged() != f.staged())
     }) {
         bail!("文件或暂存状态已变化；按 F5 后重新审查")
     }
@@ -636,6 +701,9 @@ pub fn execute(p: &Plan) -> Result<Outcome> {
     })
 }
 pub fn diff(repo: &Path, f: &Change) -> Result<String> {
+    if f.ignored() {
+        return Ok("Ignored by Git · read-only\nExcluded from commits and AI patches.".into());
+    }
     if f.conflict {
         return Ok("Unmerged path — 在 Merge 面板处理".into());
     }
@@ -729,6 +797,78 @@ mod tests {
     fn get(r: &Path, args: &[&str]) -> String {
         txt(g(r, None, args).unwrap())
     }
+    #[test]
+    fn ignored_paths_are_collapsed_read_only_and_excluded_from_plans() {
+        let d = setup();
+        let r = d.path();
+        put(r, ".gitignore", "cache/\n*.log\n");
+        put(r, ".git/info/exclude", "local.tmp\n");
+        fs::create_dir(r.join("cache")).unwrap();
+        put(r, "cache/private.txt", "ignored content marker");
+        put(r, "app.log", "ignored content marker");
+        put(r, "local.tmp", "local only");
+        let ignored = ignored(r).unwrap();
+        assert_eq!(
+            ignored
+                .iter()
+                .map(|f| f.path.as_path())
+                .collect::<BTreeSet<_>>(),
+            ["app.log", "cache/", "local.tmp"].map(Path::new).into()
+        );
+        for change in &ignored {
+            assert!(change.ignored() && !change.staged() && !change.selectable());
+            assert!(!diff(r, change).unwrap().contains("ignored content marker"));
+        }
+        assert!(ignored
+            .iter()
+            .find(|f| f.path == Path::new("cache"))
+            .unwrap()
+            .directory());
+        assert!(plan(0, r, ignored, "ignored".into(), false).is_err());
+        assert_eq!(status(r).unwrap().len(), 1); // Only .gitignore is untracked.
+        assert!(g(r, None, &["ls-files", "--stage"]).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nested_literal_paths_keep_the_selected_staged_blob() {
+        let d = setup();
+        let r = d.path();
+        let paths = [
+            PathBuf::from("src/[literal]*?/界面/selected.rs"),
+            PathBuf::from(r"src/[literal]*?/back\slash.rs"),
+            #[cfg(not(target_os = "macos"))]
+            PathBuf::from(raw(b"src/[literal]*?/bad\xff.rs")),
+        ];
+        for path in &paths {
+            fs::create_dir_all(r.join(path).parent().unwrap()).unwrap();
+            fs::write(r.join(path), "base\n").unwrap();
+        }
+        commit_all(r);
+        for path in &paths {
+            fs::write(r.join(path), "selected staged\n").unwrap();
+        }
+        g(r, None, &["add", "-A"]).unwrap();
+        for path in &paths {
+            fs::write(r.join(path), "selected working\n").unwrap();
+        }
+        for path in &paths {
+            let selected = status(r)
+                .unwrap()
+                .into_iter()
+                .find(|f| &f.path == path)
+                .unwrap();
+            assert_eq!(selected.xy, *b"MM");
+            let plan = plan(0, r, vec![selected], "literal path".into(), false).unwrap();
+            assert!(plan.preview.contains("+selected staged"));
+            assert!(!plan.preview.contains("selected working"));
+            assert_eq!(
+                exact_path(r, None, &["ls-files", "-z"], path).unwrap(),
+                [path.as_os_str().as_encoded_bytes(), b"\0"].concat()
+            );
+        }
+    }
+
     #[test]
     fn mixed_and_unrelated_index_survive() {
         let d = setup();
@@ -1082,5 +1222,22 @@ mod submodule_tests {
         execute(&next).unwrap();
         assert!(status(&par).unwrap().is_empty());
         assert_eq!(status(&child).unwrap().len(), 1);
+        // Removing a gitlink must also keep the initialized child worktree.
+        g(&par, None, &["rm", "--cached", "--", "sdk"]).unwrap();
+        let selected = status(&par)
+            .unwrap()
+            .into_iter()
+            .filter(|f| f.path == Path::new("sdk"))
+            .collect();
+        let removal = plan(0, &par, selected, "remove gitlink".into(), false).unwrap();
+        execute(&removal).unwrap();
+        assert!(g(&par, None, &["ls-tree", "HEAD", "--", "sdk"])
+            .unwrap()
+            .is_empty());
+        assert_eq!(fs::read_to_string(child.join("file")).unwrap(), "new");
+        assert_eq!(
+            fs::read_to_string(child.join("untracked")).unwrap(),
+            "extra"
+        );
     }
 }

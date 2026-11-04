@@ -90,3 +90,38 @@ pub(crate) fn clipped(s: &str, width: usize) -> String {
     out.push('…');
     out
 }
+
+/// Keep whole trailing directories (e.g. …/lang/es_MX), or the last
+/// directory's tail if necessary, without splitting a grapheme.
+pub(crate) fn clipped_path(hint: String, width: usize) -> String {
+    if hint.width() <= width {
+        return hint;
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut left = width - 1;
+    let mut start = hint.len();
+    for (slash, _) in hint.rmatch_indices('/') {
+        let len = hint[slash..start].width();
+        if len > left {
+            break;
+        }
+        left -= len;
+        start = slash;
+    }
+    if start == hint.len() {
+        let last = hint.rsplit('/').next().unwrap_or("");
+        let span = Span::raw(last);
+        let glyphs: Vec<_> = span.styled_graphemes(Style::new()).collect();
+        for glyph in glyphs.iter().rev() {
+            let len = glyph.symbol.width();
+            if len > left {
+                break;
+            }
+            left -= len;
+            start -= glyph.symbol.len();
+        }
+    }
+    format!("…{}", &hint[start..])
+}

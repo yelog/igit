@@ -68,12 +68,77 @@ pub(super) enum Kind {
     File(usize),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Group {
+    Directory,
+    Repository,
+    Module,
+}
+
+impl Group {
+    pub const ALL: [Self; 3] = [Self::Directory, Self::Repository, Self::Module];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Directory => "Directory",
+            Self::Repository => "Repository",
+            Self::Module => "Module",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct Grouping([bool; Group::ALL.len()]);
+
+impl Default for Grouping {
+    fn default() -> Self {
+        Self([true; Group::ALL.len()])
+    }
+}
+
+impl Grouping {
+    pub fn enabled(self, group: Group) -> bool {
+        self.0[group as usize]
+    }
+
+    pub fn toggle(&mut self, group: Group) {
+        self.0[group as usize] = !self.enabled(group);
+    }
+
+    fn shows(self, kind: &Kind) -> bool {
+        match kind {
+            Kind::Repository => self.enabled(Group::Repository),
+            Kind::Module => self.enabled(Group::Module),
+            Kind::Directory { .. } => self.enabled(Group::Directory),
+            Kind::File(_) => true,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct Node {
     pub kind: Kind,
-    pub depth: usize,
+    directory_depth: usize,
     pub count: usize,
     pub end: usize,
+}
+
+impl Node {
+    pub fn depth(&self, grouping: Grouping) -> usize {
+        let repo = usize::from(grouping.enabled(Group::Repository));
+        match self.kind {
+            Kind::Repository => 0,
+            Kind::Module => repo,
+            _ => {
+                repo + usize::from(grouping.enabled(Group::Module))
+                    + if grouping.enabled(Group::Directory) {
+                        self.directory_depth
+                    } else {
+                        0
+                    }
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -101,7 +166,7 @@ impl Directory {
                     path: path.clone(),
                     name,
                 },
-                depth,
+                directory_depth: depth,
                 count: dir.count,
                 end: 0,
             });
@@ -113,7 +178,7 @@ impl Directory {
         for file in leaves {
             nodes.push(Node {
                 kind: Kind::File(file),
-                depth,
+                directory_depth: depth,
                 count: 1,
                 end: nodes.len() + 1,
             });
@@ -124,6 +189,9 @@ impl Directory {
 #[derive(Clone, Default)]
 pub(super) struct FileTree {
     pub nodes: Vec<Node>,
+    // IDs in display order before folding. IDs and subtree ends always refer
+    // to the original tree, including in the alphabetically sorted flat view.
+    order: Vec<usize>,
     pub visible: Vec<usize>,
     pub folded: BTreeSet<usize>,
     pub cursor: usize,
@@ -131,7 +199,7 @@ pub(super) struct FileTree {
 }
 
 impl FileTree {
-    pub fn new(files: &[Change]) -> Self {
+    pub fn new(files: &[Change], grouping: Grouping) -> Self {
         let mut root = Directory::default();
         for (i, file) in files.iter().enumerate() {
             let mut dir = &mut root;
@@ -145,26 +213,54 @@ impl FileTree {
         }
         let mut nodes = vec![Node {
             kind: Kind::Repository,
-            depth: 0,
+            directory_depth: 0,
             count: files.len(),
             end: 1,
         }];
         if !files.is_empty() {
             nodes.push(Node {
                 kind: Kind::Module,
-                depth: 1,
+                directory_depth: 0,
                 count: files.len(),
                 end: 0,
             });
-            root.append(&mut nodes, Path::new(""), 2, files);
+            root.append(&mut nodes, Path::new(""), 0, files);
             nodes[1].end = nodes.len();
             nodes[0].end = nodes.len();
         }
-        Self {
-            visible: (0..nodes.len()).collect(),
+        let mut tree = Self {
             nodes,
             ..Self::default()
+        };
+        tree.regroup(files, grouping);
+        tree
+    }
+
+    pub fn regroup(&mut self, files: &[Change], grouping: Grouping) {
+        let keep = self.visible.get(self.cursor).copied().unwrap_or(0);
+        self.order.clear();
+        for (id, node) in self.nodes.iter().enumerate() {
+            if grouping.shows(&node.kind) {
+                self.order.push(id);
+                if id < keep && keep < node.end {
+                    self.folded.remove(&id); // Reveal the selection in a restored group.
+                }
+            }
         }
+        if !grouping.enabled(Group::Directory) {
+            let start = self
+                .order
+                .partition_point(|&id| !matches!(self.nodes[id].kind, Kind::File(_)));
+            let path = |id: usize| match self.nodes[id].kind {
+                Kind::File(i) => &files[i].path,
+                _ => unreachable!("only file rows follow the group headers"),
+            };
+            self.order[start..].sort_unstable_by(|&a, &b| {
+                let (a, b) = (path(a), path(b));
+                a.file_name().cmp(&b.file_name()).then_with(|| a.cmp(b))
+            });
+        }
+        self.reflow(keep);
     }
 
     pub fn selected(&self) -> Option<&Node> {
@@ -180,19 +276,34 @@ impl FileTree {
 
     fn reflow(&mut self, keep: usize) {
         self.visible.clear();
-        let mut id = 0;
-        while id < self.nodes.len() {
+        let mut rows = self.order.as_slice();
+        while let Some((&id, rest)) = rows.split_first() {
             self.visible.push(id);
-            id = if self.folded.contains(&id) {
-                self.nodes[id].end
+            rows = if self.folded.contains(&id) {
+                // Each group's descendants are contiguous in both layouts.
+                let end = self.nodes[id].end;
+                &rest[rest.partition_point(|&child| id < child && child < end)..]
             } else {
-                id + 1
+                rest
             };
         }
+        // If the selected group disappears, prefer a surviving parent, then a
+        // descendant of that group. Flat rows need not be in node-ID order.
         self.cursor = self
             .visible
-            .partition_point(|&n| n <= keep)
-            .saturating_sub(1);
+            .iter()
+            .position(|&id| id == keep)
+            .or_else(|| {
+                self.visible
+                    .iter()
+                    .rposition(|&id| id < keep && keep < self.nodes[id].end)
+            })
+            .or_else(|| {
+                self.visible
+                    .iter()
+                    .position(|&id| keep < id && id < self.nodes[keep].end)
+            })
+            .unwrap_or(0);
     }
 
     pub fn toggle(&mut self) {
@@ -218,7 +329,7 @@ impl FileTree {
         } else if left {
             if let Some(parent) = self.visible[..self.cursor]
                 .iter()
-                .rposition(|&n| self.nodes[n].depth < node.depth)
+                .rposition(|&n| n < id && id < self.nodes[n].end)
             {
                 self.cursor = parent;
             }
@@ -229,15 +340,14 @@ impl FileTree {
 
     pub fn fold_all(&mut self, collapse: bool) {
         let keep = self.visible.get(self.cursor).copied().unwrap_or(0);
-        self.folded.clear();
-        if collapse {
-            self.folded.extend(
-                self.nodes
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, n)| n.end > i + 1)
-                    .map(|(i, _)| i),
-            );
+        for &id in &self.order {
+            if self.nodes[id].end > id + 1 {
+                if collapse {
+                    self.folded.insert(id);
+                } else {
+                    self.folded.remove(&id);
+                }
+            }
         }
         self.reflow(keep);
     }
@@ -267,7 +377,7 @@ mod tests {
             "dev/iframe-proxy/compose.yaml",
             "package.json",
         ]);
-        let mut tree = FileTree::new(&files);
+        let mut tree = FileTree::new(&files, Grouping::default());
         assert_eq!(tree.nodes[0].count, 5);
         assert_eq!(tree.nodes[1].count, 5);
         let views = tree
@@ -296,9 +406,96 @@ mod tests {
     }
 
     #[test]
+    fn all_groupings_keep_file_identity_depth_and_parent_navigation() {
+        let files = changes(&["src/b/index.rs", "z.rs", "src/a/index.rs", "a.rs"]);
+        for directory in [true, false] {
+            for repository in [true, false] {
+                for module in [true, false] {
+                    let groups = Grouping([directory, repository, module]);
+                    let mut tree = FileTree::new(&files, groups);
+                    let headers = usize::from(repository) + usize::from(module);
+                    let mut rows = tree.visible.iter().map(|&id| &tree.nodes[id]);
+                    if repository {
+                        let row = rows.next().unwrap();
+                        assert!(matches!(row.kind, Kind::Repository));
+                        assert_eq!((row.depth(groups), row.count), (0, 4));
+                    }
+                    if module {
+                        let row = rows.next().unwrap();
+                        assert!(matches!(row.kind, Kind::Module));
+                        assert_eq!((row.depth(groups), row.count), (usize::from(repository), 4));
+                    }
+                    let mut leaves = vec![];
+                    let mut dirs = vec![];
+                    for row in rows {
+                        match &row.kind {
+                            Kind::File(i) => leaves.push((*i, row.depth(groups) - headers)),
+                            Kind::Directory { name, .. } => dirs.push((name.as_str(), row.count)),
+                            _ => panic!("unexpected group row"),
+                        }
+                    }
+                    if directory {
+                        assert_eq!(dirs, [("src", 2), ("a", 1), ("b", 1)]);
+                        assert_eq!(leaves, [(2, 2), (0, 2), (3, 0), (1, 0)]);
+                    } else {
+                        assert!(dirs.is_empty());
+                        assert_eq!(leaves, [(3, 0), (2, 0), (0, 0), (1, 0)]);
+                    }
+                    tree.cursor = tree
+                        .visible
+                        .iter()
+                        .position(|&id| matches!(tree.nodes[id].kind, Kind::File(0)))
+                        .unwrap();
+                    tree.horizontal(true);
+                    let parent = &tree.selected().unwrap().kind;
+                    if directory {
+                        assert!(
+                            matches!(parent, Kind::Directory { path, .. } if path == Path::new("src/b"))
+                        );
+                    } else if module {
+                        assert!(matches!(parent, Kind::Module));
+                    } else if repository {
+                        assert!(matches!(parent, Kind::Repository));
+                    } else {
+                        assert_eq!(tree.file_index(), Some(0));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn regroup_reveals_the_same_file_and_preserves_unrelated_folds() {
+        let files = changes(&["src/a/index.rs", "src/b/index.rs"]);
+        let mut groups = Grouping::default();
+        let mut tree = FileTree::new(&files, groups);
+        for dir in ["src/a", "src/b"] {
+            tree.cursor = tree.visible.iter().position(|&id| {
+                matches!(&tree.nodes[id].kind, Kind::Directory { path, .. } if path == Path::new(dir))
+            }).unwrap();
+            tree.toggle();
+        }
+        groups.toggle(Group::Directory);
+        tree.regroup(&files, groups);
+        assert!(matches!(tree.selected().unwrap().kind, Kind::Module));
+        tree.cursor = tree
+            .visible
+            .iter()
+            .position(|&id| matches!(tree.nodes[id].kind, Kind::File(1)))
+            .unwrap();
+        groups.toggle(Group::Directory);
+        tree.regroup(&files, groups);
+        assert_eq!(tree.file_index(), Some(1));
+        assert!(!tree
+            .visible
+            .iter()
+            .any(|&id| matches!(tree.nodes[id].kind, Kind::File(0))));
+    }
+
+    #[test]
     fn folding_and_parent_navigation_never_reuse_a_hidden_file_index() {
         let files = changes(&["src/a/index.vue", "src/b/index.vue", "README.md"]);
-        let mut tree = FileTree::new(&files);
+        let mut tree = FileTree::new(&files, Grouping::default());
         let file = tree
             .visible
             .iter()
@@ -347,7 +544,7 @@ mod tests {
             files[5].path.as_os_str().as_encoded_bytes(),
             b"bad-\xff\t\n.ts"
         );
-        let tree = FileTree::new(&files);
+        let tree = FileTree::new(&files, Grouping::default());
         assert_eq!(tree.nodes[0].count, 6);
         assert_eq!(
             added_paths(b"a\0folder/b\0".to_vec())

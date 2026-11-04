@@ -1,5 +1,6 @@
 //! IDEA-style presentation options. These are shared by this session's Log tabs.
 use super::*;
+use crate::ui::idea::checkbox;
 use crossterm::event::KeyEvent;
 use ratatui::widgets::BorderType;
 
@@ -11,10 +12,8 @@ pub(super) struct Options {
     pub long_edges: bool,
     pub commit_timestamp: bool,
     pub refs_left: bool,
-    pub author: bool,
-    pub hash: bool,
-    pub date: bool,
-    pub signature: bool,
+    /// Menu order is left-to-right log order; hidden columns keep their place.
+    pub(super) columns: [(Column, bool); Column::ALL.len()],
     pub my_commits: bool,
     pub merge_commits: bool,
     pub current_branch: bool,
@@ -30,15 +29,31 @@ impl Default for Options {
             long_edges: false,
             commit_timestamp: false,
             refs_left: false,
-            author: true,
-            hash: false,
-            date: true,
-            signature: false,
+            columns: Column::ALL.map(|col| (col, !matches!(col, Column::Hash | Column::Signature))),
             my_commits: true,
             merge_commits: true,
             current_branch: true,
             not_cherry_picked: false,
         }
+    }
+}
+
+impl Options {
+    fn column_index(&self, column: Column) -> usize {
+        self.columns
+            .iter()
+            .position(|&(col, _)| col == column)
+            .expect("column order is a permutation of Column::ALL")
+    }
+
+    pub(super) fn shows(&self, column: Column) -> bool {
+        self.columns[self.column_index(column)].1
+    }
+
+    fn move_column(&mut self, column: Column, by: isize) {
+        let from = self.column_index(column);
+        let to = from.saturating_add_signed(by).min(self.columns.len() - 1);
+        self.columns.swap(from, to);
     }
 }
 
@@ -115,24 +130,27 @@ pub(super) enum Column {
     Hash,
     Date,
     Signature,
+    Graph,
+    Message,
 }
 
 impl Column {
-    pub const ALL: [Self; 4] = [Self::Author, Self::Hash, Self::Date, Self::Signature];
+    pub const ALL: [Self; 6] = [
+        Self::Author,
+        Self::Hash,
+        Self::Date,
+        Self::Signature,
+        Self::Graph,
+        Self::Message,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             Self::Author => "Author",
             Self::Hash => "Hash",
             Self::Date => "Date",
             Self::Signature => "GPG Signature",
-        }
-    }
-    fn value(self, o: &Options) -> bool {
-        match self {
-            Self::Author => o.author,
-            Self::Hash => o.hash,
-            Self::Date => o.date,
-            Self::Signature => o.signature,
+            Self::Graph => "Graph",
+            Self::Message => "Message",
         }
     }
 }
@@ -140,7 +158,7 @@ impl Column {
 #[derive(Default, Clone, Copy)]
 pub(super) struct Menu {
     row: usize,
-    column: Option<usize>,
+    pub(super) column: Option<Column>,
 }
 
 #[derive(Clone, Copy)]
@@ -148,6 +166,7 @@ pub(super) enum MenuHit {
     Surface,
     Item(Item),
     Column(Column),
+    MoveColumn(Column, isize),
 }
 
 impl LogPanel {
@@ -155,7 +174,7 @@ impl LogPanel {
         self.hist.read_presentation(
             c,
             &self.filter,
-            self.options.signature,
+            self.options.shows(Column::Signature),
             self.options.not_cherry_picked,
         );
     }
@@ -187,22 +206,22 @@ impl LogPanel {
         };
         match hit {
             MenuHit::Surface => (),
+            MenuHit::MoveColumn(col, by) => {
+                menu.column = Some(col);
+                self.options.move_column(col, by);
+            }
             MenuHit::Column(col) => {
-                menu.column = Some(col as usize);
-                let v = match col {
-                    Column::Author => &mut self.options.author,
-                    Column::Hash => &mut self.options.hash,
-                    Column::Date => &mut self.options.date,
-                    Column::Signature => &mut self.options.signature,
-                };
-                *v = !*v;
+                menu.column = Some(col);
+                let i = self.options.column_index(col);
+                let visible = &mut self.options.columns[i].1;
+                *visible = !*visible;
                 if col == Column::Signature {
                     self.reload(c, true)?;
                 }
             }
             MenuHit::Item(item) => {
                 menu.row = item as usize;
-                menu.column = (item == Item::Columns).then_some(0);
+                menu.column = (item == Item::Columns).then_some(self.options.columns[0].0);
                 let v = match item {
                     Item::RootNames => &mut self.options.root_names,
                     Item::CompactRefs => &mut self.options.compact_refs,
@@ -232,8 +251,10 @@ impl LogPanel {
 
     pub(super) fn move_view_menu(&mut self, d: isize) {
         if let Some(m) = &mut self.view_menu {
-            if let Some(i) = m.column {
-                m.column = Some((i as isize + d).rem_euclid(Column::ALL.len() as isize) as usize);
+            if let Some(col) = m.column {
+                let i = self.options.column_index(col) as isize;
+                let columns = &self.options.columns;
+                m.column = Some(columns[(i + d).rem_euclid(columns.len() as isize) as usize].0);
             } else {
                 m.row = (m.row as isize + d).rem_euclid(Item::ALL.len() as isize) as usize;
             }
@@ -245,9 +266,10 @@ impl LogPanel {
             match h {
                 MenuHit::Item(item) => {
                     m.row = item as usize;
-                    m.column = (item == Item::Columns).then_some(m.column.unwrap_or(0));
+                    m.column = (item == Item::Columns)
+                        .then_some(m.column.unwrap_or(self.options.columns[0].0));
                 }
-                MenuHit::Column(col) => m.column = Some(col as usize),
+                MenuHit::Column(col) | MenuHit::MoveColumn(col, _) => m.column = Some(col),
                 MenuHit::Surface => (),
             }
         }
@@ -257,6 +279,19 @@ impl LogPanel {
         let Some(m) = self.view_menu else {
             return Ok(());
         };
+        if let Some(col) = m.column {
+            let by = match (k.code, k.modifiers) {
+                (K::Char('K'), Mods::NONE | Mods::SHIFT) | (K::Up | K::Char('k'), Mods::SHIFT) => {
+                    -1
+                }
+                (K::Char('J'), Mods::NONE | Mods::SHIFT)
+                | (K::Down | K::Char('j'), Mods::SHIFT) => 1,
+                _ => 0,
+            };
+            if by != 0 {
+                return self.view_menu_hit(MenuHit::MoveColumn(col, by), c);
+            }
+        }
         match k.code {
             K::Up | K::Char('k') => self.move_view_menu(-1),
             K::Down | K::Char('j') | K::Tab => self.move_view_menu(1),
@@ -271,13 +306,12 @@ impl LogPanel {
                 }
             }
             K::Right | K::Char('l') if m.column.is_none() && Item::ALL[m.row] == Item::Columns => {
-                self.view_menu.as_mut().unwrap().column = Some(0);
+                self.view_menu.as_mut().unwrap().column = Some(self.options.columns[0].0);
             }
             K::Enter | K::Char(' ') => {
                 self.view_menu_hit(
-                    m.column.map_or(MenuHit::Item(Item::ALL[m.row]), |i| {
-                        MenuHit::Column(Column::ALL[i])
-                    }),
+                    m.column
+                        .map_or(MenuHit::Item(Item::ALL[m.row]), MenuHit::Column),
                     c,
                 )?;
             }
@@ -288,11 +322,7 @@ impl LogPanel {
     }
 
     pub(super) fn view_button(&mut self, f: &mut Frame, a: &mut Rect) {
-        let label = format!(
-            " {}{} ",
-            self.icons.glyph(Icon::Preview),
-            self.icons.disclosure(true)
-        );
+        let label = format!(" {} ", self.icons.glyph(Icon::Preview));
         let w = cells(&label).min(a.width);
         let r = Rect::new(a.right() - w, a.y, w, 1.min(a.height));
         a.width -= w;
@@ -323,20 +353,23 @@ impl LogPanel {
         hit: MenuHit,
     ) {
         let mark = if matches!(hit, MenuHit::Item(Item::Columns)) {
-            " ".repeat(cells(self.icons.check(false)).into())
+            Span::raw(" ".repeat(cells(self.icons.check(false)).into()))
         } else {
-            self.icons.check(checked).to_owned()
+            checkbox(self.icons, checked)
         };
-        let label = format!(" {mark} {label}");
-        f.render_widget(
-            Paragraph::new(clipped(&label, r.width.into())).style(style),
-            r,
-        );
+        let width = usize::from(r.width).saturating_sub(mark.width() + 2);
+        let line = Line::from(vec![
+            Span::raw(" "),
+            mark,
+            Span::raw(format!(" {}", clipped(label, width))),
+        ]);
+        f.render_widget(Paragraph::new(line).style(style), r);
         self.hit(r, Hit::ViewMenu(hit));
     }
 
     pub(super) fn draw_view_menu(&mut self, f: &mut Frame, a: Rect) {
         let Some(m) = self.view_menu else { return };
+        const COLUMN_HINTS: [&str; 2] = ["K/J or Shift+Up/Down: move", "Space toggle · Esc back"];
         let anchor = self
             .hits
             .iter()
@@ -351,7 +384,12 @@ impl LogPanel {
             w,
             h,
         );
-        let child_w = (cells("GPG Signature") + cells(self.icons.check(false)) + 5).min(a.width);
+        let move_width =
+            cells(self.icons.glyph(Icon::Up)) + cells(self.icons.glyph(Icon::Down)) + 4;
+        let child_w =
+            (cells(Column::Signature.label()) + cells(self.icons.check(false)) + 5 + move_width)
+                .max(cells(COLUMN_HINTS[0]) + 2)
+                .min(a.width);
         let right = p.right().saturating_sub(1);
         let side = if right + child_w <= a.right() {
             Some(right)
@@ -419,7 +457,9 @@ impl LogPanel {
             }
         }
         if let Some(selected) = m.column {
-            let h = 7.min(a.height);
+            let columns = self.options.columns;
+            let h = (columns.len() + COLUMN_HINTS.len() + 2) as u16;
+            let h = h.min(a.height);
             let y = if side.is_some() {
                 p.y + 1 + Item::Columns.position().saturating_sub(start) as u16
             } else {
@@ -432,23 +472,51 @@ impl LogPanel {
                 h,
             );
             let inner = self.menu_box(f, p, "Columns");
-            let slots = inner.height.saturating_sub(1) as usize;
-            let start = window(selected, slots, Column::ALL.len());
-            for (dy, i) in (start..(start + slots).min(Column::ALL.len())).enumerate() {
-                let col = Column::ALL[i];
+            let slots = columns.len().min(inner.height.into());
+            let start = window(self.options.column_index(selected), slots, columns.len());
+            for (dy, i) in (start..start + slots).enumerate() {
+                let (col, visible) = columns[i];
+                let style = fg(INK).bg(if selected == col { SELECT } else { PANEL });
+                let mut row = Rect::new(inner.x, inner.y + dy as u16, inner.width, 1);
+                // At very small widths keep the checkbox and name reachable by mouse.
+                let label_width = if row.width >= move_width + cells(self.icons.check(false)) + 4 {
+                    row.width - move_width
+                } else {
+                    row.width
+                };
                 self.menu_row(
                     f,
-                    Rect::new(inner.x, inner.y + dy as u16, inner.width, 1),
+                    take(&mut row, label_width),
                     col.label(),
-                    col.value(&self.options),
-                    fg(INK).bg(if selected == i { SELECT } else { PANEL }),
+                    visible,
+                    style,
                     MenuHit::Column(col),
                 );
+                for (icon, by, enabled) in [
+                    (Icon::Up, -1, i > 0),
+                    (Icon::Down, 1, i + 1 < columns.len()),
+                ] {
+                    let glyph = self.icons.glyph(icon);
+                    let button = take(&mut row, cells(glyph) + 2);
+                    f.render_widget(
+                        Paragraph::new(glyph).centered().style(style.fg(if enabled {
+                            BLUE
+                        } else {
+                            DIM
+                        })),
+                        button,
+                    );
+                    self.hit(button, Hit::ViewMenu(MenuHit::MoveColumn(col, by)));
+                }
             }
-            if inner.height > 0 {
+            for (dy, hint) in COLUMN_HINTS
+                .iter()
+                .take(usize::from(inner.height) - slots)
+                .enumerate()
+            {
                 f.render_widget(
-                    Paragraph::new("Left / Esc back").style(fg(DIM)),
-                    Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
+                    Paragraph::new(*hint).style(fg(DIM)),
+                    Rect::new(inner.x, inner.y + (slots + dy) as u16, inner.width, 1),
                 );
             }
         }

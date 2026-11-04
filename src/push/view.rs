@@ -1,6 +1,6 @@
 //! Push presentation uses shared column geometry for text and mouse controls.
 use super::*;
-use crate::ui::idea::{button_style, clipped, diff_line, repo_tint, CONFLICT};
+use crate::ui::idea::{button_style, clipped, clipped_path, diff_line, repo_tint, CONFLICT};
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy, Default)]
@@ -215,19 +215,28 @@ impl PushPanel {
             let block = pane("Details / Diff · d / Esc close", self.focus == 2);
             let inner = block.inner(right[1]);
             f.render_widget(block, right[1]);
-            let details = if self.preview.is_patch {
-                self.preview.body.lines().map(diff_line).collect::<Text>()
-            } else {
-                Text::from(self.preview.body.as_str())
-            };
-            f.render_widget(
-                Paragraph::new(details)
-                    .wrap(Wrap { trim: false })
-                    .scroll((self.detail_off, 0)),
-                inner,
-            );
+            let mut layout = TextLayout::default();
+            for line in self.preview.body.split('\n') {
+                layout.push(
+                    if self.preview.is_patch {
+                        diff_line(line)
+                    } else {
+                        Line::raw(line)
+                    },
+                    inner.width,
+                    TextWrap::Word,
+                );
+            }
+            self.detail_off = usize::from(self.detail_off)
+                .min(layout.rows.len().saturating_sub(usize::from(inner.height)))
+                .min(u16::MAX as usize) as u16;
+            self.detail_selection
+                .render(f, inner, layout, usize::from(self.detail_off), 0);
+        } else {
+            self.detail_selection.reset();
         }
         self.draw_controls(f, vert[2], c);
+        self.draw_group_menu(f, area);
         if let Some((i, target)) = &self.target_edit {
             let pop = Rect::new(
                 area.x + 2,
@@ -408,7 +417,7 @@ impl PushPanel {
     ) -> (Line<'static>, Option<Column>) {
         let node = &self.preview.tree.nodes[id];
         let icons = self.icons;
-        let indent = (node.depth * 2 + 1).min(width.saturating_sub(14));
+        let indent = (node.depth(self.grouping) * 2 + 1).min(width.saturating_sub(14));
         let mut line = Line::from(" ".repeat(indent));
         let folder = !matches!(node.kind, Kind::File(_));
         let open = node.end > id + 1 && !self.preview.tree.folded.contains(&id);
@@ -445,11 +454,27 @@ impl PushPanel {
             };
             let status = format!(" {}", char::from(file.status));
             let room = width.saturating_sub(line.width() + status.width());
+            let parent = file
+                .path
+                .parent()
+                .filter(|p| !self.grouping.enabled(Group::Directory) && !p.as_os_str().is_empty())
+                .map(label);
+            let reserve = parent
+                .as_ref()
+                .filter(|_| room >= 14)
+                .map_or(0, |p| (p.width() + 2).min(room / 3).min(12));
             line.push_span(Span::styled(
-                filename(&file.path, room),
+                filename(&file.path, room - reserve),
                 Style::new().fg(color),
             ));
             line.push_span(Span::styled(status, Style::new().fg(MUTED)));
+            if let Some(parent) = parent {
+                let room = width.saturating_sub(line.width() + 2);
+                if room > 0 {
+                    let hint = clipped_path(parent, room);
+                    line.push_span(Span::styled(format!("  {hint}"), Style::new().fg(MUTED)));
+                }
+            }
         } else {
             let repo = &c.repos[root];
             let (icon, tint, name) = match &node.kind {
@@ -518,55 +543,65 @@ impl PushPanel {
         if inner.is_empty() {
             return;
         }
-        let labels = [
+        let controls = [
+            (icons.glyph(Icon::Preview), "Group By", Hit::GroupBy),
+            (icons.glyph(Icon::Diff), "Details", Hit::Details),
+            (icons.glyph(Icon::ExpandAll), "Expand", Hit::FoldAll(false)),
             (
-                format!(" {} Details ", icons.glyph(Icon::Preview)),
-                Hit::Details,
-            ),
-            (
-                format!(" {} Expand ", icons.glyph(Icon::ExpandAll)),
-                Hit::FoldAll(false),
-            ),
-            (
-                format!(" {} Collapse ", icons.glyph(Icon::CollapseAll)),
+                icons.glyph(Icon::CollapseAll),
+                "Collapse",
                 Hit::FoldAll(true),
             ),
         ];
-        let compact =
-            labels.iter().map(|(s, _)| s.width()).sum::<usize>() > usize::from(inner.width);
+        let compact = controls
+            .iter()
+            .map(|(glyph, label, _)| glyph.width() + label.width() + 3)
+            .sum::<usize>()
+            > usize::from(inner.width);
         let mut x = inner.x;
-        for (i, (label, hit)) in labels.into_iter().enumerate() {
+        for (glyph, label, hit) in controls {
             let text = if compact {
-                format!(
-                    " {} ",
-                    icons.glyph([Icon::Preview, Icon::ExpandAll, Icon::CollapseAll][i])
-                )
+                format!(" {glyph} ")
             } else {
-                label
+                format!(" {glyph} {label} ")
             };
             let width = (text.width() as u16).min(inner.right() - x);
             if width == 0 {
                 break;
             }
             let row = Rect::new(x, inner.y, width, 1);
+            let active = matches!(hit, Hit::GroupBy) && self.group_menu.is_some()
+                || matches!(hit, Hit::Details) && self.show_details;
             f.render_widget(
-                Paragraph::new(text).style(Style::new().fg(if i == 0 && self.show_details {
-                    ACCENT
-                } else {
-                    MUTED
-                })),
+                Paragraph::new(text).style(Style::new().fg(if active { ACCENT } else { MUTED })),
                 row,
             );
             self.hits.push((row, hit));
             x += width;
         }
+        let height = usize::from(inner.height.saturating_sub(1));
+        if self.preview.tree.nodes.is_empty() && self.preview.body.is_empty() {
+            if height > 0 {
+                f.render_widget(
+                    Paragraph::new("No commits selected")
+                        .style(Style::new().fg(MUTED))
+                        .centered(),
+                    Rect::new(
+                        inner.x,
+                        inner.y + 1 + (height as u16 - 1) / 2,
+                        inner.width,
+                        1,
+                    ),
+                );
+            }
+            return;
+        }
         let Some((root, _)) = self.selected() else {
             return;
         };
-        let height = usize::from(inner.height.saturating_sub(1));
         let tree = &mut self.preview.tree;
         tree.offset = tree.offset.min(tree.visible.len().saturating_sub(height));
-        if self.focus == 1 && height > 0 {
+        if (self.focus == 1 || self.show_details || self.group_menu.is_some()) && height > 0 {
             tree.offset = tree
                 .offset
                 .min(tree.cursor)
@@ -593,7 +628,8 @@ impl PushPanel {
                     .push((cell(row, fold.start, fold.width), Hit::FileFold(i)));
             }
         }
-        if self.preview.files.is_empty() && height >= 2 {
+        let empty_row = self.preview.tree.visible.len();
+        if self.preview.files.is_empty() && empty_row < height {
             let text = if self.preview.tree.nodes.is_empty() {
                 self.preview
                     .body
@@ -605,7 +641,7 @@ impl PushPanel {
             };
             f.render_widget(
                 Paragraph::new(format!("   {text}")).style(Style::new().fg(MUTED)),
-                Rect::new(inner.x, inner.y + 2, inner.width, 1),
+                Rect::new(inner.x, inner.y + 1 + empty_row as u16, inner.width, 1),
             );
         }
     }

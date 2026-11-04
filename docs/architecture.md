@@ -8,10 +8,11 @@ IGit 是一个 Rust 终端程序。两个入口 [igit](../src/bin/igit.rs) 和 [
 |---|---|
 | 当前目录里有哪些仓库？Git 命令在哪个目录执行？ | [core.rs](../src/core.rs)：`Context`、`Repo`、发现、作用域和 Git 子进程环境。 |
 | 谁处理快捷键、鼠标、弹窗和跨面板跳转？ | [shell.rs](../src/shell.rs)：`Shell`、事件循环、Roots 和确认框；[ui.rs](../src/ui.rs)：`Panel`、`Action` 和共用样式。 |
+| 帮助为什么优先显示这个区域？ | 各面板的内部 `keymap` 方法在 [log/keymap.rs](../src/log/keymap.rs)、[commit/keymap.rs](../src/commit/keymap.rs)、[push/keymap.rs](../src/push/keymap.rs)、[merge/keymap.rs](../src/merge/keymap.rs) 根据焦点和编辑状态提供快捷键；[ui/help.rs](../src/ui/help.rs) 管 Search、候选选择、紧凑绘制与命中。 |
 | 同一文件或按钮为什么显示这个图标？ | [ui/icons.rs](../src/ui/icons.rs) 按语义、文件名和扩展名映射字形。Shell 将启动时的 `IconMode` 传给四个面板；布局和命中读取实际终端列宽。图标偏好不写入仓库、草稿或 Git 配置。提交图的轨道和节点由 [graph/render.rs](../src/log/model/graph/render.rs) 按拓扑绘制。 |
 | 为什么这条提交出现在该位置？ | [log/model.rs](../src/log/model.rs) 读真实 Git 引用、提交、可达性与补丁；[graph.rs](../src/log/model/graph.rs) 分配轨道。[log.rs](../src/log.rs) 联动选择和事件；[view.rs](../src/log/view.rs)、[refs.rs](../src/log/refs.rs)、[inspector.rs](../src/log/inspector.rs) 分别绘制时间线、分支树、右栏；[filters.rs](../src/log/filters.rs) 管筛选与会话内页签。 |
 | 这次 commit 包含哪些内容？ | [commit.rs](../src/commit.rs)：分组、勾选、逐仓说明、AI 与批量提交；[commit/tree.rs](../src/commit/tree.rs)：平铺／紧凑目录两种投影和原生文件身份；[commit/rows.rs](../src/commit/rows.rs)：单行绘制及箭头、复选框的共用坐标；[commit/view.rs](../src/commit/view.rs)：变更列表、消息栏与按需打开的预览；[commit/backend.rs](../src/commit/backend.rs)：status、快照、计划与提交执行。 |
-| 会推送到哪里，子模块提交在目标端能否取到？ | [push.rs](../src/push.rs)：待推送提交、目标、计划、后台任务、逐仓结果；[push/files.rs](../src/push/files.rs) 解析变更类型并投影文件树，[push/view.rs](../src/push/view.rs) 绘制列与命中区；[push/submodules.rs](../src/push/submodules.rs)：待发布历史中 gitlink 的远端可达性检查。 |
+| 会推送到哪里，子模块提交在目标端能否取到？ | [push.rs](../src/push.rs)：待推送提交、目标、计划、后台任务、逐仓结果；[push/files.rs](../src/push/files.rs) 解析变更并从同一棵树生成各分组的可见行，[push/display.rs](../src/push/display.rs) 处理会话内的 Group By 菜单，[push/view.rs](../src/push/view.rs) 绘制列与命中区；[push/submodules.rs](../src/push/submodules.rs)：待发布历史中 gitlink 的远端可达性检查。 |
 | “智能合并”什么时候能自动选择？ | [merge.rs](../src/merge.rs)：冲突导航、结果编辑、对话框；[merge/engine.rs](../src/merge/engine.rs)：读取 stages、三方比较、写文件并暂存、继续 Git 操作。 |
 
 ## 一次按键或点击的路径
@@ -22,6 +23,12 @@ IGit 是一个 Rust 终端程序。两个入口 [igit](../src/bin/igit.rs) 和 [
 4. 例如点击 **Commit & Push**：Commit 构建各仓计划 → 用户审查 → 逐仓提交 → `Action::Committed` 携成功仓集合返回 → Shell 切到 Push 并将成功仓设为初始勾选 → 用户单独审查并发起推送。“已创建本地提交”和“远端已更新”是两个独立结果。
 
 四个面板在同一 Shell 内常驻。切换面板、刷新当前面板不会重建整个 Shell；打开另一工作区或重新扫描会重建上下文和面板。Log 历史刷新和显式打开补丁、Commit 快照和执行、Merge 读写走同步调用；Log 提交详情、Push/Fetch 和 AI 请求使用标准线程与 `mpsc` 回传结果，由 Shell 轮询。当前没有通用异步任务调度器；大型仓库的同步刷新、耗时 hook 都可能阻塞输入。
+
+[ui/selection.rs](../src/ui/selection.rs) 为 Log 详情和 Diff、Commit 消息编辑器和预览、Push Details / Diff 提供共享文本布局与选区。每条显示行保留原始 UTF-8 字节范围；字符格命中、软换行、滚动与高亮使用同一投影，复制直接切片原文，装饰行没有源文本。共享鼠标处理在左键松开时返回 `Action::Copy` 并将选区折叠到终点，面板将动作交给 Shell；单击返回空动作，重复释放不重复复制。各面板管理选区对象的生命周期与焦点，Log 的可点击链接复用同一行布局，松开且没有复制／拖选时才执行。`Panel::selected_text` 只暴露当前上下文的有效选区，使 Shell 的 Ctrl-C 在退出确认前交给键盘选区；实际复制继续用 `Action::Copy` → [ui/clipboard.rs](../src/ui/clipboard.rs)，错误只显示原因，不记录文本。Commit 编辑器保留自动复制后的光标终点，并在连续事件之间同步原文，避免尚未重绘的输入造成选区错位；选区和视口都只在内存，不进入草稿文件或 Git 操作计划。Shell 测试用线程局部接收器捕获复制，不改动真实系统剪贴板。
+
+帮助由 Shell 在打开时捕获原区域的 `HelpContent`，不扩展公开 `Panel` trait。各面板只提供当前上下文可用的单动作快捷键；内部仍按区域、面板通用、全局排序，UI 将它们去重为与 lazydb 一致的紧凑列表。Search 始终接收文本，↑/↓ 改候选，Enter 返回 `HelpCommand`；Shell 恢复被覆盖的弹窗、校验原上下文后，将候选中静态注册的按键序列交回 `dispatch`，多键组合与修饰键使用原事件路径。搜索文本不会成为执行序列；提交、推送和合并写入仍由原面板生成审查与验证。F1 在普通事件分发前处理，顶栏帮助不取消输入；取消帮助时草稿、勾选、按钮与滚动位置留在原对象中，Search、候选和滚动状态只在内存保存。
+
+鼠标手势分别保存按下的屏幕坐标和是否发生实际拖动。只有跨字符格的 `Drag(Left)` 会开始文本选择；普通 `Down → Up` 保留按下时的光标，不在释放时重新映射文本位置。因此收起通知、视口滚动或布局重排不会把单击变成复制；释放、按键、清选区和原文变更都会结束未完成的手势。`cargo test --locked click_after_copy --lib` 覆盖复制后再次单击、同字符格移动及按下／释放间重绘的边界。
 
 ## 仓库、作用域与持久化
 
@@ -44,13 +51,17 @@ Log 的[显示菜单](../src/log/display.rs)保存会话级偏好和临时菜单
 
 [列表导航](../src/log/navigation.rs) 保存纵向起点与最近绘制的有效行数，每次选择变化就校正边缘，保证批量处理输入与逐键重绘得到相同的滚动结果。绘制时根据新窗口高度再次校正；`gg` 与 `y` 系列仅在提交列表中识别，换焦点或进入浮层时清除前缀。复制经 `Action::Copy` 交给 Shell 和[剪贴板适配](../src/ui/clipboard.rs)，通过 stdin 调用系统命令，不把文本拼进命令或记录进通知。ID、姓名和邮箱取当前行；完整消息仅在 `ym` 时对该仓的准确 OID 运行只读 `git show`，不依赖可能仍在加载的详情。
 
+[组合键提示](../src/ui/key_sequence.rs) 从 Log 的 `g/y` 与 Merge 的 `[/]` 待完成状态派生候选；面板仍负责序列识别，Shell 中的候选状态保存光标、最近绘制的命中区域和 200ms 显示期限。期限参与事件轮询的最短等待，到点只触发一次重绘，不阻塞后续按键；完成或取消清除计时，新前缀重新计时。底部浮层复用共享色板，按字符格宽度分列；浮层显示后，方向键、Enter 及浮层内鼠标事件先于普通面板／全局事件处理，Esc/Ctrl-C 在等待期间也可取消。选择执行会把后续键交回原面板事件路径，不另造 Git 操作入口；全局切屏、刷新或弹窗统一清除两类前缀。没有前缀的单键操作和文本编辑不经过候选面板。
+
 **Commit：勾选的是内容，不是整个真实索引。** 从 `git status --porcelain=v1 -z` 获得变更。默认按仓库和文件名平铺，用各自的原生路径处理选择、勾选和移组，父目录提示仅用于显示。切换目录模式和展开状态不会触碰 index。关闭预览时不读取文件补丁；打开时根据当前行决定加载文件 Diff 或显示内存中的容器摘要。审查时从 HEAD（首个提交为空树）构造临时索引：选中文件已有暂存内容则使用该版本；否则读取选中的工作区内容。例如同一文件既 staged 又有后续修改时，提交只取 staged 版本。用 `write-tree` 得到拟提交的 tree，并保留 HEAD、分支和选中项的索引记录。审查可能生成 Git 对象，但不移动 HEAD 或覆盖真实索引。
+
+[Commit 显示菜单](../src/commit/display.rs) 保存会话内的目录、仓库分组、忽略项和 XY 状态开关；[树模型](../src/commit/tree.rs) 组合两种分组，Module 关闭的目录树使用工作区相对路径。显示状态与文件原生路径身份、勾选及 Git 写入计划分开。仅在显示忽略项时运行 `git ls-files --others --ignored --exclude-standard --directory -z`，不读取被忽略文件内容，目录保留为单项；这些 `!!` 项统一标为不可选，提交和 AI 的源校验再次拒绝它们。菜单处理优先于变更清单事件；边框拦截、外部点击与 Shell 头部关闭沿用 Log 的交互约定。
 
 确认后，`backend::execute` 以独占创建方式获取真实的 `index.lock`，再核对分支、HEAD、索引记录和重新计算的 tree。实际 `git commit` 使用私有索引并运行原生 hook；新真实索引从锁定时的索引副本构建，保留无关文件原有的暂存内容。hook 改写提交时报告结果并要求复核；如果 HEAD 已更新而索引发布失败，错误提示会保留恢复锁。此时应先检查 HEAD、索引和报错，不能自动删锁或再次提交。
 
 **AI 提交说明：请求按仓构建，输出仍是草稿。** Commit 用勾选项生成 patch，审查界面列出将发送的目标和范围；确认后后台调用 `curl` 请求配置的接口。API key 从 `IGIT_LLM_API_KEY` 读取，不写入 `commit.json`。结果先作为候选稿，须由用户采用和审查；生成成功不会创建提交。排查时不要把凭据或完整的私有仓库 patch 加入日志。
 
-Commit 和 AI 共用勾选文件的快照。文件与目录互换时，用实际变更路径核对范围；若加入一个文件必须删除未勾选的子路径，停止并请用户重新选择。Commit 确认页的分支来自同一份待执行计划，分支列表的缓存不参与决定目标。
+Commit 和 AI 共用勾选文件的快照。索引记录以原生路径逐项精确匹配；Diff、临时暂存和索引发布的排除规则只匹配所选路径的后代，并转义路径中的通配符，保留 gitlink 本身。文件与目录互换时，用实际变更路径核对范围；若加入一个文件必须删除未勾选的子路径，停止并请用户重新选择。Commit 确认页的分支来自同一份待执行计划，分支列表的缓存不参与决定目标。
 
 **Push：推送审查过的对象。** 每个 Job 记录仓库、源分支和 HEAD、目标 remote/branch、push URL 和预期远端 tip。执行前复查源状态，向实际 **push URL** 查询目标 tip。祖先关系用 Git 对象中记录的父提交验证，忽略本地替换引用和旧式 graft；通过后才用针对目标引用和预期值的 `--force-with-lease` 推送已审查的 OID，防止检查后远端被并发改写。待发布历史中，只要 gitlink 改变或对应路径的来源改变，就检查该提交记录的子模块版本能否从当时声明的来源取得。无法证明则拒绝父仓推送，不会隐式推送其他仓。
 

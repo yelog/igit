@@ -2,7 +2,7 @@ mod branch_filter;
 mod graph;
 pub(super) use branch_filter::BranchFilter;
 mod presentation;
-pub(super) use graph::{Graph, NodeGlyphs};
+pub(super) use graph::{Graph, GraphWindow, NodeGlyphs};
 #[cfg(test)]
 mod tests;
 
@@ -76,6 +76,7 @@ pub(super) struct Branch {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RefKind {
     Head,
+    // The local branch HEAD points to, retaining its local identity and colour.
     Current,
     Local,
     Remote,
@@ -507,10 +508,10 @@ pub(super) struct Details {
     pub files: Vec<File>,
     pub body: String,
     pub email: String,
-    pub branches: Vec<String>,
+    pub branches: Vec<(RefKind, String)>,
 }
 
-fn containing_branches(path: &Path, oid: &str) -> Result<Vec<String>> {
+fn containing_branches(path: &Path, oid: &str) -> Result<Vec<(RefKind, String)>> {
     // Decorations are refs pointing *at* this commit. The inspector instead
     // needs the local and remote branches whose tips can *reach* it.
     let refs = git_bytes(
@@ -519,7 +520,7 @@ fn containing_branches(path: &Path, oid: &str) -> Result<Vec<String>> {
             "for-each-ref",
             "--contains",
             oid,
-            "--format=%(refname:short)%00%(symref)%00%(HEAD)",
+            "--format=%(refname:short)%00%(refname)%00%(symref)%00%(HEAD)",
             "refs/heads",
             "refs/remotes",
         ],
@@ -528,11 +529,18 @@ fn containing_branches(path: &Path, oid: &str) -> Result<Vec<String>> {
     let mut head = false;
     for line in refs.split(|&b| b == b'\n').filter(|s| !s.is_empty()) {
         let mut fields = line.split(|&b| b == 0);
-        if let (Some(name), Some(target), Some(current)) =
-            (fields.next(), fields.next(), fields.next())
+        if let (Some(name), Some(full_name), Some(target), Some(current)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
         {
             if target.is_empty() {
-                branches.push(plain(name));
+                let kind = if current == b"*" {
+                    RefKind::Current
+                } else if full_name.starts_with(b"refs/heads/") {
+                    RefKind::Local
+                } else {
+                    RefKind::Remote
+                };
+                branches.push((kind, plain(name)));
                 head |= current == b"*";
             }
         }
@@ -553,7 +561,7 @@ fn containing_branches(path: &Path, oid: &str) -> Result<Vec<String>> {
         )?
         .is_empty()
     {
-        branches.insert(0, "HEAD".into());
+        branches.insert(0, (RefKind::Head, "HEAD".into()));
     }
     Ok(branches)
 }
