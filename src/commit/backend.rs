@@ -1,0 +1,1086 @@
+use anyhow::{anyhow, bail, Context as _, Result};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::{OsStr, OsString},
+    fs::{self, OpenOptions},
+    io::Write,
+    path::{Path, PathBuf},
+    process::{Command, Output, Stdio},
+};
+use tempfile::TempDir;
+
+#[derive(Clone, Debug)]
+pub struct Change {
+    pub path: PathBuf,
+    pub xy: [u8; 2],
+    pub conflict: bool,
+}
+impl Change {
+    pub fn staged(&self) -> bool {
+        self.xy[0] != b' ' && self.xy[0] != b'?'
+    }
+    pub fn label(&self) -> String {
+        super::display_path(&self.path)
+    }
+}
+#[cfg(unix)]
+fn raw(b: &[u8]) -> OsString {
+    use std::os::unix::ffi::OsStringExt;
+    OsString::from_vec(b.to_vec())
+}
+#[cfg(not(unix))]
+fn raw(b: &[u8]) -> OsString {
+    OsString::from(String::from_utf8_lossy(b).into_owned())
+}
+
+fn cmd(repo: &Path, idx: Option<&Path>) -> Command {
+    let mut c = crate::core::command(repo);
+    c.env("GIT_LITERAL_PATHSPECS", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env_remove("GIT_INDEX_FILE");
+    if let Some(p) = idx {
+        c.env("GIT_INDEX_FILE", p);
+    }
+    c
+}
+fn run(repo: &Path, idx: Option<&Path>, args: &[&OsStr], input: Option<&[u8]>) -> Result<Output> {
+    let mut c = cmd(repo, idx);
+    c.args(args)
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = c.spawn()?;
+    if let Some(b) = input {
+        child.stdin.take().unwrap().write_all(b)?;
+    }
+    Ok(child.wait_with_output()?)
+}
+fn checked(o: Output) -> Result<Vec<u8>> {
+    if !o.status.success() {
+        let e = String::from_utf8_lossy(&o.stderr);
+        let s = String::from_utf8_lossy(&o.stdout);
+        bail!(
+            "Git: {}",
+            if e.trim().is_empty() {
+                s.trim()
+            } else {
+                e.trim()
+            }
+        )
+    }
+    Ok(o.stdout)
+}
+fn g(repo: &Path, idx: Option<&Path>, args: &[&str]) -> Result<Vec<u8>> {
+    checked(run(
+        repo,
+        idx,
+        &args.iter().map(OsStr::new).collect::<Vec<_>>(),
+        None,
+    )?)
+}
+fn txt(v: Vec<u8>) -> String {
+    String::from_utf8_lossy(&v)
+        .trim_end_matches(['\r', '\n'])
+        .to_owned()
+}
+fn oid(repo: &Path) -> Result<Option<String>> {
+    let out = run(
+        repo,
+        None,
+        &[
+            "rev-parse".as_ref(),
+            "--verify".as_ref(),
+            "-q".as_ref(),
+            "HEAD".as_ref(),
+        ],
+        None,
+    )?;
+    if out.status.success() {
+        Ok(Some(txt(out.stdout)))
+    } else if out.status.code() == Some(1) {
+        Ok(None)
+    } else {
+        Err(anyhow!(String::from_utf8_lossy(&out.stderr).to_string()))
+    }
+}
+pub fn status(repo: &Path) -> Result<Vec<Change>> {
+    let b = g(
+        repo,
+        None,
+        &[
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--no-renames",
+            // The child root shows its own dirty files. Only actual gitlink
+            // revisions can contribute a patch to the superproject.
+            "--ignore-submodules=dirty",
+        ],
+    )?;
+    let mut changes: Vec<Change> = b
+        .split(|c| *c == 0)
+        .filter(|x| x.len() >= 4)
+        .map(|r| Change {
+            path: PathBuf::from(raw(&r[3..])),
+            xy: [r[0], r[1]],
+            conflict: matches!(
+                &r[..2],
+                b"DD" | b"AU" | b"UD" | b"UA" | b"DU" | b"AA" | b"UU"
+            ),
+        })
+        .collect();
+    // After a staged deletion followed by an untracked replacement, porcelain
+    // reports the same path twice. Offer the reviewed deletion first. Once
+    // committed, the replacement appears as an unchecked untracked file.
+    let staged = changes
+        .iter()
+        .filter(|x| x.staged())
+        .map(|x| x.path.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    changes.retain(|x| x.xy != *b"??" || !staged.contains(&x.path));
+    Ok(changes)
+}
+fn git_path(repo: &Path, n: &str) -> Result<PathBuf> {
+    let mut b = g(
+        repo,
+        None,
+        &["rev-parse", "--path-format=absolute", "--git-path", n],
+    )?;
+    if b.last() == Some(&b'\n') {
+        b.pop();
+    }
+    Ok(PathBuf::from(raw(&b)))
+}
+fn safe(repo: &Path) -> Result<()> {
+    for n in [
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "rebase-merge",
+        "rebase-apply",
+        "sequencer",
+    ] {
+        if git_path(repo, n)?.exists() {
+            bail!("{n} 进行中；请先完成或终止当前 Git 操作")
+        }
+    }
+    if !g(repo, None, &["ls-files", "-u", "-z"])?.is_empty() {
+        bail!("有未解决冲突，先进入 Merge")
+    }
+    Ok(())
+}
+fn change_idx(repo: &Path, path: &Path, args: &[&str], file: &Path) -> Result<Vec<u8>> {
+    let mut aa: Vec<_> = args.iter().map(OsStr::new).collect();
+    aa.push(OsStr::new("--"));
+    aa.push(file.as_os_str());
+    checked(run(repo, Some(path), &aa, None)?)
+}
+// Even a literal Git pathspec matches a directory's descendants. Keep its
+// exact depth: for "src/node", exclude "*/*/**". Unlike excluding "src/node/",
+// this also keeps the entry itself when it is an initialized submodule.
+fn exact_path(repo: &Path, idx: Option<&Path>, args: &[&str], file: &Path) -> Result<Vec<u8>> {
+    let mut include = OsString::from(":(top,literal)");
+    include.push(file);
+    let exclude = format!(
+        ":(top,exclude,glob){}**",
+        "*/".repeat(file.components().count())
+    );
+    checked(
+        cmd(repo, idx)
+            .env_remove("GIT_LITERAL_PATHSPECS")
+            .env_remove("GIT_GLOB_PATHSPECS")
+            .env_remove("GIT_NOGLOB_PATHSPECS")
+            .env_remove("GIT_ICASE_PATHSPECS")
+            .args(args)
+            .arg("--")
+            .arg(include)
+            .arg(exclude)
+            .output()?,
+    )
+}
+fn base_tree(repo: &Path, head: Option<&str>) -> Result<String> {
+    if let Some(h) = head {
+        Ok(txt(g(
+            repo,
+            None,
+            &["rev-parse", &format!("{h}^{{tree}}")],
+        )?))
+    } else {
+        Ok(txt(checked(run(
+            repo,
+            None,
+            &["mktree".as_ref()],
+            Some(&[]),
+        )?)?))
+    }
+}
+fn tree_patch(repo: &Path, base: &str, tree: &str) -> Result<Vec<u8>> {
+    g(
+        repo,
+        None,
+        &[
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--ignore-submodules=none",
+            "--submodule=short",
+            base,
+            tree,
+            "--",
+        ],
+    )
+}
+/// Build the exact snapshot displayed in review. Use real Git's filters, modes,
+/// ignore rules and staged blob OIDs. Never stage the user's live worktree here.
+fn snapshot(repo: &Path, files: &[Change], base: &str, di: &TempDir) -> Result<(PathBuf, String)> {
+    let at = di.path().join("selected");
+    g(repo, Some(&at), &["read-tree", base])?;
+    for f in files {
+        if f.conflict {
+            bail!("未解决: {}", f.label())
+        }
+        if f.staged() {
+            // The cached version wins, even for MM/MD.
+            let entries = exact_path(repo, None, &["ls-files", "--stage", "-z"], &f.path)?;
+            change_idx(repo, &at, &["update-index", "--force-remove"], &f.path)?;
+            if !entries.is_empty() {
+                checked(run(
+                    repo,
+                    Some(&at),
+                    &[
+                        "update-index".as_ref(),
+                        "-z".as_ref(),
+                        "--index-info".as_ref(),
+                    ],
+                    Some(&entries),
+                )?)?;
+            }
+        } else {
+            if f.xy == *b"??"
+                && repo
+                    .join(&f.path)
+                    .symlink_metadata()
+                    .is_ok_and(|m| m.is_dir())
+            {
+                bail!("{} 是嵌套仓库或目录；请在其仓库中提交", f.label())
+            }
+            exact_path(repo, Some(&at), &["add", "-A"], &f.path)?;
+        }
+    }
+    let tree = txt(g(repo, Some(&at), &["write-tree"])?);
+    check_tree_scope(repo, base, &tree, files)?;
+    Ok((at, tree))
+}
+// Adding a leaf can still evict ancestors/descendants. Require every changed
+// leaf to be selected, and every selected version to survive (including a
+// staged edit which a selected working child could turn into a deletion).
+fn check_tree_scope(repo: &Path, base: &str, tree: &str, files: &[Change]) -> Result<()> {
+    let mut expected: BTreeMap<_, _> = files
+        .iter()
+        .map(|f| {
+            (
+                f.path.as_os_str().as_encoded_bytes(),
+                if f.staged() { f.xy[0] } else { f.xy[1] } == b'D',
+            )
+        })
+        .collect();
+    let changed = g(
+        repo,
+        None,
+        &[
+            "diff-tree",
+            "-r",
+            "-z",
+            "--no-commit-id",
+            "--name-status",
+            "--no-renames",
+            "--ignore-submodules=none",
+            base,
+            tree,
+            "--",
+        ],
+    )?;
+    let mut fields = changed.split(|b| *b == 0);
+    while let Some(kind) = fields.next().filter(|s| !s.is_empty()) {
+        let path = fields.next().context("Git 返回了缺少路径的文件变更")?;
+        let Some(deleted) = expected.remove(path) else {
+            bail!(
+                "文件与目录的替换还会改动未勾选路径 {}；请一并勾选相关路径后重新审查",
+                super::display_path(Path::new(&raw(path)))
+            )
+        };
+        if deleted != (kind == b"D") {
+            bail!(
+                "所选版本无法同时保留在提交中：{}；请检查文件与目录的替换，刷新后重新审查",
+                super::display_path(Path::new(&raw(path)))
+            )
+        }
+    }
+    if let Some((path, _)) = expected.first_key_value() {
+        bail!(
+            "快照未包含勾选项 {} 的变更；请检查选区，刷新后重新审查",
+            super::display_path(Path::new(&raw(path)))
+        )
+    }
+    Ok(())
+}
+#[derive(Clone, Debug)]
+pub struct Plan {
+    pub root: usize,
+    pub repo: PathBuf,
+    pub files: Vec<Change>,
+    pub msg: String,
+    pub head: Option<String>,
+    pub tree: String,
+    pub preview: String,
+    pub branch: String,
+    pub amend: bool,
+    stages: Vec<Vec<u8>>,
+}
+fn stages(repo: &Path, files: &[Change]) -> Result<Vec<Vec<u8>>> {
+    files
+        .iter()
+        .map(|f| exact_path(repo, None, &["ls-files", "--stage", "-z"], &f.path))
+        .collect()
+}
+fn check_sources(repo: &Path, files: &[Change]) -> Result<()> {
+    let live: BTreeMap<_, _> = status(repo)?
+        .into_iter()
+        .map(|x| (x.path.clone(), x))
+        .collect();
+    if files.iter().any(|f| {
+        live.get(&f.path)
+            .is_none_or(|x| x.conflict || x.staged() != f.staged())
+    }) {
+        bail!("文件或暂存状态已变化；按 F5 后重新审查")
+    }
+    Ok(())
+}
+pub fn plan(
+    root: usize,
+    repo: &Path,
+    files: Vec<Change>,
+    msg: String,
+    amend: bool,
+) -> Result<Plan> {
+    if msg.trim().is_empty() {
+        bail!("缺少提交说明")
+    }
+    if files.is_empty() {
+        bail!("没有勾选文件")
+    }
+    safe(repo)?;
+    check_sources(repo, &files)?;
+    let head = oid(repo)?;
+    if amend && head.is_none() {
+        bail!("尚无可修改的提交")
+    }
+    if amend
+        && !g(
+            repo,
+            None,
+            &[
+                "for-each-ref",
+                "--contains",
+                "HEAD",
+                "--format=%(refname)",
+                "refs/remotes",
+            ],
+        )?
+        .is_empty()
+    {
+        bail!("HEAD 已可从远端跟踪引用到达，拒绝 Amend")
+    }
+    let idx = git_path(repo, "index")?;
+    let d = tempfile::Builder::new()
+        .prefix("igit-review-")
+        .tempdir_in(idx.parent().context("missing git directory")?)?;
+    let old = base_tree(repo, head.as_deref())?;
+    let (_, tree) = snapshot(repo, &files, &old, &d)?;
+    if tree == old && !amend {
+        bail!("所选内容没有可提交的变更（如子模块仅有未提交文件，请先提交子仓）")
+    }
+    // Derive review text from the exact two trees, not from a possibly stale
+    // render-time worktree diff. Keep the row summary visible above patches.
+    let bytes = tree_patch(repo, &old, &tree)?;
+    let patch = String::from_utf8_lossy(&bytes);
+    let mut preview = String::new();
+    for (i, l) in patch.lines().enumerate() {
+        if i >= 500 || preview.len() > 48000 {
+            preview.push_str("… 预览过长；其余路径见上方清单。");
+            break;
+        }
+        preview.extend(l.chars().take(1800));
+        if l.chars().nth(1800).is_some() {
+            preview.push('…')
+        }
+        preview.push('\n');
+    }
+    let stages = stages(repo, &files)?;
+    Ok(Plan {
+        root,
+        repo: repo.into(),
+        files,
+        msg,
+        head,
+        tree,
+        amend,
+        branch: branch_ref(repo)?,
+        preview,
+        stages,
+    })
+}
+fn branch_ref(repo: &Path) -> Result<String> {
+    let v = run(
+        repo,
+        None,
+        &["symbolic-ref".as_ref(), "-q".as_ref(), "HEAD".as_ref()],
+        None,
+    )?;
+    if v.status.success() {
+        Ok(txt(v.stdout))
+    } else if v.status.code() == Some(1) {
+        Ok("HEAD".into())
+    } else {
+        Err(anyhow!("无法核对当前分支"))
+    }
+}
+struct Guard(PathBuf, bool);
+impl Drop for Guard {
+    fn drop(&mut self) {
+        if !self.1 {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+}
+pub struct Outcome {
+    pub hash: String,
+    pub warning: Option<String>,
+}
+// An unselected, staged file may only exist in the real index, not in HEAD.
+// Git can implicitly drop that entry to make room for a conflicting file or
+// directory. Check the index copy before publishing; include intent-to-add
+// entries, which don't necessarily appear in a tree.
+fn reset_index_paths<'a>(
+    repo: &Path,
+    index: &Path,
+    tree: &str,
+    paths: impl IntoIterator<Item = &'a Path>,
+) -> Result<()> {
+    let entries = || g(repo, Some(index), &["ls-files", "--stage", "-z"]);
+    let before = entries()?;
+    let mut allowed = BTreeSet::new();
+    for path in paths {
+        exact_path(repo, Some(index), &["reset", "-q", tree], path)?;
+        allowed.insert(path.as_os_str().as_encoded_bytes());
+    }
+    let after = entries()?;
+    let unchecked = |record: &&[u8]| {
+        record
+            .iter()
+            .position(|b| *b == b'\t')
+            .is_some_and(|tab| !allowed.contains(&record[tab + 1..]))
+    };
+    if before
+        .split(|b| *b == 0)
+        .filter(unchecked)
+        .ne(after.split(|b| *b == 0).filter(unchecked))
+    {
+        bail!("文件与目录的替换会覆盖未勾选的暂存项；请检查真实暂存区后重新审查")
+    }
+    Ok(())
+}
+pub fn execute(p: &Plan) -> Result<Outcome> {
+    let repo = &p.repo;
+    safe(repo)?;
+    let idx = git_path(repo, "index")?;
+    let lock = idx.with_file_name("index.lock");
+    let mut lockfile = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&lock)
+        .context("无法锁定 Git index；请等待其他操作完成")?;
+    let mut guard = Guard(lock.clone(), false);
+    if stages(repo, &p.files)? != p.stages {
+        bail!("暂存内容已变更，请重新审查")
+    }
+    if oid(repo)? != p.head || branch_ref(repo)? != p.branch {
+        bail!("分支或 HEAD 已变更，请重新审查")
+    }
+    let d = tempfile::Builder::new()
+        .prefix("igit-commit-")
+        .tempdir_in(idx.parent().unwrap())?;
+    if p.amend
+        && !g(
+            repo,
+            None,
+            &[
+                "for-each-ref",
+                "--contains",
+                "HEAD",
+                "--format=%(refname)",
+                "refs/remotes",
+            ],
+        )?
+        .is_empty()
+    {
+        bail!("HEAD 已在远端跟踪引用中，请重新审查")
+    }
+    let before = base_tree(repo, p.head.as_deref())?;
+    let staged_before = g(
+        repo,
+        None,
+        &[
+            "diff",
+            "--cached",
+            "--name-only",
+            "--no-renames",
+            "--ignore-submodules=none",
+            "-z",
+            &before,
+        ],
+    )?
+    .split(|x| *x == 0)
+    .filter(|x| !x.is_empty())
+    .map(|x| PathBuf::from(raw(x)))
+    .collect::<std::collections::BTreeSet<_>>();
+    let (at, tree) = snapshot(repo, &p.files, &before, &d)?;
+    if tree != p.tree {
+        bail!("勾选内容已变化，请刷新后重新审查")
+    }
+    // Start the next real index from the *current* live index, which is locked.
+    // Replace selected entries only; every other staged path stays untouched.
+    let next = d.path().join("next");
+    if idx.exists() {
+        fs::copy(&idx, &next)?;
+    } else {
+        g(repo, Some(&next), &["read-tree", "--empty"])?;
+    }
+    reset_index_paths(repo, &next, &tree, p.files.iter().map(|f| f.path.as_path()))?;
+    // Prepare the real index replacement before committing; only a rename remains
+    // after Git updates HEAD. An interrupted publish leaves Git's recovery lock.
+    if idx.exists() {
+        lockfile.set_permissions(fs::metadata(&idx)?.permissions())?;
+    }
+    lockfile.write_all(&fs::read(&next)?)?;
+    lockfile.sync_all()?;
+    drop(lockfile);
+    let mut aa = vec![OsStr::new("commit")];
+    if p.amend {
+        aa.push(OsStr::new("--amend"))
+    }
+    aa.extend([OsStr::new("--file=-"), OsStr::new("--cleanup=verbatim")]);
+    checked(run(repo, Some(&at), &aa, Some(p.msg.as_bytes()))?)?;
+    guard.1 = true;
+    let hash = txt(g(repo, None, &["rev-parse", "--short", "HEAD"])
+        .context("提交已创建，无法读 HEAD；保留 index.lock，勿重试")?);
+    let finalized = (|| -> Result<Option<String>> {
+        let actual = txt(g(repo, None, &["rev-parse", "HEAD^{tree}"])?);
+        if actual == tree {
+            return Ok(None);
+        }
+        // A formatter or other commit hook may update its private index. Align
+        // selected files and originally-clean paths to the actual commit; keep
+        // unrelated, previously staged blobs exactly as the user left them.
+        let changed = g(
+            repo,
+            None,
+            &[
+                "diff",
+                "--name-only",
+                "--no-renames",
+                "--ignore-submodules=none",
+                "-z",
+                &tree,
+                &actual,
+            ],
+        )?;
+        let mut names = Vec::new();
+        let mut reset = Vec::new();
+        for bytes in changed.split(|b| *b == 0).filter(|x| !x.is_empty()) {
+            let path = PathBuf::from(raw(bytes));
+            names.push(path.to_string_lossy().replace(['\n', '\r'], " "));
+            if !staged_before.contains(&path) || p.files.iter().any(|x| x.path == path) {
+                reset.push(path);
+            }
+        }
+        reset_index_paths(repo, &next, &actual, reset.iter().map(|p| p.as_path()))?;
+        let mut replacement = tempfile::NamedTempFile::new_in(idx.parent().unwrap())?;
+        replacement
+            .as_file()
+            .set_permissions(fs::metadata(&lock)?.permissions())?;
+        replacement.write_all(&fs::read(&next)?)?;
+        replacement.as_file().sync_all()?;
+        replacement.persist(&lock)?;
+        Ok(Some(format!(
+            "hook 改写实际提交：{}；推送前请复核",
+            names.join(", ")
+        )))
+    })()
+    .with_context(|| {
+        format!("提交 {hash} 已生成，未能对齐实际 index；保留 index.lock，勿重复提交")
+    })?;
+    fs::rename(&lock, &idx)
+        .context("提交已生成，但发布 index 失败；保留 index.lock，勿重试提交")?;
+    Ok(Outcome {
+        hash,
+        warning: finalized,
+    })
+}
+pub fn diff(repo: &Path, f: &Change) -> Result<String> {
+    if f.conflict {
+        return Ok("Unmerged path — 在 Merge 面板处理".into());
+    }
+    if f.xy == *b"??" {
+        let path = repo.join(&f.path);
+        if path.is_file() && !path.is_symlink() {
+            use std::io::Read;
+            let mut content = Vec::new();
+            fs::File::open(&path)?
+                .take(96 * 1024)
+                .read_to_end(&mut content)?;
+            if content.contains(&0) {
+                return Ok("Binary new file".into());
+            }
+            return Ok(format!(
+                "+++ {} (untracked)\n{}",
+                f.label(),
+                String::from_utf8_lossy(&content)
+                    .lines()
+                    .map(|x| format!("+{x}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+        return Ok(format!("New path: {}", f.label()));
+    }
+    let mut args = vec![
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--no-renames",
+        "--ignore-submodules=none",
+        "--submodule=short",
+    ];
+    if f.staged() {
+        args.push("--cached")
+    }
+    Ok(txt(exact_path(repo, None, &args, &f.path)?))
+}
+pub fn patch(repo: &Path, files: &[Change]) -> Result<String> {
+    check_sources(repo, files)?;
+    let h = oid(repo)?;
+    let idx = git_path(repo, "index")?;
+    let di = tempfile::Builder::new()
+        .prefix("igit-patch-")
+        .tempdir_in(idx.parent().unwrap())?;
+    let base = base_tree(repo, h.as_deref())?;
+    let (_, tree) = snapshot(repo, files, &base, &di)?;
+    let b = tree_patch(repo, &base, &tree)?;
+    if b.is_empty() {
+        bail!("选区没有补丁")
+    }
+    if b.len() > 160_000 {
+        bail!("选区超过 160KB，请缩小选区后生成说明")
+    }
+    Ok(String::from_utf8_lossy(&b).into_owned())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn setup() -> TempDir {
+        let d = TempDir::new().unwrap();
+        let r = d.path();
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.name", "Fixture"],
+            &["config", "user.email", "fixture@invalid.test"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.hooksPath", ".git/hooks"],
+        ] {
+            g(r, None, args).unwrap();
+        }
+        d
+    }
+    fn put(r: &Path, n: &str, s: &str) {
+        fs::write(r.join(n), s).unwrap()
+    }
+    fn commit_all(r: &Path) {
+        g(r, None, &["add", "-A"]).unwrap();
+        g(r, None, &["commit", "-qm", "base"]).unwrap();
+    }
+    fn p(r: &Path, paths: &[&str]) -> Plan {
+        let selected = status(r)
+            .unwrap()
+            .into_iter()
+            .filter(|f| paths.iter().any(|s| Path::new(s) == f.path))
+            .collect();
+        plan(0, r, selected, "selected".into(), false).unwrap()
+    }
+    fn get(r: &Path, args: &[&str]) -> String {
+        txt(g(r, None, args).unwrap())
+    }
+    #[test]
+    fn mixed_and_unrelated_index_survive() {
+        let d = setup();
+        let r = d.path();
+        for n in ["a", "b", "c"] {
+            put(r, n, "base\n")
+        }
+        commit_all(r);
+        put(r, "a", "selected staged\n");
+        put(r, "b", "keep staged\n");
+        g(r, None, &["add", "a", "b"]).unwrap();
+        put(r, "a", "later work\n");
+        put(r, "c", "selected working\n");
+        let plan = p(r, &["a", "c"]);
+        execute(&plan).unwrap();
+        assert_eq!(get(r, &["show", "HEAD:a"]), "selected staged");
+        assert_eq!(get(r, &["show", "HEAD:b"]), "base");
+        assert_eq!(get(r, &["show", "HEAD:c"]), "selected working");
+        assert_eq!(get(r, &["show", ":b"]), "keep staged");
+        assert_eq!(get(r, &["diff", "--cached", "--name-only"]), "b");
+        assert_eq!(get(r, &["diff", "--name-only"]), "a");
+    }
+    #[test]
+    fn untracked_first_commit_and_stale_review() {
+        let d = setup();
+        let r = d.path();
+        put(r, "a*[x]", "hello\n");
+        let before = p(r, &["a*[x]"]);
+        put(r, "a*[x]", "new\n");
+        assert!(execute(&before).is_err());
+        assert!(oid(r).unwrap().is_none());
+        let after = p(r, &["a*[x]"]);
+        execute(&after).unwrap();
+        assert_eq!(get(r, &["show", "HEAD:a*[x]"]), "new");
+        assert!(status(r).unwrap().is_empty());
+    }
+    fn change(r: &Path, path: &str) -> Change {
+        status(r)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.path == Path::new(path))
+            .unwrap()
+    }
+    #[test]
+    fn path_scope_file_deletion_does_not_take_an_unchecked_directory_child() {
+        for staged_child in [false, true] {
+            let d = setup();
+            let r = d.path();
+            // Pathspec metacharacters are part of this file's real name.
+            let node = "node[1]";
+            let child = "node[1]/private";
+            put(r, node, "old leaf\n");
+            commit_all(r);
+            fs::remove_file(r.join(node)).unwrap();
+            fs::create_dir(r.join(node)).unwrap();
+            put(r, child, "private staged version\n");
+            if staged_child {
+                g(r, None, &["add", "-A"]).unwrap();
+            }
+            put(r, child, "private working version\n");
+            let selected = vec![change(r, node)];
+            let head = oid(r).unwrap();
+            let index = fs::read(r.join(".git/index")).unwrap();
+            let preview = diff(r, &selected[0]).unwrap();
+            let ai = patch(r, &selected).unwrap();
+            let plan = plan(0, r, selected, "delete old leaf".into(), false).unwrap();
+            for (label, text) in [
+                ("file preview", preview),
+                ("AI patch", ai),
+                ("commit review", plan.preview.clone()),
+            ] {
+                assert!(text.contains("-old leaf"), "{label}: {text}");
+                assert!(
+                    !text.contains("private"),
+                    "{label} exposed the unchecked child: {text}"
+                );
+            }
+            assert_eq!(oid(r).unwrap(), head);
+            assert_eq!(fs::read(r.join(".git/index")).unwrap(), index);
+            execute(&plan).unwrap();
+            assert_eq!(
+                get(
+                    r,
+                    &[
+                        "diff-tree",
+                        "--no-commit-id",
+                        "--name-status",
+                        "-r",
+                        "--no-renames",
+                        "HEAD"
+                    ]
+                ),
+                format!("D\t{node}")
+            );
+            assert_eq!(get(r, &["ls-tree", "-r", "--name-only", "HEAD"]), "");
+            assert_eq!(
+                fs::read_to_string(r.join(child)).unwrap(),
+                "private working version\n"
+            );
+            if staged_child {
+                assert_eq!(
+                    get(r, &["show", ":node[1]/private"]),
+                    "private staged version"
+                );
+                assert_eq!(get(r, &["diff", "--cached", "--name-only"]), child);
+            } else {
+                assert!(get(r, &["ls-files"]).is_empty());
+                assert_eq!(change(r, child).xy, *b"??");
+            }
+        }
+    }
+    #[test]
+    fn path_scope_directory_to_file_requires_its_tracked_children() {
+        let d = setup();
+        let r = d.path();
+        fs::create_dir(r.join("node")).unwrap();
+        put(r, "node/a", "old a\n");
+        put(r, "node/b", "old b\n");
+        commit_all(r);
+        fs::remove_dir_all(r.join("node")).unwrap();
+        put(r, "node", "replacement\n");
+        let head = oid(r).unwrap();
+        let index = fs::read(r.join(".git/index")).unwrap();
+        let only_new = vec![change(r, "node")];
+        assert!(
+            patch(r, &only_new).is_err(),
+            "AI must not include the unchecked deletions"
+        );
+        assert!(plan(0, r, only_new, "partial".into(), false).is_err());
+        assert_eq!(oid(r).unwrap(), head);
+        assert_eq!(fs::read(r.join(".git/index")).unwrap(), index);
+        assert_eq!(fs::read_to_string(r.join("node")).unwrap(), "replacement\n");
+        let all = p(r, &["node", "node/a", "node/b"]);
+        execute(&all).unwrap();
+        assert_eq!(get(r, &["ls-tree", "-r", "--name-only", "HEAD"]), "node");
+        assert_eq!(get(r, &["show", "HEAD:node"]), "replacement");
+        assert!(status(r).unwrap().is_empty());
+    }
+    #[test]
+    fn path_scope_cannot_select_a_staged_file_and_a_working_child_together() {
+        let d = setup();
+        let r = d.path();
+        put(r, "node", "old\n");
+        commit_all(r);
+        put(r, "node", "reviewed staged edit\n");
+        g(r, None, &["add", "node"]).unwrap();
+        fs::remove_file(r.join("node")).unwrap();
+        fs::create_dir(r.join("node")).unwrap();
+        put(r, "node/new", "working child\n");
+        let both = vec![change(r, "node"), change(r, "node/new")];
+        assert_eq!(both[0].xy, *b"MD");
+        let head = oid(r).unwrap();
+        let index = fs::read(r.join(".git/index")).unwrap();
+        // The actual diff can name BOTH paths yet delete the selected staged edit.
+        assert!(patch(r, &both).is_err());
+        assert!(plan(0, r, both, "impossible selection".into(), false).is_err());
+        assert_eq!(oid(r).unwrap(), head);
+        assert_eq!(fs::read(r.join(".git/index")).unwrap(), index);
+        assert_eq!(get(r, &["show", ":node"]), "reviewed staged edit");
+        assert_eq!(
+            fs::read_to_string(r.join("node/new")).unwrap(),
+            "working child\n"
+        );
+    }
+    #[test]
+    fn path_scope_working_file_cannot_displace_an_unchecked_staged_child() {
+        let d = setup();
+        let r = d.path();
+        put(r, "base", "base\n");
+        commit_all(r);
+        fs::create_dir(r.join("node")).unwrap();
+        put(r, "node/child", "private staged child\n");
+        g(r, None, &["add", "node/child"]).unwrap();
+        fs::remove_dir_all(r.join("node")).unwrap();
+        put(r, "node", "new working file\n");
+        let head = oid(r).unwrap();
+        let index = fs::read(r.join(".git/index")).unwrap();
+        let result = plan(0, r, vec![change(r, "node")], "keep child".into(), false)
+            .and_then(|p| execute(&p));
+        assert!(
+            result.is_err(),
+            "publishing the new file must not discard the staged child"
+        );
+        assert_eq!(oid(r).unwrap(), head);
+        assert_eq!(fs::read(r.join(".git/index")).unwrap(), index);
+        assert_eq!(get(r, &["show", ":node/child"]), "private staged child");
+        assert_eq!(
+            fs::read_to_string(r.join("node")).unwrap(),
+            "new working file\n"
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn rejected_hook_preserves_head_index_worktree() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = setup();
+        let r = d.path();
+        put(r, "one", "one");
+        commit_all(r);
+        put(r, "one", "two");
+        put(r, "unrelated", "x");
+        g(r, None, &["add", "unrelated"]).unwrap();
+        let idx = fs::read(r.join(".git/index")).unwrap();
+        let head = oid(r).unwrap();
+        put(r, ".git/hooks/pre-commit", "#!/bin/sh\nexit 2\n");
+        fs::set_permissions(
+            r.join(".git/hooks/pre-commit"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let pp = p(r, &["one"]);
+        assert!(execute(&pp).is_err());
+        assert_eq!(oid(r).unwrap(), head);
+        assert_eq!(fs::read(r.join(".git/index")).unwrap(), idx);
+        assert_eq!(fs::read_to_string(r.join("one")).unwrap(), "two");
+        assert!(!r.join(".git/index.lock").exists())
+    }
+}
+#[cfg(all(test, unix))]
+mod hook_change_tests {
+    use super::*;
+    #[test]
+    fn report_hook_mutations_without_spurious_reverse_stage() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.name", "Fixture"],
+            &["config", "user.email", "fixture@invalid.test"],
+            &["config", "core.hooksPath", ".git/hooks"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g(r, None, args).unwrap();
+        }
+        for n in ["task", "meta", "unrelated"] {
+            fs::write(r.join(n), "original").unwrap()
+        }
+        g(r, None, &["add", "-A"]).unwrap();
+        g(r, None, &["commit", "-qm", "base"]).unwrap();
+        fs::write(r.join("unrelated"), "keep this staged").unwrap();
+        g(r, None, &["add", "unrelated"]).unwrap();
+        fs::write(r.join("task"), "edit").unwrap();
+        let hook = r.join(".git/hooks/pre-commit");
+        fs::write(
+            &hook,
+            "#!/bin/sh\nprintf formatted > task\nprintf generated > meta\ngit add -- task meta\n",
+        )
+        .unwrap();
+        fs::set_permissions(hook, fs::Permissions::from_mode(0o700)).unwrap();
+        let proposal = plan(
+            0,
+            r,
+            status(r)
+                .unwrap()
+                .into_iter()
+                .filter(|x| x.path == Path::new("task"))
+                .collect(),
+            "review".into(),
+            false,
+        )
+        .unwrap();
+        let result = execute(&proposal).unwrap();
+        assert!(result.warning.unwrap().contains("meta"));
+        assert_eq!(
+            txt(g(r, None, &["show", "HEAD:task"]).unwrap()),
+            "formatted"
+        );
+        assert_eq!(txt(g(r, None, &["show", ":meta"]).unwrap()), "generated");
+        assert_eq!(
+            txt(g(r, None, &["diff", "--cached", "--name-only"]).unwrap()),
+            "unrelated"
+        );
+    }
+}
+#[cfg(test)]
+mod submodule_tests {
+    use super::*;
+    fn init(p: &Path) {
+        fs::create_dir(p).unwrap();
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.name", "Fixture"],
+            &["config", "user.email", "fixture@invalid.test"],
+            &["config", "core.hooksPath", ".git/hooks"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g(p, None, args).unwrap();
+        }
+    }
+    #[test]
+    fn child_dirt_is_not_a_parent_patch_but_gitlink_updates_are() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("source");
+        let par = temp.path().join("parent");
+        init(&src);
+        init(&par);
+        fs::write(src.join("file"), "base").unwrap();
+        g(&src, None, &["add", "file"]).unwrap();
+        g(&src, None, &["commit", "-qm", "base"]).unwrap();
+        g(
+            &par,
+            None,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                src.to_str().unwrap(),
+                "sdk",
+            ],
+        )
+        .unwrap();
+        g(&par, None, &["commit", "-qm", "add sdk"]).unwrap();
+        let child = par.join("sdk");
+        fs::write(child.join("file"), "new").unwrap();
+        fs::write(child.join("untracked"), "extra").unwrap();
+        assert!(status(&par).unwrap().is_empty());
+        assert_eq!(status(&child).unwrap().len(), 2);
+        g(
+            &child,
+            None,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=test@invalid.test",
+                "commit",
+                "-qam",
+                "child work",
+            ],
+        )
+        .unwrap();
+        let ptr = status(&par).unwrap();
+        assert_eq!(ptr.len(), 1);
+        assert_eq!(ptr[0].path, Path::new("sdk"));
+        assert!(!ptr[0].staged());
+        let p = plan(0, &par, ptr, "new child revision".into(), false).unwrap();
+        assert!(!p.tree.is_empty());
+        g(&par, None, &["add", "sdk"]).unwrap();
+        let staged = status(&par).unwrap();
+        assert_eq!(staged.len(), 1);
+        assert!(staged[0].staged());
+        let next = plan(0, &par, staged, "new child revision".into(), false).unwrap();
+        assert_eq!(next.tree, p.tree);
+        execute(&next).unwrap();
+        assert!(status(&par).unwrap().is_empty());
+        assert_eq!(status(&child).unwrap().len(), 1);
+    }
+}

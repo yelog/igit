@@ -1,0 +1,1425 @@
+mod files;
+mod submodules;
+mod view;
+#[cfg(test)]
+mod view_tests;
+use crate::{
+    core::{command, git, git_bytes, Context, Repo},
+    ui::{
+        icons::{Icon, IconMode},
+        idea::{checkbox, GREEN, RED},
+        *,
+    },
+};
+use anyhow::{bail, Result};
+use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+use files::{Change, FileTree, Kind};
+use ratatui::{
+    layout::{Constraint as C, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span, Text},
+    widgets::{Clear, Paragraph, Wrap},
+    Frame,
+};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+    sync::mpsc::{self, Receiver},
+};
+
+#[derive(Clone, Debug, Default)]
+struct Target {
+    remote: String,
+    dst: String,
+}
+#[derive(Clone, Debug, Default)]
+struct Out {
+    id: String,
+    msg: String,
+}
+#[derive(Clone, Debug, Default)]
+struct Entry {
+    idx: usize,
+    source: String,
+    head: String,
+    t: Target,
+    tracking: Option<String>,
+    n: usize,
+    logs: Vec<Out>,
+    error: String,
+}
+#[derive(Clone, Debug)]
+struct Job {
+    idx: usize,
+    path: PathBuf,
+    branch: String,
+    head: String,
+    t: Target,
+    tracking: Option<String>,
+    url: String,
+}
+#[derive(Clone, Default)]
+struct Preview {
+    files: Vec<Change>,
+    tree: FileTree,
+    summary: String,
+    body: String,
+    is_patch: bool,
+}
+enum Report {
+    Row(usize, Result<(), String>),
+    Done,
+}
+#[derive(Clone)]
+enum Hit {
+    Row(usize),
+    Check(usize),
+    Fold(usize),
+    Target(usize),
+    File(usize),
+    FileFold(usize),
+    FoldAll(bool),
+    Details,
+    Send,
+    Retry,
+    Hooks,
+    Tags,
+    Fetch,
+}
+#[derive(Default)]
+pub struct PushPanel {
+    pub(crate) icons: IconMode,
+    entries: Vec<Entry>,
+    checked: BTreeSet<usize>,
+    expanded: BTreeSet<usize>,
+    targets: BTreeMap<usize, Target>,
+    init: bool,
+    pub(crate) reseed: Option<Vec<usize>>,
+    pos: usize,
+    offset: usize,
+    focus: usize,
+    preview: Preview,
+    show_details: bool,
+    detail_off: u16,
+    target_edit: Option<(usize, String)>,
+    hits: Vec<(Rect, Hit)>,
+    zones: Vec<Rect>,
+    results: BTreeMap<usize, Result<(), String>>,
+    inflight: Option<Receiver<Report>>,
+    busy: String,
+    review: Vec<Job>,
+    follow_tags: bool,
+    skip_hooks: bool,
+    last_fetch: bool,
+    pub(crate) progress_seq: u64,
+}
+fn slices(a: Rect, dir: Direction, cs: Vec<C>) -> Vec<Rect> {
+    Layout::default()
+        .direction(dir)
+        .constraints(cs)
+        .split(a)
+        .to_vec()
+}
+fn remote_list(p: &Path) -> Vec<String> {
+    git(p, &["remote"])
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+fn get_t(r: &Repo, branch: &str) -> Target {
+    let cfg = |k: &str| git(&r.path, &["config", "--get", k]).unwrap_or_default();
+    let upstream = cfg(&format!("branch.{branch}.remote"));
+    let mut remote = cfg(&format!("branch.{branch}.pushRemote"));
+    if remote.is_empty() {
+        remote = cfg("remote.pushDefault")
+    }
+    if remote.is_empty() {
+        remote = upstream.clone()
+    }
+    let remotes = remote_list(&r.path);
+    if remote.is_empty() {
+        remote = if remotes.iter().any(|s| s == "origin") {
+            "origin".into()
+        } else {
+            remotes.first().cloned().unwrap_or_default()
+        }
+    }
+    let dst = if upstream == remote {
+        cfg(&format!("branch.{branch}.merge"))
+            .strip_prefix("refs/heads/")
+            .unwrap_or(branch)
+            .to_owned()
+    } else {
+        branch.into()
+    };
+    Target { remote, dst }
+}
+fn remote_head(p: &Path, t: &Target) -> Option<String> {
+    git(
+        p,
+        &[
+            "rev-parse",
+            "--verify",
+            &format!("refs/remotes/{}/{}", t.remote, t.dst),
+        ],
+    )
+    .ok()
+}
+fn entry(i: usize, r: &Repo, t: Option<&Target>) -> Entry {
+    let mut x = Entry {
+        idx: i,
+        ..Default::default()
+    };
+    let run = || -> Result<Entry> {
+        let source = git(&r.path, &["symbolic-ref", "--short", "-q", "HEAD"])
+            .map_err(|_| anyhow::anyhow!("detached HEAD: switch to a branch"))?;
+        let head = git(&r.path, &["rev-parse", "--verify", "HEAD"])
+            .map_err(|_| anyhow::anyhow!("no commits yet"))?;
+        let t = t.cloned().unwrap_or_else(|| get_t(r, &source));
+        if t.remote.is_empty() {
+            bail!("no remote configured")
+        }
+        let tracking = remote_head(&r.path, &t);
+        let range = tracking
+            .as_ref()
+            .map(|h| format!("{h}..{head}"))
+            .unwrap_or_else(|| head.clone());
+        let n = git(&r.path, &["rev-list", "--count", &range])?.parse()?;
+        let logs = git(
+            &r.path,
+            &["log", "--max-count=60", "--format=%H%x09%s", &range, "--"],
+        )?
+        .lines()
+        .filter_map(|x| x.split_once('\t'))
+        .map(|(id, msg)| Out {
+            id: id.into(),
+            msg: msg.into(),
+        })
+        .collect();
+        Ok(Entry {
+            idx: i,
+            source,
+            head,
+            t,
+            tracking,
+            n,
+            logs,
+            error: String::new(),
+        })
+    };
+    match run() {
+        Ok(v) => v,
+        Err(e) => {
+            x.error = e.to_string();
+            x
+        }
+    }
+}
+fn url(p: &Path, r: &str) -> Result<String> {
+    let s = git(p, &["remote", "get-url", "--push", "--all", r])?;
+    if s.lines().count() != 1 {
+        bail!("multiple push URLs; use Git to inspect this remote")
+    }
+    Ok(s)
+}
+fn redact(msg: &str, url: &str) -> String {
+    let mut s = msg.replace(url, "<remote>");
+    for word in msg.split_whitespace() {
+        if word.contains("://") && word.contains('@') {
+            s = s.replace(word, "<remote>")
+        }
+    }
+    s
+}
+fn job(repo: &Repo, x: &Entry) -> Result<Job> {
+    if x.t.remote.starts_with('-')
+        || x.t.remote == "."
+        || !remote_list(&repo.path).contains(&x.t.remote)
+    {
+        bail!("pick a configured remote")
+    }
+    git(
+        &repo.path,
+        &["check-ref-format", &format!("refs/heads/{}", x.t.dst)],
+    )?;
+    if git(
+        &repo.path,
+        &["config", "--bool", &format!("remote.{}.mirror", x.t.remote)],
+    )
+    .as_deref()
+    .ok()
+        == Some("true")
+    {
+        bail!("mirror remote requires a separate manual review")
+    }
+    Ok(Job {
+        idx: x.idx,
+        path: repo.path.clone(),
+        branch: x.source.clone(),
+        head: x.head.clone(),
+        url: url(&repo.path, &x.t.remote)?,
+        t: x.t.clone(),
+        tracking: x.tracking.clone(),
+    })
+}
+
+// Replacement refs and legacy grafts can invent parents that the remote will
+// never receive. A lease checks the old tip, not whether the update is a fast-forward.
+fn published_graph(repo: &Path) -> std::process::Command {
+    let mut cmd = command(repo);
+    cmd.env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_GRAFT_FILE", "");
+    cmd
+}
+
+fn push_one(j: &Job, tags: bool, nohooks: bool) -> Result<()> {
+    let p = &j.path;
+    if git(p, &["symbolic-ref", "--short", "-q", "HEAD"])? != j.branch
+        || git(p, &["rev-parse", "HEAD"])? != j.head
+        || url(p, &j.t.remote)? != j.url
+    {
+        bail!("branch, HEAD or remote changed; refresh and review")
+    }
+    let dst = format!("refs/heads/{}", j.t.dst);
+    // Query the *push* endpoint, which may differ from the fetch endpoint.
+    let actual = git(p, &["ls-remote", "--refs", "--", &j.url, &dst])
+        .map_err(|e| anyhow::anyhow!(redact(&e.to_string(), &j.url)))?;
+    if actual.split_whitespace().next() != j.tracking.as_deref() {
+        bail!("remote tip differs from preview; Fetch, review target and retry (check push URL if different)")
+    }
+    if let Some(ref old) = j.tracking {
+        match published_graph(p)
+            .args(["merge-base", "--is-ancestor", old, &j.head])
+            .output()?
+            .status
+            .code()
+        {
+            Some(0) => (),
+            Some(1) => bail!("non-fast-forward; integrate upstream before retrying"),
+            _ => bail!("cannot verify fast-forward against the stored history; fetch and review"),
+        }
+    }
+    submodules::verify_for_remote(p, &j.head, j.tracking.as_deref(), Some(&j.url))?;
+    let spec = format!("{}:{}", j.head, dst);
+    // A lease performs a compare-and-swap on the reviewed target. The ancestry check above still forbids rewritten history.
+    let lease = format!(
+        "--force-with-lease={}:{}",
+        dst,
+        j.tracking.as_deref().unwrap_or("")
+    );
+    let mut args = vec![
+        "-c",
+        "push.autoSetupRemote=false",
+        "push",
+        "--porcelain",
+        "--recurse-submodules=check",
+        if tags {
+            "--follow-tags"
+        } else {
+            "--no-follow-tags"
+        },
+    ];
+    if nohooks {
+        args.push("--no-verify")
+    }
+    args.extend([lease.as_str(), "--", &j.t.remote, &spec]);
+    git(p, &args).map_err(|e| anyhow::anyhow!(redact(&e.to_string(), &j.url)))?;
+    Ok(())
+}
+fn label(p: &Path) -> String {
+    p.to_string_lossy()
+        .chars()
+        .map(|c| if c.is_control() { '�' } else { c })
+        .collect()
+}
+impl PushPanel {
+    pub(crate) fn busy(&self) -> bool {
+        self.inflight.is_some()
+    }
+    fn rows(&self) -> Vec<(usize, Option<usize>)> {
+        let mut rows = vec![];
+        for e in &self.entries {
+            rows.push((e.idx, None));
+            if self.expanded.contains(&e.idx) {
+                rows.extend((0..e.logs.len()).map(|k| (e.idx, Some(k))))
+            }
+        }
+        rows
+    }
+    fn selected(&self) -> Option<(usize, Option<usize>)> {
+        self.rows().get(self.pos).copied()
+    }
+    fn inspect(&mut self, c: &Context) {
+        self.preview = Preview::default();
+        self.detail_off = 0;
+        let Some((i, sub)) = self.selected() else {
+            return;
+        };
+        let Some(e) = self.entries.iter().find(|e| e.idx == i) else {
+            return;
+        };
+        let p = &c.repos[i].path;
+        if !e.error.is_empty() {
+            self.preview.body = e.error.clone();
+            self.preview.summary = e.error.clone();
+            return;
+        }
+        let selected = sub.and_then(|k| e.logs.get(k));
+        let (files, desc) = if let Some(h) = selected {
+            (
+                git_bytes(
+                    p,
+                    &[
+                        "diff-tree",
+                        "--root",
+                        "--diff-merges=first-parent",
+                        "--no-commit-id",
+                        "--name-status",
+                        "-z",
+                        "-r",
+                        "--find-renames",
+                        &h.id,
+                        "--",
+                    ],
+                )
+                .map(files::name_status),
+                git(
+                    p,
+                    &[
+                        "show",
+                        "-s",
+                        "--format=%s%n%n%b%n%h   %an <%ae>%n%ai",
+                        &h.id,
+                    ],
+                )
+                .unwrap_or_default(),
+            )
+        } else {
+            let paths = if let Some(base) = &e.tracking {
+                git_bytes(
+                    p,
+                    &[
+                        "diff",
+                        "--name-status",
+                        "-z",
+                        "--find-renames",
+                        base,
+                        &e.head,
+                        "--",
+                    ],
+                )
+                .map(files::name_status)
+            } else {
+                git_bytes(p, &["ls-tree", "-r", "--name-only", "-z", &e.head])
+                    .map(files::added_paths)
+            };
+            (
+                paths,
+                format!(
+                    "{} {} {}:{}\n\n{} outgoing commits.\n{}\n\n{}",
+                    e.source,
+                    self.icons.glyph(Icon::Right),
+                    e.t.remote,
+                    e.t.dst,
+                    e.n,
+                    e.tracking
+                        .as_ref()
+                        .map(|h| format!("Last fetched tip: {:.10}", h))
+                        .unwrap_or_else(|| "New target (no tracking ref)".into()),
+                    if e.n > 60 {
+                        "List displays newest 60; the complete branch will be pushed."
+                    } else {
+                        "Select a commit to inspect its files."
+                    }
+                ),
+            )
+        };
+        let files = match files {
+            Ok(files) => files,
+            Err(err) => {
+                self.preview.body = format!("Unable to load changed files: {err}\n\n{desc}");
+                self.preview.summary = self.preview.body.clone();
+                return;
+            }
+        };
+        let summary = if let Some(Err(err)) = self.results.get(&i) {
+            format!("FAILED: {err}\n\n{desc}")
+        } else {
+            desc
+        };
+        self.preview = Preview {
+            tree: FileTree::new(&files),
+            files,
+            body: summary.clone(),
+            summary,
+            is_patch: false,
+        };
+    }
+    fn open_file(&mut self, c: &Context) {
+        let Some((i, k)) = self.selected() else {
+            return;
+        };
+        let Some(file) = self
+            .preview
+            .tree
+            .file_index()
+            .and_then(|i| self.preview.files.get(i))
+        else {
+            return;
+        };
+        let path = &file.path;
+        let x = self.entries.iter().find(|e| e.idx == i).unwrap();
+        let mut cmd = command(&c.repos[i].path);
+        cmd.arg("--literal-pathspecs");
+        if let Some(h) = k.and_then(|k| x.logs.get(k)) {
+            cmd.args([
+                "show",
+                "--diff-merges=first-parent",
+                "--format=",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--find-renames",
+                &h.id,
+            ]);
+        } else if let Some(base) = &x.tracking {
+            cmd.args([
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--find-renames",
+                base,
+                &x.head,
+            ]);
+        } else {
+            let item = cmd
+                .args(["ls-tree", "-z", &x.head, "--"])
+                .arg(path)
+                .output()
+                .ok();
+            let oid = item
+                .as_ref()
+                .and_then(|o| o.stdout.split(|v| *v == b'\t').next())
+                .and_then(|s| std::str::from_utf8(s).ok())
+                .and_then(|s| s.split_whitespace().nth(2));
+            self.preview.is_patch = false;
+            self.preview.body = match oid {
+                Some(id)
+                    if git(&c.repos[i].path, &["cat-file", "-s", id])
+                        .ok()
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .is_some_and(|n| n <= 1_048_576) =>
+                {
+                    match git_bytes(&c.repos[i].path, &["cat-file", "blob", id]) {
+                        Ok(b) if !b.contains(&0) => format!(
+                            "New target: {}\n\n{}",
+                            label(path),
+                            String::from_utf8_lossy(&b)
+                                .chars()
+                                .take(30000)
+                                .collect::<String>()
+                        ),
+                        _ => "Binary or non-blob entry".into(),
+                    }
+                }
+                _ => "Preview unavailable: large file or not a blob".into(),
+            };
+            self.detail_off = 0;
+            return;
+        }
+
+        cmd.arg("--").arg(path);
+        if let Some(previous) = &file.previous {
+            cmd.arg(previous);
+        }
+        let out = cmd.output();
+        (self.preview.body, self.preview.is_patch) = match out {
+            Ok(o) if o.status.success() => (
+                String::from_utf8_lossy(&o.stdout)
+                    .chars()
+                    .take(30000)
+                    .collect(),
+                true,
+            ),
+            Ok(o) => (String::from_utf8_lossy(&o.stderr).into_owned(), false),
+            Err(e) => (e.to_string(), false),
+        };
+        self.detail_off = 0;
+    }
+    fn inspect_file(&mut self, c: &Context) {
+        if self.preview.tree.file_index().is_some() {
+            self.open_file(c);
+        } else {
+            self.preview.is_patch = false;
+            self.detail_off = 0;
+            self.preview.body = match self.preview.tree.selected() {
+                Some(files::Node {
+                    kind: Kind::Directory { path, .. },
+                    count,
+                    ..
+                }) => {
+                    format!(
+                        "{}\n\n{count} changed files\n\n{}",
+                        label(path),
+                        self.preview.summary
+                    )
+                }
+                _ => self.preview.summary.clone(),
+            };
+        }
+    }
+    fn activate_file(&mut self, row: usize, fold: bool, c: &Context) {
+        if row >= self.preview.tree.visible.len() {
+            return;
+        }
+        self.preview.tree.cursor = row;
+        if fold {
+            self.preview.tree.toggle();
+        } else if self.preview.tree.file_index().is_some() {
+            self.show_details = true;
+        }
+        if self.show_details {
+            self.inspect_file(c);
+        }
+    }
+    fn toggle_details(&mut self, c: &Context) {
+        self.show_details = !self.show_details;
+        if self.show_details {
+            self.inspect_file(c);
+        } else if self.focus == 2 {
+            self.focus = 1;
+        }
+    }
+    fn toggle(&mut self, i: usize) {
+        if self.entries.iter().any(|e| e.idx == i && e.n > 0) && !self.checked.remove(&i) {
+            self.checked.insert(i);
+        }
+    }
+    fn target(&mut self, i: usize) {
+        if let Some(e) = self
+            .entries
+            .iter()
+            .find(|e| e.idx == i && e.error.is_empty())
+        {
+            self.target_edit = Some((i, format!("{}:{}", e.t.remote, e.t.dst)))
+        }
+    }
+    fn review(&mut self, c: &Context, retry: bool) -> Action {
+        if self.busy() {
+            return Action::Notice(self.busy.clone());
+        }
+        if retry && self.last_fetch {
+            return Action::Notice("Retry Fetch after fixing the remote".into());
+        }
+        let mut js = vec![];
+        let mut lines = vec![];
+        for e in &self.entries {
+            if !c.scope.contains(&e.idx)
+                || e.n == 0
+                || !e.error.is_empty()
+                || if retry {
+                    !matches!(self.results.get(&e.idx), Some(Err(_)))
+                } else {
+                    !self.checked.contains(&e.idx)
+                }
+            {
+                continue;
+            }
+            match job(&c.repos[e.idx], e) {
+                Ok(j) => {
+                    lines.push(format!(
+                        "{}: {} @ {:.8} {} {}:{}  ({} commits)",
+                        c.repos[e.idx].name,
+                        e.source,
+                        e.head,
+                        self.icons.glyph(Icon::Right),
+                        e.t.remote,
+                        e.t.dst,
+                        e.n
+                    ));
+                    js.push(j)
+                }
+                Err(err) => return Action::Notice(err.to_string()),
+            }
+        }
+        if js.is_empty() {
+            return Action::Notice("No outgoing repository selected".into());
+        }
+        js.sort_by_key(|j| std::cmp::Reverse(j.path.components().count()));
+        self.review = js;
+        Action::Confirm{title:format!("Push {} repositories?",lines.len()),body:format!("{}\n\nHooks: {}   Follow annotated tags: {}\nEach repository is pushed separately; no force push.",lines.join("\n"),!self.skip_hooks,self.follow_tags),token:"push".into()}
+    }
+    fn start(&mut self, c: &Context, fetch: bool) -> Action {
+        if self.busy() {
+            return Action::Notice(self.busy.clone());
+        }
+        let (tx, rx) = mpsc::channel();
+        let js = std::mem::take(&mut self.review);
+        let (tags, hooks) = (self.follow_tags, self.skip_hooks);
+        let items: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|e| c.scope.contains(&e.idx))
+            .map(|e| (e.idx, c.repos[e.idx].path.clone(), e.t.remote.clone()))
+            .collect();
+        let parents: Vec<_> = c.repos.iter().map(|r| r.parent).collect();
+        self.last_fetch = fetch;
+        self.busy = if fetch { "Fetching…" } else { "Pushing…" }.into();
+        self.inflight = Some(rx);
+        if fetch {
+            self.results.clear()
+        } else {
+            for j in &js {
+                self.results.remove(&j.idx);
+            }
+        }
+        std::thread::spawn(move || {
+            if fetch {
+                for (i, p, r) in items {
+                    if r.is_empty() {
+                        continue;
+                    }
+                    let res = git(&p, &["fetch", "--no-recurse-submodules", "--", &r])
+                        .map(|_| ())
+                        .map_err(|e| {
+                            let u = url(&p, &r).unwrap_or_else(|_| "<remote>".into());
+                            redact(&e.to_string(), &u)
+                        });
+                    let _ = tx.send(Report::Row(i, res));
+                }
+            } else {
+                let mut blocked = BTreeSet::new();
+                for j in js {
+                    let res = if blocked.contains(&j.idx) {
+                        Err("not executed: dependent submodule failed".into())
+                    } else {
+                        push_one(&j, tags, hooks).map_err(|e| e.to_string())
+                    };
+                    if res.is_err() {
+                        let mut anc = parents[j.idx];
+                        while let Some(i) = anc {
+                            blocked.insert(i);
+                            anc = parents[i]
+                        }
+                    }
+                    let _ = tx.send(Report::Row(j.idx, res));
+                }
+            }
+            let _ = tx.send(Report::Done);
+        });
+        Action::Notice(self.busy.clone())
+    }
+    pub(crate) fn poll(&mut self, c: &Context) -> Option<String> {
+        let mut finished = false;
+        let rx = self.inflight.as_ref()?;
+        while let Ok(m) = rx.try_recv() {
+            match m {
+                Report::Row(i, r) => {
+                    self.results.insert(i, r);
+                    self.progress_seq = self.progress_seq.wrapping_add(1);
+                }
+                Report::Done => finished = true,
+            }
+        }
+        if !finished {
+            return None;
+        }
+        self.inflight = None;
+        let n = self.results.values().filter(|r| r.is_err()).count();
+        let msg = if n == 0 {
+            format!("{} complete", self.busy.trim_end_matches('…'))
+        } else {
+            format!("{n} failed / not executed · select row for details")
+        };
+        let _ = self.refresh(c);
+        Some(msg)
+    }
+}
+impl Panel for PushPanel {
+    fn help(&self) -> &'static str {
+        "j/k move · h/l fold · Enter diff · d details · [/] fold all · Space check root · t target · p push · Tab/F6 pane"
+    }
+    fn editing(&self) -> bool {
+        self.target_edit.is_some()
+    }
+    fn refresh(&mut self, c: &Context) -> Result<()> {
+        let old = self.reseed.is_none().then(|| self.selected()).flatten();
+        self.entries = c
+            .scope
+            .iter()
+            .map(|&i| entry(i, &c.repos[i], self.targets.get(&i)))
+            .collect();
+        if let Some(rs) = self.reseed.take() {
+            self.checked = rs.iter().copied().collect();
+            self.expanded = self.checked.clone();
+            self.init = true
+        }
+        if !self.init {
+            if let Some(e) = self.entries.iter().find(|e| e.n > 0) {
+                self.checked.insert(e.idx);
+                self.expanded.insert(e.idx);
+            }
+            self.init = true
+        }
+        self.entries.sort_by(|a, b| {
+            c.repos[a.idx]
+                .name
+                .to_lowercase()
+                .cmp(&c.repos[b.idx].name.to_lowercase())
+                .then(a.idx.cmp(&b.idx))
+        });
+        let rows = self.rows();
+        self.pos = old
+            .and_then(|key| rows.iter().position(|x| *x == key))
+            .or_else(|| {
+                rows.iter()
+                    .position(|(i, commit)| commit.is_none() && self.checked.contains(i))
+            })
+            .unwrap_or(0);
+        self.inspect(c);
+        Ok(())
+    }
+    fn draw(&mut self, f: &mut Frame, a: Rect, c: &Context) {
+        self.draw_panel(f, a, c);
+    }
+    fn event(&mut self, e: &Event, c: &Context) -> Action {
+        if let Some((id, t)) = &mut self.target_edit {
+            let id = *id;
+            match e {
+                Event::Paste(s) => t.push_str(&s.replace(['\r', '\n'], "")),
+                Event::Key(k) => match k.code {
+                    KeyCode::Esc => self.target_edit = None,
+                    KeyCode::Backspace => {
+                        t.pop();
+                    }
+                    KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => t.clear(),
+                    KeyCode::Char(ch) => t.push(ch),
+                    KeyCode::Enter => {
+                        if let Some((r, b)) = t.split_once(':') {
+                            if !r.starts_with('-')
+                                && remote_list(&c.repos[id].path).contains(&r.to_string())
+                                && git(
+                                    &c.repos[id].path,
+                                    &["check-ref-format", &format!("refs/heads/{b}")],
+                                )
+                                .is_ok()
+                            {
+                                self.targets.insert(
+                                    id,
+                                    Target {
+                                        remote: r.into(),
+                                        dst: b.into(),
+                                    },
+                                );
+                                self.target_edit = None;
+                                let _ = self.refresh(c);
+                                return Action::Notice("Push target updated".into());
+                            }
+                        }
+                        return Action::Notice(
+                            "Use a configured remote and valid remote:branch".into(),
+                        );
+                    }
+                    _ => (),
+                },
+                _ => (),
+            }
+            return Action::None;
+        }
+        let mut key = None;
+        let mut hit = None;
+        match e {
+            Event::Key(k) => key = Some(k.code),
+            Event::Mouse(m) => {
+                let (x, y) = (m.column, m.row);
+                if let Some(i) = self.zones.iter().position(|r| inside(*r, x, y)) {
+                    self.focus = i
+                }
+                match m.kind {
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        hit = self
+                            .hits
+                            .iter()
+                            .rev()
+                            .find(|(r, _)| inside(*r, x, y))
+                            .map(|z| z.1.clone())
+                    }
+                    MouseEventKind::ScrollDown => key = Some(KeyCode::Down),
+                    MouseEventKind::ScrollUp => key = Some(KeyCode::Up),
+                    _ => {}
+                }
+            }
+            _ => (),
+        }
+        if let Some(h) = hit {
+            match h {
+                Hit::Row(v) => {
+                    self.pos = v;
+                    self.inspect(c)
+                }
+                Hit::File(v) => {
+                    self.focus = 1;
+                    self.activate_file(v, false, c)
+                }
+                Hit::FileFold(v) => {
+                    self.focus = 1;
+                    self.activate_file(v, true, c)
+                }
+                Hit::FoldAll(close) => {
+                    self.focus = 1;
+                    self.preview.tree.fold_all(close);
+                    if self.show_details {
+                        self.inspect_file(c);
+                    }
+                }
+                Hit::Details => self.toggle_details(c),
+                Hit::Check(i) => self.toggle(i),
+                Hit::Fold(i) => {
+                    if !self.expanded.remove(&i) {
+                        self.expanded.insert(i);
+                    }
+                    self.pos = self
+                        .rows()
+                        .iter()
+                        .position(|x| *x == (i, None))
+                        .unwrap_or(0);
+                    self.inspect(c)
+                }
+                Hit::Send => return self.review(c, false),
+                Hit::Retry => return self.review(c, true),
+                Hit::Fetch => return self.start(c, true),
+                Hit::Tags => self.follow_tags = !self.follow_tags,
+                Hit::Hooks => self.skip_hooks = !self.skip_hooks,
+                Hit::Target(i) => self.target(i),
+            }
+        }
+        if let Some(k) = key {
+            match k {
+                KeyCode::Tab | KeyCode::F(6) | KeyCode::BackTab => {
+                    let back = matches!(e,Event::Key(k) if k.modifiers.contains(KeyModifiers::SHIFT))
+                        || k == KeyCode::BackTab;
+                    let panes = if self.show_details { 3 } else { 2 };
+                    self.focus = (self.focus + if back { panes - 1 } else { 1 }) % panes
+                }
+                KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Up | KeyCode::Down => {
+                    let down = matches!(k, KeyCode::Down | KeyCode::Char('j'));
+                    let mv = |v: usize, len: usize| {
+                        if down {
+                            (v + 1).min(len.saturating_sub(1))
+                        } else {
+                            v.saturating_sub(1)
+                        }
+                    };
+                    match self.focus {
+                        0 => {
+                            self.pos = mv(self.pos, self.rows().len());
+                            self.inspect(c)
+                        }
+                        1 => {
+                            self.preview.tree.cursor =
+                                mv(self.preview.tree.cursor, self.preview.tree.visible.len());
+                            if self.show_details {
+                                self.inspect_file(c);
+                            }
+                        }
+                        _ => {
+                            self.detail_off = if down {
+                                self.detail_off.saturating_add(1)
+                            } else {
+                                self.detail_off.saturating_sub(1)
+                            }
+                        }
+                    }
+                }
+                KeyCode::Char('p') => return self.review(c, false),
+                KeyCode::Char('R') => return self.review(c, true),
+                KeyCode::Char('f') => return self.start(c, true),
+                KeyCode::Char('v') => self.follow_tags = !self.follow_tags,
+                KeyCode::Char('x') => self.skip_hooks = !self.skip_hooks,
+                KeyCode::Char('d') => self.toggle_details(c),
+                KeyCode::Esc if self.show_details => {
+                    self.show_details = false;
+                    self.focus = 1;
+                }
+                KeyCode::Char('[' | ']') if self.focus == 1 => {
+                    self.preview.tree.fold_all(k == KeyCode::Char('['));
+                    if self.show_details {
+                        self.inspect_file(c);
+                    }
+                }
+                KeyCode::Char('h' | 'l') | KeyCode::Left | KeyCode::Right if self.focus == 1 => {
+                    self.preview
+                        .tree
+                        .horizontal(matches!(k, KeyCode::Char('h') | KeyCode::Left));
+                    if self.show_details {
+                        self.inspect_file(c);
+                    }
+                }
+                _ => {
+                    if let Some((i, s)) = self.selected() {
+                        match k {
+                            KeyCode::Char(' ') => self.toggle(i),
+                            KeyCode::Char('t') => self.target(i),
+                            KeyCode::Char('h')
+                            | KeyCode::Char('l')
+                            | KeyCode::Left
+                            | KeyCode::Right
+                            | KeyCode::Enter
+                                if self.focus == 0 =>
+                            {
+                                if s.is_some() && k == KeyCode::Enter {
+                                    self.focus = 1
+                                } else {
+                                    if matches!(k, KeyCode::Char('h') | KeyCode::Left)
+                                        || (k == KeyCode::Enter && self.expanded.contains(&i))
+                                    {
+                                        self.expanded.remove(&i);
+                                    } else {
+                                        self.expanded.insert(i);
+                                    }
+                                    self.pos = self
+                                        .rows()
+                                        .iter()
+                                        .position(|r| *r == (i, None))
+                                        .unwrap_or(0);
+                                    self.inspect(c)
+                                }
+                            }
+                            KeyCode::Enter if self.focus == 1 => {
+                                if self.preview.tree.file_index().is_some() {
+                                    self.show_details = true;
+                                    self.inspect_file(c);
+                                    self.focus = 2;
+                                } else {
+                                    self.preview.tree.toggle();
+                                    if self.show_details {
+                                        self.inspect_file(c);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        Action::None
+    }
+    fn confirm(&mut self, token: &str, c: &Context) -> Action {
+        if token == "push" {
+            self.start(c, false)
+        } else {
+            Action::None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use unicode_width::UnicodeWidthStr;
+    fn g(p: &Path, a: &[&str]) -> String {
+        git(p, a).unwrap()
+    }
+    fn make(parent: &Path, n: &str) -> PathBuf {
+        let repo = parent.join(n);
+        let bare = parent.join(format!("{n}.git"));
+        fs::create_dir(&repo).unwrap();
+        fs::create_dir(&bare).unwrap();
+        g(&bare, &["init", "--bare", "-q", "-b", "main"]);
+        g(&repo, &["init", "-q", "-b", "main"]);
+        for (k, v) in [
+            ("user.name", "IGit test"),
+            ("user.email", "test@invalid"),
+            ("commit.gpgSign", "false"),
+            ("core.hooksPath", "/dev/null"),
+        ] {
+            g(&repo, &["config", k, v]);
+        }
+        fs::write(repo.join("a"), "base").unwrap();
+        g(&repo, &["add", "a"]);
+        g(&repo, &["commit", "-qm", "base"]);
+        g(&repo, &["remote", "add", "origin", bare.to_str().unwrap()]);
+        g(&repo, &["push", "-q", "-u", "origin", "main"]);
+        fs::write(repo.join("a"), "next").unwrap();
+        g(&repo, &["commit", "-qam", "next"]);
+        repo
+    }
+
+    #[test]
+    fn rendered_push_controls_keep_browsing_and_review_separate_in_each_mode() {
+        use crossterm::event::MouseEvent;
+        use ratatui::{backend::TestBackend, Terminal};
+        let td = tempfile::tempdir().unwrap();
+        make(td.path(), "app");
+        make(td.path(), "tools");
+        let c = Context::discover(td.path()).unwrap();
+        let click = |p: &mut PushPanel, x, y| {
+            p.event(
+                &Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: x,
+                    row: y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &c,
+            )
+        };
+        let hit = |p: &PushPanel, matches: fn(&Hit) -> bool| {
+            p.hits.iter().find(|(_, h)| matches(h)).unwrap().0
+        };
+        for icons in [IconMode::Ascii, IconMode::Unicode, IconMode::NerdFont] {
+            let mut p = PushPanel {
+                icons,
+                ..Default::default()
+            };
+            p.refresh(&c).unwrap();
+            let mut term = Terminal::new(TestBackend::new(44, 16)).unwrap();
+            let draw = |p: &mut PushPanel, term: &mut Terminal<TestBackend>| {
+                term.draw(|f| p.draw(f, f.area(), &c)).unwrap();
+            };
+            let text = |term: &Terminal<TestBackend>, r: Rect| -> String {
+                (r.x..r.right())
+                    .map(|x| term.backend().buffer()[(x, r.y)].symbol())
+                    .collect()
+            };
+            draw(&mut p, &mut term);
+            let other = hit(&p, |h| matches!(h, Hit::Row(2)));
+            let prefix = format!("{} ", icons.disclosure(false));
+            let start = other.x + prefix.width() as u16;
+            for offset in 0..icons.check(false).width() as u16 {
+                for checked in [false, true] {
+                    assert!(text(&term, other)
+                        .starts_with(&format!("{prefix}{} ", icons.check(checked))));
+                    click(&mut p, start + offset, other.y);
+                    assert_eq!(p.checked.contains(&1), !checked);
+                    assert_eq!(p.selected(), Some((0, None)));
+                    draw(&mut p, &mut term);
+                }
+            }
+            click(
+                &mut p,
+                start + icons.check(false).width() as u16 + 1,
+                other.y,
+            );
+            assert_eq!(p.selected(), Some((1, None)));
+            assert_eq!(p.checked, BTreeSet::from([0]));
+            click(&mut p, other.x, other.y);
+            assert!(p.expanded.contains(&1));
+            assert_eq!(p.checked, BTreeSet::from([0]));
+
+            p.results.insert(0, Ok(()));
+            p.results.insert(1, Err("offline".into()));
+            draw(&mut p, &mut term);
+            assert!(text(&term, other).contains(&format!("tools {}", icons.glyph(Icon::Error))));
+            let tags = hit(&p, |h| matches!(h, Hit::Tags));
+            assert_eq!(
+                text(&term, tags),
+                format!("{} Follow tags", icons.check(false))
+            );
+            click(&mut p, tags.right() - 1, tags.y);
+            assert!(p.follow_tags);
+            let send = hit(&p, |h| matches!(h, Hit::Send));
+            assert!(
+                matches!(click(&mut p, send.right() - 1, send.y), Action::Confirm {ref body, ..}
+                if body.contains("app:") && !body.contains("tools:") && body.contains(icons.glyph(Icon::Right)))
+            );
+            let retry = hit(&p, |h| matches!(h, Hit::Retry));
+            assert!(
+                matches!(click(&mut p, retry.x, retry.y), Action::Confirm {ref body, ..}
+                if body.contains("tools:") && !body.contains("app:"))
+            );
+        }
+    }
+
+    #[test]
+    fn push_repository_sorting_keeps_the_checked_root_selected_and_honours_reseed() {
+        let td = tempfile::tempdir().unwrap();
+        make(td.path(), "app");
+        make(td.path(), "tools");
+        let mut c = Context::discover(td.path()).unwrap();
+        c.repos[0].name = "z-app".into();
+        c.repos[1].name = "a-tools".into();
+        let mut p = PushPanel::default();
+        p.refresh(&c).unwrap();
+        assert_eq!(p.entries.iter().map(|e| e.idx).collect::<Vec<_>>(), [1, 0]);
+        assert_eq!(p.checked, BTreeSet::from([0]));
+        assert_eq!(p.selected(), Some((0, None)));
+        p.reseed = Some(vec![1]);
+        p.refresh(&c).unwrap();
+        assert_eq!(p.checked, BTreeSet::from([1]));
+        assert_eq!(p.selected(), Some((1, None)));
+    }
+
+    #[test]
+    fn push_preview_reads_real_statuses_and_opens_exact_files_without_writes() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = make(td.path(), "app");
+        for path in ["src/a", "src/b", "dev"] {
+            fs::create_dir_all(repo.join(path)).unwrap();
+        }
+        fs::write(repo.join("src/a/index.vue"), "first base\n").unwrap();
+        fs::write(repo.join("src/b/index.vue"), "second base\n").unwrap();
+        fs::write(repo.join("dev/old.conf"), "legacy config\n").unwrap();
+        fs::write(repo.join("old.ts"), "export const renamed = true;\n").unwrap();
+        g(&repo, &["add", "--all"]);
+        g(&repo, &["commit", "-qm", "baseline tree"]);
+        g(&repo, &["push", "-q", "origin", "main"]);
+        fs::write(repo.join("src/a/index.vue"), "first updated\n").unwrap();
+        fs::write(repo.join("src/b/index.vue"), "second updated\n").unwrap();
+        fs::write(repo.join("dev/compose.yaml"), "services: {}\n").unwrap();
+        fs::remove_file(repo.join("dev/old.conf")).unwrap();
+        g(&repo, &["mv", "old.ts", "src/renamed.ts"]);
+        g(&repo, &["add", "--all"]);
+        g(&repo, &["commit", "-qm", "feat: preview all change kinds"]);
+
+        // The read-only preview must use committed content, even with dirty index/worktree.
+        fs::write(repo.join("a"), "already staged\n").unwrap();
+        g(&repo, &["add", "a"]);
+        fs::write(repo.join("a"), "unstaged after staging\n").unwrap();
+        let snapshot = || {
+            [
+                g(&repo, &["rev-parse", "HEAD"]),
+                g(&repo, &["status", "--porcelain=v1", "-z"]),
+                g(&repo, &["ls-files", "--stage", "-z"]),
+                g(&repo, &["diff", "--binary"]),
+                g(&repo, &["diff", "--cached", "--binary"]),
+            ]
+        };
+        let before = snapshot();
+        let c = Context::discover(td.path()).unwrap();
+        let mut p = PushPanel::default();
+        p.refresh(&c).unwrap();
+        let statuses: BTreeMap<_, _> = p
+            .preview
+            .files
+            .iter()
+            .map(|f| (label(&f.path), f.status))
+            .collect();
+        assert_eq!(
+            statuses,
+            BTreeMap::from([
+                ("dev/compose.yaml".into(), b'A'),
+                ("dev/old.conf".into(), b'D'),
+                ("src/a/index.vue".into(), b'M'),
+                ("src/b/index.vue".into(), b'M'),
+                ("src/renamed.ts".into(), b'R'),
+            ])
+        );
+        let select = |p: &mut PushPanel, path: &str| {
+            let row = p
+                .preview
+                .tree
+                .visible
+                .iter()
+                .position(|&n| match p.preview.tree.nodes[n].kind {
+                    Kind::File(i) => p.preview.files[i].path == Path::new(path),
+                    _ => false,
+                })
+                .unwrap();
+            p.activate_file(row, false, &c);
+        };
+        for (path, included, excluded) in [
+            ("src/a/index.vue", "+first updated", "second updated"),
+            ("src/b/index.vue", "+second updated", "first updated"),
+            ("dev/old.conf", "-legacy config", "updated"),
+        ] {
+            select(&mut p, path);
+            assert!(p.show_details && p.preview.is_patch);
+            assert!(p.preview.body.contains(included), "{}", p.preview.body);
+            assert!(!p.preview.body.contains(excluded));
+        }
+        select(&mut p, "src/renamed.ts");
+        assert!(p.preview.body.contains("rename from old.ts"));
+        assert!(p.preview.body.contains("rename to src/renamed.ts"));
+        p.preview.tree.fold_all(true);
+        p.inspect_file(&c);
+        assert!(!p.preview.is_patch);
+        assert_eq!(p.preview.body, p.preview.summary);
+        assert!(!p.preview.body.contains("rename from"));
+
+        p.pos = 1; // The individual outgoing commit has the same five statuses.
+        p.inspect(&c);
+        assert_eq!(p.preview.files.len(), 5);
+        select(&mut p, "src/renamed.ts");
+        assert!(p.preview.body.contains("rename from old.ts"));
+        assert_eq!(p.checked, BTreeSet::from([0]));
+
+        p.pos = 0;
+        p.targets.insert(
+            0,
+            Target {
+                remote: "origin".into(),
+                dst: "new-target".into(),
+            },
+        );
+        p.refresh(&c).unwrap();
+        assert!(p.preview.files.iter().all(|f| f.status == b'A'));
+        select(&mut p, "src/a/index.vue");
+        assert!(p
+            .preview
+            .body
+            .contains("New target: src/a/index.vue\n\nfirst updated"));
+        let root = g(&repo, &["rev-list", "--max-parents=0", "HEAD"]);
+        p.pos = 1 + p.entries[0].logs.iter().position(|h| h.id == root).unwrap();
+        p.inspect(&c);
+        assert_eq!(p.preview.files.len(), 1);
+        assert_eq!(p.preview.files[0].status, b'A');
+        assert_eq!(snapshot(), before);
+    }
+
+    #[test]
+    fn merge_commit_preview_matches_its_first_parent_patch() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = make(td.path(), "app");
+        g(&repo, &["switch", "-qc", "topic"]);
+        fs::write(repo.join("side.ts"), "side branch content\n").unwrap();
+        g(&repo, &["add", "side.ts"]);
+        g(&repo, &["commit", "-qm", "side change"]);
+        g(&repo, &["switch", "-q", "main"]);
+        fs::write(repo.join("main.ts"), "main branch content\n").unwrap();
+        g(&repo, &["add", "main.ts"]);
+        g(&repo, &["commit", "-qm", "main change"]);
+        g(&repo, &["merge", "--no-ff", "-qm", "merge topic", "topic"]);
+        let c = Context::discover(td.path()).unwrap();
+        let mut p = PushPanel::default();
+        p.refresh(&c).unwrap();
+        p.pos = 1;
+        p.inspect(&c);
+        assert_eq!(p.preview.files.len(), 1);
+        assert_eq!(p.preview.files[0].path, PathBuf::from("side.ts"));
+        p.preview.tree.cursor = p
+            .preview
+            .tree
+            .visible
+            .iter()
+            .position(|&n| matches!(p.preview.tree.nodes[n].kind, Kind::File(0)))
+            .unwrap();
+        p.open_file(&c);
+        assert!(p.preview.body.contains("+side branch content"));
+        assert!(!p.preview.body.contains("main branch content"));
+    }
+
+    #[test]
+    fn bare_push_exact_tip_and_stale_plans() {
+        let td = tempfile::tempdir().unwrap();
+        let p = make(td.path(), "app");
+        let c = Context::discover(td.path()).unwrap();
+        let x = entry(0, &c.repos[0], None);
+        assert_eq!(x.n, 1);
+        let j = job(&c.repos[0], &x).unwrap();
+        push_one(&j, false, false).unwrap();
+        assert_eq!(
+            g(
+                &td.path().join("app.git"),
+                &["rev-parse", "refs/heads/main"]
+            ),
+            j.head
+        );
+        assert!(push_one(&j, false, false).is_err());
+        g(&p, &["commit", "--allow-empty", "-qm", "later"]);
+        assert!(push_one(&j, false, false).is_err());
+    }
+
+    fn assert_synthetic_parent_cannot_publish(install_parent: impl FnOnce(&Path, &str, &str)) {
+        let td = tempfile::tempdir().unwrap();
+        let p = make(td.path(), "app");
+        let bare = td.path().join("app.git");
+        let remote = g(&bare, &["rev-parse", "refs/heads/main"]);
+        let head = g(
+            &p,
+            &["commit-tree", "HEAD^{tree}", "-m", "independent root"],
+        );
+        g(&p, &["update-ref", "refs/heads/main", &head]);
+        let ancestry = ["merge-base", "--is-ancestor", &remote, &head];
+        assert!(git(&p, &ancestry).is_err());
+        install_parent(&p, &head, &remote);
+        assert!(
+            git(&p, &ancestry).is_ok(),
+            "ordinary Git sees a fast-forward"
+        );
+
+        let c = Context::discover(&p).unwrap();
+        let r = &c.repos[0];
+        let j = job(r, &entry(0, r, None)).unwrap();
+        let result = push_one(&j, false, false);
+        assert_eq!(
+            g(&bare, &["rev-parse", "refs/heads/main"]),
+            remote,
+            "a synthetic parent must never authorize a remote rewrite: {result:?}"
+        );
+        assert!(result.unwrap_err().to_string().contains("non-fast-forward"));
+    }
+
+    #[test]
+    fn replace_ref_cannot_turn_a_non_fast_forward_into_a_push() {
+        assert_synthetic_parent_cannot_publish(|repo, tip, parent| {
+            g(repo, &["replace", "--graft", tip, parent]);
+        });
+    }
+
+    #[test]
+    fn legacy_graft_cannot_turn_a_non_fast_forward_into_a_push() {
+        assert_synthetic_parent_cannot_publish(|repo, tip, parent| {
+            let info = repo.join(".git/info");
+            fs::create_dir_all(&info).unwrap();
+            fs::write(info.join("grafts"), format!("{tip} {parent}\n")).unwrap();
+        });
+    }
+
+    #[test]
+    fn two_remotes_partial_failure_and_retry_scope() {
+        use std::time::{Duration, Instant};
+        let t = tempfile::tempdir().unwrap();
+        make(t.path(), "a");
+        make(t.path(), "b");
+        let mut c = Context::discover(t.path()).unwrap();
+        assert_eq!(c.repos.len(), 2);
+        let mut p = PushPanel {
+            reseed: Some(vec![0, 1]),
+            ..Default::default()
+        };
+        p.refresh(&c).unwrap();
+        assert!(matches!(p.review(&c, false), Action::Confirm { .. }));
+        g(
+            &t.path().join("b.git"),
+            &[
+                "update-ref",
+                "refs/heads/main",
+                &g(&c.repos[1].path, &["rev-parse", "HEAD~1"]),
+            ],
+        );
+        let reviewed = p.review[1].head.clone();
+        g(
+            &c.repos[1].path,
+            &["commit", "--allow-empty", "-qm", "changed during preview"],
+        );
+        p.start(&c, false);
+        let wait = |p: &mut PushPanel, c: &Context| {
+            let now = Instant::now();
+            while p.poll(c).is_none() {
+                assert!(now.elapsed() < Duration::from_secs(20));
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        wait(&mut p, &c);
+        assert!(p.results[&0].is_ok());
+        assert!(p.results[&1].is_err());
+        assert_ne!(g(&t.path().join("b.git"), &["rev-parse", "main"]), reviewed);
+        c.scope.remove(&1);
+        p.refresh(&c).unwrap();
+        assert!(matches!(p.review(&c, true), Action::Notice(_)));
+        c.scope.insert(1);
+        p.refresh(&c).unwrap();
+        assert!(matches!(p.review(&c, true), Action::Confirm { .. }));
+        assert_eq!(p.review.len(), 1);
+        assert_eq!(p.review[0].idx, 1);
+        p.start(&c, false);
+        wait(&mut p, &c);
+        assert_eq!(
+            g(&t.path().join("b.git"), &["rev-parse", "main"]),
+            g(&c.repos[1].path, &["rev-parse", "HEAD"])
+        );
+    }
+}

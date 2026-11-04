@@ -1,0 +1,1459 @@
+mod backend;
+mod rows;
+mod tree;
+mod view;
+#[cfg(test)]
+mod view_tests;
+use crate::{
+    core::{branch_label, Context},
+    ui::{
+        icons::{Icon, IconMode},
+        idea::{BLUE, DIM as MUTED, INK as FG, PANEL, SELECT as SEL},
+        inside, Action, Panel,
+    },
+};
+use anyhow::{bail, Result};
+use backend::{Change, Plan};
+use crossterm::event::{
+    Event, KeyCode as K, KeyModifiers as Mod, MouseButton, MouseEventKind as M,
+};
+use ratatui::{
+    layout::Rect,
+    style::{Color, Style},
+    text::Line,
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    Frame,
+};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+    time::{Duration, Instant},
+};
+use tree::{Kind, Row};
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+struct Saved {
+    groups: Vec<String>,
+    membership: BTreeMap<String, String>,
+    drafts: BTreeMap<String, String>,
+    endpoint: String,
+    model: String,
+    prompt: String,
+}
+struct File {
+    key: String,
+    root: usize,
+    change: Change,
+    group: String,
+}
+#[derive(Default, Clone, Copy, PartialEq)]
+enum Focus {
+    #[default]
+    Tree,
+    Diff,
+    Message,
+}
+#[derive(Clone)]
+enum Edit {
+    Message,
+    Group,
+    Move,
+    AISettings,
+    AIDraft,
+}
+#[derive(Clone)]
+enum Hit {
+    Row(usize),
+    Show(Focus),
+    Refresh,
+    UndoCheck,
+    TogglePreview,
+    Directories,
+    Status,
+    Expand(bool),
+    New,
+    Move,
+    Msg,
+    Repo(usize),
+    Submit(bool),
+    Amend,
+    Ai,
+    Settings,
+    EditSave,
+    EditCancel,
+    MoveTo(String),
+}
+impl Hit {
+    fn hint(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Refresh => "Refresh  F5",
+            Self::UndoCheck => "Undo last checkbox change  u",
+            Self::Move => "Move to changelist  m",
+            Self::New => "New changelist  n",
+            Self::TogglePreview => "Show or hide preview  v",
+            Self::Directories => "Group by directory  t",
+            Self::Status => "Show Git status columns  s",
+            Self::Expand(true) => "Expand all  Z",
+            Self::Expand(false) => "Collapse all  z",
+            Self::Amend => "Amend the selected repository's last commit  a",
+            Self::Ai => "Review patches for AI commit messages  A",
+            Self::Settings => "AI settings  S",
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Default)]
+pub struct CommitPanel {
+    pub(crate) icons: IconMode,
+    saved: Saved,
+    loaded: bool,
+    files: Vec<File>,
+    checks: BTreeMap<String, bool>,
+    fold: BTreeSet<String>,
+    group_by_directory: bool,
+    show_status: bool,
+    preview_open: bool,
+    stacked: bool,
+    hover: Option<&'static str>,
+    last_click: Option<(String, Instant)>,
+    last_check: Vec<(String, bool)>,
+    cursor: usize,
+    offset: usize,
+    focus: Focus,
+    edit: Option<Edit>,
+    buf: String,
+    caret: usize,
+    ai_scroll: u16,
+    repo: usize,
+    amend: BTreeSet<usize>,
+    view: Vec<Row>,
+    hits: Vec<(Rect, Hit)>,
+    tree: Rect,
+    diff: Rect,
+    dragged: Option<(usize, bool)>,
+    edit_view: (Rect, u16, u16),
+    diff_key: String,
+    diff_text: String,
+    diff_scroll: u16,
+    plans: Vec<Plan>,
+    push: bool,
+    move_to: usize,
+    move_names: Vec<String>,
+    ai_pending: Option<std::sync::mpsc::Receiver<Result<BTreeMap<String, String>, String>>>,
+    ai_drafts: BTreeMap<String, String>,
+    ai_payload: Vec<(String, String)>,
+    ai_error: String,
+}
+const DEF: &str = "Changes";
+const NEW: &str = "Unversioned Files";
+fn display_path(p: &Path) -> String {
+    p.to_string_lossy()
+        .replace('\n', "↵")
+        .replace('\r', "␍")
+        .replace('\t', "⇥")
+}
+fn keypart(p: &Path) -> String {
+    let b = p.as_os_str().as_encoded_bytes();
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+fn rid(c: &Context, r: usize) -> String {
+    keypart(&c.repos[r].path)
+}
+fn slice(r: Rect, y: u16) -> Rect {
+    Rect::new(r.x, r.y.saturating_add(y), r.width, u16::from(y < r.height))
+}
+fn word(f: &mut Frame, r: Rect, s: &str, st: Style) {
+    f.render_widget(Paragraph::new(s.to_owned()).style(st), r)
+}
+fn err(e: impl ToString) -> Action {
+    Action::Notice(e.to_string())
+}
+impl CommitPanel {
+    fn save(&self, c: &Context) -> Result<()> {
+        use std::io::Write;
+        fs::create_dir_all(&c.state_dir)?;
+        let mut w = tempfile::NamedTempFile::new_in(&c.state_dir)?;
+        w.write_all(&serde_json::to_vec_pretty(&self.saved)?)?;
+        w.persist(c.state_dir.join("commit.json"))?;
+        Ok(())
+    }
+    fn sync(&mut self, c: &Context) {
+        let old = self.view.get(self.cursor).map(|r| r.id.clone());
+        self.view = self.render_rows(c);
+        self.cursor = match old {
+            Some(k) => self
+                .view
+                .iter()
+                .position(|r| r.id == k)
+                .unwrap_or(self.cursor.min(self.view.len().saturating_sub(1))),
+            None => self
+                .view
+                .iter()
+                .position(|r| !r.files.is_empty())
+                .unwrap_or(0),
+        };
+        if !c.scope.contains(&self.repo) {
+            self.repo = *c.scope.iter().next().unwrap_or(&0)
+        }
+    }
+    fn active(&self) -> Option<&Row> {
+        self.view.get(self.cursor)
+    }
+    fn selection(&self, c: &Context) -> Vec<&File> {
+        self.files
+            .iter()
+            .filter(|f| {
+                c.scope.contains(&f.root)
+                    && self.checks.get(&f.key) == Some(&true)
+                    && !f.change.conflict
+            })
+            .collect()
+    }
+    fn checked_repos(&self, c: &Context) -> Vec<usize> {
+        self.selection(c)
+            .iter()
+            .map(|f| f.root)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+    fn message_repos(&self, c: &Context) -> Vec<usize> {
+        let roots = self.checked_repos(c);
+        if roots.is_empty() {
+            c.scope.iter().copied().collect()
+        } else {
+            roots
+        }
+    }
+    fn toggle(&mut self, index: usize) {
+        let Some(row) = self.view.get(index) else {
+            return;
+        };
+        let (checked, eligible) = self.check_counts(row);
+        if eligible == 0 {
+            return;
+        }
+        self.last_check.clear();
+        for &i in &row.files {
+            let f = &self.files[i];
+            if !f.change.conflict {
+                let was = self.checks.get(&f.key) == Some(&true);
+                if was != (checked < eligible) {
+                    self.last_check.push((f.key.clone(), was));
+                    self.checks.insert(f.key.clone(), !was);
+                }
+            }
+        }
+    }
+    fn fold(&mut self, index: usize, v: Option<bool>, c: &Context) {
+        if let Some(r) = self.view.get(index) {
+            if !r.foldable() {
+                return;
+            }
+            let id = r.id.clone();
+            if v.unwrap_or(!self.fold.contains(&id)) {
+                if index < self.cursor
+                    && self.view[index + 1..=self.cursor]
+                        .iter()
+                        .all(|child| child.depth > r.depth)
+                {
+                    self.cursor = index;
+                }
+                self.fold.insert(id);
+            } else {
+                self.fold.remove(&id);
+            }
+            self.sync(c)
+        }
+    }
+    fn move_cursor(&mut self, n: isize) {
+        self.cursor = self
+            .cursor
+            .saturating_add_signed(n)
+            .min(self.view.len().saturating_sub(1));
+        self.diff_scroll = 0
+    }
+    fn edit_message(&mut self, c: &Context) {
+        if !c.scope.contains(&self.repo) {
+            return;
+        }
+        self.buf = self
+            .saved
+            .drafts
+            .get(&rid(c, self.repo))
+            .cloned()
+            .unwrap_or_default();
+        self.caret = self.buf.len();
+        self.edit = Some(Edit::Message);
+        self.focus = Focus::Message
+    }
+    fn move_menu(&mut self) {
+        self.move_to = 0;
+        self.move_names = std::iter::once(DEF.to_string())
+            .chain(self.saved.groups.iter().cloned())
+            .collect();
+        self.edit = Some(Edit::Move)
+    }
+    fn accept(&mut self, c: &Context) -> Result<()> {
+        match self.edit.clone() {
+            Some(Edit::Message) => {
+                self.saved
+                    .drafts
+                    .insert(rid(c, self.repo), self.buf.clone());
+            }
+            Some(Edit::Group) => {
+                let n = self.buf.trim();
+                if n.is_empty() || n == DEF || n == NEW || self.saved.groups.iter().any(|v| v == n)
+                {
+                    bail!("请输入唯一的分组名称")
+                }
+                self.saved.groups.push(n.to_string());
+            }
+            Some(Edit::Move) => {
+                let g = self
+                    .move_names
+                    .get(self.move_to)
+                    .cloned()
+                    .unwrap_or(DEF.into());
+                for i in self.active().map(|r| r.files.clone()).unwrap_or_default() {
+                    let f = &mut self.files[i];
+                    if f.change.xy != *b"??" {
+                        f.group = g.clone();
+                        self.saved.membership.insert(f.key.clone(), g.clone());
+                    }
+                }
+            }
+            Some(Edit::AISettings) => {
+                let mut p = self.buf.splitn(3, '\n');
+                self.saved.endpoint = p.next().unwrap_or("").trim().into();
+                self.saved.model = p.next().unwrap_or("").trim().into();
+                self.saved.prompt = p.next().unwrap_or("").trim().into();
+            }
+            Some(Edit::AIDraft) => {
+                self.saved
+                    .drafts
+                    .extend(std::mem::take(&mut self.ai_drafts));
+            }
+            None => {}
+        }
+        self.save(c)?;
+        self.edit = None;
+        self.sync(c);
+        Ok(())
+    }
+    fn review(&mut self, c: &Context, push: bool) -> Result<Action> {
+        let mut plans = vec![];
+        let rs = self.checked_repos(c);
+        if rs.is_empty() {
+            bail!("请先勾选文件")
+        }
+        for r in rs {
+            let fs = self
+                .selection(c)
+                .into_iter()
+                .filter(|f| f.root == r)
+                .map(|f| f.change.clone())
+                .collect();
+            let msg = self
+                .saved
+                .drafts
+                .get(&rid(c, r))
+                .cloned()
+                .unwrap_or_default();
+            if msg.trim().is_empty() {
+                self.repo = r;
+                self.edit_message(c);
+                bail!("请填写 {} 的提交说明", c.repos[r].name)
+            }
+            plans.push(
+                backend::plan(r, &c.repos[r].path, fs, msg, self.amend.contains(&r))
+                    .map_err(|e| anyhow::anyhow!("{}: {e}", c.repos[r].name))?,
+            );
+        }
+        plans.sort_by_key(|p| std::cmp::Reverse(p.repo.components().count()));
+        let mut body = String::new();
+        for p in &plans {
+            body.push_str(&format!(
+                "{} / {} · {}{}\n  {}\n",
+                c.repos[p.root].name,
+                branch_label(&p.branch, p.head.as_deref()),
+                &p.tree[..8],
+                if p.amend { " · AMEND" } else { "" },
+                p.msg.trim()
+            ));
+            for f in &p.files {
+                body.push_str(&format!(
+                    "    {}  {}\n",
+                    if f.staged() { "INDEX" } else { "WORK " },
+                    f.label()
+                ));
+            }
+        }
+        for p in &plans {
+            body.push_str(&format!(
+                "\n{} / reviewed patch\n{}",
+                c.repos[p.root].name, p.preview
+            ));
+        }
+        self.plans = plans;
+        self.push = push;
+        Ok(Action::Confirm {
+            title: format!("审查提交 · {} 仓", self.plans.len()),
+            body,
+            token: "commit".into(),
+        })
+    }
+    fn submit(&mut self, c: &Context) -> Action {
+        let mut success = vec![];
+        let mut out = vec![];
+        let mut failed: BTreeSet<usize> = BTreeSet::new();
+        for p in std::mem::take(&mut self.plans) {
+            if !c.scope.contains(&p.root) {
+                out.push(format!("{} 超出范围，未提交", c.repos[p.root].name));
+                failed.insert(p.root);
+                continue;
+            }
+            let dep = failed.iter().any(|&r| {
+                c.repos[r].parent == Some(p.root)
+                    && p.files
+                        .iter()
+                        .any(|f| p.repo.join(&f.path) == c.repos[r].path)
+            });
+            if dep {
+                out.push(format!("{} 因子仓失败已跳过", c.repos[p.root].name));
+                failed.insert(p.root);
+                continue;
+            }
+            match backend::execute(&p) {
+                Ok(result) => {
+                    out.push(format!(
+                        "{} {} {}",
+                        c.repos[p.root].name,
+                        self.icons.glyph(Icon::Success),
+                        result.hash
+                    ));
+                    if let Some(note) = result.warning {
+                        self.push = false;
+                        out.push(format!("{} {note}", self.icons.glyph(Icon::Warning)));
+                    }
+                    success.push(p.root);
+                    self.saved.drafts.remove(&rid(c, p.root));
+                    self.amend.remove(&p.root);
+                    for f in p.files {
+                        self.checks
+                            .insert(format!("{}:{}", rid(c, p.root), keypart(&f.path)), false);
+                    }
+                }
+                Err(e) => {
+                    failed.insert(p.root);
+                    out.push(format!(
+                        "{} {} {e:#}",
+                        c.repos[p.root].name,
+                        self.icons.glyph(Icon::Error)
+                    ));
+                }
+            }
+        }
+        if let Err(e) = self.save(c) {
+            out.push(format!("保存本地状态失败: {e}"))
+        }
+        Action::Committed {
+            repos: success.clone(),
+            push: self.push && !success.is_empty(),
+            message: out.join(" | "),
+        }
+    }
+    pub(crate) fn hover_at(&mut self, x: u16, y: u16) -> bool {
+        let new = self
+            .hits
+            .iter()
+            .find(|(area, _)| inside(*area, x, y))
+            .and_then(|(_, hit)| hit.hint());
+        let changed = self.hover != new;
+        self.hover = new;
+        changed
+    }
+    fn launch(&mut self, h: Hit, c: &Context) -> Action {
+        match h {
+            Hit::Refresh => return Action::Refresh("变更列表已刷新".into()),
+            Hit::UndoCheck => {
+                for (key, was) in self.last_check.drain(..) {
+                    self.checks.insert(key, was);
+                }
+            }
+            Hit::TogglePreview => {
+                // A narrow window can show the message/tree while the preview
+                // is still in the focus cycle. The eye always opens it there.
+                self.preview_open =
+                    !self.preview_open || (self.stacked && self.focus != Focus::Diff);
+                self.focus = if self.preview_open && self.stacked {
+                    Focus::Diff
+                } else {
+                    Focus::Tree
+                };
+            }
+            Hit::Directories => self.set_directory_grouping(!self.group_by_directory, c),
+            Hit::Status => self.show_status = !self.show_status,
+            Hit::Expand(expanded) => self.set_all_expanded(expanded, c),
+            Hit::New => {
+                self.buf.clear();
+                self.caret = 0;
+                self.edit = Some(Edit::Group)
+            }
+            Hit::Move => self.move_menu(),
+            Hit::Msg => self.edit_message(c),
+            Hit::Repo(r) => {
+                self.repo = r;
+                self.focus = Focus::Message;
+            }
+            Hit::Amend => {
+                if !self.amend.remove(&self.repo) {
+                    self.amend.insert(self.repo);
+                }
+            }
+            Hit::Submit(p) => return self.review(c, p).unwrap_or_else(err),
+            Hit::Ai => return self.ai_review(c).unwrap_or_else(err),
+            Hit::Settings => {
+                self.buf = format!(
+                    "{}\n{}\n{}",
+                    self.saved.endpoint, self.saved.model, self.saved.prompt
+                );
+                self.caret = self.buf.len();
+                self.edit = Some(Edit::AISettings)
+            }
+            Hit::EditSave => {
+                if let Err(e) = self.accept(c) {
+                    return err(e);
+                }
+            }
+            Hit::EditCancel => {
+                self.edit = None;
+            }
+            Hit::MoveTo(s) => {
+                if let Some(k) = self.move_names.iter().position(|x| *x == s) {
+                    self.move_to = k;
+                    if let Err(e) = self.accept(c) {
+                        return err(e);
+                    }
+                }
+            }
+            Hit::Show(focus) => {
+                self.focus = focus;
+                self.preview_open = focus == Focus::Diff;
+            }
+            Hit::Row(_) => {}
+        }
+        Action::None
+    }
+}
+impl Panel for CommitPanel {
+    fn refresh(&mut self, c: &Context) -> Result<()> {
+        if !self.loaded {
+            let p = c.state_dir.join("commit.json");
+            if p.exists() {
+                self.saved = serde_json::from_slice(&fs::read(p)?)?
+            }
+            if self.saved.prompt.is_empty() {
+                self.saved.prompt="Write one concise Conventional Commit message for exactly these changes. Return the message only.".into()
+            }
+            self.loaded = true
+        }
+        let mut files = vec![];
+        let mut errors = vec![];
+        for (r, repo) in c.repos.iter().enumerate() {
+            match backend::status(&repo.path) {
+                Ok(ch) => {
+                    for change in ch {
+                        let key = format!("{}:{}", rid(c, r), keypart(&change.path));
+                        let group = if change.xy == *b"??" {
+                            NEW.into()
+                        } else {
+                            self.saved
+                                .membership
+                                .get(&key)
+                                .cloned()
+                                .unwrap_or_else(|| DEF.into())
+                        };
+                        self.checks
+                            .entry(key.clone())
+                            .or_insert(group == DEF && !change.conflict);
+                        files.push(File {
+                            root: r,
+                            key,
+                            change,
+                            group,
+                        })
+                    }
+                }
+                Err(e) => errors.push(format!("{}: {e}", repo.name)),
+            }
+        }
+        self.files = files;
+        self.last_check.clear();
+        self.last_click = None;
+        self.dragged = None;
+        self.diff_key.clear();
+        self.sync(c);
+        if !self
+            .files
+            .iter()
+            .any(|f| f.root == self.repo && c.scope.contains(&f.root))
+        {
+            self.repo = self
+                .files
+                .iter()
+                .find(|f| c.scope.contains(&f.root))
+                .map(|f| f.root)
+                .unwrap_or(self.repo)
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            bail!("{}", errors.join(" | "))
+        }
+    }
+    fn draw(&mut self, f: &mut Frame, a: Rect, c: &Context) {
+        self.poll_ai();
+        self.draw_workbench(f, a, c);
+        if self.edit.is_some() {
+            self.draw_edit(f, a, c)
+        }
+    }
+    fn tick(&mut self, _c: &Context) -> Action {
+        let pending = self.ai_pending.is_some();
+        self.poll_ai();
+        if pending && self.ai_pending.is_none() {
+            if self.ai_error.is_empty() {
+                Action::Notice("AI 候选稿已就绪，进入 Commit 审查".into())
+            } else {
+                Action::Notice(self.ai_error.clone())
+            }
+        } else {
+            Action::None
+        }
+    }
+    fn editing(&self) -> bool {
+        self.edit.is_some()
+    }
+    fn help(&self) -> &'static str {
+        "Space check · Enter/v preview · t directories · i message · c review · ? keys"
+    }
+    fn confirm(&mut self, t: &str, c: &Context) -> Action {
+        match t {
+            "commit" => self.submit(c),
+            "commit-ai" => self.start_ai(c).unwrap_or_else(err),
+            _ => Action::None,
+        }
+    }
+    fn event(&mut self, e: &Event, c: &Context) -> Action {
+        if self.edit.is_some() {
+            return self.edit_event(e, c);
+        }
+        if !matches!(e, Event::Mouse(m) if matches!(m.kind, M::Down(MouseButton::Left) | M::Up(MouseButton::Left)))
+        {
+            self.last_click = None;
+        }
+        self.hover = None;
+        match e {
+            Event::Mouse(m) => {
+                if m.kind == M::Drag(MouseButton::Left) {
+                    self.last_click = None;
+                    if let Some(v) = self.dragged.as_mut() {
+                        v.1 = true;
+                    }
+                    return Action::None;
+                }
+                if m.kind == M::Up(MouseButton::Left) {
+                    let item = self.dragged.take();
+                    if let Some((i, true)) = item {
+                        let Some(file) = self.files.get(i) else {
+                            return Action::None;
+                        };
+                        let target = self.hits.iter().find_map(|(area, hit)| {
+                            if inside(*area, m.column, m.row) {
+                                if let Hit::Row(idx) = hit {
+                                    let row = self.view.get(*idx)?;
+                                    (row.kind == Kind::Group).then(|| row.label.clone())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        });
+                        if let Some(g) = target {
+                            if g == NEW || file.change.xy == *b"??" {
+                                return err("未跟踪文件独立分组，仅跟踪文件可移组");
+                            }
+                            self.saved.membership.insert(file.key.clone(), g.clone());
+                            self.files[i].group = g;
+                            self.sync(c);
+                            return self.save(c).map(|_| Action::None).unwrap_or_else(err);
+                        }
+                    }
+                    return Action::None;
+                }
+                if m.kind == M::Down(MouseButton::Left) {
+                    self.dragged = None;
+                    for (r, h) in self.hits.clone() {
+                        if inside(r, m.column, m.row) {
+                            if let Hit::Row(i) = h {
+                                self.focus = Focus::Tree;
+                                let row = &self.view[i];
+                                let (arrow, check) = self.row_controls(row, r);
+                                let previous = self.last_click.take();
+                                if inside(check, m.column, m.row) {
+                                    self.toggle(i);
+                                } else if inside(arrow, m.column, m.row) {
+                                    self.fold(i, None, c)
+                                } else {
+                                    self.cursor = i;
+                                    if let Some(file) = row.file() {
+                                        if previous.is_some_and(|(id, time)| {
+                                            id == row.id
+                                                && time.elapsed() <= Duration::from_millis(450)
+                                        }) {
+                                            return self.launch(Hit::Show(Focus::Diff), c);
+                                        }
+                                        self.last_click = Some((row.id.clone(), Instant::now()));
+                                        self.dragged = Some((file, false));
+                                    }
+                                }
+                                return Action::None;
+                            } else {
+                                self.last_click = None;
+                                return self.launch(h, c);
+                            }
+                        }
+                    }
+                    if inside(self.diff, m.column, m.row) {
+                        self.focus = Focus::Diff
+                    }
+                } else if m.kind == M::Down(MouseButton::Right)
+                    && inside(self.tree, m.column, m.row)
+                {
+                    let i = self.offset + (m.row - self.tree.y) as usize;
+                    if i < self.view.len() {
+                        self.cursor = i;
+                        self.focus = Focus::Tree;
+                        self.move_menu()
+                    }
+                } else if matches!(m.kind, M::ScrollUp | M::ScrollDown) {
+                    let d = if m.kind == M::ScrollUp { -3 } else { 3 };
+                    if inside(self.tree, m.column, m.row) {
+                        self.focus = Focus::Tree;
+                        self.move_cursor(d)
+                    } else if inside(self.diff, m.column, m.row) {
+                        self.focus = Focus::Diff;
+                        self.diff_scroll = self.diff_scroll.saturating_add_signed(d as i16)
+                    }
+                }
+            }
+            Event::Key(k) => match k.code {
+                K::Char('j') | K::Down => {
+                    if self.focus == Focus::Diff {
+                        self.diff_scroll = self.diff_scroll.saturating_add(1)
+                    } else {
+                        self.move_cursor(1)
+                    }
+                }
+                K::Char('k') | K::Up => {
+                    if self.focus == Focus::Diff {
+                        self.diff_scroll = self.diff_scroll.saturating_sub(1)
+                    } else {
+                        self.move_cursor(-1)
+                    }
+                }
+                K::Char('g') | K::Home if self.focus == Focus::Diff => self.diff_scroll = 0,
+                K::Char('G') | K::End if self.focus == Focus::Diff => self.diff_scroll = u16::MAX,
+                K::Char('g') | K::Home => self.cursor = 0,
+                K::Char('G') | K::End => self.cursor = self.view.len().saturating_sub(1),
+                K::PageUp | K::PageDown => {
+                    let forward = k.code == K::PageDown;
+                    if self.focus == Focus::Diff {
+                        let step = self.diff.height.saturating_sub(1).max(1);
+                        self.diff_scroll = if forward {
+                            self.diff_scroll.saturating_add(step)
+                        } else {
+                            self.diff_scroll.saturating_sub(step)
+                        };
+                    } else {
+                        let step = self.tree.height.saturating_sub(1).max(1) as isize;
+                        self.focus = Focus::Tree;
+                        self.move_cursor(if forward { step } else { -step });
+                    }
+                }
+                K::Char(' ') if self.focus == Focus::Tree => self.toggle(self.cursor),
+                K::Char('h') | K::Left if self.focus == Focus::Tree => {
+                    if let Some(row) = self.active() {
+                        if !row.foldable() || self.fold.contains(&row.id) {
+                            let d = row.depth;
+                            if let Some(i) =
+                                self.view[..self.cursor].iter().rposition(|x| x.depth < d)
+                            {
+                                self.cursor = i;
+                            }
+                        } else {
+                            self.fold(self.cursor, Some(true), c)
+                        }
+                    }
+                }
+                K::Char('l') | K::Right if self.focus == Focus::Tree => {
+                    if let Some(row) = self.active() {
+                        if row.foldable() && !self.fold.contains(&row.id) {
+                            if self
+                                .view
+                                .get(self.cursor + 1)
+                                .is_some_and(|x| x.depth > row.depth)
+                            {
+                                self.move_cursor(1)
+                            }
+                        } else {
+                            self.fold(self.cursor, Some(false), c)
+                        }
+                    }
+                }
+                K::Char('t') => return self.launch(Hit::Directories, c),
+                K::Char('s') => return self.launch(Hit::Status, c),
+                K::Char('v') => return self.launch(Hit::TogglePreview, c),
+                K::Char('u') => return self.launch(Hit::UndoCheck, c),
+                K::Char('z') => return self.launch(Hit::Expand(false), c),
+                K::Char('Z') => return self.launch(Hit::Expand(true), c),
+                K::Enter => {
+                    if self.focus == Focus::Message {
+                        self.edit_message(c)
+                    } else if self.focus == Focus::Diff {
+                        return self.launch(Hit::Show(Focus::Tree), c);
+                    } else if self.active().is_some_and(|x| x.file().is_some()) {
+                        return self.launch(Hit::Show(Focus::Diff), c);
+                    } else {
+                        self.fold(self.cursor, None, c)
+                    }
+                }
+                K::Tab | K::BackTab | K::F(6) => {
+                    let fs = if self.preview_open {
+                        &[Focus::Tree, Focus::Diff, Focus::Message][..]
+                    } else {
+                        &[Focus::Tree, Focus::Message][..]
+                    };
+                    let i = fs.iter().position(|s| *s == self.focus).unwrap_or(0);
+                    self.focus =
+                        fs[(i + if k.modifiers.contains(Mod::SHIFT) || k.code == K::BackTab {
+                            fs.len() - 1
+                        } else {
+                            1
+                        }) % fs.len()];
+                }
+                K::Char('i') => self.edit_message(c),
+                K::Char('n') => return self.launch(Hit::New, c),
+                K::Char('m') => self.move_menu(),
+                K::Char('a') => return self.launch(Hit::Amend, c),
+                K::Char('A') => return self.launch(Hit::Ai, c),
+                K::Char('S') => return self.launch(Hit::Settings, c),
+                K::Char('c') => return self.launch(Hit::Submit(false), c),
+                K::Char('P') => return self.launch(Hit::Submit(true), c),
+                K::Char(']') | K::Char('[') => {
+                    let rs = self.message_repos(c);
+                    if !rs.is_empty() {
+                        let i = rs.iter().position(|r| *r == self.repo).unwrap_or(0);
+                        self.repo = rs[(i + if k.code == K::Char(']') {
+                            1
+                        } else {
+                            rs.len() - 1
+                        }) % rs.len()]
+                    }
+                }
+                K::Esc => return self.launch(Hit::Show(Focus::Tree), c),
+                _ => {}
+            },
+            _ => {}
+        }
+        Action::None
+    }
+}
+impl CommitPanel {
+    fn draw_edit(&mut self, f: &mut Frame, a: Rect, c: &Context) {
+        let h = (a.height.saturating_sub(2)).min(17);
+        let w = a.width.saturating_sub(4).min(86);
+        let area = Rect::new(a.x + (a.width - w) / 2, a.y + (a.height - h) / 2, w, h);
+        f.render_widget(Clear, area);
+        self.hits.clear();
+        let ed = self.edit.clone().unwrap();
+        let title = match ed {
+            Edit::Message => format!("Edit commit message · {}", c.repos[self.repo].name),
+            Edit::Group => "New changelist".into(),
+            Edit::Move => "Move to changelist".into(),
+            Edit::AISettings => "AI settings".into(),
+            Edit::AIDraft => "AI candidates · review before replacing drafts".into(),
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().fg(FG).bg(PANEL))
+            .border_style(Style::default().fg(BLUE))
+            .title(format!(" {title} "));
+        let inn = block.inner(area);
+        f.render_widget(block, area);
+        if inn.height < 3 {
+            return;
+        }
+        let hint=match ed{Edit::Group=>"新分组名称 · Enter 保存 · Esc 取消",Edit::Message=>"输入说明 · Enter 换行 · Ctrl-S / F2 保存 · Esc 取消",Edit::Move=>"j/k 选择组 · Enter 应用 · Esc 取消",Edit::AISettings=>"三行依次为：完整 HTTP(S) chat/completions URL、模型、提示词。Token: IGIT_LLM_API_KEY",Edit::AIDraft=>"逐仓候选（保存将替换对应说明；Esc 放弃）"};
+        word(f, slice(inn, 0), hint, Style::default().fg(MUTED));
+        let text = Rect::new(inn.x, inn.y + 1, inn.width, inn.height - 2);
+        if matches!(ed, Edit::Move) {
+            let start = self
+                .move_to
+                .saturating_sub(text.height.saturating_sub(1) as usize);
+            for (n, s) in self
+                .move_names
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take(text.height as usize)
+            {
+                let r = slice(text, (n - start) as u16);
+                word(
+                    f,
+                    r,
+                    s,
+                    Style::default()
+                        .fg(FG)
+                        .bg(if n == self.move_to { SEL } else { Color::Reset }),
+                );
+                self.hits.push((r, Hit::MoveTo(s.clone())))
+            }
+        } else if matches!(ed, Edit::AIDraft) {
+            let mut lines = String::new();
+            for (r, repo) in c.repos.iter().enumerate() {
+                if let Some(msg) = self.ai_drafts.get(&rid(c, r)) {
+                    lines.push_str(&format!("{}\n{}\n\n", repo.name, msg))
+                }
+            }
+            f.render_widget(
+                Paragraph::new(lines)
+                    .wrap(Wrap { trim: false })
+                    .scroll((self.ai_scroll, 0)),
+                text,
+            )
+        } else {
+            let pos = self.caret.min(self.buf.len());
+            let mut lines = vec![];
+            let mut at = 0usize;
+            let mut cr = 0u16;
+            let mut col = 0u16;
+            for (i, line) in self.buf.split('\n').enumerate() {
+                if pos >= at && pos <= at + line.len() {
+                    cr = i as u16;
+                    col = unicode_width::UnicodeWidthStr::width(&line[..pos - at]) as u16
+                }
+                lines.push(Line::from(line));
+                at += line.len() + 1
+            }
+            let off = cr.saturating_sub(text.height.saturating_sub(1));
+            let hor = col.saturating_sub(text.width.saturating_sub(1));
+            self.edit_view = (text, off, hor);
+            f.render_widget(Paragraph::new(lines).scroll((off, hor)), text);
+            f.set_cursor_position((
+                text.x + col.saturating_sub(hor),
+                text.y + cr.saturating_sub(off),
+            ))
+        }
+        let foot = slice(inn, inn.height - 1);
+        let mut x = foot.x;
+        let save_key = if matches!(ed, Edit::Message | Edit::AISettings) {
+            "F2"
+        } else {
+            self.icons.glyph(Icon::Enter)
+        };
+        self.hit_button(f, foot, &mut x, &format!("Save {save_key}"), Hit::EditSave);
+        self.hit_button(f, foot, &mut x, "Cancel Esc", Hit::EditCancel);
+    }
+    fn edit_event(&mut self, e: &Event, c: &Context) -> Action {
+        if let Event::Mouse(m) = e {
+            if m.kind == M::Down(MouseButton::Left) {
+                if let Some((_, h)) = self
+                    .hits
+                    .iter()
+                    .find(|(r, _)| inside(*r, m.column, m.row))
+                    .cloned()
+                {
+                    return self.launch(h, c);
+                }
+                let (a, off, hor) = self.edit_view;
+                if matches!(
+                    self.edit,
+                    Some(Edit::Message | Edit::AISettings | Edit::Group)
+                ) && inside(a, m.column, m.row)
+                {
+                    let (line, cell) = (
+                        (off + m.row - a.y) as usize,
+                        (hor + m.column - a.x) as usize,
+                    );
+                    let mut pos = 0;
+                    for (i, s) in self.buf.split('\n').enumerate() {
+                        if i == line {
+                            let mut width = 0;
+                            let mut bytes = 0;
+                            for ch in s.chars() {
+                                let n = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                                if width + n > cell {
+                                    break;
+                                }
+                                width += n;
+                                bytes += ch.len_utf8()
+                            }
+                            self.caret = pos + bytes;
+                            return Action::None;
+                        }
+                        pos += s.len() + 1
+                    }
+                    self.caret = self.buf.len()
+                }
+            } else if matches!(self.edit, Some(Edit::AIDraft)) {
+                match m.kind {
+                    M::ScrollDown => self.ai_scroll = self.ai_scroll.saturating_add(2),
+                    M::ScrollUp => self.ai_scroll = self.ai_scroll.saturating_sub(2),
+                    _ => {}
+                }
+            }
+            return Action::None;
+        }
+        if let Event::Paste(s) = e {
+            if matches!(
+                self.edit,
+                Some(Edit::Message | Edit::AISettings | Edit::Group)
+            ) {
+                let s = if matches!(self.edit, Some(Edit::Group)) {
+                    s.replace(['\n', '\r'], " ")
+                } else {
+                    s.clone()
+                };
+                self.buf.insert_str(self.caret, &s);
+                self.caret += s.len()
+            }
+            return Action::None;
+        }
+        let Event::Key(k) = e else {
+            return Action::None;
+        };
+        if k.code == K::Esc {
+            self.edit = None;
+            self.focus = Focus::Tree;
+            return Action::None;
+        }
+        if k.code == K::F(2)
+            || (matches!(k.code, K::Char('s') | K::Enter) && k.modifiers.contains(Mod::CONTROL))
+            || k.code == K::Enter
+                && matches!(self.edit, Some(Edit::Move | Edit::Group | Edit::AIDraft))
+        {
+            return self.accept(c).map(|_| Action::None).unwrap_or_else(err);
+        }
+        if matches!(self.edit, Some(Edit::Move)) {
+            match k.code {
+                K::Char('j') | K::Down => {
+                    self.move_to = (self.move_to + 1).min(self.move_names.len().saturating_sub(1))
+                }
+                K::Char('k') | K::Up => self.move_to = self.move_to.saturating_sub(1),
+                _ => {}
+            }
+            return Action::None;
+        }
+        if matches!(self.edit, Some(Edit::AIDraft)) {
+            match k.code {
+                K::Char('j') | K::Down => self.ai_scroll = self.ai_scroll.saturating_add(1),
+                K::Char('k') | K::Up => self.ai_scroll = self.ai_scroll.saturating_sub(1),
+                _ => {}
+            }
+            return Action::None;
+        }
+        let pos = self.caret.min(self.buf.len());
+        let prev = self.buf[..pos]
+            .char_indices()
+            .last()
+            .map(|(i, _)| i)
+            .unwrap_or(pos);
+        let next = pos
+            + self.buf[pos..]
+                .chars()
+                .next()
+                .map(|c| c.len_utf8())
+                .unwrap_or(0);
+        match k.code {
+            K::Char(ch) if !k.modifiers.intersects(Mod::CONTROL | Mod::ALT) => {
+                self.buf.insert(pos, ch);
+                self.caret = pos + ch.len_utf8()
+            }
+            K::Enter => {
+                self.buf.insert(pos, '\n');
+                self.caret = pos + 1
+            }
+            K::Backspace => {
+                self.buf.replace_range(prev..pos, "");
+                self.caret = prev
+            }
+            K::Delete => {
+                self.buf.replace_range(pos..next, "");
+            }
+            K::Left => self.caret = prev,
+            K::Right => self.caret = next,
+            K::Home => self.caret = self.buf[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0),
+            K::End => self.caret = pos + self.buf[pos..].find('\n').unwrap_or(self.buf.len() - pos),
+            K::Up | K::Down => {
+                let start = self.buf[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                let right = pos + self.buf[pos..].find('\n').unwrap_or(self.buf.len() - pos);
+                let idx = self.buf[start..pos].chars().count();
+                let (s, e) = if k.code == K::Up && start > 0 {
+                    let e = start - 1;
+                    (self.buf[..e].rfind('\n').map(|i| i + 1).unwrap_or(0), e)
+                } else if k.code == K::Down && right < self.buf.len() {
+                    let s = right + 1;
+                    (
+                        s,
+                        s + self.buf[s..].find('\n').unwrap_or(self.buf.len() - s),
+                    )
+                } else {
+                    return Action::None;
+                };
+                self.caret = s + self.buf[s..e]
+                    .char_indices()
+                    .nth(idx)
+                    .map(|(i, _)| i)
+                    .unwrap_or(e - s)
+            }
+            _ => {}
+        }
+        Action::None
+    }
+}
+impl CommitPanel {
+    fn ai_review(&mut self, c: &Context) -> Result<Action> {
+        if self.ai_pending.is_some() {
+            bail!("模型正在处理，请稍候")
+        }
+        if self.saved.endpoint.trim().is_empty() || self.saved.model.trim().is_empty() {
+            self.launch(Hit::Settings, c);
+            return Ok(err("先设置完整服务 URL、模型及提示词"));
+        }
+        let ep = self.saved.endpoint.as_str();
+        if !(ep.starts_with("https://")
+            || ep.starts_with("http://localhost:")
+            || ep.starts_with("http://127.0.0.1:")
+            || ep.starts_with("http://[::1]:"))
+            || ep.contains('@')
+            || ep.contains('#')
+            || ep.chars().any(char::is_whitespace)
+        {
+            bail!("使用 HTTPS URL 或带端口的本机 HTTP URL；凭据放 IGIT_LLM_API_KEY")
+        }
+        let mut items = vec![];
+        let mut body = format!(
+            "提交以下选区的补丁至 {}\n模型：{}。每仓一份。生成后可预览候选，原稿不会自动覆盖。\n",
+            ep, self.saved.model
+        );
+        for r in self.checked_repos(c) {
+            let fs: Vec<_> = self
+                .selection(c)
+                .iter()
+                .filter(|f| f.root == r)
+                .map(|f| f.change.clone())
+                .collect();
+            let patch = backend::patch(&c.repos[r].path, &fs)?;
+            body.push_str(&format!("\n{} · {} bytes\n", c.repos[r].name, patch.len()));
+            for f in &fs {
+                body.push_str(&format!("  {}\n", f.label()))
+            }
+            items.push((rid(c, r), patch))
+        }
+        if items.is_empty() {
+            bail!("请先选择文件")
+        }
+        self.ai_payload = items;
+        Ok(Action::Confirm {
+            title: "AI · 发送所选补丁？".into(),
+            body,
+            token: "commit-ai".into(),
+        })
+    }
+    fn start_ai(&mut self, _c: &Context) -> Result<Action> {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let req = std::mem::take(&mut self.ai_payload);
+        if req.is_empty() {
+            bail!("空选区")
+        }
+        let ep = self.saved.endpoint.clone();
+        let model = self.saved.model.clone();
+        let prompt = self.saved.prompt.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.ai_pending = Some(rx);
+        self.ai_error.clear();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<BTreeMap<String, String>> {
+                let mut map = BTreeMap::new();
+                let mut token_file = tempfile::NamedTempFile::new()?;
+                let has_key = if let Ok(token) = std::env::var("IGIT_LLM_API_KEY") {
+                    if token.contains(['\n', '\r']) {
+                        bail!("Invalid credential")
+                    }
+                    writeln!(token_file, "Authorization: Bearer {token}")?;
+                    true
+                } else {
+                    false
+                };
+                for (k, p) in req {
+                    let mut curl = Command::new("curl");
+                    curl.arg("-q")
+                        .args([
+                            "--silent",
+                            "--show-error",
+                            "--fail",
+                            "--max-time",
+                            "60",
+                            "--connect-timeout",
+                            "8",
+                            "--header",
+                            "Content-Type: application/json",
+                            "--proto",
+                            "=http,https",
+                        ])
+                        .env_remove("IGIT_LLM_API_KEY");
+                    if has_key {
+                        curl.arg("--header")
+                            .arg(format!("@{}", token_file.path().display()));
+                    }
+                    let mut proc = curl
+                        .args(["--data-binary", "@-", "--url", &ep])
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()?;
+                    let payload = serde_json::json!({"model":model,"messages":[{"role":"system","content":prompt},{"role":"user","content":p}]});
+                    proc.stdin
+                        .take()
+                        .unwrap()
+                        .write_all(&serde_json::to_vec(&payload)?)?;
+                    let out = proc.wait_with_output()?;
+                    if !out.status.success() {
+                        bail!("模型服务请求失败: curl {}", out.status)
+                    }
+                    let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+                    let s = v["choices"][0]["message"]["content"]
+                        .as_str()
+                        .filter(|s| !s.trim().is_empty())
+                        .ok_or_else(|| anyhow::anyhow!("服务未返回有效的 message.content"))?;
+                    map.insert(k, s.trim().to_string());
+                }
+                Ok(map)
+            })();
+            let _ = tx.send(result.map_err(|e| e.to_string()));
+        });
+        Ok(err("正在生成逐仓提交说明，可继续浏览"))
+    }
+    fn poll_ai(&mut self) {
+        if self.edit.is_some() {
+            return;
+        }
+        let Some(rx) = self.ai_pending.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(m)) => {
+                self.ai_drafts = m;
+                self.ai_scroll = 0;
+                self.edit = Some(Edit::AIDraft);
+                self.ai_pending = None
+            }
+            Ok(Err(e)) => {
+                self.ai_error = e;
+                self.ai_pending = None
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.ai_error = "生成工作线程已结束".into();
+                self.ai_pending = None
+            }
+            _ => {}
+        }
+    }
+}
+#[cfg(test)]
+mod flow_tests {
+    use super::*;
+    use crate::core::{git, Repo};
+    use crossterm::event::{KeyEvent, MouseEvent};
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn external_branch_switch_review_names_the_target_that_is_checked() {
+        let d = tempfile::tempdir().unwrap();
+        let repo = d.path().join("app");
+        fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]).unwrap();
+        for (k, v) in [
+            ("user.name", "Fixture"),
+            ("user.email", "fixture@invalid.test"),
+            ("core.hooksPath", "/dev/null"),
+            ("commit.gpgSign", "false"),
+        ] {
+            git(&repo, &["config", k, v]).unwrap();
+        }
+        let mut c = Context::discover(&repo).unwrap();
+        c.state_dir = d.path().join("state");
+        fs::write(repo.join("file"), "base\n").unwrap();
+        git(&repo, &["add", "--", "file"]).unwrap();
+        let mut panel = CommitPanel::default();
+        panel.refresh(&c).unwrap();
+        panel.saved.drafts.insert(rid(&c, 0), "edit".into());
+        let review = |panel: &mut CommitPanel| {
+            let Action::Confirm { body, .. } = panel.review(&c, false).unwrap() else {
+                panic!("missing commit review");
+            };
+            body.lines().next().unwrap().to_owned()
+        };
+
+        // Before the first commit HEAD already names a branch, even without an OID.
+        git(&repo, &["symbolic-ref", "HEAD", "refs/heads/feature/first"]).unwrap();
+        assert!(review(&mut panel).starts_with("app / feature/first · "));
+        git(&repo, &["commit", "-qm", "base"]).unwrap();
+        let base = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+        fs::write(repo.join("file"), "pending\n").unwrap();
+        panel.refresh(&c).unwrap();
+        git(&repo, &["switch", "-qc", "reviewed"]).unwrap();
+        assert!(review(&mut panel).starts_with("app / reviewed · "));
+
+        // Moving to another branch at the same commit after review must refuse the write.
+        git(&repo, &["switch", "-q", "feature/first"]).unwrap();
+        let Action::Committed { repos, message, .. } = panel.confirm("commit", &c) else {
+            panic!("missing commit result");
+        };
+        assert!(
+            repos.is_empty() && message.contains("分支或 HEAD 已变更"),
+            "{message}"
+        );
+        for rev in ["reviewed", "feature/first"] {
+            assert_eq!(git(&repo, &["rev-parse", rev]).unwrap(), base);
+        }
+        assert!(git(&repo, &["diff", "--cached", "--name-only"])
+            .unwrap()
+            .is_empty());
+        assert_eq!(fs::read_to_string(repo.join("file")).unwrap(), "pending\n");
+
+        git(&repo, &["switch", "-q", "--detach", &base]).unwrap();
+        assert!(review(&mut panel).starts_with(&format!("app / detached@{} · ", &base[..8])));
+
+        // A fresh review commits to the branch it names, leaving the former target untouched.
+        git(&repo, &["switch", "-q", "reviewed"]).unwrap();
+        assert!(review(&mut panel).starts_with("app / reviewed · "));
+        let Action::Committed { repos, message, .. } = panel.confirm("commit", &c) else {
+            panic!("missing commit result");
+        };
+        assert_eq!(repos, [0], "{message}");
+        assert_eq!(git(&repo, &["rev-parse", "reviewed^"]).unwrap(), base);
+        assert_eq!(git(&repo, &["rev-parse", "feature/first"]).unwrap(), base);
+        assert_eq!(git(&repo, &["show", "reviewed:file"]).unwrap(), "pending");
+    }
+
+    #[test]
+    fn filtered_batch_and_mouse_move_preserve_the_other_repo_check() {
+        let d = tempfile::tempdir().unwrap();
+        let repos = ["web", "api"]
+            .into_iter()
+            .map(|n| {
+                let p = d.path().join(n);
+                fs::create_dir(&p).unwrap();
+                for args in [
+                    &["init", "-q"][..],
+                    &["config", "user.name", "Fixture"],
+                    &["config", "user.email", "fixture@invalid.test"],
+                    &["config", "core.hooksPath", ".git/hooks"],
+                    &["config", "commit.gpgsign", "false"],
+                ] {
+                    git(&p, args).unwrap();
+                }
+                fs::write(p.join("settings"), "base").unwrap();
+                git(&p, &["add", "settings"]).unwrap();
+                git(&p, &["commit", "-qm", "base"]).unwrap();
+                fs::write(p.join("settings"), "change").unwrap();
+                Repo {
+                    path: p,
+                    name: n.into(),
+                    branch: "main".into(),
+                    parent: None,
+                    submodule: false,
+                }
+            })
+            .collect();
+        let mut c = Context {
+            repos,
+            scope: [0, 1].into_iter().collect(),
+            workspace: d.path().into(),
+            state_dir: d.path().join("state"),
+        };
+        let mut panel = CommitPanel::default();
+        panel.refresh(&c).unwrap();
+        let mut term = Terminal::new(TestBackend::new(110, 30)).unwrap();
+        let key = |ch| Event::Key(KeyEvent::new(K::Char(ch), Mod::NONE));
+        panel.event(&key('n'), &c);
+        panel.event(&Event::Paste("Later".into()), &c);
+        panel.event(&Event::Key(KeyEvent::new(K::Enter, Mod::NONE)), &c);
+        term.draw(|f| panel.draw(f, f.area(), &c)).unwrap();
+        let (mut source, mut group) = (None, None);
+        for (rect, hit) in &panel.hits {
+            if let Hit::Row(i) = hit {
+                let row = &panel.view[*i];
+                if row.file().is_some_and(|f| panel.files[f].root == 0) {
+                    source = Some(*rect)
+                }
+                if row.id == "g:Later" {
+                    group = Some(*rect)
+                }
+            }
+        }
+        let send = |panel: &mut CommitPanel, kind, r: Rect| {
+            panel.event(
+                &Event::Mouse(MouseEvent {
+                    kind,
+                    column: r.x + 12,
+                    row: r.y,
+                    modifiers: Mod::NONE,
+                }),
+                &c,
+            );
+        };
+        send(&mut panel, M::Down(MouseButton::Left), source.unwrap());
+        send(&mut panel, M::Drag(MouseButton::Left), group.unwrap());
+        send(&mut panel, M::Up(MouseButton::Left), group.unwrap());
+        assert_eq!(
+            panel.files.iter().find(|f| f.root == 0).unwrap().group,
+            "Later"
+        );
+        assert_eq!(panel.checked_repos(&c), vec![0, 1]);
+        c.scope = [1].into_iter().collect();
+        panel.refresh(&c).unwrap();
+        panel.event(&key('i'), &c);
+        panel.event(&Event::Paste("API only".into()), &c);
+        panel.event(&Event::Key(KeyEvent::new(K::F(2), Mod::NONE)), &c);
+        let Action::Confirm { body, token, .. } = panel.event(&key('P'), &c) else {
+            panic!("missing review")
+        };
+        assert!(body.contains("api") && !body.contains("web"));
+        let Action::Committed { repos, push, .. } = panel.confirm(&token, &c) else {
+            panic!("missing result")
+        };
+        assert_eq!(repos, vec![1]);
+        assert!(push);
+        assert_eq!(
+            git(&c.repos[1].path, &["log", "-1", "--format=%s"]).unwrap(),
+            "API only"
+        );
+        assert_eq!(
+            git(&c.repos[0].path, &["log", "-1", "--format=%s"]).unwrap(),
+            "base"
+        );
+        c.scope.insert(0);
+        panel.refresh(&c).unwrap();
+        assert_eq!(panel.checked_repos(&c), vec![0]);
+    }
+}
