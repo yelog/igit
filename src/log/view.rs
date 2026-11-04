@@ -270,13 +270,18 @@ fn subject_spans(s: &str) -> Vec<Span<'_>> {
     out
 }
 impl LogPanel {
+    pub(super) fn pane_visible(&self, pane: Pane) -> bool {
+        match pane {
+            Pane::Refs => self.show_refs,
+            Pane::Graph => true,
+            Pane::Files | Pane::Info => self.show_info,
+        }
+    }
+
     pub(super) fn cycle_focus(&mut self, d: i32) {
         for _ in 0..4 {
             self.focus = self.focus.delta(d);
-            if self.bounds.width < 82
-                || (self.focus != Pane::Refs || self.show_refs)
-                    && (!matches!(self.focus, Pane::Files | Pane::Info) || self.show_info)
-            {
+            if self.pane_visible(self.focus) {
                 break;
             }
         }
@@ -323,108 +328,49 @@ impl LogPanel {
             );
         }
     }
-    fn rail_buttons(&self) -> [(Icon, bool, Hit); 8] {
-        [
-            (
-                if self.show_refs {
-                    Icon::Left
-                } else {
-                    Icon::Right
-                },
-                false,
-                Hit::ToggleRefs,
-            ),
-            (Icon::Add, false, Hit::NewTab),
-            (Icon::Branch, false, Hit::Filter(Rail(Field::Branch))),
-            (Icon::Refresh, false, Hit::Refresh),
-            (Icon::Search, false, Hit::Filter(Rail(Field::Text))),
-            (Icon::Tag, self.show_labels, Hit::ToggleLabels),
-            (
-                Icon::Highlight,
-                self.options.current_branch,
-                Hit::ToggleHighlight,
-            ),
-            (Icon::Info, self.show_info, Hit::ToggleInfo),
-        ]
-    }
-    fn draw_rail(&mut self, f: &mut Frame, r: Rect) {
-        vline(f, Rect::new(r.right() - 1, r.y, 1, r.height));
-        for (i, (icon, on, h)) in self.rail_buttons().into_iter().enumerate() {
-            let dy = i as u16 * 2;
-            if dy >= r.height {
-                break;
-            }
-            let a = one(r.x, r.y + dy, r.width - 1);
-            f.render_widget(
-                Paragraph::new(self.icons.glyph(icon))
-                    .centered()
-                    .style(fg(if on { INK } else { DIM })),
-                a,
-            );
-            self.hit(a, h);
-        }
-    }
     pub(super) fn draw_layout(&mut self, f: &mut Frame, a: Rect, c: &Context) {
         f.render_widget(Block::default().style(fg(INK).bg(PANEL)), a);
-        if a.width >= 82
-            && ((!self.show_refs && self.focus == Pane::Refs)
-                || (!self.show_info && matches!(self.focus, Pane::Files | Pane::Info)))
-        {
+        if !self.pane_visible(self.focus) {
             self.focus = Pane::Graph;
         }
         if a.width < 82 {
             let mut navigation = Rect::new(a.x, a.y, a.width, 1);
             self.view_button(f, &mut navigation);
-            self.bar(
-                f,
-                navigation,
-                &[
-                    ("Refs".into(), Hit::Pane(Pane::Refs)),
-                    ("Graph".into(), Hit::Pane(Pane::Graph)),
-                    ("Files".into(), Hit::Pane(Pane::Files)),
-                    ("Details".into(), Hit::Pane(Pane::Info)),
-                ],
-            );
+            for (pane, label) in [
+                (Pane::Refs, " Refs "),
+                (Pane::Graph, " Graph "),
+                (Pane::Files, " Files "),
+                (Pane::Info, " Details "),
+            ] {
+                if self.pane_visible(pane) {
+                    let tab = take(&mut navigation, cells(label));
+                    self.button(f, tab, label, self.focus == pane, Hit::Pane(pane));
+                }
+            }
             self.areas.push((
                 Rect::new(a.x, a.y + 1, a.width, a.height.saturating_sub(1)),
                 self.focus,
             ));
         } else {
-            let icons_width = self
-                .rail_buttons()
-                .iter()
-                .map(|(icon, _, _)| cells(self.icons.glyph(*icon)))
-                .max()
-                .unwrap_or(1);
-            let rail = Rect::new(
-                a.x,
-                a.y,
-                icons_width.max(if a.width > 100 { 2 } else { 1 }) + 1,
-                a.height,
-            );
-            self.draw_rail(f, rail);
             let xx = |v: u16| a.x + (u32::from(a.width) * u32::from(v) / 100) as u16;
-            let left = if self.show_refs {
-                xx(self.left)
-            } else {
-                rail.right() - 1
-            };
             let right = if self.show_info {
                 xx(100 - self.right)
             } else {
                 a.right()
             };
-            if self.show_refs {
-                self.areas.push((
-                    Rect::new(rail.right(), a.y, left - rail.right(), a.height),
-                    Pane::Refs,
-                ));
+            let graph_x = if self.show_refs {
+                let left = xx(self.left);
+                self.areas
+                    .push((Rect::new(a.x, a.y, left - a.x, a.height), Pane::Refs));
                 let d = Rect::new(left, a.y, 1, a.height);
                 vline(f, d);
                 self.hit(d, Hit::Split(Divider::Left));
-            }
+                d.right()
+            } else {
+                a.x
+            };
             self.areas.push((
-                Rect::new(left + 1, a.y, right - left - 1, a.height),
+                Rect::new(graph_x, a.y, right - graph_x, a.height),
                 Pane::Graph,
             ));
             if self.show_info {
@@ -475,7 +421,7 @@ impl LogPanel {
         let input = self
             .editor
             .as_ref()
-            .filter(|(control, _)| control.field() == Field::Text);
+            .filter(|(field, _)| *field == Field::Text);
         let editing = input.is_some();
         let show_options = two || area.width >= 77 || editing;
         let suffix_width = if show_options { 6 } else { 0 };
@@ -496,7 +442,7 @@ impl LogPanel {
             !self.filter.query.is_empty() && !editing,
             suffix_width,
         );
-        self.hit(field, Hit::Filter(Toolbar(Field::Text)));
+        self.hit(field, Hit::Filter(Field::Text));
         if let Some(clear) = clear {
             self.hit(clear, Hit::Clear(Field::Text));
         }
@@ -549,7 +495,7 @@ impl LogPanel {
                     .style(fg(if active { INK } else { DIM })),
                 value,
             );
-            self.hit(chip, Hit::Filter(Toolbar(k)));
+            self.hit(chip, Hit::Filter(k));
             if let Some(clear) = clear {
                 self.button(f, clear, close, false, Hit::Clear(k));
             }
@@ -775,7 +721,8 @@ impl LogPanel {
                 return;
             } else if self.filter.branch.is_none()
                 && self.filter.roots.is_none()
-                && [Field::Author, Field::Date, Field::Path, Field::Text]
+                && self.filter.paths.is_empty()
+                && [Field::Author, Field::Date, Field::Text]
                     .iter()
                     .all(|k| self.value(*k).is_empty())
             {
@@ -984,21 +931,16 @@ impl LogPanel {
         }
     }
     pub(super) fn draw_editor(&mut self, f: &mut Frame, a: Rect, c: &Context) {
-        let Some((control, v)) = self.editor.clone() else {
+        let Some((k, v)) = self.editor.clone() else {
             return;
         };
-        let k = control.field();
         if k.inline() {
             return;
         }
-        let locate = |control| {
-            self.hits
-                .iter()
-                .find_map(|(r, h)| matches!(h, Hit::Filter(id) if *id == control).then_some(*r))
-        };
-        let anchor = locate(control)
-            // Resizing to single-pane mode hides the rail; the toolbar still has the field.
-            .or_else(|| locate(Toolbar(k)))
+        let anchor = self
+            .hits
+            .iter()
+            .find_map(|(r, h)| matches!(h, Hit::Filter(field) if *field == k).then_some(*r))
             .unwrap_or(one(a.x, a.y, 1));
         if let Some(menu) = &mut self.branch_menu {
             menu.draw(f, a, anchor, self.icons, &mut self.hits);
@@ -1008,14 +950,14 @@ impl LogPanel {
             self.draw_date_editor(f, a, anchor);
             return;
         }
+        if k == Field::Path {
+            self.draw_paths(f, a, anchor, c, &v);
+            return;
+        }
         let w = a.width.min(40);
         let x = anchor.x.min(a.right() - w);
         let y = (anchor.bottom()).min(a.bottom().saturating_sub(6)).max(a.y);
-        let h = if k == Field::Path {
-            (self.path_options.len() + 5).clamp(6, 25)
-        } else {
-            (self.suggestions.len() + 4).clamp(5, 13)
-        } as u16;
+        let h = (self.suggestions.len() + 4).clamp(5, 13) as u16;
         let h = h.min(a.bottom() - y);
         let p = Rect::new(x, y, w, h);
         // Cover underlying rows even where the menu has no button (input, border, padding).
@@ -1025,10 +967,6 @@ impl LogPanel {
         let inner = b.inner(p);
         f.render_widget(b, p);
         if inner.is_empty() {
-            return;
-        }
-        if k == Field::Path {
-            self.draw_path_choices(f, inner, c, &v);
             return;
         }
         toolbar_field(

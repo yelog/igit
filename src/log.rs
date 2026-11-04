@@ -10,7 +10,7 @@ mod paths;
 mod preview;
 mod refs;
 pub(crate) mod view;
-use self::FilterControl::{Rail, Toolbar};
+use self::display::Item;
 use crate::{
     core::Context,
     ui::{
@@ -58,24 +58,14 @@ enum Field {
     Date,
     Path,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum FilterControl {
-    Toolbar(Field),
-    Rail(Field),
-}
-impl FilterControl {
-    fn field(self) -> Field {
-        match self {
-            Toolbar(field) | Rail(field) => field,
-        }
-    }
-}
 #[derive(Clone, Copy)]
 enum DropdownHit {
     Surface,
     Branch(branches::Target),
     Choice(usize),
     PathInput,
+    PathTree(paths::TreeHit),
+    PathText,
     AllRoots,
     DateInput(usize),
     Apply,
@@ -88,15 +78,11 @@ enum Hit {
     Commit(usize),
     GraphJump(usize),
     File(usize),
-    Filter(FilterControl),
+    Filter(Field),
     Clear(Field),
     Reset,
     ToggleRegex,
     ToggleCase,
-    ToggleRefs,
-    ToggleInfo,
-    ToggleHighlight,
-    ToggleLabels,
     ViewOptions,
     ViewMenu(display::MenuHit),
     Refresh,
@@ -157,6 +143,7 @@ pub struct LogPanel {
     choice: Option<usize>,
     suggestions: Vec<(String, String)>,
     path_options: Vec<usize>,
+    path_dialog: Option<paths::Dialog>,
     regex: bool,
     case_sensitive: bool,
     show_refs: bool,
@@ -169,7 +156,7 @@ pub struct LogPanel {
     details: Details,
     preview: preview::Preview,
     focus: Pane,
-    editor: Option<(FilterControl, String)>,
+    editor: Option<(Field, String)>,
     branch_menu: Option<branches::Menu>,
     date_range: Option<DateRangeEditor>,
     diff: Option<DiffView>,
@@ -205,6 +192,7 @@ impl Default for LogPanel {
             choice: None,
             suggestions: vec![],
             path_options: vec![],
+            path_dialog: None,
             regex: false,
             case_sensitive: false,
             show_refs: true,
@@ -353,6 +341,25 @@ impl LogPanel {
             .rev()
             .find(|(r, _)| inside(*r, x, y))
             .map(|(_, h)| h.clone());
+        if let Some(dialog) = &mut self.path_dialog {
+            if button == MouseButton::Left {
+                match (dialog, target) {
+                    (paths::Dialog::Text(input), Some(Hit::Dropdown(DropdownHit::PathText))) => {
+                        input.place(x, y)
+                    }
+                    (
+                        _,
+                        Some(
+                            hit @ Hit::Dropdown(
+                                DropdownHit::PathTree(_) | DropdownHit::Apply | DropdownHit::Cancel,
+                            ),
+                        ),
+                    ) => self.click(hit, c)?,
+                    _ => (),
+                }
+            }
+            return Ok(());
+        }
         if self.diff.is_some() && !matches!(target, Some(Hit::CloseDiff)) {
             return Ok(());
         }
@@ -362,8 +369,7 @@ impl LogPanel {
                 return Ok(());
             }
         }
-        if let Some((control, _)) = self.editor {
-            let field = control.field();
+        if let Some((field, _)) = self.editor {
             if field.inline() {
                 if button == MouseButton::Left {
                     let next = match target {
@@ -382,7 +388,7 @@ impl LogPanel {
             if !matches!(target, Some(Hit::Dropdown(_))) {
                 // Cancel the draft, then let this same press reach its original target.
                 self.discard_editor();
-                if matches!(target, Some(Hit::Filter(trigger)) if trigger == control) {
+                if matches!(target, Some(Hit::Filter(trigger)) if trigger == field) {
                     return Ok(()); // The same button toggles its menu closed.
                 }
             }
@@ -426,11 +432,17 @@ impl LogPanel {
                     self.open_diff(c)?
                 }
             }
-            Hit::Filter(control) => self.begin(control, c)?,
+            Hit::Filter(field) => self.begin(field, c)?,
             Hit::Dropdown(item) => match item {
                 DropdownHit::Surface => (),
                 DropdownHit::Branch(t) => self.branch_input(branches::Input::Click(t), c)?,
                 DropdownHit::PathInput => self.choice = None,
+                DropdownHit::PathText => (),
+                DropdownHit::PathTree(hit) => {
+                    if let Some(paths::Dialog::Tree(tree)) = &mut self.path_dialog {
+                        tree.click(hit, c)?;
+                    }
+                }
                 DropdownHit::AllRoots => self.toggle_listed_roots(c)?,
                 DropdownHit::Choice(i) => self.accept_choice(i, c)?,
                 DropdownHit::DateInput(i) => {
@@ -447,20 +459,6 @@ impl LogPanel {
             }
             Hit::Clear(k) => self.clear_field(k, c)?,
             Hit::ToggleRegex | Hit::ToggleCase => self.toggle_match_mode(hit)?,
-            Hit::ToggleRefs => {
-                self.show_refs = !self.show_refs;
-                if self.focus == Pane::Refs && !self.show_refs {
-                    self.focus = Pane::Graph;
-                }
-            }
-            Hit::ToggleInfo => {
-                self.show_info = !self.show_info;
-                if !self.show_info && matches!(self.focus, Pane::Info | Pane::Files) {
-                    self.focus = Pane::Graph;
-                }
-            }
-            Hit::ToggleHighlight => self.options.current_branch = !self.options.current_branch,
-            Hit::ToggleLabels => self.show_labels = !self.show_labels,
             Hit::ViewOptions => self.toggle_view_menu(),
             Hit::ViewMenu(item) => self.view_menu_hit(item, c)?,
             Hit::Refresh => self.reload(c, true)?,
@@ -675,6 +673,8 @@ impl Panel for LogPanel {
                         d.y =
                             d.y.saturating_add_signed(dir)
                                 .min(d.lines.len().saturating_sub(1));
+                    } else if let Some(dialog) = &mut self.path_dialog {
+                        dialog.scroll(dir);
                     } else if self.view_menu.is_some() {
                         self.move_view_menu(dir);
                     } else if self.branch_menu.is_some() {
@@ -711,12 +711,18 @@ impl Panel for LogPanel {
                 return Ok(());
             }
             if let Event::Paste(v) = e {
-                if self.branch_menu.is_some() {
+                if let Some(dialog) = &mut self.path_dialog {
+                    if let paths::Dialog::Text(input) = dialog {
+                        input.paste(v);
+                    }
+                } else if self.editing_paths() && v.contains(['\r', '\n']) {
+                    self.open_path_text_for_paste(v);
+                } else if self.branch_menu.is_some() {
                     self.branch_input(branches::Input::Paste(v), c)?;
                 } else if let Some(range) = &mut self.date_range {
                     range.values[range.active].extend(v.chars().filter(|c| !c.is_control()));
-                } else if let Some((control, text)) = &mut self.editor {
-                    if control.field() == Field::Date {
+                } else if let Some((field, text)) = &mut self.editor {
+                    if *field == Field::Date {
                         return Ok(());
                     }
                     text.extend(v.chars().filter(|c| !c.is_control()));
@@ -765,25 +771,25 @@ impl Panel for LogPanel {
                 )?,
                 K::Char(']') => self.switch_tab((self.view_index + 1) % self.views.len(), c)?,
                 K::Char('/') => self.begin(
-                    Toolbar(if self.focus == Pane::Refs {
+                    if self.focus == Pane::Refs {
                         Field::Refs
                     } else {
                         Field::Text
-                    }),
+                    },
                     c,
                 )?,
-                K::Char('b') => self.begin(Toolbar(Field::Branch), c)?,
-                K::Char('B') => self.click(Hit::ToggleRefs, c)?,
-                K::Char('I') => self.click(Hit::ToggleInfo, c)?,
-                K::Char('H') => self.click(Hit::ToggleHighlight, c)?,
-                K::Char('L') => self.click(Hit::ToggleLabels, c)?,
+                K::Char('b') => self.begin(Field::Branch, c)?,
+                K::Char('B') => self.toggle_view_item(Item::BranchOrTag, c)?,
+                K::Char('I') => self.toggle_view_item(Item::CommitDetails, c)?,
+                K::Char('H') => self.toggle_view_item(Item::CurrentBranch, c)?,
+                K::Char('L') => self.toggle_view_item(Item::ReferenceLabels, c)?,
                 K::Char('o') => self.toggle_view_menu(),
                 K::Char('z' | 'Z') if self.focus == Pane::Files => {
                     self.file_fold_all(key == K::Char('z'))
                 }
-                K::Char('a') => self.begin(Toolbar(Field::Author), c)?,
-                K::Char('d') => self.begin(Toolbar(Field::Date), c)?,
-                K::Char('p') => self.begin(Toolbar(Field::Path), c)?,
+                K::Char('a') => self.begin(Field::Author, c)?,
+                K::Char('d') => self.begin(Field::Date, c)?,
+                K::Char('p') => self.begin(Field::Path, c)?,
                 K::Char('x') => self.click(Hit::Reset, c)?,
                 K::Char('+') => self.click(Hit::More, c)?,
                 K::Char('j') | K::Down => self.mv(1),
@@ -900,7 +906,7 @@ mod tests {
             .iter()
             .any(|s| s == "+root"));
         let filter = Filter {
-            path: "[literal]*.txt".into(),
+            paths: model::PathFilter::parse("[literal]*.txt", &c).unwrap(),
             ..Default::default()
         };
         let selected = model::load(&c, &filter, 10).revs;

@@ -1,6 +1,8 @@
 mod branch_filter;
 mod graph;
+mod path_filter;
 pub(super) use branch_filter::BranchFilter;
+pub(super) use path_filter::PathFilter;
 mod presentation;
 pub(super) use graph::{Graph, GraphWindow, NodeGlyphs};
 #[cfg(test)]
@@ -32,7 +34,7 @@ pub(super) struct Filter {
     pub query: String,
     pub author: String,
     pub date: Option<DateFilter>,
-    pub path: String,
+    pub paths: PathFilter,
     // None follows global Roots. An explicit empty set deliberately shows no commits.
     pub roots: Option<BTreeSet<usize>>,
     pub branch: Option<BranchFilter>,
@@ -227,6 +229,9 @@ fn revisions(
     tips: &[String],
     limit: usize,
 ) -> Result<Vec<Rev>> {
+    let Some(paths) = f.paths.for_root(root) else {
+        return Ok(Vec::new());
+    };
     let mut a = vec![
         "--literal-pathspecs".to_owned(),
         "log".into(),
@@ -268,10 +273,18 @@ fn revisions(
     }
     a.extend_from_slice(tips);
     a.push("--".into());
-    if !f.path.is_empty() {
-        a.push(f.path.clone())
+    let output = crate::core::command(dir)
+        .args(a)
+        .args(paths)
+        .output()
+        .context("git log")?;
+    if !output.status.success() {
+        bail!(
+            "git log: {}",
+            String::from_utf8_lossy(&output.stderr).trim_end()
+        );
     }
-    let data = git_bytes(dir, &a.iter().map(String::as_str).collect::<Vec<_>>())?;
+    let data = output.stdout;
     let mut it = data.split(|b| *b == 0);
     let mut out = vec![];
     while let Some(id) = it.next().filter(|s| !s.is_empty()) {
@@ -411,7 +424,7 @@ fn reachable(
     {
         return Ok(revs.iter().map(|r| r.oid.clone()).collect());
     }
-    if f.branch.is_none() && f.date.is_none() && f.path.is_empty() && f.author.is_empty() {
+    if f.branch.is_none() && f.date.is_none() && f.paths.is_empty() && f.author.is_empty() {
         // This is a topologically ordered prefix of *all* tips. Every child on a
         // path from HEAD to a visible parent is in this prefix, even with skewed clocks.
         let mut pending = HashSet::new();

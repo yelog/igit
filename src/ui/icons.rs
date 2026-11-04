@@ -104,8 +104,6 @@ glyphs! {
     Divider     => "│", "│", "|";
     TreeEnd     => "└", "└", "`-";
     Diff        => cod::COD_DIFF, "⇆", "+-";
-    Info        => cod::COD_INFO, "ⓘ", "i";
-    Highlight   => cod::COD_TARGET, "◎", "@";
     Console     => cod::COD_TERMINAL, ">_", ">_";
 
     GenericFile => cod::COD_FILE, "▤", "F";

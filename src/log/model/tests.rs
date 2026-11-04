@@ -164,7 +164,7 @@ fn shared_branch_me_and_literal_or_repository_paths_respect_scope() {
     panel.reload(&c, true).unwrap();
     assert!(panel.visible.is_empty());
     let literal = Filter {
-        path: "./web".into(),
+        paths: PathFilter::parse("./web", &c).unwrap(),
         ..f
     };
     let h = loaded(&c, &literal);
@@ -221,7 +221,7 @@ fn reads_tracking_and_containing_branches_including_ancestors_across_a_filter_ga
     );
     g(&p, &["branch", "--set-upstream-to", "origin/main", "main"]);
     let f = Filter {
-        path: "visible".into(),
+        paths: PathFilter::parse("visible", &c).unwrap(),
         ..Filter::default()
     };
     let h = loaded(&c, &f);

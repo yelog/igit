@@ -45,10 +45,10 @@
 | 操作 | 鼠标 | 键盘 |
 | --- | --- | --- |
 | 查分支或历史 | 点左栏 Branch or tag 或中栏 Text or hash；`.*` 开关正则，`Cc` 开关大小写 | 所在栏按 `/`。正文搜索输入时 `Alt-R` / `Alt-C` 也可切换；Enter 应用，Esc 取消。 |
-| 筛选 | 点 Branch、User、Date、Paths，在按钮下方选择候选；点左侧分支按钮则在图标旁打开分支菜单。点清除按钮只清除该项 | `b/a/d/p` 在对应的顶部按钮下方打开菜单，方向键选候选或输入然后回车；`x` 清筛选。User 的 `me` 按各仓 Git 作者邮箱匹配。Paths 输入仓库名筛整仓，其余输入是仓库内的字面路径。 |
+| 筛选 | 点 Branch、User、Date、Paths，在对应按钮下方选择候选。点清除按钮只清除该项 | `b/a/d/p` 在对应的顶部按钮下方打开菜单，方向键选候选或输入然后回车；`x` 清筛选。User 的 `me` 按各仓 Git 作者邮箱匹配。Paths 可逐行输入，也可展开仓库按目录或文件勾选。 |
 | 浏览与审查 | 点提交联动右栏，双击文件打开 Diff；包含分支始终展开；父提交可点击跳转 | 提交列表 `j/k` 浏览，`gg/G` 到首／末条，`H/M/L` 到本屏顶部／中间／底部；`Ctrl-F/B` 整页、`Ctrl-D/U` 半页，`PageDown/PageUp` 同整页。`h/l` 收展或换栏，`Tab/F6` 换栏。文件区 `z/Z` 全部收起／展开，Enter 查看补丁，Esc 返回；详情区 `j/k`、翻页键或滚轮浏览完整分支列表。 |
 | 复制提交 | — | 提交列表 `yy` 复制完整 commit ID，`ym` 复制完整提交消息（标题与正文），`ya` 复制 `姓名 <邮箱>`；显示成功或失败提示。 |
-| 调整视图 | 拖动两条竖线和右侧横线；左侧窄工具栏可收起分支树／详情，切换引用与当前分支高亮 | `B/I` 隐藏或恢复左右侧栏；`+` 追加历史。提交列表的 `H/L` 用于定位，显示开关通过工具栏与显示菜单操作。少于 82 列时用 Refs / Graph / Files / Details 切单区。 |
+| 调整视图 | 拖动可见的分隔线调整宽度或高度；点右上角眼睛，在 Show 中开关分支树、详情或引用标签，在 Highlight 中切换当前分支高亮 | `B/I` 隐藏或恢复左右侧栏；`+` 追加历史。提交列表的 `H/L` 用于定位。少于 82 列时用顶部页签切换可见区域。 |
 | 保留一组筛选 | 顶部 `+` 新开 Log，点页签切回，`×` 关闭当前 Log 页；全局 Roots 仍共用 | `Ctrl-T/W` 新建／关闭，`[/]` 切换。回到原页会恢复该页筛选与可见的已选 SHA。 |
 
 正文搜索框中的 `.*` 与 `Cc` 使用输入框底色，右边框位于 `Cc` 之后；开启的选项保留蓝色高亮，编辑时整个输入框两侧边框一起变蓝。
@@ -61,7 +61,11 @@
 
 Branch 菜单中直接输入可搜索。`Select...` 支持 `|` 或粘贴多行来组合分支、`-分支` 排除可达历史、`A..B` 查看两分支差集，也可用 `origin/feat/.*` 匹配分支名。Tab 补全，Enter 或 Ctrl-Enter 应用，Esc 放弃草稿。分支与标签重名可输入 `refs/heads/…` 或 `refs/tags/…` 区分。`Favorites` 一次应用当前可见的收藏集合；清除 Branch 只移除筛选，保留收藏。
 
-Paths 的 **Roots** 默认勾选全局范围中的所有仓库。点仓库行或用方向键定位后按空格即可逐项切换，每次勾选立即生效并保留菜单。标题显示已选数／列出数；点标题或按 `Ctrl-A` 切换列出的整组。全部取消时本页不显示提交。底部输入会筛出匹配的仓库名；在输入框按回车，完整仓库名只选该仓，其他文本作为已勾选仓库内的字面路径（例如 `./web` 可区分同名仓库）。点 Paths 的清除按钮重置本页的仓库与路径，其他条件和全局 Roots 保持原值。
+Paths 菜单从上到下是 **Select...**、**Select in Tree...** 和 **Roots** 仓库列表。
+
+- **Select...** 打开多行输入。每行是一个文件或目录，以仓库根目录为起点；只要提交改动了其中之一就会显示。`api/src` 指定名为 `api` 的仓库，`api/` 表示整仓；如果要在各仓匹配名为 `api/src` 的路径，则输入 `./api/src`。支持粘贴多行和已从工作区删除的历史路径。`Enter` 换行，`F2`、`Ctrl-S`、`Ctrl-Enter` 或 **Apply** 确认，清空后应用则移除路径条件。绝对路径或含 `..` 的行会提示位置并保留草稿。
+- **Select in Tree...** 先列出全局范围内的仓库和位置，默认折叠。点箭头或用 `h/l`、左右键收展；点复选框或按空格勾选，父项显示部分勾选。可在一次选择中混合整仓、目录和文件；本页 Roots 未勾选的仓库标为不可选。按 `Enter` 或 **OK** 应用。两个选择器都可用 `Esc` 或 **Cancel** 放弃修改。
+- **Roots** 默认勾选全局范围的全部仓库。点仓库行或上下键定位后按空格，立即更新本页并保留菜单。标题显示已选数／列出数；点标题或按 `Ctrl-A` 切换整组。全部取消时不显示提交。菜单内直接输入可快速查找仓库；按回车时，完整仓名只选该仓，其他文本作为路径。点 Paths 的清除按钮重置本页的仓库与路径，保留其他筛选和全局 Roots。
 
 Date 菜单只显示三项，依次为 `Select...`、`Last 24 hours`、`Last 7 days`，没有文本搜索框。首次打开高亮 `Select...`，已有快捷时段时高亮当前选项；方向键或 `j/k` 移动，Enter 或点击选项生效。`Select...` 打开 From / To 两个日期字段，以 `YYYY-MM-DD` 输入，Tab / Shift-Tab 或点击切换字段，Ctrl-U 清空当前字段；Enter / Apply 应用，Esc / Cancel 取消。自定义范围包含本地起日的 00:00:00 至止日的 23:59:59，也允许首尾为同一天；无效日期、缺失日期或起日晚于止日时保留草稿并提示。取消不改变已应用条件，重新编辑会带入原范围。最近时段以查询时的当前时间为终点，刷新时重新计算；清除日期保留其他筛选。
 
@@ -79,9 +83,11 @@ Show、Highlight 和 Columns 子菜单的复选框沿用 Commit 变更清单：�
 
 **列顺序。** Columns 初始列出 Author、Hash、Date、GPG Signature、Graph、Message。菜单从上到下对应日志行从左到右；例如把 Date 移到 Author 上方，日期就显示在作者左侧。`K/J` 或 `Shift+↑/↓` 将当前列前移／后移一位，也可点该行右端的上下箭头。移动后高亮跟随该列，首末行不能越界。点击复选框或列名只切换显隐，隐藏列仍保留在菜单里，可以提前定位。仓库标记固定在行首；Graph 可以移到任意列之间，跳转箭头随图移动。Message 带着标题和引用一起移动或隐藏，并使用其余列分配后的剩余宽度。
 
-Show 中的 Root Names 展开仓库色标为名称，Compact References View 保留首个引用并显示剩余数量；Tag Names 只控制标签文字，关闭后仍有图标。Long Edges 关闭时，跨越超过 12 行且中途无汇入的边只保留两端与跳转箭头，开启后完整连接；共享轨道保持连续，不会补画已被过滤的父子。Commit Timestamp 在作者时间与提交时间之间切换，不改变拓扑与排序。References on the Left 将引用移到标题前。六列可独立开关。窄屏优先保留已开启的提交标题和图；关闭后释放的空间可供其他列使用。
+Show 首项 **Branch or Tag** 控制左侧分支树。显示时分支树从左边缘开始；隐藏时提交列表使用这块空间，原分支筛选与选中提交保留。若焦点原在分支树，则回到提交列表。窄屏同样隐藏 Refs 页签，恢复入口始终是眼睛菜单或 `B`。Commit Details 控制右侧文件与详情，Reference Labels 控制提交行的引用标签。
 
-Highlight 中 My Commits 按每仓的 Git 作者邮箱匹配并加粗；Merge Commits 降低合并正文亮度；Current Branch 用蓝底表示 HEAD 可达历史，选中行始终更亮。Not Cherry-Picked Commits 只在 Branch 选了另一条本地／远端分支后可启用，按 `git cherry` 的等价补丁降低已应用提交亮度；不可用时菜单提示选择另一 Branch。默认开启 Author、Date、Graph、Message 和前三种高亮，其他 Show 项及 cherry 高亮关闭；所有 Log 页共用本次会话的选项，重启恢复默认。日期默认是作者时间。签名只在启用列时检查，展示 Good、Unsigned、Untrusted、Bad、Expired、Key exp.、Revoked、Unchecked 或 Unknown；后两项不表示验证成功。实现见 [display.rs](../src/log/display.rs)。语义参考 [IDEA 官方 Log 文档](https://www.jetbrains.com/help/idea/log-tab.html)。
+Root Names 展开仓库色标为名称，Compact References View 保留首个引用并显示剩余数量；Tag Names 只控制标签文字，关闭后仍有图标。Long Edges 关闭时，跨越超过 12 行且中途无汇入的边只保留两端与跳转箭头，开启后完整连接；共享轨道保持连续，不会补画已被过滤的父子。Commit Timestamp 在作者时间与提交时间之间切换，不改变拓扑与排序。References on the Left 将引用移到标题前。六列可独立开关。窄屏优先保留已开启的提交标题和图；关闭后释放的空间可供其他列使用。
+
+Highlight 中 My Commits 按每仓的 Git 作者邮箱匹配并加粗；Merge Commits 降低合并正文亮度；Current Branch 用蓝底表示 HEAD 可达历史，选中行始终更亮。Not Cherry-Picked Commits 只在 Branch 选了另一条本地／远端分支后可启用，按 `git cherry` 的等价补丁降低已应用提交亮度；不可用时菜单提示选择另一 Branch。默认开启 Branch or Tag、Commit Details、Reference Labels、Author、Date、Graph、Message 和前三种高亮，其他 Show 项及 cherry 高亮关闭；所有 Log 页共用本次会话的选项，重启恢复默认。日期默认是作者时间。签名只在启用列时检查，展示 Good、Unsigned、Untrusted、Bad、Expired、Key exp.、Revoked、Unchecked 或 Unknown；后两项不表示验证成功。实现见 [display.rs](../src/log/display.rs)。语义参考 [IDEA 官方 Log 文档](https://www.jetbrains.com/help/idea/log-tab.html)。
 
 ## 2 · Commit：IDEA 变更清单
 

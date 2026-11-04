@@ -76,13 +76,13 @@ Push 文件分组复验（A11）：在[眼睛菜单](reference/IGit-Push-Group-B
 
 Branch 菜单复验（A8）：在多仓工作区打开 Branch，悬停 Local 或远端展开对应分支；点星标只改收藏，重开仍保留，点名称才筛选历史。点 Favorites 取收藏分支的并集；Select... 中输入 `master..topic` 应只看到 topic 独有的提交。检查窄屏可返回、能滚到最后一个分支，点击 User 一次即可切换。运行 `cargo test --locked branch_menu` 验证。
 
-Paths 多仓复验（A8）：在当前 Log 的 Paths 菜单连续勾选两个仓，提交列表应只包含这些仓；全部取消应显示空态，全局 Roots 不变。切换 Log 页再返回，勾选范围与字面路径仍生效。运行 `cargo test --locked paths_` 验证。
+Paths 多仓复验（A8）：在 Paths → Select... 分行输入一个目录和一个带 `[]` 的文件，结果应是其历史的并集。用 Select in Tree... 展开两个仓库，分别勾选其中一个文件及另一个仓的目录；确认前不改变日志，确认后不混入其他仓的同名路径。重开能看到原勾选，取消保留原结果。Roots 连续勾选立即更新，全部取消显示空态；切换 Log 页再返回，仓库与路径条件均保留，全局 Roots 不变。运行 `cargo test --locked paths_` 验证。
 
 写入边界复验（A3、A4、A6）：用 `cargo test --locked <名称片段>` 分别运行 `path_scope_`、`ai_review_of_a_replaced_file`、`external_branch_switch`、`source_only_change` 和 `cannot_turn_a_non_fast_forward_into_a_push`。场景与预期结果见[修复与回归计划](plans/2026-11-04-git-write-safety.md)。
 
 日期筛选复验（R1、R7、R8）：Date 菜单应依次显示 `Select...`、`Last 24 hours`、`Last 7 days`。分别用鼠标和键盘进入自定义范围，输入起止日期并应用；检查首尾两天都包含、非法日期和倒序范围不生效、取消保留原条件。清除日期应保留 User / Branch / Paths，切换 Log 页应恢复日期条件。运行 `cargo test --locked date_` 验证真实 Git 历史中的相对范围、未来提交排除、时间倒序祖先和日期边界，以及 48、80、120、180 列的菜单与输入命中。
 
-Log 眼睛菜单复验（R1、R4、R7、R8）：右上角眼睛或 `o` 打开 Show / Highlight，Columns 展开 Author、Hash、Date、GPG Signature、Graph、Message；各项即时影响日志行。检查仓库名、标签名、紧凑引用、引用位置、两种日期与三种默认高亮。选另一分支后启用 Not Cherry-Picked Commits，应降低已等价应用项亮度。关闭 Long Edges 后可点箭头跳至真实端点。默认显示作者、日期、提交图及标题，Hash 和签名默认隐藏；选项只在本次会话共享。运行 `cargo test --locked view_options` 覆盖三种图标及 48、80、120、180 列、短窗口、悬停、键鼠和页签保持，运行 `cargo test --locked log::model::presentation` 覆盖真实签名、双日期、按仓身份和 cherry 等价，同时核对 HEAD、暂存项和工作区不变。
+Log 眼睛菜单复验（R1、R4、R7、R8）：右上角眼睛或 `o` 打开 Show / Highlight。在 Show 切换 Branch or Tag：宽屏隐藏后提交列表占满左侧，窄屏同步隐藏 Refs；用菜单或 `B` 恢复，原筛选与选中提交应保留。Columns 展开 Author、Hash、Date、GPG Signature、Graph、Message；各项即时影响日志行。检查仓库名、标签名、紧凑引用、引用位置、两种日期与三种默认高亮。选另一分支后启用 Not Cherry-Picked Commits，应降低已等价应用项亮度。关闭 Long Edges 后可点箭头跳至真实端点。默认显示作者、日期、提交图及标题，Hash 和签名默认隐藏；选项只在本次会话共享。运行 `cargo test --locked view_options` 覆盖三种图标及 48、80、120、180 列、短窗口、悬停、键鼠和页签保持，运行 `cargo test --locked log::model::presentation` 覆盖真实签名、双日期、按仓身份和 cherry 等价，同时核对 HEAD、暂存项和工作区不变。
 
 Log 列顺序复验（A8）：在 Columns 中把 Date 移到 Author 前，再用行尾箭头把未勾选的 Hash 移到首位。日志应先显示日期、作者；勾选 Hash 后，哈希应出现在两者左侧。首末项不能绕回，移动不改勾选、不刷新历史；切换 Log 页后沿用该顺序。将 Message 移到日期前，长标题和引用只占本列；将 Graph 移到最后，箭头仍能跳到同一提交，隐藏 Graph 后不再触发。窄屏可分别关闭这两列。运行 `cargo test --locked view_options_reorder` 验证。
 

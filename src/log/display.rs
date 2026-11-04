@@ -59,6 +59,9 @@ impl Options {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Item {
+    BranchOrTag,
+    CommitDetails,
+    ReferenceLabels,
     RootNames,
     CompactRefs,
     TagNames,
@@ -73,7 +76,10 @@ pub(super) enum Item {
 }
 
 impl Item {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 14] = [
+        Self::BranchOrTag,
+        Self::CommitDetails,
+        Self::ReferenceLabels,
         Self::RootNames,
         Self::CompactRefs,
         Self::TagNames,
@@ -86,9 +92,15 @@ impl Item {
         Self::CurrentBranch,
         Self::NotCherryPicked,
     ];
+    const DIVIDER_ROW: usize = Self::MyCommits as usize + 1;
+    const HIGHLIGHT_ROW: usize = Self::DIVIDER_ROW + 1;
+    const ROWS: usize = Self::ALL.len() + 3; // Two headings and a divider.
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::BranchOrTag => "Branch or Tag",
+            Self::CommitDetails => "Commit Details",
+            Self::ReferenceLabels => "Reference Labels",
             Self::RootNames => "Root Names",
             Self::CompactRefs => "Compact References View",
             Self::TagNames => "Tag Names",
@@ -104,11 +116,20 @@ impl Item {
     }
 
     fn position(self) -> usize {
-        self as usize + if (self as usize) < 7 { 1 } else { 3 }
+        let row = self as usize + 1;
+        if row < Self::DIVIDER_ROW {
+            row
+        } else {
+            row + 2
+        }
     }
 
-    fn value(self, o: &Options) -> bool {
+    fn value(self, panel: &LogPanel) -> bool {
+        let o = &panel.options;
         match self {
+            Self::BranchOrTag => panel.show_refs,
+            Self::CommitDetails => panel.show_info,
+            Self::ReferenceLabels => panel.show_labels,
             Self::RootNames => o.root_names,
             Self::CompactRefs => o.compact_refs,
             Self::TagNames => o.tag_names,
@@ -222,29 +243,40 @@ impl LogPanel {
             MenuHit::Item(item) => {
                 menu.row = item as usize;
                 menu.column = (item == Item::Columns).then_some(self.options.columns[0].0);
-                let v = match item {
-                    Item::RootNames => &mut self.options.root_names,
-                    Item::CompactRefs => &mut self.options.compact_refs,
-                    Item::TagNames => &mut self.options.tag_names,
-                    Item::LongEdges => &mut self.options.long_edges,
-                    Item::CommitTimestamp => &mut self.options.commit_timestamp,
-                    Item::RefsLeft => &mut self.options.refs_left,
-                    Item::MyCommits => &mut self.options.my_commits,
-                    Item::MergeCommits => &mut self.options.merge_commits,
-                    Item::CurrentBranch => &mut self.options.current_branch,
-                    Item::NotCherryPicked => {
-                        if !self.options.not_cherry_picked && !self.cherry_available() {
-                            return Ok(());
-                        }
-                        &mut self.options.not_cherry_picked
-                    }
-                    Item::Columns => return Ok(()),
-                };
-                *v = !*v;
-                if item == Item::NotCherryPicked {
-                    self.reload(c, true)?;
-                }
+                self.toggle_view_item(item, c)?;
             }
+        }
+        Ok(())
+    }
+
+    pub(super) fn toggle_view_item(&mut self, item: Item, c: &Context) -> Result<()> {
+        let v = match item {
+            Item::BranchOrTag => &mut self.show_refs,
+            Item::CommitDetails => &mut self.show_info,
+            Item::ReferenceLabels => &mut self.show_labels,
+            Item::RootNames => &mut self.options.root_names,
+            Item::CompactRefs => &mut self.options.compact_refs,
+            Item::TagNames => &mut self.options.tag_names,
+            Item::LongEdges => &mut self.options.long_edges,
+            Item::CommitTimestamp => &mut self.options.commit_timestamp,
+            Item::RefsLeft => &mut self.options.refs_left,
+            Item::MyCommits => &mut self.options.my_commits,
+            Item::MergeCommits => &mut self.options.merge_commits,
+            Item::CurrentBranch => &mut self.options.current_branch,
+            Item::NotCherryPicked => {
+                if !self.options.not_cherry_picked && !self.cherry_available() {
+                    return Ok(());
+                }
+                &mut self.options.not_cherry_picked
+            }
+            Item::Columns => return Ok(()),
+        };
+        *v = !*v;
+        if !self.pane_visible(self.focus) {
+            self.focus = Pane::Graph;
+        }
+        if item == Item::NotCherryPicked {
+            self.reload(c, true)?;
         }
         Ok(())
     }
@@ -377,7 +409,7 @@ impl LogPanel {
             .unwrap_or(Rect::new(a.right().saturating_sub(1), a.y, 1, 1));
         let w =
             (cells("Not Cherry-Picked Commits") + cells(self.icons.check(false)) + 5).min(a.width);
-        let h = 17.min(a.height);
+        let h = (Item::ROWS as u16 + 3).min(a.height);
         let p = Rect::new(
             anchor.right().saturating_sub(w).clamp(a.x, a.right() - w),
             anchor.bottom().min(a.bottom() - h).max(a.y),
@@ -399,23 +431,23 @@ impl LogPanel {
             None
         };
         let slots = p.height.saturating_sub(3) as usize;
-        let start = window(Item::ALL[m.row].position(), slots, 14);
+        let start = window(Item::ALL[m.row].position(), slots, Item::ROWS);
         if m.column.is_none() || side.is_some() {
             let inner = self.menu_box(f, p, "");
-            for (dy, i) in (start..(start + slots).min(14)).enumerate() {
+            for (dy, i) in (start..(start + slots).min(Item::ROWS)).enumerate() {
                 let r = Rect::new(inner.x, inner.y + dy as u16, inner.width, 1);
                 match i {
-                    0 | 9 => f.render_widget(
+                    0 | Item::HIGHLIGHT_ROW => f.render_widget(
                         Paragraph::new(if i == 0 { " Show" } else { " Highlight" })
                             .style(fg(DIM).bold()),
                         r,
                     ),
-                    8 => f.render_widget(
+                    Item::DIVIDER_ROW => f.render_widget(
                         Paragraph::new("─".repeat(r.width.into())).style(fg(EDGE)),
                         r,
                     ),
                     _ => {
-                        let item = Item::ALL[if i < 8 { i - 1 } else { i - 3 }];
+                        let item = Item::ALL[if i < Item::DIVIDER_ROW { i - 1 } else { i - 3 }];
                         let enabled = item != Item::NotCherryPicked
                             || self.cherry_available()
                             || self.options.not_cherry_picked;
@@ -429,7 +461,7 @@ impl LogPanel {
                             f,
                             r,
                             item.label(),
-                            item.value(&self.options),
+                            item.value(self),
                             style,
                             MenuHit::Item(item),
                         );

@@ -2,7 +2,7 @@
 //! a branch in one root and a folder of the same name in another can coexist.
 use super::{
     cells, fg, fold_slot, model::History, toolbar_field, window, Field, Hit, Icon, IconMode,
-    LogPanel, Pane, Toolbar, BLUE, DIM, EDGE, GOLD, INK, PANEL, SELECT,
+    LogPanel, Pane, BLUE, DIM, EDGE, GOLD, INK, PANEL, SELECT,
 };
 use crate::core::Context;
 use anyhow::Result;
@@ -316,7 +316,7 @@ impl RefTree {
 impl LogPanel {
     pub(super) fn rebuild_refs(&mut self, c: &Context) {
         let query = match &self.editor {
-            Some((Toolbar(Field::Refs), text)) => text,
+            Some((Field::Refs, text)) => text,
             _ => &self.ref_query,
         };
         self.refs.rebuild(&self.hist, c, query, self.icons);
@@ -361,7 +361,7 @@ impl LogPanel {
         }
         let bar = Rect::new(a.x, a.y, a.width, 1);
         let (text, editing) = match &self.editor {
-            Some((Toolbar(Field::Refs), text)) => (text.as_str(), true),
+            Some((Field::Refs, text)) => (text.as_str(), true),
             _ if self.ref_query.is_empty() => ("Branch or tag", false),
             _ => (self.ref_query.as_str(), false),
         };
@@ -373,7 +373,7 @@ impl LogPanel {
             self.icons,
             !editing && !self.ref_query.is_empty(),
         );
-        self.hit(bar, Hit::Filter(Toolbar(Field::Refs)));
+        self.hit(bar, Hit::Filter(Field::Refs));
         if let Some(clear) = clear {
             self.hit(clear, Hit::Clear(Field::Refs));
         }
@@ -575,7 +575,7 @@ mod tests {
         assert!(!panel.ref_horizontal(false, &c));
         assert!(row(&panel.refs, "refs/heads/feat/ui/").is_some());
         assert!(row(&panel.refs, "refs/heads/feat/ui/needle").is_none());
-        panel.editor = Some((Toolbar(Field::Refs), "NEEDLE".into()));
+        panel.editor = Some((Field::Refs, "NEEDLE".into()));
         panel.rebuild_refs(&c);
         let ids: Vec<_> = panel.refs.rows.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(

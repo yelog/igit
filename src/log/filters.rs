@@ -90,13 +90,12 @@ impl LogPanel {
                 .as_ref()
                 .map(DateFilter::label)
                 .unwrap_or_default(),
-            Field::Path => self.filter.path.clone(),
+            Field::Path => String::new(), // Paths opens on its commands, with an empty quick search.
         }
     }
-    pub(super) fn begin(&mut self, control: FilterControl, c: &Context) -> Result<()> {
+    pub(super) fn begin(&mut self, k: Field, c: &Context) -> Result<()> {
         self.discard_editor();
         self.view_menu = None;
-        let k = control.field();
         self.last = None;
         if k == Field::Refs {
             self.show_refs = true;
@@ -107,12 +106,13 @@ impl LogPanel {
         if k == Field::Branch {
             self.branch_menu = Some(branches::Menu::open(&self.hist, &self.filter, c)?);
         }
-        self.editor = Some((control, self.value(k)));
+        self.editor = Some((k, self.value(k)));
         self.edit_changed(c);
         Ok(())
     }
     pub(super) fn discard_editor(&mut self) {
         self.path_options.clear();
+        self.path_dialog = None;
         self.branch_menu = None;
         self.editor = None;
         self.date_range = None;
@@ -121,17 +121,17 @@ impl LogPanel {
     }
     pub(crate) fn dismiss_filter_dropdown(&mut self) {
         self.view_menu = None;
-        if matches!(self.editor, Some((control, _)) if !control.field().inline()) {
+        if self.path_dialog.is_none() && matches!(self.editor, Some((field, _)) if !field.inline())
+        {
             self.discard_editor();
         }
     }
     pub(super) fn edit_changed(&mut self, c: &Context) {
         self.choice = None;
         self.suggestions.clear();
-        let Some((control, input)) = &self.editor else {
+        let Some((k, input)) = &self.editor else {
             return;
         };
-        let k = control.field();
         let needle = input.to_lowercase();
         let mut opts = Vec::new();
         match k {
@@ -167,11 +167,9 @@ impl LogPanel {
                     .scope
                     .iter()
                     .copied()
-                    .filter(|&id| {
-                        input == &self.filter.path
-                            || c.repos[id].name.to_lowercase().contains(&needle)
-                    })
+                    .filter(|&id| c.repos[id].name.to_lowercase().contains(&needle))
                     .collect();
+                self.choice = input.is_empty().then_some(0);
                 return;
             }
         }
@@ -185,9 +183,9 @@ impl LogPanel {
     }
     pub(super) fn accept_choice(&mut self, i: usize, c: &Context) -> Result<()> {
         if self.editing_paths() {
-            return self.toggle_path_root(i, c);
+            return self.path_choice(i, c);
         }
-        if matches!(self.editor, Some((control, _)) if control.field() == Field::Date) {
+        if matches!(self.editor, Some((Field::Date, _))) {
             match i {
                 0 => {
                     self.date_range = Some(DateRangeEditor {
@@ -217,18 +215,20 @@ impl LogPanel {
         self.apply(c)
     }
     pub(super) fn apply(&mut self, c: &Context) -> Result<()> {
-        if let Some(i) = self.choice.take() {
-            if self.editing_paths() {
+        if self.path_dialog.is_some() {
+            return self.apply_path_dialog(c);
+        }
+        if let Some(i) = self.choice {
+            if self.editing_paths() && i >= paths::COMMANDS.len() {
                 // The checkboxes apply immediately. Enter leaves the current selection intact.
                 self.discard_editor();
                 return Ok(());
             }
             return self.accept_choice(i, c);
         }
-        let Some((control, v)) = self.editor.clone() else {
+        let Some((k, v)) = self.editor.clone() else {
             return Ok(());
         };
-        let k = control.field();
         match k {
             Field::Refs => self.ref_query = v,
             Field::Text => {
@@ -279,7 +279,7 @@ impl LogPanel {
             self.discard_editor();
             return self.reload(c, false);
         }
-        self.editor = Some((Toolbar(k), String::new()));
+        self.editor = Some((k, String::new()));
         self.choice = None;
         self.apply(c)
     }
@@ -288,20 +288,47 @@ impl LogPanel {
             return self.branch_input(branches::Input::Key(k), c);
         }
         if self.editing_paths() {
+            if self.path_dialog.is_some() {
+                return self.path_dialog_key(k, c);
+            }
+            if k.code == K::Char('/')
+                && self.choice.is_some()
+                && self.editor.as_ref().is_some_and(|(_, q)| q.is_empty())
+            {
+                self.choice = None;
+                return Ok(());
+            }
             if k.code == K::Char('a') && k.modifiers.contains(Mods::CONTROL) {
                 return self.toggle_listed_roots(c);
             }
             if k.code == K::Char(' ') && k.modifiers.is_empty() {
                 if let Some(i) = self.choice {
-                    return self.toggle_path_root(i, c);
+                    return self.path_choice(i, c);
                 }
+            }
+            if k.code == K::Down && self.choice.is_none() && !self.path_options.is_empty() {
+                self.choice = Some(paths::COMMANDS.len());
+                return Ok(());
+            }
+            if matches!(k.code, K::Home | K::End)
+                || (self.choice.is_some() && matches!(k.code, K::Up | K::Down | K::Char('j' | 'k')))
+            {
+                let last = self.choice_count() - 1;
+                let current = self.choice.unwrap_or(0);
+                self.choice = Some(match k.code {
+                    K::Home => 0,
+                    K::End => last,
+                    K::Up | K::Char('k') => current.checked_sub(1).unwrap_or(last),
+                    _ => (current + 1).min(last),
+                });
+                return Ok(());
             }
         }
         let count = self.choice_count();
-        if matches!(self.editor, Some((control, _)) if control.field() == Field::Date) {
+        if matches!(self.editor, Some((Field::Date, _))) {
             return self.date_key(k, c);
         }
-        let Some((control, v)) = &mut self.editor else {
+        let Some((field, v)) = &mut self.editor else {
             return Ok(());
         };
         match k.code {
@@ -319,15 +346,12 @@ impl LogPanel {
                     (Some(i), _) => i.saturating_sub(1),
                 });
             }
-            K::Char('r' | 'c')
-                if control.field() == Field::Text && k.modifiers.contains(Mods::ALT) =>
-            {
-                self.toggle_match_mode(if k.code == K::Char('r') {
+            K::Char('r' | 'c') if *field == Field::Text && k.modifiers.contains(Mods::ALT) => self
+                .toggle_match_mode(if k.code == K::Char('r') {
                     Hit::ToggleRegex
                 } else {
                     Hit::ToggleCase
-                })?
-            }
+                })?,
             K::Backspace => {
                 v.pop();
                 self.edit_changed(c);

@@ -1,6 +1,7 @@
 //! Exercise the rendered cells and actual input dispatch together.
 mod branch_menu;
 mod column_order;
+mod path_selection;
 mod reference_badges;
 mod text_selection;
 use super::tests::{commit, finish_preview, git, init};
@@ -325,7 +326,7 @@ fn navigation_yank_prefix_is_cancelled_by_clicks_editors_and_other_keys() {
         key(&mut p, K::Char('a'), Mods::NONE, &c),
         Action::None
     ));
-    assert!(matches!(p.editor, Some((Toolbar(Field::Author), _))));
+    assert!(matches!(p.editor, Some((Field::Author, _))));
     key(&mut p, K::Esc, Mods::NONE, &c);
 
     key(&mut p, K::Char('y'), Mods::NONE, &c);
@@ -467,6 +468,80 @@ fn view_item(p: &mut LogPanel, item: display::Item, c: &Context) {
     p.toggle_view_menu();
     p.view_menu_hit(display::MenuHit::Item(item), c).unwrap();
     p.view_menu = None;
+}
+
+#[test]
+fn view_options_branch_or_tag_reclaims_the_left_edge_and_skips_hidden_focus() {
+    let d = init();
+    commit(d.path(), "first", "first commit");
+    commit(d.path(), "second", "second commit");
+    let c = Context::discover(d.path()).unwrap();
+    for width in [48, 80, 82, 180] {
+        let mut p = LogPanel {
+            icons: IconMode::Ascii,
+            ref_query: "main".into(),
+            ..Default::default()
+        };
+        p.filter.branch = Some("HEAD".into());
+        p.refresh(&c).unwrap();
+        p.select_row(1);
+        let selected = p.rev().unwrap().oid.clone();
+        let area = Rect::new(3, 2, width, 21);
+        let mut t = Terminal::new(TestBackend::new(area.right(), area.bottom())).unwrap();
+        let draw = |p: &mut LogPanel, t: &mut Terminal<TestBackend>| {
+            t.draw(|f| p.draw(f, area, &c)).unwrap();
+        };
+        let option = |p: &LogPanel| {
+            target(p, |h| {
+                matches!(h, Hit::ViewMenu(display::MenuHit::Item(Item::BranchOrTag)))
+            })
+        };
+
+        key(&mut p, K::BackTab, Mods::SHIFT, &c);
+        draw(&mut p, &mut t);
+        let refs = target(&p, |h| matches!(h, Hit::Filter(Field::Refs)));
+        assert_eq!(refs.x, area.x);
+        let eye = target(&p, |h| matches!(h, Hit::ViewOptions));
+        click_at(&mut p, eye, &c);
+        draw(&mut p, &mut t);
+        let row = option(&p);
+        assert!(row_text(&t, row).contains("[x] Branch or Tag"));
+        click_at(&mut p, row, &c);
+        draw(&mut p, &mut t);
+        assert!(row_text(&t, option(&p)).contains("[ ] Branch or Tag"));
+        assert_eq!(p.focus, Pane::Graph);
+        assert_eq!(
+            target(&p, |h| matches!(h, Hit::Filter(Field::Text))).x,
+            area.x
+        );
+        assert_eq!(target(&p, |h| matches!(h, Hit::ViewOptions)), eye);
+        assert!(!p.hits.iter().any(|(_, h)| matches!(
+            h,
+            Hit::Ref(_)
+                | Hit::Filter(Field::Refs)
+                | Hit::Split(Divider::Left)
+                | Hit::Pane(Pane::Refs)
+        )));
+        key(&mut p, K::Esc, Mods::NONE, &c);
+        key(&mut p, K::BackTab, Mods::SHIFT, &c);
+        assert_eq!(p.focus, Pane::Info);
+
+        key(&mut p, K::Char('B'), Mods::NONE, &c);
+        key(&mut p, K::Char('o'), Mods::NONE, &c);
+        draw(&mut p, &mut t);
+        assert!(row_text(&t, option(&p)).contains("[x] Branch or Tag"));
+        key(&mut p, K::Char(' '), Mods::NONE, &c);
+        key(&mut p, K::Enter, Mods::NONE, &c);
+        key(&mut p, K::Esc, Mods::NONE, &c);
+        key(&mut p, K::Esc, Mods::NONE, &c);
+        key(&mut p, K::BackTab, Mods::SHIFT, &c);
+        draw(&mut p, &mut t);
+        assert_eq!(p.focus, Pane::Refs);
+        assert_eq!(target(&p, |h| matches!(h, Hit::Filter(Field::Refs))), refs);
+        assert_eq!(p.ref_query, "main");
+        assert_eq!(p.filter.single_branch(), Some("HEAD"));
+        assert_eq!(p.rev().unwrap().oid, selected);
+    }
 }
 
 fn view_column(p: &mut LogPanel, column: display::Column, c: &Context) {
@@ -612,7 +687,7 @@ fn view_options_short_menus_scroll_hover_and_fit_an_offset_viewport() {
         };
         draw(&mut p, &mut t);
         key(&mut p, K::Char('o'), Mods::NONE, &c);
-        for _ in 0..6 {
+        for _ in 0..Item::Columns as usize {
             key(&mut p, K::Down, Mods::NONE, &c);
         }
         draw(&mut p, &mut t);
@@ -730,7 +805,7 @@ fn date_menu_lists_custom_range_before_relative_presets() {
         let mut t = Terminal::new(TestBackend::new(width, 24)).unwrap();
         for keyboard in [false, true] {
             render(&mut p, &mut t, &c);
-            let date = target(&p, |h| matches!(h, Hit::Filter(Toolbar(Field::Date))));
+            let date = target(&p, |h| matches!(h, Hit::Filter(Field::Date)));
             if keyboard {
                 key(&mut p, K::Char('d'), Mods::NONE, &c);
             } else {
@@ -770,7 +845,7 @@ fn date_presets_apply_by_mouse_and_keyboard_and_clear_independently() {
         let mut p = LogPanel::default();
         p.filter.author = "me".into();
         p.filter.branch = Some("HEAD".into());
-        p.filter.path = "first".into();
+        p.filter.paths = model::PathFilter::parse("first", &c).unwrap();
         p.refresh(&c).unwrap();
         key(&mut p, K::Char('d'), Mods::NONE, &c);
         if keyboard {
@@ -803,7 +878,7 @@ fn date_presets_apply_by_mouse_and_keyboard_and_clear_independently() {
         assert!(p.filter.date.is_none());
         assert_eq!(p.filter.author, "me");
         assert_eq!(p.filter.single_branch(), Some("HEAD"));
-        assert_eq!(p.filter.path, "first");
+        assert_eq!(p.filter.paths.text(&c).unwrap(), "first");
         assert_eq!(p.visible.len(), 1);
     }
 }
@@ -933,9 +1008,9 @@ fn date_range_rejects_invalid_drafts_and_restores_the_applied_range() {
     key(&mut p, K::Char('u'), Mods::CONTROL, &c);
     p.event(&Event::Paste("unfinished".into()), &c);
     render(&mut p, &mut t, &c);
-    let branch = target(&p, |h| matches!(h, Hit::Filter(Toolbar(Field::Branch))));
+    let branch = target(&p, |h| matches!(h, Hit::Filter(Field::Branch)));
     click_at(&mut p, branch, &c);
-    assert!(matches!(p.editor, Some((Toolbar(Field::Branch), _))));
+    assert!(matches!(p.editor, Some((Field::Branch, _))));
     assert!(p.date_range.is_none());
     assert_eq!(p.filter.date, expected);
 }
@@ -950,7 +1025,7 @@ fn branch_dropdown_opens_below_its_trigger() {
         let mut t = Terminal::new(TestBackend::new(width, 24)).unwrap();
         for keyboard in [false, true] {
             render(&mut p, &mut t, &c);
-            let branch = target(&p, |h| matches!(h, Hit::Filter(Toolbar(Field::Branch))));
+            let branch = target(&p, |h| matches!(h, Hit::Filter(Field::Branch)));
             assert!(row_text(&t, branch).starts_with("Branch"));
             if keyboard {
                 key(&mut p, K::Char('b'), Mods::NONE, &c);
@@ -969,23 +1044,23 @@ fn branch_dropdown_opens_below_its_trigger() {
 }
 
 #[test]
-fn rail_branch_dropdown_moves_to_the_toolbar_when_the_rail_disappears() {
+fn branch_dropdown_stays_anchored_to_the_toolbar_after_resize() {
     let d = init();
     let c = Context::discover(d.path()).unwrap();
     let mut p = LogPanel::default();
     let mut wide = Terminal::new(TestBackend::new(180, 24)).unwrap();
     render(&mut p, &mut wide, &c);
-    let rail = target(&p, |h| matches!(h, Hit::Filter(Rail(Field::Branch))));
-    click_at(&mut p, rail, &c);
+    let branch = target(&p, |h| matches!(h, Hit::Filter(Field::Branch)));
+    click_at(&mut p, branch, &c);
     render(&mut p, &mut wide, &c);
     assert_eq!(
         target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Surface))).as_position(),
-        (rail.x, rail.bottom()).into()
+        (branch.x, branch.bottom()).into()
     );
 
     let mut narrow = Terminal::new(TestBackend::new(80, 24)).unwrap();
     render(&mut p, &mut narrow, &c);
-    let branch = target(&p, |h| matches!(h, Hit::Filter(Toolbar(Field::Branch))));
+    let branch = target(&p, |h| matches!(h, Hit::Filter(Field::Branch)));
     assert_eq!(
         target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Surface))).as_position(),
         (branch.x, branch.bottom()).into()
@@ -1012,13 +1087,10 @@ fn outside_click_switches_dropdowns_and_discards_only_the_draft() {
     let mut t = Terminal::new(TestBackend::new(180, 30)).unwrap();
     for field in [Field::Branch, Field::Author, Field::Date, Field::Path] {
         render(&mut p, &mut t, &c);
-        let button = target(
-            &p,
-            |h| matches!(h, Hit::Filter(id) if *id == Toolbar(field)),
-        );
+        let button = target(&p, |h| matches!(h, Hit::Filter(id) if *id == field));
         click_at(&mut p, button, &c);
         assert!(
-            matches!(p.editor, Some((Toolbar(open), _)) if open == field),
+            matches!(p.editor, Some((open, _)) if open == field),
             "{}",
             field.label()
         );
@@ -1028,11 +1100,11 @@ fn outside_click_switches_dropdowns_and_discards_only_the_draft() {
         p.event(&Event::Paste("unfinished".into()), &c);
     }
     render(&mut p, &mut t, &c);
-    let paths = target(&p, |h| matches!(h, Hit::Filter(Toolbar(Field::Path))));
+    let paths = target(&p, |h| matches!(h, Hit::Filter(Field::Path)));
     click_at(&mut p, paths, &c);
     assert!(!p.editing());
     assert_eq!(p.filter.single_branch(), Some("HEAD"));
-    assert!(p.filter.author.is_empty() && p.filter.date.is_none() && p.filter.path.is_empty());
+    assert!(p.filter.author.is_empty() && p.filter.date.is_none() && p.filter.paths.is_empty());
 }
 
 #[test]
@@ -1046,7 +1118,7 @@ fn dropdown_surface_blocks_the_row_beneath_but_an_exposed_row_takes_the_first_cl
     let mut t = Terminal::new(TestBackend::new(180, 30)).unwrap();
     key(&mut p, K::Char('b'), Mods::NONE, &c);
     render(&mut p, &mut t, &c);
-    let branch = target(&p, |h| matches!(h, Hit::Filter(Toolbar(Field::Branch))));
+    let branch = target(&p, |h| matches!(h, Hit::Filter(Field::Branch)));
     let second = target(&p, |h| matches!(h, Hit::Commit(1)));
     assert_eq!(second.y, branch.bottom() + 1);
     // The popup border covers the second commit; its author is still exposed.
@@ -1106,7 +1178,7 @@ fn paths_root_checkboxes_filter_the_log_without_closing_or_changing_global_scope
 
     key(&mut p, K::Char('p'), Mods::NONE, &c);
     render(&mut p, &mut t, &c);
-    let web = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Choice(1))));
+    let web = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Choice(3))));
     assert!(row_text(&t, web).contains("web") && row_text(&t, web).contains(p.icons.check(true)));
     click_at(&mut p, web, &c);
     render(&mut p, &mut t, &c);
@@ -1162,7 +1234,7 @@ fn paths_menu_fits_eleven_roots_and_keeps_the_last_reachable_on_a_short_screen()
     for i in 0..11 {
         let row = target(
             &p,
-            |h| matches!(h, Hit::Dropdown(DropdownHit::Choice(n)) if *n == i),
+            |h| matches!(h, Hit::Dropdown(DropdownHit::Choice(n)) if *n == i + paths::COMMANDS.len()),
         );
         assert!(row_text(&wide, row).contains(&format!("[x] repo-{i:02}")));
         assert_eq!(wide.backend().buffer()[(row.x, row.y)].fg, repo_tint(i));
@@ -1170,9 +1242,9 @@ fn paths_menu_fits_eleven_roots_and_keeps_the_last_reachable_on_a_short_screen()
     click_at(&mut p, header, &c);
     render(&mut p, &mut wide, &c);
     assert!(row_text(&wide, header).contains("Roots  0/11"));
-    let user = target(&p, |h| matches!(h, Hit::Filter(Toolbar(Field::Author))));
+    let user = target(&p, |h| matches!(h, Hit::Filter(Field::Author)));
     click_at(&mut p, user, &c);
-    assert!(matches!(p.editor, Some((Toolbar(Field::Author), _))));
+    assert!(matches!(p.editor, Some((Field::Author, _))));
     assert!(p.filter.roots.as_ref().unwrap().is_empty());
     key(&mut p, K::Esc, Mods::NONE, &c);
 
@@ -1181,7 +1253,7 @@ fn paths_menu_fits_eleven_roots_and_keeps_the_last_reachable_on_a_short_screen()
     key(&mut p, K::Up, Mods::NONE, &c);
     key(&mut p, K::Char(' '), Mods::NONE, &c);
     render(&mut p, &mut short, &c);
-    let last = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Choice(10))));
+    let last = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Choice(12))));
     assert!(row_text(&short, last).contains("[x] repo-10"));
     key(&mut p, K::Enter, Mods::NONE, &c);
     assert_eq!(p.filter.roots.as_ref().unwrap(), &[10].into());
@@ -1204,7 +1276,7 @@ fn toolbar_queries_are_scoped_and_log_tabs_restore_the_selected_commit() {
     p.refresh(&c).unwrap();
     let mut t = Terminal::new(TestBackend::new(180, 42)).unwrap();
     render(&mut p, &mut t, &c);
-    let author = target(&p, |h| matches!(h, Hit::Filter(Toolbar(Field::Author))));
+    let author = target(&p, |h| matches!(h, Hit::Filter(Field::Author)));
     click_at(&mut p, author, &c);
     render(&mut p, &mut t, &c);
     let me = p.suggestions.iter().position(|(v, _)| v == "me").unwrap();

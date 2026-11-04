@@ -85,8 +85,52 @@ impl LogPanel {
                     ],
                 )
             })
-        } else if let Some((control, _)) = &self.editor {
-            let field = control.field();
+        } else if self.editing_paths() {
+            Some(match &self.path_dialog {
+                Some(paths::Dialog::Text(_)) => Section::new(
+                    "Log / Select Paths",
+                    &[
+                        ("Enter", "换行，每行输入一个相对路径"),
+                        ("Up", "光标移到上一行"),
+                        ("Down", "光标移到下一行"),
+                        ("Home", "光标移到行首"),
+                        ("End", "光标移到行尾"),
+                        ("Ctrl-u", "清空路径草稿"),
+                        ("F2", "应用输入的全部路径"),
+                        ("Ctrl-s", "应用输入的全部路径"),
+                        ("Ctrl-Enter", "应用输入的全部路径"),
+                        ("Esc", "取消输入，保留原筛选"),
+                    ],
+                ),
+                Some(paths::Dialog::Tree(_)) => Section::new(
+                    "Log / Select in Tree",
+                    &[
+                        ("j", "移到下一行"),
+                        ("k", "移到上一行"),
+                        ("l", "展开目录或移到子项"),
+                        ("h", "收起目录或移到父项"),
+                        ("Space", "勾选或取消此仓库、目录或文件"),
+                        ("PgDn", "向下翻页"),
+                        ("PgUp", "向上翻页"),
+                        ("Enter", "应用树中勾选的路径"),
+                        ("Esc", "放弃此次勾选"),
+                    ],
+                ),
+                None => Section::new(
+                    "Log / Paths 筛选",
+                    &[
+                        ("/", "输入仓库名或路径快速查找"),
+                        ("Down", "选择下一项"),
+                        ("Up", "选择上一项"),
+                        ("Enter", "打开选择器、应用输入或完成仓库勾选"),
+                        ("Space", "打开选择器或切换当前仓库"),
+                        ("Ctrl-a", "全选或取消当前列出的仓库"),
+                        ("Ctrl-u", "清空菜单里的快速查找"),
+                        ("Esc", "关闭 Paths 菜单"),
+                    ],
+                ),
+            })
+        } else if let Some((field, _)) = self.editor {
             let title = match field {
                 Field::Refs => "Log / 分支搜索",
                 Field::Text => "Log / 文本搜索",
@@ -134,14 +178,6 @@ impl LogPanel {
                 content.sections.push(Section::new(
                     "文本匹配",
                     &[("Alt-r", "切换正则表达式匹配"), ("Alt-c", "切换大小写敏感")],
-                ));
-            } else if field == Field::Path {
-                content.sections.push(Section::new(
-                    "仓库与路径范围",
-                    &[
-                        ("Space", "勾选或取消当前仓库候选"),
-                        ("Ctrl-a", "切换菜单内全部仓库的勾选"),
-                    ],
                 ));
             }
             return content;
@@ -234,7 +270,7 @@ impl LogPanel {
                     ("p", "打开 Paths 筛选"),
                     ("x", "清除当前 Log 页的全部筛选"),
                     ("o", "打开 Show / Highlight 显示选项"),
-                    ("B", "显示或隐藏左侧分支栏"),
+                    ("B", "显示或隐藏 Branch or Tag 分支栏"),
                     ("I", "显示或隐藏右侧检查栏"),
                     ("[", "切换到上一个 Log 页"),
                     ("]", "切换到下一个 Log 页"),

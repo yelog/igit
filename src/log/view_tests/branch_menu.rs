@@ -156,9 +156,9 @@ fn hover_cascades_star_is_independent_of_filter_and_survives_reopening() {
     assert!(p.filter.branch.is_none());
     assert_eq!(item(&p, &t, "origin/antv-version", child_row), leaf);
     assert!(row_text(&t, leaf).contains('★'));
-    let user = target(&p, |h| matches!(h, Hit::Filter(Toolbar(Field::Author))));
+    let user = target(&p, |h| matches!(h, Hit::Filter(Field::Author)));
     click_at(&mut p, user, &c);
-    assert!(matches!(p.editor, Some((Toolbar(Field::Author), _))));
+    assert!(matches!(p.editor, Some((Field::Author, _))));
     let mut reopened = LogPanel::default();
     reopened.refresh(&c).unwrap();
     key(&mut reopened, K::Char('b'), Mods::NONE, &c);
