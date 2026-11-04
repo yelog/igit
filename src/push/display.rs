@@ -5,6 +5,16 @@ use ratatui::widgets::{Block, BorderType, Borders};
 use unicode_width::UnicodeWidthStr;
 
 impl PushPanel {
+    pub(crate) fn hover_group_at(&mut self, x: u16, y: u16) -> bool {
+        let Some(current) = self.group_menu else {
+            return false;
+        };
+        if let Some(Hit::Group(item)) = self.hit_at(x, y) {
+            self.group_menu = Some(item);
+            return item != current;
+        }
+        false
+    }
     pub(crate) fn dismiss_group_menu(&mut self) {
         self.group_menu = None;
     }
@@ -56,7 +66,9 @@ impl PushPanel {
                 (MouseEventKind::Down(MouseButton::Left), Some(Hit::Group(item))) => {
                     self.toggle_group(item, c)
                 }
-                (MouseEventKind::Moved, Some(Hit::Group(item))) => self.group_menu = Some(item),
+                (MouseEventKind::Moved, _) => {
+                    self.hover_group_at(m.column, m.row);
+                }
                 (MouseEventKind::ScrollDown, Some(Hit::Group(_) | Hit::MenuSurface)) => {
                     self.group_menu = Some(step(1))
                 }

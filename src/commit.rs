@@ -677,7 +677,9 @@ impl Panel for CommitPanel {
         }
     }
     fn draw(&mut self, f: &mut Frame, a: Rect, c: &Context) {
-        self.draw_with_cursor(f, a, c, true);
+        self.poll_ai();
+        self.draw_content(f, a, c);
+        self.draw_overlays(f, a, c, true);
     }
     fn tick(&mut self, _c: &Context) -> Action {
         let pending = self.ai_pending.is_some();
@@ -983,12 +985,16 @@ impl Panel for CommitPanel {
     }
 }
 impl CommitPanel {
-    pub(crate) fn draw_with_cursor(&mut self, f: &mut Frame, a: Rect, c: &Context, cursor: bool) {
-        self.poll_ai();
+    pub(crate) fn overlay_at(&self, x: u16, y: u16) -> bool {
+        self.edit.is_some() || self.view_menu.is_some_and(|m| inside(m.area, x, y))
+    }
+    pub(crate) fn draw_content(&mut self, f: &mut Frame, a: Rect, c: &Context) {
         self.draw_workbench(f, a, c);
         if self.diff.is_empty() {
             self.diff_selection.reset();
         }
+    }
+    pub(crate) fn draw_overlays(&mut self, f: &mut Frame, a: Rect, c: &Context, cursor: bool) {
         if self.edit.is_some() {
             self.draw_edit(f, a, c, cursor);
         }

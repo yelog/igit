@@ -7,7 +7,7 @@ IGit 是独立的多仓 Git 终端工作台，`igit` 和 `ig` 进入同一应用
 | 本次任务 | 先读 | 从哪里动手 |
 | --- | --- | --- |
 | 确认范围、优先级、验收条件 | [产品需求 PRD](docs/prd.md) | 对照“已实现”和“待验收”；新需求先确定涉及哪个仓库、哪些文件、是否写入。 |
-| 调整布局、鼠标命中或 Vim 快捷键 | [交互设计](docs/design.md) · [四屏总览](docs/reference/IGit-Overview.png) | 一般从对应面板的 `draw`、`event` 和点击区域入手；全局快捷键在 [shell.rs](src/shell.rs)。 |
+| 调整布局、鼠标命中或 Vim 快捷键 | [交互设计](docs/design.md) · [工作区实图](docs/reference/IGit-Split-Workspace.png) | 分屏与 Push/Merge 弹窗的几何和鼠标路由在 [workspace.rs](src/shell/workspace.rs)；面板内部看各自的 `draw`、`event`，全局快捷键在 [shell.rs](src/shell.rs)。 |
 | 修改 Git 命令、状态或跨仓操作 | [架构](docs/architecture.md) | [core.rs](src/core.rs) 负责仓库发现和共享 Git 调用；事务细节在各面板的实现里。 |
 | 启动、体验操作或配置 AI | [README](README.md) | 使用本地演练工作区；无需连接外部仓库或配置模型。 |
 

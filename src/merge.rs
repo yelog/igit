@@ -178,6 +178,10 @@ fn offset_glyphs(line: &str, offset: usize) -> String {
         .collect()
 }
 impl MergePanel {
+    pub(crate) fn at_root(&self) -> bool {
+        self.doc.is_none() && self.edit.is_none()
+    }
+
     /// Shared cancellation for Shell overlays and the panel's input transitions.
     pub(crate) fn cancel_key_sequence(&mut self) {
         self.prefix = None;

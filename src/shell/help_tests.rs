@@ -1,64 +1,8 @@
-use super::*;
+use super::{test_support::*, *};
 use crate::core::git;
 use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::backend::{Backend, TestBackend};
-use std::{fs, path::Path};
-
-fn key(code: KeyCode) -> Event {
-    Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
-}
-
-fn fixture() -> (tempfile::TempDir, Shell) {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = dir.path().join("repo");
-    fs::create_dir(&repo).unwrap();
-    git(&repo, &["init", "-q", "-b", "main"]).unwrap();
-    fs::write(repo.join("mixed.txt"), "base\n").unwrap();
-    fs::write(repo.join("other.txt"), "base\n").unwrap();
-    git(&repo, &["add", "."]).unwrap();
-    git(
-        &repo,
-        &[
-            "-c",
-            "user.name=Help tester",
-            "-c",
-            "user.email=help@example.invalid",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--no-gpg-sign",
-            "-qm",
-            "base",
-        ],
-    )
-    .unwrap();
-    fs::write(repo.join("mixed.txt"), "staged\n").unwrap();
-    fs::write(repo.join("other.txt"), "unselected staged\n").unwrap();
-    git(&repo, &["add", "."]).unwrap();
-    fs::write(repo.join("mixed.txt"), "working tree\n").unwrap();
-    let mut ctx = Context::discover(&repo).unwrap();
-    ctx.state_dir = dir.path().join("state");
-    (dir, Shell::new(ctx, IconMode::Ascii))
-}
-
-fn screen(app: &mut Shell, width: u16, height: u16) -> String {
-    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-    terminal.draw(|f| app.draw(f)).unwrap();
-    let buffer = terminal.backend().buffer();
-    (0..height)
-        .map(|y| {
-            let mut line = String::new();
-            let mut x = 0;
-            while x < width {
-                let symbol = buffer[(x, y)].symbol();
-                line.push_str(symbol);
-                x += symbol.width().max(1) as u16;
-            }
-            line
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
+use std::fs;
 
 fn context(app: &Shell) -> &'static str {
     match &app.pop {
@@ -89,24 +33,12 @@ fn check_context(app: &mut Shell, expected: &str) {
     assert!(app.pop.is_none());
 }
 
-fn snapshot(repo: &Path) -> Vec<String> {
-    [
-        vec!["rev-parse", "HEAD"],
-        vec!["ls-files", "--stage"],
-        vec!["diff", "--binary"],
-        vec!["status", "--porcelain=v1"],
-    ]
-    .into_iter()
-    .map(|args| git(repo, &args).unwrap())
-    .collect()
-}
-
 #[test]
 fn text_selection_mouse_release_copies_without_shortcut_and_keeps_message_caret() {
     let (_dir, mut app) = fixture();
     let capture = clipboard::CopyCapture::start();
     let before = snapshot(&app.ctx.repos[0].path);
-    app.go(1);
+    app.go(Split(Commit));
     screen(&mut app, 120, 36);
     app.dispatch(&key(KeyCode::Char('i')));
     let first = "auto 中文 copy";
@@ -163,12 +95,12 @@ fn text_selection_mouse_release_copies_without_shortcut_and_keeps_message_caret(
 }
 
 #[test]
-fn text_selection_click_after_copy_does_not_copy_again_when_notice_reflows() {
+fn text_selection_click_after_copy_survives_notice_clear_and_resize() {
     let (_dir, mut app) = fixture();
     let capture = clipboard::CopyCapture::start();
     let before = snapshot(&app.ctx.repos[0].path);
     for (width, height) in [(120, 35), (80, 25), (44, 13)] {
-        app.go(1);
+        app.go(Split(Commit));
         screen(&mut app, width, height);
         app.dispatch(&key(KeyCode::Char('i')));
         app.dispatch(&Event::Paste("first line\nsecond line\nthird line".into()));
@@ -201,9 +133,8 @@ fn text_selection_click_after_copy_does_not_copy_again_when_notice_reflows() {
         let (x, y) = find(screen(&mut app, width, height), "second line");
         app.dispatch(&mouse(MouseEventKind::Down(MouseButton::Left), x + 2, y));
         assert!(app.msg.is_empty());
-        // The real event loop repaints after Down: clearing the notice moves
-        // the editor before Up arrives at the same physical mouse position.
-        screen(&mut app, width, height);
+        // Moving the editor between Down and Up must still count as a click.
+        screen(&mut app, width, height + 2);
         app.dispatch(&mouse(MouseEventKind::Up(MouseButton::Left), x + 2, y));
         assert_eq!(
             capture.texts().len(),
@@ -250,7 +181,7 @@ fn text_selection_ctrl_c_copies_before_quit_and_help_preserves_the_editor_select
     assert!(matches!(app.pop, Some(Popup::Confirm { .. })));
     app.dispatch(&key(KeyCode::Esc));
 
-    app.go(1);
+    app.go(Split(Commit));
     screen(&mut app, 80, 24);
     app.dispatch(&key(KeyCode::Char('i')));
     let text = "编辑说明 中文 e\u{301} 👩‍💻\n保留原始换行\n";
@@ -299,21 +230,21 @@ fn help_tracks_keyboard_focus_across_log_commit_and_push_without_changing_git() 
         check_context(&mut app, title);
         app.dispatch(&key(KeyCode::Tab));
     }
-    app.go(1);
+    app.go(Split(Commit));
     check_context(&mut app, "Commit / 变更清单");
     app.dispatch(&key(KeyCode::Char('v')));
     app.dispatch(&key(KeyCode::Tab));
     check_context(&mut app, "Commit / 预览");
     app.dispatch(&key(KeyCode::Tab));
     check_context(&mut app, "Commit / 提交说明");
-    app.go(2);
+    app.go(Dialog(Push));
     check_context(&mut app, "Push / 仓库与提交");
     app.dispatch(&key(KeyCode::Tab));
     check_context(&mut app, "Push / 变更文件");
     app.dispatch(&key(KeyCode::Char('d')));
     app.dispatch(&key(KeyCode::Tab));
     check_context(&mut app, "Push / Diff 与详情");
-    app.go(3);
+    app.go(Dialog(Merge));
     check_context(&mut app, "Merge / 冲突文件");
     assert_eq!(snapshot(&repo), before);
 }
@@ -330,7 +261,7 @@ fn help_header_click_preserves_mouse_focus_and_text_input() {
             modifiers: KeyModifiers::NONE,
         })
     };
-    app.dispatch(&click(117, 5));
+    app.dispatch(&click(117, app.regions.log.y + 3));
     let help_button = app.tools.iter().find(|(_, n)| *n == 1).unwrap().0;
     app.dispatch(&click(help_button.x, help_button.y));
     assert_eq!(context(&app), "Log / 文件树");
@@ -353,7 +284,7 @@ fn help_header_click_preserves_mouse_focus_and_text_input() {
 fn help_f1_in_commit_editor_keeps_draft_focus_and_blocks_underlying_shortcuts() {
     let (_dir, mut app) = fixture();
     let before_git = snapshot(&app.ctx.repos[0].path);
-    app.go(1);
+    app.go(Split(Commit));
     app.dispatch(&key(KeyCode::Char('i')));
     app.dispatch(&Event::Paste("我的草稿 ?12".into()));
     let before = screen(&mut app, 80, 24);
@@ -378,7 +309,7 @@ fn help_f1_in_commit_editor_keeps_draft_focus_and_blocks_underlying_shortcuts() 
     }
     app.dispatch(&Event::Paste("help only".into()));
     app.dispatch(&key(KeyCode::Enter));
-    assert_eq!(app.tab, 1);
+    assert_eq!(app.surface(), Split(Commit));
     assert!(!app.quit);
     assert!(matches!(app.pop, Some(Popup::Help { .. })));
     app.dispatch(&key(KeyCode::Esc));
@@ -403,7 +334,7 @@ fn help_restores_roots_review_and_workspace_input_exactly_after_closing() {
                 title: "保留审查".into(),
                 body: "待审查正文".into(),
                 token: "__quit".into(),
-                owner: 1,
+                owner: Split(Commit),
                 scroll: 7,
                 yes: true,
             },
@@ -438,7 +369,7 @@ fn help_restores_roots_review_and_workspace_input_exactly_after_closing() {
             }) => {
                 assert_eq!(*scroll, 7);
                 assert!(*yes);
-                assert_eq!(*owner, 1);
+                assert_eq!(*owner, Split(Commit));
             }
             Some(Popup::Open { path }) => assert_eq!(path, "/temporary/my draft"),
             _ => panic!("origin was not restored"),
@@ -501,7 +432,7 @@ fn help_follows_all_merge_columns_and_preserves_the_result_editor() {
     let mut ctx = Context::discover(repo).unwrap();
     ctx.state_dir = repo.join("state");
     let mut app = Shell::new(ctx, IconMode::Ascii);
-    app.go(3);
+    app.go(Dialog(Merge));
     app.dispatch(&key(KeyCode::Enter));
     for expected in ["Merge / 合并结果", "Merge / 右侧来源", "Merge / 左侧来源"] {
         check_context(&mut app, expected);
@@ -534,7 +465,7 @@ fn help_focuses_search_immediately_over_the_commit_editor_and_restores_it() {
         }
         assert_eq!(terminal.backend(), &expected);
     };
-    app.go(1);
+    app.go(Split(Commit));
     app.dispatch(&key(KeyCode::Char('i')));
     terminal.draw(|f| app.draw(f)).unwrap();
     assert_cursor(&terminal, true);
@@ -599,8 +530,8 @@ fn help_enter_executes_navigation_filters_and_global_panel_switches() {
     run_help(&mut app, "打开 Date 筛选");
     assert_eq!(app.log.keymap().context(), "Log / Date 筛选");
     app.dispatch(&key(KeyCode::Esc));
-    run_help(&mut app, "切换到 Commit");
-    assert_eq!(app.tab, 1);
+    run_help(&mut app, "聚焦上半区 Commit");
+    assert_eq!(app.surface(), Split(Commit));
     assert!(app.pop.is_none());
     assert_eq!(snapshot(&repo), before);
 }
@@ -618,7 +549,7 @@ fn help_enter_runs_the_selected_candidate_after_down_and_keeps_typing_in_search(
     app.dispatch(&key(KeyCode::Enter));
     assert!(app.pop.is_none());
     assert!(!app.log.editing());
-    app.go(1);
+    app.go(Split(Commit));
     run_help(&mut app, "编辑当前仓库的提交说明");
     assert!(app.commit.editing());
     app.dispatch(&Event::Paste("原始草稿".into()));
@@ -633,7 +564,7 @@ fn help_enter_runs_the_selected_candidate_after_down_and_keeps_typing_in_search(
 fn help_enter_opens_commit_review_and_cancel_preserves_head_index_and_worktree() {
     let (_dir, mut app) = fixture();
     let before = snapshot(&app.ctx.repos[0].path);
-    app.go(1);
+    app.go(Split(Commit));
     app.dispatch(&key(KeyCode::Char('i')));
     app.dispatch(&Event::Paste("review from keymap".into()));
     app.dispatch(&key(KeyCode::F(2)));
@@ -672,7 +603,7 @@ fn help_executes_against_the_restored_roots_and_confirmation_dialogs() {
 #[test]
 fn help_revalidates_the_origin_before_replaying_a_shortcut() {
     let (_dir, mut app) = fixture();
-    app.go(1);
+    app.go(Split(Commit));
     app.dispatch(&key(KeyCode::F(1)));
     // A background result can open an editor while Help still owns the input.
     app.commit.event(&key(KeyCode::Char('i')), &app.ctx);
@@ -688,7 +619,7 @@ fn help_revalidates_the_origin_before_replaying_a_shortcut() {
 fn help_executes_commit_view_options_against_the_active_menu() {
     let (_dir, mut app) = fixture();
     let before = snapshot(&app.ctx.repos[0].path);
-    app.go(1);
+    app.go(Split(Commit));
     run_help(&mut app, "打开 View Options");
     assert_eq!(app.commit.keymap().context(), "Commit / 显示选项");
     check_context(&mut app, "Commit / 显示选项");
@@ -701,9 +632,9 @@ fn help_executes_commit_view_options_against_the_active_menu() {
 }
 
 #[test]
-fn help_executes_push_grouping_and_header_click_dismisses_it() {
+fn help_executes_push_grouping_and_window_close_preserves_it() {
     let (_dir, mut app) = fixture();
-    app.go(2);
+    app.go(Dialog(Push));
     run_help(&mut app, "打开 Group By");
     check_context(&mut app, "Push / 文件分组");
     run_help(&mut app, "切换当前分组");
@@ -715,17 +646,17 @@ fn help_executes_push_grouping_and_header_click_dismisses_it() {
     );
     app.dispatch(&key(KeyCode::Char('p')));
     app.dispatch(&key(KeyCode::Char('1')));
-    assert!(app.pop.is_none() && app.tab == 2 && app.push.editing());
-    let tab = app.tabs[1];
+    assert!(app.pop.is_none() && app.surface() == Dialog(Push) && app.push.editing());
+    let close = app.regions.close;
     app.dispatch(&Event::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        column: tab.x,
-        row: tab.y,
+        column: close.x,
+        row: close.y,
         modifiers: KeyModifiers::NONE,
     }));
-    assert_eq!(app.tab, 1);
+    assert_eq!(app.surface(), Split(Log));
     assert!(!app.push.editing());
-    app.go(2);
+    app.go(Dialog(Push));
     app.dispatch(&key(KeyCode::Char('o')));
     assert!(screen(&mut app, 80, 24).contains("[ ] Directory"));
 }

@@ -121,12 +121,13 @@ impl CommitPanel {
         let inner = panel.inner(area).inner(Margin::new(1, 0));
         f.render_widget(panel, area);
         let narrow = inner.width < 70;
+        let separate_options = narrow && inner.height >= 7;
         let [bar, tree, rule, message, options, actions] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Fill(1),
+            Constraint::Length(u16::from(inner.height >= 7)),
             Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(u16::from(narrow)),
+            Constraint::Length(u16::from(separate_options)),
             Constraint::Length(1),
         ])
         .areas(inner);
@@ -200,7 +201,7 @@ impl CommitPanel {
         self.hit_button(f, actions, &mut x, "Commit…", Hit::Submit(false));
         self.hit_button(f, actions, &mut x, "Commit & Push…", Hit::Submit(true));
         let submit_end = x;
-        let options = if narrow {
+        let options = if separate_options {
             x = options.x;
             options
         } else {
@@ -259,12 +260,12 @@ impl CommitPanel {
             .min(usize::from(rule.width.saturating_sub(2))) as u16;
         let r = if actions
             .right()
-            .saturating_sub(if narrow { submit_end } else { x })
+            .saturating_sub(if separate_options { submit_end } else { x })
             > w
         {
             Rect::new(actions.right() - w, actions.y, w, 1)
         } else {
-            Rect::new(rule.right() - w, rule.y, w, 1)
+            Rect::new(rule.right() - w, rule.y, w, rule.height)
         };
         word(f, r, &fit(&status, usize::from(w)), fg(DIM));
         if let Some(hint) = self.hover {

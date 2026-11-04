@@ -1,3 +1,10 @@
+mod workspace;
+
+use self::{
+    Surface::{Dialog, Split},
+    ToolWindow::{Merge, Push},
+    WorkspacePane::{Commit, Log},
+};
 use crate::{
     commit::CommitPanel,
     core::{Context, Repo},
@@ -25,9 +32,9 @@ use crossterm::{
 use ratatui::{
     backend::CrosstermBackend,
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Clear, Paragraph, Wrap},
     Frame, Terminal,
 };
 use std::{
@@ -38,8 +45,22 @@ use std::{
     time::{Duration, Instant},
 };
 use unicode_width::UnicodeWidthStr;
-const NAMES: [&str; 4] = ["Log", "Commit", "Push", "Merge"];
-const PANEL_ICONS: [Icon; 4] = [Icon::Log, Icon::Commit, Icon::Push, Icon::Merge];
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkspacePane {
+    Log,
+    Commit,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolWindow {
+    Push,
+    Merge,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Surface {
+    Split(WorkspacePane),
+    Dialog(ToolWindow),
+}
+const SHORTCUTS: [Surface; 4] = [Split(Log), Split(Commit), Dialog(Push), Dialog(Merge)];
 const HEADER: &str = "IGit 0.1.0 — terminal Git workbench";
 const HELP: &str = "Usage: igit [OPTIONS] [DIRECTORY]  (alias: ig)
 
@@ -48,7 +69,7 @@ const HELP: &str = "Usage: igit [OPTIONS] [DIRECTORY]  (alias: ig)
   -h, --help                 show this help
   -V, --version              print version
 
-1 Log   2 Commit   3 Push   4 Merge   r repositories   ? / F1 help   q quit
+Focus: 1 Git Log / 2 Commit   Dialogs: 3 Push / 4 Merge   r repositories   ? / F1 help   q quit
 Runs Git on your local working trees; mutations require a reviewed confirmation.";
 enum Popup {
     Scope {
@@ -66,7 +87,7 @@ enum Popup {
         title: String,
         body: String,
         token: String,
-        owner: usize,
+        owner: Surface,
         scroll: u16,
         yes: bool,
     },
@@ -82,15 +103,16 @@ struct Shell {
     commit: CommitPanel,
     push: PushPanel,
     merge: MergePanel,
-    tab: usize,
+    focus: WorkspacePane,
+    tool: Option<ToolWindow>,
+    remote_refs_changed: bool,
     pop: Option<Popup>,
     msg: String,
     journal: Vec<String>,
     quit: bool,
-    tabs: [Rect; NAMES.len()],
+    regions: workspace::Regions,
     tools: Vec<(Rect, u8)>,
     pop_hits: Vec<(Rect, usize)>,
-    mode_active: bool,
     key_picker: KeySequencePicker,
 }
 impl Shell {
@@ -102,15 +124,16 @@ impl Shell {
             commit: Default::default(),
             push: Default::default(),
             merge: Default::default(),
-            tab: 0,
+            focus: Log,
+            tool: None,
+            remote_refs_changed: false,
             pop: None,
             msg: "".into(),
             journal: vec![],
             quit: false,
-            tabs: [Rect::default(); NAMES.len()],
+            regions: Default::default(),
             tools: vec![],
             pop_hits: vec![],
-            mode_active: false,
             key_picker: KeySequencePicker::default(),
         };
         s.log.icons = icons;
@@ -120,21 +143,24 @@ impl Shell {
         s.refresh();
         s
     }
+    fn surface(&self) -> Surface {
+        self.tool.map_or(Split(self.focus), Dialog)
+    }
     fn panel(&self) -> &dyn Panel {
-        match self.tab {
-            0 => &self.log,
-            1 => &self.commit,
-            2 => &self.push,
-            _ => &self.merge,
+        match self.surface() {
+            Split(Log) => &self.log,
+            Split(Commit) => &self.commit,
+            Dialog(Push) => &self.push,
+            Dialog(Merge) => &self.merge,
         }
     }
     fn key_sequence(&self) -> Option<KeySequence> {
         if self.pop.is_some() || self.ctx.repos.is_empty() {
             return None;
         }
-        match self.tab {
-            0 => self.log.key_sequence(),
-            3 => self.merge.key_sequence(),
+        match self.surface() {
+            Split(Log) => self.log.key_sequence(),
+            Dialog(Merge) => self.merge.key_sequence(),
             _ => None,
         }
     }
@@ -143,13 +169,13 @@ impl Shell {
         self.merge.cancel_key_sequence();
         self.key_picker = KeySequencePicker::default();
     }
-    fn panel_event(&mut self, ev: &Event) {
+    fn panel_event(&mut self, surface: Surface, ev: &Event) {
         let before = self.key_sequence();
-        let action = match self.tab {
-            0 => self.log.event(ev, &self.ctx),
-            1 => self.commit.event(ev, &self.ctx),
-            2 => self.push.event(ev, &self.ctx),
-            _ => self.merge.event(ev, &self.ctx),
+        let action = match surface {
+            Split(Log) => self.log.event(ev, &self.ctx),
+            Split(Commit) => self.commit.event(ev, &self.ctx),
+            Dialog(Push) => self.push.event(ev, &self.ctx),
+            Dialog(Merge) => self.merge.event(ev, &self.ctx),
         };
         self.action(action);
         let after = self.key_sequence();
@@ -163,16 +189,27 @@ impl Shell {
     }
     fn refresh(&mut self) {
         self.cancel_key_sequences();
-        let r = match self.tab {
-            0 => self.log.refresh(&self.ctx),
-            1 => {
-                for &root in &self.ctx.scope {
-                    self.ctx.repos[root].refresh_branch();
-                }
-                self.commit.refresh(&self.ctx)
-            }
-            2 => self.push.refresh(&self.ctx),
-            _ => self.merge.refresh(&self.ctx),
+        for &root in &self.ctx.scope {
+            self.ctx.repos[root].refresh_branch();
+        }
+        if let Err(e) = self.commit.refresh(&self.ctx) {
+            self.notice(format!("Commit: {e:#}"));
+        }
+        self.refresh_log();
+        if let Some(tool) = self.tool {
+            self.refresh_tool(tool);
+        }
+    }
+    fn refresh_log(&mut self) {
+        self.remote_refs_changed = false;
+        if let Err(e) = self.log.refresh(&self.ctx) {
+            self.notice(format!("Log: {e:#}"));
+        }
+    }
+    fn refresh_tool(&mut self, tool: ToolWindow) {
+        let r = match tool {
+            Push => self.push.refresh(&self.ctx),
+            Merge => self.merge.refresh(&self.ctx),
         };
         if let Err(e) = r {
             self.notice(format!("{e:#}"))
@@ -185,11 +222,23 @@ impl Shell {
             self.journal.remove(0);
         }
     }
-    fn go(&mut self, n: usize) {
+    fn go(&mut self, surface: Surface) {
         self.cancel_key_sequences();
-        self.tab = n.min(3);
         self.msg.clear();
-        self.refresh()
+        match surface {
+            Split(pane) => {
+                self.focus = pane;
+                self.tool = None;
+            }
+            Dialog(_) if self.ctx.repos.is_empty() => {
+                self.notice("当前工作区没有 Git 仓库".into());
+            }
+            Dialog(tool) if self.tool != Some(tool) => {
+                self.tool = Some(tool);
+                self.refresh_tool(tool);
+            }
+            Dialog(_) => (),
+        }
     }
     fn action(&mut self, a: Action) {
         match a {
@@ -203,14 +252,14 @@ impl Shell {
                 self.refresh();
                 self.notice(s)
             }
-            Action::Go(n) => self.go(n),
+            Action::Go(n) => self.go(SHORTCUTS[n.min(3)]),
             Action::Confirm { title, body, token } => {
                 self.cancel_key_sequences();
                 self.pop = Some(Popup::Confirm {
                     title,
                     body,
                     token,
-                    owner: self.tab,
+                    owner: self.surface(),
                     scroll: 0,
                     yes: false,
                 })
@@ -223,16 +272,15 @@ impl Shell {
                 if !repos.is_empty() {
                     self.push.reseed = Some(repos)
                 }
+                self.refresh();
                 if push {
-                    self.go(2)
-                } else {
-                    self.refresh()
+                    self.go(Dialog(Push))
                 }
                 self.notice(message)
             }
         }
     }
-    fn confirm(&mut self, owner: usize, token: &str) {
+    fn confirm(&mut self, owner: Surface, token: &str) {
         if token == "__quit" {
             self.quit = true;
             return;
@@ -242,10 +290,10 @@ impl Shell {
             return;
         }
         let a = match owner {
-            0 => self.log.confirm(token, &self.ctx),
-            1 => self.commit.confirm(token, &self.ctx),
-            2 => self.push.confirm(token, &self.ctx),
-            _ => self.merge.confirm(token, &self.ctx),
+            Split(Log) => self.log.confirm(token, &self.ctx),
+            Split(Commit) => self.commit.confirm(token, &self.ctx),
+            Dialog(Push) => self.push.confirm(token, &self.ctx),
+            Dialog(Merge) => self.merge.confirm(token, &self.ctx),
         };
         self.action(a)
     }
@@ -259,7 +307,7 @@ impl Shell {
             title: "退出 IGit？".into(),
             body: "关闭终端工作台。未保存的编辑可能丢失；已完成的 Git 操作会保留。".into(),
             token: "__quit".into(),
-            owner: self.tab,
+            owner: self.surface(),
             scroll: 0,
             yes: false,
         })
@@ -280,7 +328,7 @@ impl Shell {
             4 => self.pop = Some(Popup::Journal),
             5 => {
                 self.refresh();
-                self.notice("面板已刷新 / Refreshed".into())
+                self.notice("工作区已刷新 / Refreshed".into())
             }
             _ => (),
         }
@@ -347,12 +395,18 @@ impl Shell {
             ),
             Some(Popup::Help { .. }) => unreachable!("help content describes the origin"),
             None => {
-                let mut content = match self.tab {
-                    0 => self.log.keymap(),
-                    1 => self.commit.keymap(),
-                    2 => self.push.keymap(),
-                    _ => self.merge.keymap(),
+                let mut content = match self.surface() {
+                    Split(Log) => self.log.keymap(),
+                    Split(Commit) => self.commit.keymap(),
+                    Dialog(Push) => self.push.keymap(),
+                    Dialog(Merge) => self.merge.keymap(),
                 };
+                if self.tool_at_root() {
+                    content.sections.push(HelpSection::new(
+                        "操作窗口",
+                        &[("Esc", "关闭弹窗，返回原分屏")],
+                    ));
+                }
                 if !self.panel().editing() {
                     content.sections.push(global_section());
                 }
@@ -374,7 +428,7 @@ impl Shell {
     }
     fn menu_action(&mut self, row: usize) {
         match row {
-            0..=3 => self.go(row),
+            0..=3 => self.go(SHORTCUTS[row]),
             4 => self.global(0),
             5 => self.global(5),
             6 => {
@@ -571,13 +625,12 @@ impl Shell {
             }
         };
     }
-    fn prepare_header_click(&mut self) -> bool {
-        if self.tab == 0 {
-            self.log.dismiss_filter_dropdown();
-        } else if self.tab == 1 {
-            self.commit.dismiss_view_menu();
-        } else if self.tab == 2 {
-            self.push.dismiss_group_menu();
+    fn can_leave_panel(&mut self) -> bool {
+        match self.surface() {
+            Split(Log) => self.log.dismiss_filter_dropdown(),
+            Split(Commit) => self.commit.dismiss_view_menu(),
+            Dialog(Push) => self.push.dismiss_group_menu(),
+            Dialog(Merge) => (),
         }
         !self.panel().editing()
     }
@@ -603,16 +656,16 @@ impl Shell {
                     return;
                 }
                 SequenceEvent::Run(suffix) => {
-                    self.panel_event(&Event::Key(KeyEvent::new(
-                        KeyCode::Char(suffix),
-                        KeyModifiers::NONE,
-                    )));
+                    self.panel_event(
+                        self.surface(),
+                        &Event::Key(KeyEvent::new(KeyCode::Char(suffix), KeyModifiers::NONE)),
+                    );
                     return;
                 }
                 SequenceEvent::Pass => (),
             }
         }
-        if self.tab <= 1
+        if self.tool.is_none()
             && matches!(
                 ev,
                 Event::Key(_)
@@ -626,25 +679,8 @@ impl Shell {
             self.msg.clear();
         }
         if let Event::Mouse(m) = ev {
-            if m.kind == MouseEventKind::Down(MouseButton::Left) {
-                if let Some(i) = self.tabs.iter().position(|r| inside(*r, m.column, m.row)) {
-                    if self.prepare_header_click() {
-                        self.go(i)
-                    } else {
-                        self.notice("先确认或退出当前输入 (Esc)".into())
-                    }
-                    return;
-                }
-                if let Some((_, n)) = self.tools.iter().find(|(r, _)| inside(*r, m.column, m.row)) {
-                    let n = *n;
-                    if n == 1 {
-                        self.open_help();
-                    } else if self.prepare_header_click() {
-                        self.global(n)
-                    }
-                    return;
-                }
-            }
+            self.workspace_mouse(m);
+            return;
         }
         if let Event::Key(k) = ev {
             let editing = self.panel().editing();
@@ -654,8 +690,12 @@ impl Shell {
                     .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL)
             {
                 match k.code {
+                    KeyCode::Esc if self.tool_at_root() => {
+                        self.go(Split(self.focus));
+                        return;
+                    }
                     KeyCode::Char(ch @ '1'..='4') => {
-                        self.go((ch as u8 - b'1') as usize);
+                        self.go(SHORTCUTS[(ch as u8 - b'1') as usize]);
                         return;
                     }
                     KeyCode::Char('r') => {
@@ -690,23 +730,34 @@ impl Shell {
                 return;
             }
         }
-        self.panel_event(ev)
+        if !self.ctx.repos.is_empty() {
+            self.panel_event(self.surface(), ev);
+        }
     }
     fn poll(&mut self) -> bool {
         let mut change = self.key_picker.poll(Instant::now());
-        if self.tab == 0 {
-            match self.log.poll_preview(&self.ctx) {
-                Ok(redraw) => change |= redraw,
-                Err(e) => {
-                    self.notice(format!("Log: {e:#}"));
-                    change = true;
-                }
+        match self.log.poll_preview(&self.ctx) {
+            Ok(redraw) => change |= redraw,
+            Err(e) => {
+                self.notice(format!("Log: {e:#}"));
+                change = true;
             }
         }
         let seq = self.push.progress_seq;
         if let Some(msg) = self.push.poll(&self.ctx) {
+            self.remote_refs_changed = true;
             self.notice(msg);
             change = true
+        }
+        // A fetch/push can finish after its window closes. Reload moved refs
+        // without interrupting a Log editor, Diff, text selection or pending key.
+        if self.remote_refs_changed
+            && !self.log.editing()
+            && self.log.selected_text().is_none()
+            && self.log.key_sequence().is_none()
+        {
+            self.refresh_log();
+            change = true;
         }
         change |= seq != self.push.progress_seq;
         let a = self.commit.tick(&self.ctx);
@@ -718,222 +769,10 @@ impl Shell {
     }
     fn poll_timeout(&self) -> Duration {
         const IDLE: Duration = Duration::from_millis(150);
-        let timeout = if self.tab == 0 {
-            self.log.preview_wakeup().unwrap_or(IDLE).min(IDLE)
-        } else {
-            IDLE
-        };
+        let timeout = self.log.preview_wakeup().unwrap_or(IDLE).min(IDLE);
         self.key_picker
             .wakeup(Instant::now())
             .map_or(timeout, |remaining| remaining.min(timeout))
-    }
-    fn draw_header(&mut self, f: &mut Frame, area: Rect, log_window: bool) {
-        const LOG_CONTEXT_WIDTH: u16 = 20; // Git, a Log page, and its × / + / › controls.
-        f.render_widget(
-            Block::default()
-                .borders(Borders::BOTTOM)
-                .border_style(Style::new().fg(LINE)),
-            area,
-        );
-        let mut left = Rect::new(area.x, area.y, area.width, 1);
-        let roots = format!(
-            " {} Roots {}/{} ",
-            self.icons.glyph(Icon::Repo),
-            self.ctx.scope.len(),
-            self.ctx.repos.len()
-        );
-        let menu = format!(" {} ", self.icons.glyph(Icon::More));
-        let help = format!(" {} ", self.icons.glyph(Icon::Help));
-        let tools = [(help.as_str(), 1), (menu.as_str(), 2), (roots.as_str(), 0)];
-        let tools_width: usize = tools.iter().map(|(label, _)| label.width()).sum();
-        let tab_icons_width: usize = PANEL_ICONS
-            .iter()
-            .map(|&i| self.icons.glyph(i).width() + 1)
-            .sum();
-        let text_width: usize = NAMES.iter().map(|n| n.width() + 2).sum();
-        let show_icons = self.icons != IconMode::Ascii
-            && usize::from(area.width)
-                >= text_width + tab_icons_width + usize::from(LOG_CONTEXT_WIDTH);
-        let labels: [String; 4] = std::array::from_fn(|i| {
-            if show_icons {
-                format!(" {} {} ", self.icons.glyph(PANEL_ICONS[i]), NAMES[i])
-            } else {
-                format!(" {} ", NAMES[i])
-            }
-        });
-        let tabs_width: usize = labels.iter().map(|label| label.width()).sum();
-        // Keep room for the workspace title or the local Log tabs on the left.
-        let mut tool_row = left;
-        if usize::from(area.width) < tabs_width + tools_width + usize::from(LOG_CONTEXT_WIDTH) {
-            tool_row.y += 1;
-        }
-        let mut button = |row: &mut Rect, label: &str, style| {
-            let w = row.width.min(label.width() as u16);
-            row.width -= w;
-            let r = Rect::new(row.right(), row.y, w, 1);
-            f.render_widget(Paragraph::new(label).style(style), r);
-            r
-        };
-        let idle = Style::new().fg(MUTED);
-        for (label, action) in tools {
-            self.tools
-                .push((button(&mut tool_row, label, idle), action));
-        }
-        if tool_row.y == left.y {
-            left = tool_row;
-        }
-        for (i, label) in labels.iter().enumerate().rev() {
-            let style = if self.tab == i {
-                Style::new().fg(FG).bg(SEL).add_modifier(Modifier::BOLD)
-            } else {
-                idle
-            };
-            self.tabs[i] = button(&mut left, label, style);
-        }
-        if log_window {
-            if left.width >= LOG_CONTEXT_WIDTH {
-                f.render_widget(
-                    Paragraph::new(" Git ").style(Style::new().fg(FG).add_modifier(Modifier::BOLD)),
-                    Rect::new(left.x, left.y, 5, 1),
-                );
-                left.x += 6;
-                left.width -= 6;
-            }
-            self.log.draw_tabs(f, left, &self.ctx);
-        } else if self.tab == 1 && !self.ctx.repos.is_empty() {
-            f.render_widget(
-                Paragraph::new(" Commit ").style(Style::new().fg(FG).add_modifier(Modifier::BOLD)),
-                left,
-            );
-        } else {
-            f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(" IGit ", Style::new().fg(FG).add_modifier(Modifier::BOLD)),
-                    Span::styled(
-                        format!(
-                            "  {} ",
-                            self.ctx
-                                .workspace
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                        ),
-                        Style::default().fg(FG),
-                    ),
-                    Span::styled(" / workspace", Style::default().fg(MUTED)),
-                ])),
-                left,
-            );
-            if area.width > 85 && tool_row.y == area.y {
-                let console = format!(" {} Console ", self.icons.glyph(Icon::Console));
-                let w = console.width() as u16;
-                let r = Rect::new(area.right() - w, area.y + 1, w, 1);
-                f.render_widget(Paragraph::new(console).style(idle), r);
-                self.tools.push((r, 4));
-            }
-        }
-    }
-    fn draw_git_window(&mut self, f: &mut Frame, a: Rect) {
-        let notice = u16::from(!self.msg.is_empty());
-        let body = Rect::new(a.x, a.y + 2, a.width, a.height - 2 - notice);
-        if self.tab == 0 {
-            self.log.draw(f, body, &self.ctx);
-        } else {
-            self.commit
-                .draw_with_cursor(f, body, &self.ctx, self.pop.is_none());
-        }
-        self.mode_active = self.panel().editing();
-        if notice > 0 {
-            f.render_widget(
-                Paragraph::new(self.msg.as_str()).style(Style::new().fg(ACCENT)),
-                Rect::new(a.x, a.bottom() - 1, a.width, 1),
-            );
-        }
-    }
-    fn draw(&mut self, f: &mut Frame) {
-        let a = f.area();
-        self.key_picker.clear_geometry();
-        self.tabs = [Rect::default(); NAMES.len()];
-        self.tools.clear();
-        self.pop_hits.clear();
-        f.render_widget(Block::default().style(Style::new().bg(BG).fg(FG)), a);
-        if a.width < 44 || a.height < 12 {
-            f.render_widget(
-                Paragraph::new(
-                    "IGit · 窗口过小\n至少 44 列 × 12 行；推荐 120 × 36。\nq 退出，y 确认。",
-                )
-                .wrap(Wrap { trim: false }),
-                a,
-            );
-            return;
-        }
-        let log_window = self.tab == 0 && !self.ctx.repos.is_empty();
-        if self.tab <= 1 && !self.ctx.repos.is_empty() {
-            self.draw_git_window(f, a);
-        } else {
-            self.draw_workbench(f, a);
-        }
-        self.draw_header(f, Rect::new(a.x, a.y, a.width, 2), log_window);
-        if let Some(sequence) = self.key_sequence() {
-            let footer = if self.tab <= 1 {
-                u16::from(!self.msg.is_empty())
-            } else {
-                2
-            };
-            self.key_picker.draw(
-                f,
-                Rect::new(a.x, a.y + 2, a.width, a.height - 2 - footer),
-                sequence,
-            );
-        }
-        self.draw_popup(f, a);
-    }
-    fn draw_workbench(&mut self, f: &mut Frame, a: Rect) {
-        let row = |y, h| Rect::new(a.x, a.y + y, a.width, h);
-        let main = row(2, a.height - 4);
-        if self.ctx.repos.is_empty() {
-            f.render_widget(Paragraph::new("No Git working trees found.\n\nUse : Actions → Open workspace, or start igit /path/to/workspace.\nF5 refreshes the active view; reopen the workspace to rescan roots.").wrap(Wrap{trim:true}).block(pane("Workspace",true)),main)
-        } else {
-            match self.tab {
-                2 => self.push.draw(f, main, &self.ctx),
-                _ => self.merge.draw(f, main, &self.ctx),
-            }
-        }
-        self.mode_active = self.panel().editing();
-        let mode = if self.pop.is_some() {
-            "DIALOG"
-        } else if self.mode_active {
-            "INPUT"
-        } else {
-            "NORMAL"
-        };
-        let foot = row(a.height - 2, 1);
-        let note = if self.msg.is_empty() {
-            self.panel().help()
-        } else {
-            &self.msg
-        };
-        f.render_widget(
-            Paragraph::new(note).style(Style::default().fg(if self.msg.is_empty() {
-                MUTED
-            } else {
-                ACCENT
-            })),
-            foot,
-        );
-        let bar = row(a.height - 1, 1);
-        let bar_style = Style::new().fg(FG).bg(TAG);
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(format!(" {mode} "), button_style(true)),
-                Span::raw(format!(" {}  ·  F5 refresh  ·  ? keys", NAMES[self.tab])),
-            ]))
-            .style(bar_style),
-            bar,
-        );
-        let qr = Rect::new(a.right() - 8, bar.y, 8, 1);
-        f.render_widget(Paragraph::new(" q Exit ").style(bar_style), qr);
-        self.tools.push((qr, 3));
     }
     fn draw_popup(&mut self, f: &mut Frame, a: Rect) {
         if let Some(Popup::Help { state, .. }) = self.pop.as_mut() {
@@ -1067,12 +906,12 @@ impl Shell {
             }
             Popup::Menu { row } => {
                 for (i, s) in [
-                    "01  Log",
-                    "02  Commit",
-                    "03  Push",
-                    "04  Merge",
+                    "1  Focus Git Log",
+                    "2  Focus Commit",
+                    "3  Open Push…",
+                    "4  Open Merge…",
                     "Roots / 选仓库",
-                    "Refresh panel",
+                    "Refresh workspace",
                     "Open / rescan workspace…",
                     "Console",
                     "Quit",
@@ -1203,16 +1042,12 @@ pub fn run() -> Result<()> {
             };
             match &e {
                 Event::Mouse(m) if m.kind == MouseEventKind::Moved => {
-                    dirty = app.pop.is_none()
-                        && !app.key_picker.contains(m.column, m.row)
-                        && match app.tab {
-                            0 => app.log.hover_menu_at(m.column, m.row),
-                            1 => app.commit.hover_at(m.column, m.row),
-                            _ => false,
-                        };
+                    dirty = app.hover(m.column, m.row);
                 }
                 _ => {
-                    let motion = app.tab == 0 && app.pop.is_none() && app.log.graph_motion(&e);
+                    let motion = app.surface() == Split(Log)
+                        && app.pop.is_none()
+                        && app.log.graph_motion(&e);
                     app.dispatch(&e);
                     dirty = true;
                     if motion {
@@ -1251,6 +1086,10 @@ mod key_sequence_tests;
 
 #[cfg(test)]
 mod help_tests;
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+mod workspace_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1323,7 +1162,16 @@ mod tests {
         key(&mut app, KeyCode::F(5));
         let refreshed = screen(&mut app);
         assert!(refreshed.contains("on fresh-main"), "{refreshed}");
-        assert_eq!(refreshed.matches("fresh-main").count(), 2); // Tree badge and repository preview.
+        let changes = refreshed
+            .lines()
+            .take(app.regions.log.y.into())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(changes.matches("fresh-main").count(), 2); // Tree badge and repository preview.
+        assert!(refreshed
+            .lines()
+            .skip(app.regions.log.y.into())
+            .any(|line| line.contains("fresh-main"))); // Log refs refresh in the same frame.
 
         git(&linked, &["switch", "-qc", "fresh-linked"]).unwrap();
         key(&mut app, KeyCode::Char('r'));
@@ -1407,19 +1255,19 @@ mod tests {
 
         send(&mut app, key(KeyCode::Char('b')));
         let roots = app.tools.iter().find(|(_, n)| *n == 0).unwrap().0;
-        let commit = app.tabs[1];
+        let commit = app.regions.commit;
         send(&mut app, click(roots));
         assert!(matches!(app.pop, Some(Popup::Scope { .. })));
         assert!(!app.log.editing());
         send(&mut app, click(commit));
-        assert_eq!(app.tab, 0);
+        assert_eq!(app.surface(), Split(Log));
         assert!(matches!(app.pop, Some(Popup::Scope { .. })));
         send(&mut app, key(KeyCode::Esc));
 
         send(&mut app, key(KeyCode::Char('o')));
         assert!(app.log.editing());
         send(&mut app, key(KeyCode::Char('2')));
-        assert_eq!(app.tab, 0);
+        assert_eq!(app.surface(), Split(Log));
         send(&mut app, click(roots));
         assert!(matches!(app.pop, Some(Popup::Scope { .. })));
         assert!(!app.log.editing());
@@ -1427,13 +1275,13 @@ mod tests {
 
         send(&mut app, key(KeyCode::Char('/')));
         send(&mut app, click(commit));
-        assert_eq!(app.tab, 0);
+        assert_eq!(app.surface(), Split(Log));
         assert!(app.log.editing());
         send(&mut app, key(KeyCode::Esc));
 
         send(&mut app, key(KeyCode::Char('d')));
         send(&mut app, click(commit));
-        assert_eq!(app.tab, 1);
+        assert_eq!(app.surface(), Split(Commit));
         assert!(!app.log.editing());
     }
 }

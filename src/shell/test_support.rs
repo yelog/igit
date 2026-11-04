@@ -1,0 +1,72 @@
+use super::*;
+use crate::core::git;
+use ratatui::backend::TestBackend;
+use std::{fs, path::Path};
+
+pub(super) fn key(code: KeyCode) -> Event {
+    Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+pub(super) fn fixture() -> (tempfile::TempDir, Shell) {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]).unwrap();
+    fs::write(repo.join("mixed.txt"), "base\n").unwrap();
+    fs::write(repo.join("other.txt"), "base\n").unwrap();
+    git(&repo, &["add", "."]).unwrap();
+    git(
+        &repo,
+        &[
+            "-c",
+            "user.name=Help tester",
+            "-c",
+            "user.email=help@example.invalid",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--no-gpg-sign",
+            "-qm",
+            "base",
+        ],
+    )
+    .unwrap();
+    fs::write(repo.join("mixed.txt"), "staged\n").unwrap();
+    fs::write(repo.join("other.txt"), "unselected staged\n").unwrap();
+    git(&repo, &["add", "."]).unwrap();
+    fs::write(repo.join("mixed.txt"), "working tree\n").unwrap();
+    let mut ctx = Context::discover(&repo).unwrap();
+    ctx.state_dir = dir.path().join("state");
+    (dir, Shell::new(ctx, IconMode::Ascii))
+}
+
+pub(super) fn screen(app: &mut Shell, width: u16, height: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buffer = terminal.backend().buffer();
+    (0..height)
+        .map(|y| {
+            let mut line = String::new();
+            let mut x = 0;
+            while x < width {
+                let symbol = buffer[(x, y)].symbol();
+                line.push_str(symbol);
+                x += symbol.width().max(1) as u16;
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub(super) fn snapshot(repo: &Path) -> Vec<String> {
+    [
+        vec!["rev-parse", "HEAD"],
+        vec!["ls-files", "--stage"],
+        vec!["diff", "--binary"],
+        vec!["status", "--porcelain=v1"],
+    ]
+    .into_iter()
+    .map(|args| git(repo, &args).unwrap())
+    .collect()
+}

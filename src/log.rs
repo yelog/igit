@@ -511,26 +511,16 @@ fn popup(a: Rect, width: u16, height: u16) -> Rect {
     let h = height.min(a.height);
     Rect::new(a.x + (a.width - w) / 2, a.y + (a.height - h) / 2, w, h)
 }
-impl Panel for LogPanel {
-    fn refresh(&mut self, c: &Context) -> Result<()> {
-        self.reload(c, true)
+impl LogPanel {
+    pub(crate) fn overlay_at(&self, x: u16, y: u16) -> bool {
+        self.diff.is_some()
+            || self.path_dialog.is_some()
+            || self.editing()
+                && self.hits.iter().rev().any(|(r, h)| {
+                    matches!(h, Hit::Dropdown(_) | Hit::ViewMenu(_)) && inside(*r, x, y)
+                })
     }
-    fn editing(&self) -> bool {
-        self.editor.is_some() || self.diff.is_some() || self.view_menu.is_some()
-    }
-    fn selected_text(&self) -> Option<&str> {
-        if let Some(diff) = &self.diff {
-            diff.selection.selected_text()
-        } else if self.editor.is_none() && self.view_menu.is_none() && self.focus == Pane::Info {
-            self.info_selection.selected_text()
-        } else {
-            None
-        }
-    }
-    fn help(&self) -> &'static str {
-        "j/k 浏览 · gg/G 首/末 · H/M/L 屏顶/中/底 · Ctrl-F/B 整页 · Ctrl-D/U 半页 · yy/ym/ya 复制 · Tab/h/l 切栏 · / 搜索 · b/a/d/p 筛选 · o 显示选项 · x 清筛选 · + 更多 · Enter Diff · Ctrl-T/W Log 页签"
-    }
-    fn draw(&mut self, f: &mut Frame, a: Rect, c: &Context) {
+    pub(crate) fn draw_content(&mut self, f: &mut Frame, a: Rect, c: &Context) {
         self.bounds = a;
         self.hits.clear();
         self.areas.clear();
@@ -540,6 +530,11 @@ impl Panel for LogPanel {
         self.draw_layout(f, a, c);
         if !self.areas.iter().any(|(_, p)| *p == Pane::Info) {
             self.info_selection.reset();
+        }
+    }
+    pub(crate) fn draw_overlays(&mut self, f: &mut Frame, a: Rect, c: &Context) {
+        if a.is_empty() {
+            return;
         }
         if self.editor.is_some() {
             self.draw_editor(f, a, c);
@@ -595,6 +590,30 @@ impl Panel for LogPanel {
                 )
             }
         }
+    }
+}
+impl Panel for LogPanel {
+    fn refresh(&mut self, c: &Context) -> Result<()> {
+        self.reload(c, true)
+    }
+    fn editing(&self) -> bool {
+        self.editor.is_some() || self.diff.is_some() || self.view_menu.is_some()
+    }
+    fn selected_text(&self) -> Option<&str> {
+        if let Some(diff) = &self.diff {
+            diff.selection.selected_text()
+        } else if self.editor.is_none() && self.view_menu.is_none() && self.focus == Pane::Info {
+            self.info_selection.selected_text()
+        } else {
+            None
+        }
+    }
+    fn help(&self) -> &'static str {
+        "j/k 浏览 · gg/G 首/末 · H/M/L 屏顶/中/底 · Ctrl-F/B 整页 · Ctrl-D/U 半页 · yy/ym/ya 复制 · Tab/h/l 切栏 · / 搜索 · b/a/d/p 筛选 · o 显示选项 · x 清筛选 · + 更多 · Enter Diff · Ctrl-T/W Log 页签"
+    }
+    fn draw(&mut self, f: &mut Frame, a: Rect, c: &Context) {
+        self.draw_content(f, a, c);
+        self.draw_overlays(f, a, c);
     }
     fn event(&mut self, e: &Event, c: &Context) -> Action {
         if matches!(e, Event::FocusLost) {

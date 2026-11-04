@@ -49,12 +49,15 @@ igit "$demo_workspace"
 
 ## 全局
 
+[工作区实图](docs/reference/IGit-Split-Workspace.png)：上半屏是 Commit，下半屏是 Git Log，各占可用高度的 50%。启动时键盘焦点在 Log，当前分屏标题前有 `>`。Push 和 Merge 按需弹出，关闭后回到原分屏。
+
 | 操作 | 键盘 | 鼠标 |
 | --- | --- | --- |
-| 切换工作面板 | `1` Log、`2` Commit、`3` Push、`4` Merge | 点击右上角的 Log、Commit、Push、Merge；左侧的 Log 页签用于切换日志筛选视图 |
+| 聚焦分屏 | `1` Git Log、`2` Commit | 点击对应分屏；滚轮浏览指针所在面板。Log 标题旁的页签只切换日志筛选视图 |
+| 打开或关闭操作窗口 | `3` Push、`4` Merge；`Esc` 逐层返回 | 点 ⋯ → Open Push / Open Merge；点窗口右上角 × 关闭 |
 | 筛选仓库 | `r` → `j/k` → `Space` 切换；`a` 全选；`Enter` 应用 | 点 Roots、仓库行和 Apply |
 | 区域与动作 | `Tab/F6` 在当前面板内换区；`:` 动作列表；`?` / `F1` 当前区域帮助 | 点击区域、⋯（Actions）、?（Help） |
-| 刷新与退出 | `F5` 刷新；`q` 或普通模式 `Ctrl-C` 打开退出确认 | 点 ⋯ → Refresh panel 或 Quit |
+| 刷新与退出 | `F5` 刷新；`q` 或普通模式 `Ctrl-C` 打开退出确认 | 点 ⋯ → Refresh workspace 或 Quit |
 | 审查写操作 | `y` 确认；默认焦点在取消，`n/Esc` 取消；长内容用 `j/k` 或方向键滚动 | 点 Confirm / Cancel，滚轮浏览 |
 
 当前行决定预览，复选框决定本次操作。筛掉的仓库不参与执行。输入文本时字母与数字只作为文本，不会执行全局快捷键。Actions → Open / rescan workspace 可重新发现仓库；打开工作区将重新开始面板会话，请先结束当前输入。
@@ -96,7 +99,7 @@ igit "$demo_workspace"
 | 面板 | 实际操作 |
 | --- | --- |
 | **Log** | [三栏布局参考](docs/reference/IGit-Log-Graph.png)。同名分支跨仓合并；提交行默认从左至右是作者、本地日期与时间、彩色分支图、标题、引用。按住 `j/k` 可连续浏览，停在一行后右栏加载该提交的文件和包含分支；Diff 文件树以文件名颜色区分变更类型，不再追加状态字母。按 Enter 或双击文件打开 Diff。用 `/` 搜文本或哈希；点击 Branch/User/Date/Paths 或按 `b/a/d/p` 打开筛选菜单。菜单打开时，点另一个筛选就直接切换，点提交行就直接选中。`x` 清筛选，`+` 加载更多。 |
-| **Commit** | [平铺布局参考](docs/reference/IGit-Commit-Flat.png)。默认按分组和仓库平铺，一行一个文件，灰色父路径区分同名文件。点行浏览、点框或按 `Space` 勾选、点箭头收展。双击文件或按 `Enter` 看补丁；`v` 开关预览，`o` 打开显示选项，`t` 切目录树。`i` 写当前仓的说明，`[/]` 换仓，`F2/Ctrl-S` 保存；`c` 审查提交，`P` 审查提交后进入 Push 预览。 |
+| **Commit** | [平铺布局参考](docs/reference/IGit-Commit-Flat.png)。默认按分组和仓库平铺，一行一个文件，灰色父路径区分同名文件。点行浏览、点框或按 `Space` 勾选、点箭头收展。双击文件或按 `Enter` 看补丁；`v` 开关预览，`o` 打开显示选项，`t` 切目录树。`i` 写当前仓的说明，`[/]` 换仓，`F2/Ctrl-S` 保存；`c` 审查提交，`P` 审查提交后打开 Push 弹窗。 |
 | **Push** | 左侧仓名、分支、目标和 submodule 按列对齐；右侧默认全高文件树，目录带文件数，新增绿／修改蓝／删除红／重命名琥珀。当前仓库没有待推提交或没有选中行时，右侧居中显示 `No commits selected`。点眼睛 **Group By** 或按 `o`，可分别勾选 Directory、Repository、Module（默认全开）；关闭 Directory 后平铺文件并显示父路径。点箭头或 `h/l` 收展，文件区 `[/]` 全部收展；点文件或 `Enter` 看 Diff，`d` 开关详情、`Esc` 关闭。点框或 `Space` 勾仓；`t` 改 `remote:branch`（`Ctrl-U` 清输入），`v/x` 切 Follow tags/hooks；`p` 审查并推送，`R` 仅重试可见的失败仓，`f` Fetch。网络操作在后台运行，失败原因按仓保留。每仓最多展开最近 60 条，但计数和审查基于完整分支 tip。 |
 | **Merge** | 先列当前选区内各仓库的冲突路径。Enter 或双击文件进入左 Current、中 Result、右 Incoming；`j/k` 换块、`h/l` 换栏、`[c` / `]c` 跳冲突。点顶部按钮或 `a` 只应用确定的非冲突变更；点沟槽箭头或 `H/L` 取左/右，`b` 先左后右，`i` 手改当前块，`Ctrl-S` 或 `Ctrl-Enter` 确认，`u` 撤销。用 `A` 审查并应用文件，`C` 单独继续仓库的合并操作。会话草稿不等同于已写入磁盘。 |
 

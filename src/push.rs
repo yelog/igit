@@ -343,6 +343,10 @@ fn label(p: &Path) -> String {
         .collect()
 }
 impl PushPanel {
+    pub(crate) fn at_root(&self) -> bool {
+        !self.editing() && !self.show_details
+    }
+
     pub(crate) fn busy(&self) -> bool {
         self.inflight.is_some()
     }

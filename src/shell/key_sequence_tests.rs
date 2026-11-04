@@ -1,13 +1,11 @@
 //! Prefix hints must follow the active panel without changing its selection or Git state.
-use super::*;
+use super::{
+    test_support::{key, screen},
+    *,
+};
 use crate::core::git;
-use crossterm::event::{KeyEvent, MouseEvent};
-use ratatui::backend::TestBackend;
+use crossterm::event::MouseEvent;
 use std::{fs, path::Path};
-
-fn key(code: KeyCode) -> Event {
-    Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
-}
 
 fn save(repo: &Path, message: &str) {
     git(repo, &["add", "--", "file"]).unwrap();
@@ -40,25 +38,6 @@ fn fixture() -> (tempfile::TempDir, Shell) {
     ctx.state_dir = repo.path().join("state");
     let app = Shell::new(ctx, IconMode::Ascii);
     (repo, app)
-}
-
-fn screen(app: &mut Shell, width: u16, height: u16) -> String {
-    let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
-    term.draw(|f| app.draw(f)).unwrap();
-    let buffer = term.backend().buffer();
-    (0..height)
-        .map(|y| {
-            let mut line = String::new();
-            let mut x = 0;
-            while x < width {
-                let symbol = buffer[(x, y)].symbol();
-                line.push_str(symbol);
-                x += symbol.width().max(1) as u16;
-            }
-            line
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn show_hints(app: &mut Shell, width: u16, height: u16) -> String {
@@ -227,7 +206,7 @@ fn key_sequence_context_changes_dismiss_hints_and_text_input_keeps_its_letters()
         Event::Resize(80, 24),
         Event::FocusLost,
     ] {
-        app.go(0);
+        app.go(Split(Log));
         app.dispatch(&key(KeyCode::Esc)); // Each case starts in the commit list.
         app.dispatch(&key(KeyCode::Char('y')));
         assert!(app.key_sequence().is_some(), "{interrupt:?}");
@@ -236,7 +215,7 @@ fn key_sequence_context_changes_dismiss_hints_and_text_input_keeps_its_letters()
         assert!(!screen(&mut app, 80, 24).contains("复制完整提交消息"));
         app.pop = None;
     }
-    app.go(0);
+    app.go(Split(Log));
     app.dispatch(&key(KeyCode::Char('/')));
     for ch in ['g', 'y', '[', ']'] {
         app.dispatch(&key(KeyCode::Char(ch)));
@@ -261,19 +240,19 @@ fn key_sequence_overlay_blocks_mouse_events_and_outside_clicks_keep_their_target
         app.dispatch(&Event::Mouse(MouseEvent {
             kind,
             column: 78,
-            row: 23,
+            row: app.regions.log.bottom() - 1,
             modifiers: KeyModifiers::NONE,
         }));
         assert!(app.key_sequence().is_some());
     }
-    let commit_tab = app.tabs[1];
+    let commit = app.regions.commit;
     app.dispatch(&Event::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        column: commit_tab.x,
-        row: commit_tab.y,
+        column: commit.x,
+        row: commit.y,
         modifiers: KeyModifiers::NONE,
     }));
-    assert_eq!(app.tab, 1);
+    assert_eq!(app.surface(), Split(Commit));
     assert!(app.key_sequence().is_none());
 }
 
@@ -287,7 +266,7 @@ fn key_sequence_click_completes_goto_and_a_new_prefix_resets_the_choice() {
     app.dispatch(&Event::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: 3,
-        row: 22,
+        row: app.regions.log.bottom() - 2,
         modifiers: KeyModifiers::NONE,
     }));
     assert!(app.key_sequence().is_none());
@@ -344,7 +323,7 @@ fn key_sequence_merge_hints_cancel_without_leaving_the_document_or_changing_git(
         ]
     };
     let before = snapshot();
-    app.go(3);
+    app.go(Dialog(Merge));
     app.dispatch(&key(KeyCode::Char('[')));
     assert!(app.key_sequence().is_none());
     app.dispatch(&key(KeyCode::Enter));
@@ -367,9 +346,9 @@ fn key_sequence_merge_hints_cancel_without_leaving_the_document_or_changing_git(
         let text = screen(&mut app, 80, 24);
         // Conflict navigation wraps: previous from the first goes to the last.
         let selected = if prefix == '[' {
-            "second = current"
+            "second = base"
         } else {
-            "first = current"
+            "first = base"
         };
         assert!(text.contains(selected), "{text}");
     }
