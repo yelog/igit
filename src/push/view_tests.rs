@@ -278,7 +278,9 @@ fn long_repo_and_branch_columns_clip_without_moving_controls_or_targets() {
                 .hits
                 .iter()
                 .filter_map(|(r, h)| match h {
-                    Hit::Target(id) if r.y < p.zones[0].bottom() => Some((*id, *r)),
+                    Hit::Target(id) if p.panes.at(r.x, r.y) == Some(PaneId::Outgoing) => {
+                        Some((*id, *r))
+                    }
                     _ => None,
                 })
                 .collect();
@@ -314,7 +316,10 @@ fn push_file_tree_uses_change_colours_and_independent_file_type_icons() {
         let (mut p, c) = fixture(icons);
         let buf = draw(&mut p, &c, 180, 36);
         assert!(!p.show_details);
-        assert_eq!(p.zones[1].height, p.zones[0].height);
+        assert_eq!(
+            p.panes.rect(PaneId::PushFiles).unwrap().height,
+            p.panes.rect(PaneId::Outgoing).unwrap().height
+        );
         for (i, file) in p.preview.files.iter().enumerate() {
             let visible = p
                 .preview
@@ -409,4 +414,84 @@ fn file_tree_mouse_keyboard_scrolling_and_pane_cycle_keep_push_selection() {
         assert!(!p.show_details);
         assert_eq!(p.checked, BTreeSet::from([0]));
     }
+}
+
+#[test]
+fn pane_navigation_push_resizes_around_the_diff_without_copying_or_checking() {
+    let (mut p, c) = fixture(IconMode::Ascii);
+    p.show_details = true;
+    p.focus_pane(PaneId::PushDetails);
+    let mouse = |p: &mut PushPanel, kind, x, y| {
+        p.event(
+            &Event::Mouse(MouseEvent {
+                kind,
+                column: x,
+                row: y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &c,
+        )
+    };
+    let drag = |p: &mut PushPanel, from: (u16, u16), to: (u16, u16)| {
+        for (kind, (x, y)) in [
+            (MouseEventKind::Down(MouseButton::Left), from),
+            (MouseEventKind::Drag(MouseButton::Left), to),
+            (MouseEventKind::Up(MouseButton::Left), to),
+        ] {
+            assert!(matches!(mouse(p, kind, x, y), Action::None));
+        }
+    };
+    let initial = draw(&mut p, &c, 120, 36);
+    let left = p.panes.rect(PaneId::Outgoing).unwrap();
+    let files = p.panes.rect(PaneId::PushFiles).unwrap();
+    let diff = p.panes.rect(PaneId::PushDetails).unwrap();
+    assert_eq!(initial[(diff.x, diff.y)].fg, ACCENT);
+    assert_eq!(initial[(left.x, left.y)].fg, LINE);
+    p.event(
+        &Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+        &c,
+    );
+
+    let x = files.x; // Start on the right pane's left border.
+    drag(&mut p, (x, diff.y + 1), (x + 7, diff.y + 1));
+    draw(&mut p, &c, 120, 36);
+    let y = diff.y; // Start on the lower pane's top border.
+    drag(&mut p, (files.right() - 2, y), (files.right() - 2, y - 3));
+    draw(&mut p, &c, 120, 36);
+    assert_eq!(
+        p.panes.rect(PaneId::Outgoing).unwrap().width,
+        left.width + 7
+    );
+    let resized = p.panes.rect(PaneId::PushDetails).unwrap();
+    assert_eq!(resized.height, diff.height + 3);
+    assert_eq!(resized.x, diff.x + 7);
+    assert_eq!(p.focused_pane(), PaneId::PushDetails);
+    assert_eq!(p.selected_text(), Some(p.preview.body.as_str()));
+
+    // Wheel and hover may browse another pane; only a click takes its keyboard focus.
+    mouse(&mut p, MouseEventKind::Moved, left.x + 3, left.bottom() - 2);
+    mouse(
+        &mut p,
+        MouseEventKind::ScrollDown,
+        resized.x + 2,
+        resized.y - 2,
+    );
+    assert_eq!(p.focused_pane(), PaneId::PushDetails);
+    assert_eq!(p.preview.tree.cursor, 1);
+    mouse(
+        &mut p,
+        MouseEventKind::Down(MouseButton::Left),
+        left.x + 3,
+        left.bottom() - 2,
+    );
+    assert_eq!(p.focused_pane(), PaneId::Outgoing);
+    key(&mut p, &c, KeyCode::Char('d'));
+    draw(&mut p, &c, 120, 36);
+    assert!(p.panes.rect(PaneId::PushDetails).is_none());
+    assert!(!p
+        .panes
+        .can_resize(p.panes.rect(PaneId::PushFiles).unwrap(), Axis::Height));
+    assert_eq!(p.checked, BTreeSet::from([0]));
+    assert_eq!(p.selected(), Some((0, None)));
+    assert!(p.review.is_empty() && p.inflight.is_none());
 }

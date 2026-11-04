@@ -14,25 +14,33 @@ use unicode_width::UnicodeWidthStr;
 const HINT_DELAY: Duration = Duration::from_millis(200);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WindowPrefix {
+    pub mask: u16,
+    pub count: Option<u16>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum KeySequence {
     LogGoto,
     LogYank,
     MergePrevious,
     MergeNext,
+    Window(WindowPrefix),
 }
 
 impl KeySequence {
-    fn prefix(self) -> char {
+    fn prefix(self) -> &'static str {
         match self {
-            Self::LogGoto => 'g',
-            Self::LogYank => 'y',
-            Self::MergePrevious => '[',
-            Self::MergeNext => ']',
+            Self::LogGoto => "g",
+            Self::LogYank => "y",
+            Self::MergePrevious => "[",
+            Self::MergeNext => "]",
+            Self::Window(_) => "Ctrl-W",
         }
     }
 
-    fn shortcuts(self) -> &'static [(char, &'static str)] {
-        match self {
+    fn shortcuts(self) -> Vec<(char, &'static str)> {
+        let entries: &[(char, &str)] = match self {
             Self::LogGoto => &[('g', "跳到第一条提交")],
             Self::LogYank => &[
                 ('y', "复制完整 commit ID"),
@@ -41,7 +49,13 @@ impl KeySequence {
             ],
             Self::MergePrevious => &[('c', "跳到上一个未解决冲突")],
             Self::MergeNext => &[('c', "跳到下一个未解决冲突")],
-        }
+            Self::Window(prefix) => {
+                return super::panes::window_keys(prefix.mask)
+                    .map(|(keys, description)| (keys.chars().last().unwrap(), *description))
+                    .collect()
+            }
+        };
+        entries.to_vec()
     }
 }
 
@@ -114,6 +128,9 @@ impl KeySequencePicker {
                     return SequenceEvent::Pass;
                 }
                 let shortcuts = sequence.shortcuts();
+                if shortcuts.is_empty() {
+                    return SequenceEvent::Pass;
+                }
                 self.selected = self.selected.min(shortcuts.len() - 1);
                 match k.code {
                     K::Enter => SequenceEvent::Run(shortcuts[self.selected].0),
@@ -147,6 +164,9 @@ impl KeySequencePicker {
             return;
         }
         let shortcuts = sequence.shortcuts();
+        if shortcuts.is_empty() {
+            return;
+        }
         let inner_width = usize::from(area.width.saturating_sub(4));
         let cell_width = shortcuts
             .iter()
@@ -160,22 +180,24 @@ impl KeySequencePicker {
         self.selected = self.selected.min(shortcuts.len() - 1);
         let height = (rows as u16 + 2).min(area.height);
         self.area = Rect::new(area.x + 1, area.bottom() - height, area.width - 2, height);
+        let prefix = match sequence {
+            KeySequence::Window(WindowPrefix { count: Some(n), .. }) => format!("Ctrl-W {n}"),
+            _ => sequence.prefix().into(),
+        };
         let title = if area.width >= 64 {
-            format!(
-                "{}  Arrows select  Enter run  Esc/Ctrl-C cancel",
-                sequence.prefix()
-            )
+            format!("{prefix}  Arrows select  Enter run  Esc/Ctrl-C cancel")
         } else {
-            format!("{}  Arrows  Enter run  Esc/Ctrl-C", sequence.prefix())
+            format!("{prefix}  Arrows  Enter run  Esc/Ctrl-C")
         };
         f.render_widget(Clear, self.area);
         let block = pane(title, true);
         let inner = block.inner(self.area);
         f.render_widget(block, self.area);
         let width = usize::from(inner.width) / self.columns;
+        let first_row = (self.selected % rows + 1).saturating_sub(usize::from(inner.height));
         for (i, (suffix, description)) in shortcuts.iter().enumerate() {
             let row = i % rows;
-            if row >= usize::from(inner.height) {
+            if row < first_row || row - first_row >= usize::from(inner.height) {
                 continue;
             }
             let column = i / rows;
@@ -185,7 +207,7 @@ impl KeySequencePicker {
             } else {
                 width
             };
-            let rect = Rect::new(x, inner.y + row as u16, width as u16, 1);
+            let rect = Rect::new(x, inner.y + (row - first_row) as u16, width as u16, 1);
             let background = if i == self.selected { SEL } else { BG };
             f.render_widget(
                 Paragraph::new(Line::from(vec![

@@ -430,8 +430,11 @@ impl LogPanel {
         self.view_index = self.views.len() - 1;
         self.restore(c)
     }
-    pub(super) fn close_tab(&mut self, c: &Context) -> Result<()> {
-        if self.views.len() == 1 {
+    pub(crate) fn can_close_tab(&self) -> bool {
+        self.views.len() > 1
+    }
+    pub(crate) fn close_tab(&mut self, c: &Context) -> Result<()> {
+        if !self.can_close_tab() {
             return Ok(());
         }
         self.views.remove(self.view_index);

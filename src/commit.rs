@@ -12,6 +12,7 @@ use crate::{
         icons::{Icon, IconMode},
         idea::{BLUE, DIM as MUTED, INK as FG, PANEL, SELECT as SEL},
         inside,
+        panes::{PaneId, PaneLayout},
         selection::{self, TextLayout, TextSelection, Wrap as TextWrap},
         Action, Panel,
     },
@@ -116,6 +117,7 @@ impl Hit {
 #[derive(Default)]
 pub struct CommitPanel {
     pub(crate) icons: IconMode,
+    pub(crate) panes: PaneLayout,
     saved: Saved,
     loaded: bool,
     files: Vec<File>,
@@ -184,6 +186,27 @@ fn err(e: impl ToString) -> Action {
     Action::Notice(e.to_string())
 }
 impl CommitPanel {
+    pub(crate) fn focused_pane(&self) -> PaneId {
+        match self.focus {
+            Focus::Tree => PaneId::Changes,
+            Focus::Diff => PaneId::Preview,
+            Focus::Message => PaneId::Message,
+        }
+    }
+
+    pub(crate) fn focus_pane(&mut self, pane: PaneId) {
+        self.focus = match pane {
+            PaneId::Changes => Focus::Tree,
+            PaneId::Preview if self.preview_open => Focus::Diff,
+            PaneId::Message => Focus::Message,
+            _ => return,
+        };
+    }
+
+    fn pane_focused(&self, pane: PaneId) -> bool {
+        self.panes.active && !self.editing() && self.focused_pane() == pane
+    }
+
     fn save(&self, c: &Context) -> Result<()> {
         use std::io::Write;
         fs::create_dir_all(&c.state_dir)?;
@@ -746,6 +769,16 @@ impl Panel for CommitPanel {
             }
         }
         if let Event::Mouse(m) = e {
+            if self.panes.mouse(m) {
+                self.dragged = None;
+                self.last_click = None;
+                return Action::None;
+            }
+            if m.kind == M::Down(MouseButton::Left) {
+                if let Some(pane) = self.panes.at(m.column, m.row) {
+                    self.focus_pane(pane);
+                }
+            }
             if let Some(action) = self
                 .preview_open
                 .then(|| self.diff_selection.mouse(m))
@@ -853,10 +886,8 @@ impl Panel for CommitPanel {
                 } else if matches!(m.kind, M::ScrollUp | M::ScrollDown) {
                     let d = if m.kind == M::ScrollUp { -3 } else { 3 };
                     if inside(self.tree, m.column, m.row) {
-                        self.focus = Focus::Tree;
                         self.move_cursor(d)
                     } else if inside(self.diff, m.column, m.row) {
-                        self.focus = Focus::Diff;
                         self.diff_scroll = self.diff_scroll.saturating_add_signed(d as i16)
                     }
                 }

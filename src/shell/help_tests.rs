@@ -225,14 +225,19 @@ fn help_tracks_keyboard_focus_across_log_commit_and_push_without_changing_git() 
         "Log / 提交列表",
         "Log / 文件树",
         "Log / 提交详情",
+        "Commit / 变更清单",
+        "Commit / 提交说明",
         "Log / 分支树",
     ] {
         check_context(&mut app, title);
         app.dispatch(&key(KeyCode::Tab));
     }
     app.go(Split(Commit));
+    check_context(&mut app, "Commit / 提交说明");
+    app.dispatch(&key(KeyCode::BackTab));
     check_context(&mut app, "Commit / 变更清单");
     app.dispatch(&key(KeyCode::Char('v')));
+    screen(&mut app, 120, 36);
     app.dispatch(&key(KeyCode::Tab));
     check_context(&mut app, "Commit / 预览");
     app.dispatch(&key(KeyCode::Tab));
@@ -242,6 +247,7 @@ fn help_tracks_keyboard_focus_across_log_commit_and_push_without_changing_git() 
     app.dispatch(&key(KeyCode::Tab));
     check_context(&mut app, "Push / 变更文件");
     app.dispatch(&key(KeyCode::Char('d')));
+    screen(&mut app, 120, 36);
     app.dispatch(&key(KeyCode::Tab));
     check_context(&mut app, "Push / Diff 与详情");
     app.go(Dialog(Merge));

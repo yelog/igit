@@ -9,7 +9,9 @@ use crate::{
         idea::{button_style, repo_tint, CONFLICT, GREEN},
         inside,
         key_sequence::KeySequence,
-        pane, Action, Panel, ACCENT, BG, FG, MUTED, SEL,
+        pane,
+        panes::{Axis, PaneId, PaneLayout, SplitId},
+        Action, Panel, ACCENT, BG, FG, MUTED, SEL,
     },
 };
 use anyhow::{Context as _, Result};
@@ -113,6 +115,7 @@ impl Editor {
 #[derive(Default)]
 pub struct MergePanel {
     pub(crate) icons: IconMode,
+    pub(crate) panes: PaneLayout,
     items: Vec<Entry>,
     list_index: usize,
     list_scroll: usize,
@@ -178,6 +181,27 @@ fn offset_glyphs(line: &str, offset: usize) -> String {
         .collect()
 }
 impl MergePanel {
+    const SIDES: [PaneId; 3] = [PaneId::Current, PaneId::Result, PaneId::Incoming];
+
+    pub(crate) fn focused_pane(&self) -> PaneId {
+        if self.doc.is_some() {
+            Self::SIDES[self.side]
+        } else {
+            PaneId::Conflicts
+        }
+    }
+
+    pub(crate) fn focus_pane(&mut self, id: PaneId) {
+        if self.doc.is_some() && !self.editing() {
+            if let Some(side) = Self::SIDES.iter().position(|&p| p == id) {
+                if side != self.side {
+                    self.cancel_key_sequence();
+                    self.side = side;
+                }
+            }
+        }
+    }
+
     pub(crate) fn at_root(&self) -> bool {
         self.doc.is_none() && self.edit.is_none()
     }
@@ -446,13 +470,14 @@ impl MergePanel {
     }
     fn draw_list(&mut self, f: &mut Frame, area: Rect, c: &Context) {
         let icons = self.icons;
+        self.panes.add(PaneId::Conflicts, area);
         let outer = pane(
             format!(
                 "{} Merge conflicts {} scoped repositories",
                 icons.glyph(Icon::Merge),
                 icons.glyph(Icon::Dot)
             ),
-            true,
+            self.panes.active,
         );
         let body = outer.inner(area);
         f.render_widget(outer, area);
@@ -567,7 +592,7 @@ impl MergePanel {
         f.render_widget(Clear, boxr);
         let p = pane(
             format!("Edit Result {} current block", self.icons.glyph(Icon::Dot)),
-            true,
+            self.panes.active,
         );
         let b = p.inner(boxr);
         f.render_widget(p, boxr);
@@ -759,16 +784,31 @@ impl MergePanel {
             format!("Result {dot} editable"),
             format!("Incoming {dot} {}", d.right_label),
         ];
-        let sides = if self.zoom || compact {
-            vec![self.side]
+        let body = vert[2];
+        let cols = if self.zoom || compact {
+            let mut cols = [Rect::default(); 3];
+            cols[self.side] = body;
+            cols
         } else {
-            vec![0, 1, 2]
+            let [current, rest] = self.panes.divide(
+                SplitId::MergeCurrent,
+                body,
+                Axis::Width,
+                body.width / 3,
+                [12, 24],
+            );
+            let [result, incoming] = self.panes.divide(
+                SplitId::MergeIncoming,
+                rest,
+                Axis::Width,
+                rest.width / 2,
+                [12, 12],
+            );
+            [current, result, incoming]
         };
-        let constraints = vec![C::Ratio(1, sides.len() as u32); sides.len()];
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(constraints)
-            .split(vert[2]);
+        for (id, col) in Self::SIDES.into_iter().zip(cols) {
+            self.panes.add(id, col);
+        }
         let height = vert[2].height.saturating_sub(2) as usize;
         self.rows_height = height;
         let mut offsets = vec![];
@@ -802,10 +842,13 @@ impl MergePanel {
         // the text; only the cells painting the arrow take the change.
         let take_left = icons.glyph(Icon::Right);
         let take_right = icons.glyph(Icon::Left);
-        for (col, &s) in sides.iter().enumerate() {
-            let block = pane(&fields[s], s == self.side);
-            let inner = block.inner(cols[col]);
-            f.render_widget(block, cols[col]);
+        for (s, col) in cols.into_iter().enumerate().filter(|(_, r)| !r.is_empty()) {
+            let block = pane(
+                &fields[s],
+                self.panes.active && self.edit.is_none() && s == self.side,
+            );
+            let inner = block.inner(col);
+            f.render_widget(block, col);
             let arrow = match s {
                 0 => take_left,
                 2 => take_right,
@@ -946,7 +989,7 @@ impl MergePanel {
             true,
         );
         if self.edit.is_some() {
-            let col = cols[sides.iter().position(|s| *s == 1).unwrap_or(0)];
+            let col = cols[1];
             let h = col.height.saturating_sub(1).min(13);
             let start = offsets[self.idx].0.saturating_sub(self.scroll) as u16;
             let y = col
@@ -1014,6 +1057,7 @@ impl Panel for MergePanel {
         self.edit.is_some()
     }
     fn draw(&mut self, f: &mut Frame, area: Rect, c: &Context) {
+        self.panes.begin();
         self.hits.clear();
         if self.doc.is_some() {
             self.draw_doc(f, area, c)
@@ -1067,8 +1111,14 @@ impl Panel for MergePanel {
             self.cancel_key_sequence();
         }
         if let Event::Mouse(m) = e {
+            if !self.editing() && self.panes.mouse(m) {
+                return Action::None;
+            }
             match m.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(id) = self.panes.at(m.column, m.row) {
+                        self.focus_pane(id);
+                    }
                     if let Some(cmd) = self
                         .hits
                         .iter()

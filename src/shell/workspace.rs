@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::panes::{Axis, SplitId};
 use crossterm::event::MouseEvent;
 use ratatui::layout::{Constraint, Layout, Margin};
 use ratatui::style::Stylize;
@@ -47,6 +48,9 @@ impl Shell {
         let ev = Event::Mouse(*m);
         if press && self.key_sequence().is_some() {
             self.cancel_key_sequences();
+        }
+        if self.resize_mouse(m) {
+            return;
         }
         if let Some(tool) = self.tool {
             if press && inside(self.regions.close, x, y) {
@@ -182,14 +186,36 @@ impl Shell {
     }
 
     fn draw_split(&mut self, f: &mut Frame, work: Rect) {
-        let [commit, log] = Layout::vertical([Constraint::Ratio(1, 2); 2]).areas(work);
+        let [commit, log] = self.work_panes.divide(
+            SplitId::Workspace,
+            work,
+            Axis::Height,
+            work.height.div_ceil(2),
+            [6, 5],
+        );
         self.regions.commit = commit;
         self.regions.log = log;
         let pane = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]);
-        let [commit_header, changes] = pane.areas(commit);
+        // Give the workspace divider its own cells; it must never steal a
+        // press on the commit buttons or on the Log tab strip.
+        let mut above = commit;
+        if work.height > 10 {
+            above.height = above.height.saturating_sub(1);
+            let boundary = Rect::new(commit.x, above.bottom(), commit.width, 1);
+            self.work_panes.handle(SplitId::Workspace, boundary);
+            f.render_widget(
+                Block::default()
+                    .borders(ratatui::widgets::Borders::TOP)
+                    .border_style(Style::new().fg(LINE)),
+                boundary,
+            );
+        }
+        let [commit_header, changes] = pane.areas(above);
         let [log_header, history] = pane.areas(log);
         self.pane_header(f, commit_header, Commit);
         let tabs = self.pane_header(f, log_header, Log);
+        self.commit.panes.active = self.surface() == Split(Commit) && self.pop.is_none();
+        self.log.panes.active = self.surface() == Split(Log) && self.pop.is_none();
         self.commit.draw_content(f, changes, &self.ctx);
         self.log.draw_content(f, history, &self.ctx);
         self.log.draw_tabs(f, tabs, &self.ctx);
@@ -213,7 +239,8 @@ impl Shell {
             Push => ("Push", Icon::Push),
             Merge => ("Merge", Icon::Merge),
         };
-        let frame = pane(format!("{} {name}", self.icons.glyph(icon)), true);
+        // Only the receiving pane (or its editor) owns the accent border.
+        let frame = pane(format!("{} {name}", self.icons.glyph(icon)), false);
         let inner = frame.inner(window);
         f.render_widget(Clear, window);
         f.render_widget(frame, window);
@@ -233,6 +260,8 @@ impl Shell {
                 *r,
             );
         }
+        self.push.panes.active = tool == Push && self.pop.is_none();
+        self.merge.panes.active = tool == Merge && self.pop.is_none();
         match tool {
             Push => self.push.draw(f, inner, &self.ctx),
             Merge => self.merge.draw(f, inner, &self.ctx),
@@ -242,11 +271,17 @@ impl Shell {
     pub(super) fn draw(&mut self, f: &mut Frame) {
         let a = f.area();
         self.regions = Regions::default();
+        self.work_panes.begin();
         self.tools.clear();
         self.pop_hits.clear();
         self.key_picker.clear_geometry();
         f.render_widget(Block::default().style(Style::new().bg(BG).fg(FG)), a);
         if a.width < 44 || a.height < 12 {
+            self.cancel_drags();
+            self.commit.panes.begin();
+            self.log.panes.begin();
+            self.push.panes.begin();
+            self.merge.panes.begin();
             f.render_widget(
                 Paragraph::new(
                     "IGit · 窗口过小\n至少 44 列 × 12 行；推荐 120 × 36。\nq 退出，y 确认。",
@@ -294,8 +329,13 @@ impl Shell {
             ("F1 Help   Esc Back", MUTED)
         } else if self.ctx.repos.is_empty() {
             (": Actions   ·   Open / rescan workspace", MUTED)
+        } else if foot.width < 84 {
+            ("Tab/Ctrl-W Panes  3 Push 4 Merge ?", MUTED)
         } else {
-            ("3 Push   4 Merge   ·   : Actions   ? Help", MUTED)
+            (
+                "Tab Panes   Ctrl-W Pane keys   3 Push   4 Merge   ·   : Actions   ? Help",
+                MUTED,
+            )
         };
         f.render_widget(
             Paragraph::new(Line::from(vec![
@@ -308,6 +348,8 @@ impl Shell {
         if let Some(sequence) = self.key_sequence() {
             let bounds = if self.tool.is_some() {
                 self.regions.tool_body
+            } else if matches!(sequence, KeySequence::Window(_)) {
+                work
             } else {
                 self.regions.log
             };

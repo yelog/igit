@@ -54,15 +54,18 @@ fn key(p: &mut CommitPanel, c: &Context, k: K) {
     p.event(&Event::Key(KeyEvent::new(k, Mod::NONE)), c);
 }
 fn click(p: &mut CommitPanel, c: &Context, x: u16, y: u16) {
+    mouse(p, c, M::Down(MouseButton::Left), x, y);
+}
+fn mouse(p: &mut CommitPanel, c: &Context, kind: M, x: u16, y: u16) -> Action {
     p.event(
         &Event::Mouse(MouseEvent {
-            kind: M::Down(MouseButton::Left),
+            kind,
             column: x,
             row: y,
             modifiers: Mod::NONE,
         }),
         c,
-    );
+    )
 }
 fn row_area(p: &CommitPanel, name: &str) -> Rect {
     p.hits
@@ -72,6 +75,144 @@ fn row_area(p: &CommitPanel, name: &str) -> Rect {
             _ => None,
         })
         .unwrap()
+}
+
+#[test]
+fn resizing_both_commit_dividers_reveals_message_body_and_preserves_review() {
+    let (_dir, c) = fixture();
+    let mut p = CommitPanel::default();
+    p.refresh(&c).unwrap();
+    let message = "Subject\n\nDetails one\nDetails two\nDetails three";
+    p.saved.drafts.insert(rid(&c, 0), message.into());
+    let index = git(&c.repos[0].path, &["ls-files", "--stage"]).unwrap();
+    let checks = p.checks.clone();
+    let cursor = p.cursor;
+    let mut t = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    key(&mut p, &c, K::Char('v'));
+    draw(&mut p, &mut t, &c);
+    let old_message = p.panes.rect(PaneId::Message).unwrap();
+    assert!(!read(t.backend().buffer(), old_message).contains("Details three"));
+    for (side, step) in [(1, 2), (0, 3)] {
+        let area = p.panes.rect(PaneId::Message).unwrap();
+        let (x, y) = (area.x + 4, area.y - side);
+        click(&mut p, &c, x, y);
+        mouse(&mut p, &c, M::Drag(MouseButton::Left), x, y - step);
+        draw(&mut p, &mut t, &c);
+        mouse(&mut p, &c, M::Up(MouseButton::Left), x, y - step);
+    }
+    let expanded = p.panes.rect(PaneId::Message).unwrap();
+    assert_eq!(expanded.height, old_message.height + 5);
+    assert!(read(t.backend().buffer(), expanded).contains("Details three"));
+
+    let preview = p.panes.rect(PaneId::Preview).unwrap();
+    for side in [1, 0] {
+        let area = p.panes.rect(PaneId::Preview).unwrap();
+        let (x, y) = (area.x - side, area.y + 2);
+        click(&mut p, &c, x, y);
+        mouse(&mut p, &c, M::Drag(MouseButton::Left), x - 4, y);
+        mouse(&mut p, &c, M::Up(MouseButton::Left), x - 4, y);
+        draw(&mut p, &mut t, &c);
+    }
+    assert_eq!(
+        p.panes.rect(PaneId::Preview).unwrap().width,
+        preview.width + 8
+    );
+    assert_eq!(p.cursor, cursor);
+    assert_eq!(p.checks, checks);
+    assert!(p.edit.is_none() && p.dragged.is_none() && !p.panes.dragging());
+    assert_eq!(p.focused_pane(), PaneId::Changes);
+    let draft = p
+        .hits
+        .iter()
+        .find(|(_, h)| matches!(h, Hit::Msg))
+        .unwrap()
+        .0;
+    click(&mut p, &c, draft.x, draft.bottom() - 1);
+    assert!(matches!(p.edit, Some(Edit::Message)));
+    assert_eq!(p.buf, message);
+    key(&mut p, &c, K::Esc);
+    draw(&mut p, &mut t, &c);
+    let review = p
+        .hits
+        .iter()
+        .find(|(_, h)| matches!(h, Hit::Submit(false)))
+        .unwrap()
+        .0;
+    let action = mouse(
+        &mut p,
+        &c,
+        M::Down(MouseButton::Left),
+        review.x + 1,
+        review.y,
+    );
+    assert!(matches!(action, Action::Confirm { body, .. } if body.contains("Details three")));
+    assert_eq!(
+        git(&c.repos[0].path, &["ls-files", "--stage"]).unwrap(),
+        index
+    );
+}
+
+#[test]
+fn compact_commit_keeps_the_only_tree_row_clickable_and_frames_the_visible_focus() {
+    use crate::ui::{ACCENT, LINE};
+    let (_dir, c) = fixture();
+    let mut p = CommitPanel::default();
+    p.refresh(&c).unwrap();
+    // Four body rows are available in the top half of a 44×12 workspace.
+    let mut t = Terminal::new(TestBackend::new(44, 4)).unwrap();
+    draw(&mut p, &mut t, &c);
+    let row = row_area(&p, "Changes");
+    assert_eq!(p.tree.height, 1);
+    let (_, check) = p.row_controls(p.active().unwrap(), row);
+    click(&mut p, &c, check.x, check.y);
+    assert!(p.selection(&c).is_empty());
+    let tree = p.panes.rect(PaneId::Changes).unwrap();
+    let msg = p.panes.rect(PaneId::Message).unwrap();
+    click(&mut p, &c, msg.x, msg.y); // The frame focuses the draft without editing it.
+    draw(&mut p, &mut t, &c);
+    assert_eq!(p.focused_pane(), PaneId::Message);
+    assert!(p.edit.is_none());
+    let border = |t: &Terminal<TestBackend>, r: Rect| t.backend().buffer()[(r.x, r.y)].fg;
+    assert_eq!(border(&t, tree), LINE);
+    assert_eq!(border(&t, msg), ACCENT);
+    p.panes.active = false;
+    draw(&mut p, &mut t, &c);
+    assert_eq!(border(&t, msg), LINE);
+
+    p.panes.active = true;
+    key(&mut p, &c, K::Char('v'));
+    draw(&mut p, &mut t, &c);
+    assert_eq!(
+        p.panes.nodes(),
+        &[
+            (PaneId::Changes, Rect::default()),
+            (PaneId::Preview, t.backend().buffer().area),
+            (PaneId::Message, Rect::default())
+        ]
+    );
+    p.focus_pane(PaneId::Message);
+    draw(&mut p, &mut t, &c);
+    assert_eq!(p.panes.rect(PaneId::Preview), Some(Rect::default()));
+    assert_eq!(border(&t, msg), ACCENT);
+    assert!(p.selection(&c).is_empty());
+
+    // At these heights only the list has a bottom edge (drawn or compact).
+    // The first message row must remain editable across its entire draft.
+    for h in [7, 10] {
+        let mut t = Terminal::new(TestBackend::new(44, h)).unwrap();
+        draw(&mut p, &mut t, &c);
+        let draft = p
+            .hits
+            .iter()
+            .find(|(_, hit)| matches!(hit, Hit::Msg))
+            .unwrap()
+            .0;
+        assert_eq!(draft.y, p.panes.rect(PaneId::Message).unwrap().y);
+        click(&mut p, &c, draft.x, draft.y);
+        assert!(matches!(p.edit, Some(Edit::Message)));
+        assert!(!p.panes.dragging());
+        key(&mut p, &c, K::Esc);
+    }
 }
 
 #[test]

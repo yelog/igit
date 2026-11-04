@@ -96,6 +96,15 @@ pub(crate) struct HelpCommand {
 impl HelpCommand {
     /// Only static catalogue sequences are parsed, never the search query.
     pub fn events(self) -> Option<Vec<Event>> {
+        if let Some((keys, _)) = super::panes::WINDOW_KEYS
+            .iter()
+            .find(|(keys, _)| *keys == self.sequence)
+        {
+            return Some(vec![
+                Event::Key(KeyEvent::new(K::Char('w'), M::CONTROL)),
+                Event::Key(KeyEvent::new(K::Char(keys.chars().last()?), M::NONE)),
+            ]);
+        }
         if self.sequence.contains(char::is_whitespace) {
             return None;
         }

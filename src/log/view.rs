@@ -77,22 +77,6 @@ pub(super) fn fold_slot(icons: IconMode, open: Option<bool>) -> String {
     let mark = open.map_or("", |open| icons.disclosure(open));
     format!("{mark}{}", " ".repeat(width + 1 - mark.width()))
 }
-fn vline(f: &mut Frame, r: Rect) {
-    f.render_widget(
-        Block::default()
-            .borders(Borders::LEFT)
-            .border_style(fg(EDGE)),
-        r,
-    );
-}
-fn hline(f: &mut Frame, r: Rect) {
-    f.render_widget(
-        Block::default()
-            .borders(Borders::TOP)
-            .border_style(fg(EDGE)),
-        r,
-    );
-}
 // Reserve the close target before clipping or scrolling the input, so even a wide
 // icon cannot cover its last character. Return the cells actually occupied by it.
 pub(super) fn toolbar_field(
@@ -279,25 +263,12 @@ impl LogPanel {
     }
 
     pub(super) fn cycle_focus(&mut self, d: i32) {
-        for _ in 0..4 {
-            self.focus = self.focus.delta(d);
-            if self.pane_visible(self.focus) {
+        let mut pane = self.focus;
+        for _ in Pane::ORDER {
+            pane = pane.delta(d);
+            if self.pane_visible(pane) {
+                self.focus_pane(pane.id());
                 break;
-            }
-        }
-    }
-    pub(super) fn resize(&mut self, split: Divider, x: u16, y: u16) {
-        let a = self.bounds;
-        let pct = |v: u16, n: u16| ((u32::from(v) * 100) / u32::from(n.max(1))) as u16;
-        match split {
-            Divider::Left => self.left = pct(x.saturating_sub(a.x), a.width).clamp(12, 34),
-            Divider::Right => {
-                self.right = 100u16
-                    .saturating_sub(pct(x.saturating_sub(a.x), a.width))
-                    .clamp(17, 38)
-            }
-            Divider::Inspector => {
-                self.inspector_split = pct(y.saturating_sub(a.y), a.height).clamp(30, 82)
             }
         }
     }
@@ -333,7 +304,7 @@ impl LogPanel {
         if !self.pane_visible(self.focus) {
             self.focus = Pane::Graph;
         }
-        if a.width < 82 {
+        let areas = if a.width < 82 {
             let mut navigation = Rect::new(a.x, a.y, a.width, 1);
             self.view_button(f, &mut navigation);
             for (pane, label) in [
@@ -347,64 +318,86 @@ impl LogPanel {
                     self.button(f, tab, label, self.focus == pane, Hit::Pane(pane));
                 }
             }
-            self.areas.push((
-                Rect::new(a.x, a.y + 1, a.width, a.height.saturating_sub(1)),
-                self.focus,
-            ));
+            let content = Rect::new(a.x, navigation.bottom(), a.width, a.height - 1);
+            // Keep every enabled tab reachable; only the current tab occupies screen cells.
+            Pane::ORDER.map(|p| {
+                if p == self.focus {
+                    content
+                } else {
+                    Rect::default()
+                }
+            })
         } else {
-            let xx = |v: u16| a.x + (u32::from(a.width) * u32::from(v) / 100) as u16;
-            let right = if self.show_info {
-                xx(100 - self.right)
+            let percent = |n: u16, p: u32| (u32::from(n) * p / 100) as u16;
+            let [main, inspector] = if self.show_info {
+                self.panes.divide(
+                    SplitId::LogInspector,
+                    a,
+                    Axis::Width,
+                    percent(a.width, 74),
+                    [24 + 12 * u16::from(self.show_refs), 16],
+                )
             } else {
-                a.right()
+                [a, Rect::default()]
             };
-            let graph_x = if self.show_refs {
-                let left = xx(self.left);
-                self.areas
-                    .push((Rect::new(a.x, a.y, left - a.x, a.height), Pane::Refs));
-                let d = Rect::new(left, a.y, 1, a.height);
-                vline(f, d);
-                self.hit(d, Hit::Split(Divider::Left));
-                d.right()
+            let [refs, graph] = if self.show_refs {
+                self.panes.divide(
+                    SplitId::LogRefs,
+                    main,
+                    Axis::Width,
+                    percent(a.width, 17),
+                    [12, 24],
+                )
             } else {
-                a.x
+                [Rect::default(), main]
             };
-            self.areas.push((
-                Rect::new(graph_x, a.y, right - graph_x, a.height),
-                Pane::Graph,
-            ));
-            if self.show_info {
-                let d = Rect::new(right, a.y, 1, a.height);
-                vline(f, d);
-                self.hit(d, Hit::Split(Divider::Right));
-                let split =
-                    a.y + (u32::from(a.height) * u32::from(self.inspector_split) / 100) as u16;
-                let w = a.right() - right - 1;
-                let d = one(right + 1, split, w);
-                hline(f, d);
-                self.hit(d, Hit::Split(Divider::Inspector));
-                self.areas
-                    .push((Rect::new(right + 1, a.y, w, split - a.y), Pane::Files));
-                self.areas.push((
-                    Rect::new(
-                        right + 1,
-                        split + 1,
-                        w,
-                        a.bottom().saturating_sub(split + 1),
-                    ),
-                    Pane::Info,
-                ));
+            let [files, info] = if self.show_info {
+                self.panes.divide(
+                    SplitId::LogDetails,
+                    inspector,
+                    Axis::Height,
+                    percent(a.height, 65),
+                    [2, 1],
+                )
+            } else {
+                [Rect::default(); 2]
+            };
+            [refs, graph, files, info]
+        };
+        let active = self.panes.active && !self.editing();
+        for (p, outer) in Pane::ORDER.into_iter().zip(areas) {
+            if !self.pane_visible(p) {
+                continue;
+            }
+            self.panes.add(p.id(), outer);
+            if outer.is_empty() {
+                continue;
+            }
+            let r = pane_frame(f, outer, active && self.focus == p);
+            match p {
+                Pane::Refs => self.draw_refs(f, r, c),
+                Pane::Graph => self.draw_graph(f, r, c),
+                Pane::Files => self.draw_files(f, r, c),
+                Pane::Info => self.draw_info(f, r, c),
             }
         }
-        for (r, p) in self.areas.clone() {
-            if !r.is_empty() {
-                match p {
-                    Pane::Refs => self.draw_refs(f, r, c),
-                    Pane::Graph => self.draw_graph(f, r, c),
-                    Pane::Files => self.draw_files(f, r, c),
-                    Pane::Info => self.draw_info(f, r, c),
-                }
-            }
+        let [_, _, files, info] = areas;
+        if files.height.min(info.height) <= 4
+            && !info.is_empty()
+            && self.panes.can_resize(files, Axis::Height)
+        {
+            // Short frames only draw sides. Use whichever horizontal border is
+            // visible or mark a grip on the right edge; never cover a content row.
+            let handle = if files.height > 4 {
+                one(files.x, files.bottom() - 1, files.width)
+            } else if info.height > 4 {
+                one(info.x, info.y, info.width)
+            } else {
+                let grip = one(files.right() - 1, files.bottom() - 1, 1);
+                f.buffer_mut()[(grip.x, grip.y)].set_symbol("┤");
+                grip
+            };
+            self.panes.handle(SplitId::LogDetails, handle);
         }
     }
     fn graph_toolbar(&mut self, f: &mut Frame, area: Rect, c: &Context) -> u16 {
@@ -547,14 +540,15 @@ impl LogPanel {
             .iter()
             .map(|b| b.label.width() + b.kinds.len() * marker_width + 1)
             .sum::<usize>();
-        let tag_width = if full == 0 || line.width < 14 {
+        // Reserve space for a short title as well as every marker of the first
+        // reference (e.g. remote + local + HEAD), including in a narrow frame.
+        let minimum = tags.first().map_or(0, |b| {
+            b.kinds.len() * marker_width + usize::from(!b.label.is_empty())
+        });
+        let tag_width = if full == 0 || usize::from(line.width) < minimum + 4 {
             0
         } else {
             let spare = usize::from(line.width).saturating_sub(rev.subject.width() + 2);
-            // Keep the first reference's complete set of identities, even when its name is clipped.
-            let minimum = tags.first().map_or(0, |b| {
-                b.kinds.len() * marker_width + usize::from(!b.label.is_empty())
-            });
             full.min(
                 spare
                     .max(usize::from(line.width / 3))
@@ -686,6 +680,9 @@ impl LogPanel {
     }
 
     fn draw_graph(&mut self, f: &mut Frame, area: Rect, c: &Context) {
+        if area.is_empty() {
+            return;
+        }
         let tools = self.graph_toolbar(f, area, c).min(area.height);
         let errors = self
             .hist
@@ -695,6 +692,9 @@ impl LogPanel {
         let warning = u16::from(errors.is_some() && area.height > tools + 1);
         let avail = area.height.saturating_sub(tools + warning) as usize;
         self.graph_height = avail;
+        if avail == 0 {
+            return;
+        }
         if let Some(e) = errors {
             if warning != 0 {
                 let message = format!("{} {e}", self.icons.glyph(Icon::Warning));
@@ -707,7 +707,7 @@ impl LogPanel {
         self.keep_graph_cursor_visible();
         let start = self.graph_top;
         let end = (start + avail).min(self.visible.len());
-        if self.visible.is_empty() && avail > 0 {
+        if self.visible.is_empty() {
             let reset;
             let msg = if c.scope.is_empty() {
                 "No repositories in scope"
@@ -904,7 +904,7 @@ impl LogPanel {
                 }
             }
         }
-        if has_scroll && avail > 0 {
+        if has_scroll {
             let total = self.visible.len();
             let thumb = (avail * avail / total).max(1);
             let pos = start * (avail - thumb) / (total - avail);

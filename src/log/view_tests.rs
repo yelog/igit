@@ -1,6 +1,7 @@
 //! Exercise the rendered cells and actual input dispatch together.
 mod branch_menu;
 mod column_order;
+mod panes;
 mod path_selection;
 mod reference_badges;
 mod text_selection;
@@ -500,7 +501,7 @@ fn view_options_branch_or_tag_reclaims_the_left_edge_and_skips_hidden_focus() {
         key(&mut p, K::BackTab, Mods::SHIFT, &c);
         draw(&mut p, &mut t);
         let refs = target(&p, |h| matches!(h, Hit::Filter(Field::Refs)));
-        assert_eq!(refs.x, area.x);
+        assert_eq!(p.panes.rect(PaneId::Refs).unwrap().x, area.x);
         let eye = target(&p, |h| matches!(h, Hit::ViewOptions));
         click_at(&mut p, eye, &c);
         draw(&mut p, &mut t);
@@ -510,17 +511,16 @@ fn view_options_branch_or_tag_reclaims_the_left_edge_and_skips_hidden_focus() {
         draw(&mut p, &mut t);
         assert!(row_text(&t, option(&p)).contains("[ ] Branch or Tag"));
         assert_eq!(p.focus, Pane::Graph);
+        assert!(p.panes.rect(PaneId::Refs).is_none());
+        assert_eq!(p.panes.rect(PaneId::Graph).unwrap().x, area.x);
         assert_eq!(
             target(&p, |h| matches!(h, Hit::Filter(Field::Text))).x,
-            area.x
+            refs.x
         );
         assert_eq!(target(&p, |h| matches!(h, Hit::ViewOptions)), eye);
         assert!(!p.hits.iter().any(|(_, h)| matches!(
             h,
-            Hit::Ref(_)
-                | Hit::Filter(Field::Refs)
-                | Hit::Split(Divider::Left)
-                | Hit::Pane(Pane::Refs)
+            Hit::Ref(_) | Hit::Filter(Field::Refs) | Hit::Pane(Pane::Refs)
         )));
         key(&mut p, K::Esc, Mods::NONE, &c);
         key(&mut p, K::BackTab, Mods::SHIFT, &c);
@@ -1137,13 +1137,12 @@ fn dropdown_surface_blocks_the_row_beneath_but_an_exposed_row_takes_the_first_cl
 
     key(&mut p, K::Char('p'), Mods::NONE, &c);
     render(&mut p, &mut t, &c);
-    let files = p
-        .areas
-        .iter()
-        .find(|(_, pane)| *pane == Pane::Files)
-        .unwrap()
-        .0;
-    click_at(&mut p, Rect::new(files.x, files.bottom() - 1, 1, 1), &c);
+    let files = p.panes.rect(PaneId::Files).unwrap();
+    click_at(
+        &mut p,
+        Rect::new(files.x, files.y + files.height / 2, 1, 1),
+        &c,
+    );
     assert!(!p.editing());
     assert_eq!(p.focus, Pane::Files);
     assert_eq!(p.cursor, 1);
@@ -1341,18 +1340,18 @@ fn wide_rows_prioritise_subject_before_refs_and_narrow_layout_keeps_details_reac
     assert!(text.find("Log tester").unwrap() < text.find("2026/").unwrap());
     assert!(text.find("repair the selected account").unwrap() < text.find("main").unwrap());
     assert!(!text.contains("HEAD ->"));
-    let grab = target(&p, |h| matches!(h, Hit::Split(Divider::Left)));
+    let refs = p.panes.rect(PaneId::Refs).unwrap();
     let press = MouseEvent {
         kind: M::Down(MouseButton::Left),
-        column: grab.x,
-        row: grab.y + 3,
+        column: refs.right() - 1,
+        row: refs.y + 3,
         modifiers: Mods::NONE,
     };
     p.event(&Event::Mouse(press), &c);
     p.event(
         &Event::Mouse(MouseEvent {
             kind: M::Drag(MouseButton::Left),
-            column: grab.x + 7,
+            column: press.column + 7,
             ..press
         }),
         &c,
@@ -1360,6 +1359,7 @@ fn wide_rows_prioritise_subject_before_refs_and_narrow_layout_keeps_details_reac
     p.event(
         &Event::Mouse(MouseEvent {
             kind: M::Up(MouseButton::Left),
+            column: press.column + 7,
             ..press
         }),
         &c,
@@ -1424,12 +1424,7 @@ fn navigation_updates_the_row_before_git_and_escape_cancels_a_waiting_diff() {
     assert_eq!(t.backend().buffer()[(row.x, row.y)].bg, SELECT);
     assert_eq!(p.rev().unwrap().subject, "middle");
     assert!(p.details.files.is_empty() && p.file_index().is_none());
-    let files = p
-        .areas
-        .iter()
-        .find(|(_, pane)| *pane == Pane::Files)
-        .unwrap()
-        .0;
+    let files = p.panes.rect(PaneId::Files).unwrap();
     let text = (files.y..files.bottom())
         .map(|y| row_text(&t, Rect::new(files.x, y, files.width, 1)))
         .collect::<String>();

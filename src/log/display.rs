@@ -212,7 +212,6 @@ impl LogPanel {
 
     pub(super) fn toggle_view_menu(&mut self) {
         self.discard_editor();
-        self.drag = None;
         self.last = None;
         self.view_menu = if self.view_menu.is_some() {
             None

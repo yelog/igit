@@ -100,7 +100,8 @@ impl PushPanel {
             .hits
             .iter()
             .find_map(|(r, h)| matches!(h, Hit::GroupBy).then_some(*r))
-            .unwrap_or(self.zones[1]);
+            .or_else(|| self.panes.rect(PaneId::PushFiles))
+            .unwrap_or(area);
         let width = (self.icons.check(true).width() + "Repository".width() + 6)
             .min(area.width.into()) as u16;
         let preferred = Group::ALL.len() as u16 + 3;

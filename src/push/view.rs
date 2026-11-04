@@ -168,26 +168,32 @@ fn filename(path: &Path, width: usize) -> String {
 impl PushPanel {
     pub(super) fn draw_panel(&mut self, f: &mut Frame, area: Rect, c: &Context) {
         self.hits.clear();
-        let vert = slices(
-            area,
-            Direction::Vertical,
-            vec![C::Length(1), C::Min(2), C::Length(2)],
+        self.panes.begin();
+        let [header, body, controls] =
+            Layout::vertical([C::Length(1), C::Min(2), C::Length(2)]).areas(area);
+        let [outgoing, right] = self.panes.divide(
+            SplitId::PushColumns,
+            body,
+            Axis::Width,
+            body.width / 2,
+            [18, 18],
         );
-        let cols = slices(
-            vert[1],
-            Direction::Horizontal,
-            vec![C::Percentage(50), C::Percentage(50)],
-        );
-        let right = if self.show_details {
-            slices(
-                cols[1],
-                Direction::Vertical,
-                vec![C::Percentage(60), C::Percentage(40)],
+        let [files, details] = if self.show_details {
+            self.panes.divide(
+                SplitId::PushDetails,
+                right,
+                Axis::Height,
+                (u32::from(right.height) * 3 / 5) as u16,
+                [4, 3],
             )
         } else {
-            vec![cols[1], Rect::default()]
+            [right, Rect::default()]
         };
-        self.zones = vec![cols[0], right[0], right[1]];
+        self.panes.add(PaneId::Outgoing, outgoing);
+        self.panes.add(PaneId::PushFiles, files);
+        if self.show_details {
+            self.panes.add(PaneId::PushDetails, details);
+        }
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
@@ -207,14 +213,17 @@ impl PushPanel {
                     Style::new().fg(ACCENT),
                 ),
             ])),
-            vert[0],
+            header,
         );
-        self.draw_repositories(f, cols[0], c);
-        self.draw_files(f, right[0], c);
+        self.draw_repositories(f, outgoing, c);
+        self.draw_files(f, files, c);
         if self.show_details {
-            let block = pane("Details / Diff · d / Esc close", self.focus == 2);
-            let inner = block.inner(right[1]);
-            f.render_widget(block, right[1]);
+            let block = pane(
+                "Details / Diff · d / Esc close",
+                self.active_pane(PaneId::PushDetails),
+            );
+            let inner = block.inner(details);
+            f.render_widget(block, details);
             let mut layout = TextLayout::default();
             for line in self.preview.body.split('\n') {
                 layout.push(
@@ -235,7 +244,7 @@ impl PushPanel {
         } else {
             self.detail_selection.reset();
         }
-        self.draw_controls(f, vert[2], c);
+        self.draw_controls(f, controls, c);
         self.draw_group_menu(f, area);
         if let Some((i, target)) = &self.target_edit {
             let pop = Rect::new(
@@ -251,7 +260,7 @@ impl PushPanel {
                         "{} · remote:branch · Enter save / Esc cancel",
                         c.repos[*i].name
                     ),
-                    true,
+                    self.panes.active,
                 )),
                 pop,
             );
@@ -259,7 +268,7 @@ impl PushPanel {
     }
 
     fn draw_repositories(&mut self, f: &mut Frame, area: Rect, c: &Context) {
-        let block = pane("Outgoing commits", self.focus == 0);
+        let block = pane("Outgoing commits", self.active_pane(PaneId::Outgoing));
         let inner = block.inner(area);
         f.render_widget(block, area);
         let rows = self.rows();
@@ -536,7 +545,7 @@ impl PushPanel {
         let icons = self.icons;
         let block = pane(
             format!("Changed files · {}", self.preview.files.len()),
-            self.focus == 1,
+            self.active_pane(PaneId::PushFiles),
         );
         let inner = block.inner(area);
         f.render_widget(block, area);

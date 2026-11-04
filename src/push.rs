@@ -10,6 +10,7 @@ use crate::{
     ui::{
         icons::{Icon, IconMode},
         idea::{checkbox, GREEN, RED},
+        panes::{Axis, PaneId, PaneLayout, SplitId},
         selection::{TextLayout, TextSelection, Wrap as TextWrap},
         *,
     },
@@ -18,7 +19,7 @@ use anyhow::{bail, Result};
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use files::{Change, FileTree, Group, Grouping, Kind};
 use ratatui::{
-    layout::{Constraint as C, Direction, Layout, Rect},
+    layout::{Constraint as C, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Clear, Paragraph},
@@ -95,6 +96,7 @@ enum Hit {
 #[derive(Default)]
 pub struct PushPanel {
     pub(crate) icons: IconMode,
+    pub(crate) panes: PaneLayout,
     entries: Vec<Entry>,
     checked: BTreeSet<usize>,
     expanded: BTreeSet<usize>,
@@ -112,7 +114,6 @@ pub struct PushPanel {
     detail_selection: TextSelection,
     target_edit: Option<(usize, String)>,
     hits: Vec<(Rect, Hit)>,
-    zones: Vec<Rect>,
     results: BTreeMap<usize, Result<(), String>>,
     inflight: Option<Receiver<Report>>,
     busy: String,
@@ -121,13 +122,6 @@ pub struct PushPanel {
     skip_hooks: bool,
     last_fetch: bool,
     pub(crate) progress_seq: u64,
-}
-fn slices(a: Rect, dir: Direction, cs: Vec<C>) -> Vec<Rect> {
-    Layout::default()
-        .direction(dir)
-        .constraints(cs)
-        .split(a)
-        .to_vec()
 }
 fn remote_list(p: &Path) -> Vec<String> {
     git(p, &["remote"])
@@ -343,6 +337,24 @@ fn label(p: &Path) -> String {
         .collect()
 }
 impl PushPanel {
+    const PANES: [PaneId; 3] = [PaneId::Outgoing, PaneId::PushFiles, PaneId::PushDetails];
+
+    pub(crate) fn focused_pane(&self) -> PaneId {
+        Self::PANES[self.focus]
+    }
+
+    pub(crate) fn focus_pane(&mut self, id: PaneId) {
+        if !self.editing() && (id != PaneId::PushDetails || self.show_details) {
+            if let Some(i) = Self::PANES.iter().position(|&p| p == id) {
+                self.focus = i;
+            }
+        }
+    }
+
+    fn active_pane(&self, id: PaneId) -> bool {
+        self.panes.active && !self.editing() && self.focused_pane() == id
+    }
+
     pub(crate) fn at_root(&self) -> bool {
         !self.editing() && !self.show_details
     }
@@ -873,6 +885,9 @@ impl Panel for PushPanel {
             }
         }
         if let Event::Mouse(m) = e {
+            if self.panes.mouse(m) {
+                return Action::None;
+            }
             if let Some(action) = self
                 .show_details
                 .then(|| self.detail_selection.mouse(m))
@@ -884,17 +899,28 @@ impl Panel for PushPanel {
         }
         let mut key = None;
         let mut hit = None;
+        let mut motion_pane = self.focused_pane();
         match e {
             Event::Key(k) => key = Some(k.code),
             Event::Mouse(m) => {
                 let (x, y) = (m.column, m.row);
-                if let Some(i) = self.zones.iter().position(|r| inside(*r, x, y)) {
-                    self.focus = i
-                }
                 match m.kind {
-                    MouseEventKind::Down(MouseButton::Left) => hit = self.hit_at(x, y),
-                    MouseEventKind::ScrollDown => key = Some(KeyCode::Down),
-                    MouseEventKind::ScrollUp => key = Some(KeyCode::Up),
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        if let Some(id) = self.panes.at(x, y) {
+                            self.focus_pane(id);
+                        }
+                        hit = self.hit_at(x, y);
+                    }
+                    MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                        if let Some(id) = self.panes.at(x, y) {
+                            motion_pane = id;
+                            key = Some(if m.kind == MouseEventKind::ScrollDown {
+                                KeyCode::Down
+                            } else {
+                                KeyCode::Up
+                            });
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -961,12 +987,12 @@ impl Panel for PushPanel {
                             v.saturating_sub(1)
                         }
                     };
-                    match self.focus {
-                        0 => {
+                    match motion_pane {
+                        PaneId::Outgoing => {
                             self.pos = mv(self.pos, self.rows().len());
                             self.inspect(c)
                         }
-                        1 => {
+                        PaneId::PushFiles => {
                             self.preview.tree.cursor =
                                 mv(self.preview.tree.cursor, self.preview.tree.visible.len());
                             if self.show_details {

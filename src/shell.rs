@@ -1,3 +1,4 @@
+mod panes;
 mod workspace;
 
 use self::{
@@ -15,7 +16,7 @@ use crate::{
         help::{global_section, HelpContent, HelpEvent, HelpSection, HelpState},
         icons::{Icon, IconMode},
         idea::{button_style, checkbox, repo_tint, TAG},
-        key_sequence::{KeySequence, KeySequencePicker, SequenceEvent},
+        key_sequence::{KeySequence, KeySequencePicker, SequenceEvent, WindowPrefix},
         *,
     },
 };
@@ -23,8 +24,9 @@ use anyhow::{bail, Result};
 use crossterm::{
     cursor::Show,
     event::{
-        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+        self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, MouseButton, MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -111,9 +113,11 @@ struct Shell {
     journal: Vec<String>,
     quit: bool,
     regions: workspace::Regions,
+    work_panes: crate::ui::panes::PaneLayout,
     tools: Vec<(Rect, u8)>,
     pop_hits: Vec<(Rect, usize)>,
     key_picker: KeySequencePicker,
+    window_prefix: Option<WindowPrefix>,
 }
 impl Shell {
     fn new(ctx: Context, icons: IconMode) -> Self {
@@ -132,9 +136,11 @@ impl Shell {
             journal: vec![],
             quit: false,
             regions: Default::default(),
+            work_panes: Default::default(),
             tools: vec![],
             pop_hits: vec![],
             key_picker: KeySequencePicker::default(),
+            window_prefix: None,
         };
         s.log.icons = icons;
         s.commit.icons = icons;
@@ -158,6 +164,9 @@ impl Shell {
         if self.pop.is_some() || self.ctx.repos.is_empty() {
             return None;
         }
+        if let Some(prefix) = self.window_prefix {
+            return Some(KeySequence::Window(prefix));
+        }
         match self.surface() {
             Split(Log) => self.log.key_sequence(),
             Dialog(Merge) => self.merge.key_sequence(),
@@ -165,6 +174,7 @@ impl Shell {
         }
     }
     fn cancel_key_sequences(&mut self) {
+        self.window_prefix = None;
         self.log.cancel_key_sequence();
         self.merge.cancel_key_sequence();
         self.key_picker = KeySequencePicker::default();
@@ -223,6 +233,7 @@ impl Shell {
         }
     }
     fn go(&mut self, surface: Surface) {
+        self.cancel_drags();
         self.cancel_key_sequences();
         self.msg.clear();
         match surface {
@@ -408,6 +419,7 @@ impl Shell {
                     ));
                 }
                 if !self.panel().editing() {
+                    self.pane_help(&mut content);
                     content.sections.push(global_section());
                 }
                 content
@@ -419,6 +431,7 @@ impl Shell {
             return;
         }
         self.cancel_key_sequences();
+        self.cancel_drags();
         let content = self.help_content();
         let origin = self.pop.take().map(Box::new);
         self.pop = Some(Popup::Help {
@@ -638,6 +651,15 @@ impl Shell {
         if matches!(ev,Event::Key(k) if k.kind==KeyEventKind::Release) {
             return;
         }
+        if matches!(ev, Event::Resize(_, _) | Event::FocusLost | Event::Paste(_)) {
+            self.cancel_key_sequences();
+        }
+        if matches!(
+            ev,
+            Event::Resize(_, _) | Event::FocusLost | Event::Key(_) | Event::Paste(_)
+        ) {
+            self.cancel_drags();
+        }
         if matches!(ev, Event::Key(k) if k.code == KeyCode::F(1))
             && !matches!(self.pop, Some(Popup::Help { .. }))
         {
@@ -656,10 +678,14 @@ impl Shell {
                     return;
                 }
                 SequenceEvent::Run(suffix) => {
-                    self.panel_event(
-                        self.surface(),
-                        &Event::Key(KeyEvent::new(KeyCode::Char(suffix), KeyModifiers::NONE)),
-                    );
+                    if matches!(sequence, KeySequence::Window(_)) {
+                        self.run_window_key(suffix);
+                    } else {
+                        self.panel_event(
+                            self.surface(),
+                            &Event::Key(KeyEvent::new(KeyCode::Char(suffix), KeyModifiers::NONE)),
+                        );
+                    }
                     return;
                 }
                 SequenceEvent::Pass => (),
@@ -679,11 +705,17 @@ impl Shell {
             self.msg.clear();
         }
         if let Event::Mouse(m) = ev {
+            if self.window_prefix.is_some() && m.kind != MouseEventKind::Moved {
+                self.cancel_key_sequences();
+            }
             self.workspace_mouse(m);
             return;
         }
         if let Event::Key(k) = ev {
             let editing = self.panel().editing();
+            if !editing && !self.ctx.repos.is_empty() && self.pane_key(k) {
+                return;
+            }
             if !editing
                 && !k
                     .modifiers
@@ -762,6 +794,12 @@ impl Shell {
         change |= seq != self.push.progress_seq;
         let a = self.commit.tick(&self.ctx);
         if !matches!(a, Action::None) {
+            // A background AI request can open the message editor between two
+            // input events, even while a window command or drag is pending.
+            if self.surface() == Split(Commit) && self.commit.editing() {
+                self.cancel_key_sequences();
+                self.cancel_drags();
+            }
             self.action(a);
             change = true
         }
@@ -963,6 +1001,7 @@ impl Drop for Tty {
         let _ = disable_raw_mode();
         let _ = execute!(
             io::stdout(),
+            DisableFocusChange,
             DisableBracketedPaste,
             DisableMouseCapture,
             LeaveAlternateScreen,
@@ -1024,6 +1063,7 @@ pub fn run() -> Result<()> {
         out,
         EnterAlternateScreen,
         EnableMouseCapture,
+        EnableFocusChange,
         EnableBracketedPaste
     )?;
     let mut term = Terminal::new(CrosstermBackend::new(out))?;
@@ -1047,6 +1087,7 @@ pub fn run() -> Result<()> {
                 _ => {
                     let motion = app.surface() == Split(Log)
                         && app.pop.is_none()
+                        && app.key_sequence().is_none()
                         && app.log.graph_motion(&e);
                     app.dispatch(&e);
                     dirty = true;

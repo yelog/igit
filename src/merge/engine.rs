@@ -776,6 +776,112 @@ mod tests {
     }
 
     #[test]
+    fn pane_navigation_merge_drag_and_zoom_preserve_the_current_conflict() {
+        use crate::{
+            core::Context,
+            merge::MergePanel,
+            ui::{
+                panes::{Axis, PaneId},
+                Panel, ACCENT, LINE,
+            },
+        };
+        use crossterm::event::{
+            Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        };
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let td = fixture();
+        let ctx = Context::discover(td.path()).unwrap();
+        let mut p = MergePanel::default();
+        let draw = |p: &mut MergePanel, w| {
+            let mut term = Terminal::new(TestBackend::new(w, 24)).unwrap();
+            term.draw(|f| p.draw(f, f.area(), &ctx)).unwrap();
+            term.backend().buffer().clone()
+        };
+        let key = |p: &mut MergePanel, code| {
+            p.event(&Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), &ctx);
+        };
+        let mouse = |p: &mut MergePanel, kind, x, y| {
+            p.event(
+                &Event::Mouse(MouseEvent {
+                    kind,
+                    column: x,
+                    row: y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &ctx,
+            );
+        };
+        p.refresh(&ctx).unwrap();
+        draw(&mut p, 120);
+        assert_eq!(p.focused_pane(), PaneId::Conflicts);
+        assert!(!p
+            .panes
+            .can_resize(p.panes.rect(PaneId::Conflicts).unwrap(), Axis::Width));
+        key(&mut p, KeyCode::Enter);
+        let before = (p.idx, p.doc.as_ref().unwrap().pending());
+        let frame = draw(&mut p, 120);
+        let result = p.panes.rect(PaneId::Result).unwrap();
+        let incoming = p.panes.rect(PaneId::Incoming).unwrap();
+        assert_eq!(frame[(result.x, result.y)].fg, ACCENT);
+        assert_eq!(frame[(incoming.x, incoming.y)].fg, LINE);
+        let y = result.bottom() - 2;
+        // Empty space should select a side without choosing a chunk or taking its text.
+        mouse(
+            &mut p,
+            MouseEventKind::Down(MouseButton::Left),
+            incoming.x + 2,
+            y,
+        );
+        assert_eq!(p.focused_pane(), PaneId::Incoming);
+        let x = incoming.x;
+        mouse(&mut p, MouseEventKind::Down(MouseButton::Left), x, y);
+        mouse(&mut p, MouseEventKind::Drag(MouseButton::Left), x - 8, y);
+        mouse(&mut p, MouseEventKind::Up(MouseButton::Left), x - 8, y);
+        draw(&mut p, 120);
+        assert_eq!(
+            p.panes.rect(PaneId::Result).unwrap().width,
+            result.width - 8
+        );
+        assert_eq!(
+            p.panes.rect(PaneId::Incoming).unwrap().width,
+            incoming.width + 8
+        );
+        assert_eq!(p.focused_pane(), PaneId::Incoming);
+
+        for width in [120, 60] {
+            if width == 120 {
+                key(&mut p, KeyCode::Char('z'));
+            }
+            draw(&mut p, width);
+            let visible = p.panes.rect(p.focused_pane()).unwrap();
+            assert_eq!(visible.width, width);
+            assert!(!p.panes.can_resize(visible, Axis::Width));
+            key(&mut p, KeyCode::Tab);
+            draw(&mut p, width);
+            assert_eq!(p.panes.rect(p.focused_pane()).unwrap().width, width);
+            if width == 120 {
+                key(&mut p, KeyCode::Char('z'));
+            }
+        }
+        assert_eq!(p.focused_pane(), PaneId::Result);
+        key(&mut p, KeyCode::Char('i'));
+        draw(&mut p, 120);
+        let x = p.panes.rect(PaneId::Current).unwrap().right() - 1;
+        mouse(&mut p, MouseEventKind::Down(MouseButton::Left), x, y);
+        mouse(&mut p, MouseEventKind::Up(MouseButton::Left), x - 4, y);
+        key(&mut p, KeyCode::Tab);
+        assert!(p.edit.as_ref().unwrap().chars.contains(&'\t'));
+        key(&mut p, KeyCode::Esc);
+        draw(&mut p, 120);
+        assert_eq!(
+            p.panes.rect(PaneId::Incoming).unwrap().width,
+            incoming.width + 8
+        );
+        assert_eq!((p.idx, p.doc.as_ref().unwrap().pending()), before);
+    }
+
+    #[test]
     fn multi_root_tui_keyboard_and_mouse_apply_to_one_root() {
         use crate::{
             core::{Context, Repo},

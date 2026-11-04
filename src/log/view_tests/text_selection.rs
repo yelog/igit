@@ -48,15 +48,23 @@ fn text_selection_details_and_scrolled_diff_copy_without_navigation_or_git_write
         p.focus = Pane::Info;
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
         render(&mut p, &mut t, &c);
-        let info = p.areas.iter().find(|(_, p)| *p == Pane::Info).unwrap().0;
-        let x = info.x + u16::from(info.width >= 12);
+        let info = p.panes.rect(PaneId::Info).unwrap();
         let subject = p.rev().unwrap().subject.clone();
+        let (x, y) = (info.y..info.bottom())
+            .find_map(|y| {
+                (info.x..info.right())
+                    .find(|&x| {
+                        row_text(&t, Rect::new(x, y, info.right() - x, 1)).starts_with(&subject)
+                    })
+                    .map(|x| (x, y))
+            })
+            .expect("subject is visible inside the details frame");
         assert_eq!(
-            copied(drag(&mut p, &c, x, info.y, x + subject.width() as u16)),
+            copied(drag(&mut p, &c, x, y, x + subject.width() as u16)),
             subject
         );
         render(&mut p, &mut t, &c);
-        assert_ne!(t.backend().buffer()[(x, info.y)].bg, SELECT);
+        assert_ne!(t.backend().buffer()[(x, y)].bg, SELECT);
         assert!(p.selected_text().is_none());
         key(&mut p, K::Char('a'), Mods::CONTROL, &c);
         let selected = p.selected_text().unwrap().to_owned();

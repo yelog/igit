@@ -6,13 +6,14 @@ use crate::{
         button_style, clipped as fit, diff_line, repo_tint, BLUE, DIM, EDGE, GREEN, INK, PANEL,
         RED, SELECT, TAG,
     },
+    ui::panes::{pane_frame, Axis, PaneId, SplitId},
     ui::selection::{TextLayout, TextSelection, Wrap},
 };
 use ratatui::{
     layout::{Constraint, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Paragraph, Wrap as ParagraphWrap},
     Frame,
 };
 use unicode_width::UnicodeWidthStr;
@@ -97,40 +98,101 @@ impl CommitPanel {
     }
 
     pub(super) fn draw_workbench(&mut self, f: &mut Frame, area: Rect, c: &Context) {
+        self.panes.begin();
         self.hits.clear();
         self.tree = Rect::default();
         self.diff = Rect::default();
         self.stacked = area.width < SPLIT_AT;
-        if !self.preview_open || (self.stacked && self.focus != Focus::Diff) {
-            self.draw_sidebar(f, area, c, false);
-        } else if self.stacked {
-            self.draw_preview(f, area, c, true);
+        let [sidebar, preview] =
+            if !self.preview_open || (self.stacked && self.focus != Focus::Diff) {
+                [area, Rect::default()]
+            } else if self.stacked {
+                [Rect::default(), area]
+            } else {
+                self.panes.divide(
+                    SplitId::CommitPreview,
+                    area,
+                    Axis::Width,
+                    (u32::from(area.width) * 54 / 100) as u16,
+                    [34, 24],
+                )
+            };
+        let [changes, message] = if sidebar.is_empty() {
+            [Rect::default(); 2]
         } else {
-            let [left, right] =
-                Layout::horizontal([Constraint::Percentage(54), Constraint::Fill(1)]).areas(area);
-            self.draw_sidebar(f, left, c, true);
-            self.draw_preview(f, right, c, false);
+            let message_height = match sidebar.height {
+                0..=6 => 2,
+                7..=13 => 3,
+                _ => 5,
+            };
+            self.panes.divide(
+                SplitId::CommitMessage,
+                sidebar,
+                Axis::Height,
+                sidebar.height.saturating_sub(message_height),
+                [2, 2],
+            )
+        };
+        self.panes.add(PaneId::Changes, changes);
+        if self.preview_open {
+            self.panes.add(PaneId::Preview, preview);
+        }
+        self.panes.add(PaneId::Message, message);
+        if !sidebar.is_empty() {
+            self.draw_sidebar(f, changes, message, c);
+        }
+        if !preview.is_empty() {
+            let inner = pane_frame(f, preview, self.pane_focused(PaneId::Preview));
+            self.draw_preview(f, inner, c, self.stacked);
         }
     }
 
-    fn draw_sidebar(&mut self, f: &mut Frame, area: Rect, c: &Context, split: bool) {
-        let panel = Block::default()
-            .style(fg(INK).bg(PANEL))
-            .borders(if split { Borders::RIGHT } else { Borders::NONE })
-            .border_style(fg(EDGE));
-        let inner = panel.inner(area).inner(Margin::new(1, 0));
-        f.render_widget(panel, area);
-        let narrow = inner.width < 70;
-        let separate_options = narrow && inner.height >= 7;
-        let [bar, tree, rule, message, options, actions] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Fill(1),
-            Constraint::Length(u16::from(inner.height >= 7)),
-            Constraint::Length(1),
-            Constraint::Length(u16::from(separate_options)),
-            Constraint::Length(1),
-        ])
-        .areas(inner);
+    fn draw_sidebar(&mut self, f: &mut Frame, changes: Rect, message: Rect, c: &Context) {
+        let mut list = pane_frame(f, changes, self.pane_focused(PaneId::Changes));
+        let composer = pane_frame(f, message, self.pane_focused(PaneId::Message));
+        let last_row = slice(changes, changes.height.saturating_sub(1));
+        let rule = if list.bottom() < changes.bottom() {
+            // Only the real facing borders can resize; a compact composer's
+            // first row contains the repository tabs and the editable draft.
+            if composer.y == message.y {
+                self.panes.handle(SplitId::CommitMessage, last_row);
+            }
+            last_row
+        } else if composer.y > message.y {
+            // Short panes only have side borders. Use the adjacent top border instead.
+            let edge = slice(message, 0);
+            self.panes.handle(SplitId::CommitMessage, edge);
+            edge
+        } else if changes.height > 2 {
+            list.height -= 1;
+            self.panes.handle(SplitId::CommitMessage, last_row);
+            word(
+                f,
+                last_row,
+                &"─".repeat(last_row.width.into()),
+                fg(if self.pane_focused(PaneId::Changes) {
+                    BLUE
+                } else {
+                    EDGE
+                }),
+            );
+            last_row
+        } else {
+            // At the minimum terminal size the toolbar and the only Changes row
+            // need both lines; keep the drag handle on the frame, outside the row.
+            let grip = Rect {
+                width: last_row.width.min(1),
+                ..last_row
+            };
+            self.panes.handle(SplitId::CommitMessage, grip);
+            if !grip.is_empty() {
+                f.buffer_mut()[(grip.x, grip.y)].set_symbol("└");
+            }
+            Rect::default()
+        }
+        .inner(Margin::new(1, 0));
+        let [bar, tree] =
+            Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(list);
         self.tree = tree;
         let tools_end = self.draw_tools(f, bar);
         self.offset = self
@@ -158,12 +220,13 @@ impl CommitPanel {
             self.hits.push((r, Hit::Row(i)));
         }
 
-        f.render_widget(
-            Block::default()
-                .borders(Borders::TOP)
-                .border_style(fg(EDGE)),
-            rule,
-        );
+        let separate_options = composer.width < 70 && composer.height >= 3;
+        let [message, options, actions] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(u16::from(separate_options)),
+            Constraint::Length(1),
+        ])
+        .areas(composer);
         let roots = self.message_repos(c);
         if let Some(&first) = roots.first() {
             if !roots.contains(&self.repo) {
@@ -176,25 +239,28 @@ impl CommitPanel {
             Constraint::Min(1),
         ])
         .areas(message);
-        self.repo_tabs(f, tabs, &roots, c);
+        self.repo_tabs(f, slice(tabs, 0), &roots, c);
         let msg = c
             .repos
             .get(self.repo)
             .and_then(|_| self.saved.drafts.get(&rid(c, self.repo)))
-            .and_then(|s| s.lines().find(|line| !line.trim().is_empty()));
-        let style = if self.focus == Focus::Message {
-            fg(BLUE).bg(TAG)
-        } else if msg.is_some() {
-            fg(INK)
+            .filter(|s| !s.trim().is_empty());
+        let style = fg(if msg.is_some() { INK } else { DIM });
+        let text = msg.map_or("Commit message…", String::as_str);
+        if draft.height <= 1 {
+            let subject = text
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("");
+            word(f, draft, &fit(subject, draft.width.into()), style);
         } else {
-            fg(DIM)
-        };
-        word(
-            f,
-            draft,
-            &fit(msg.unwrap_or("Commit message…"), draft.width as usize),
-            style,
-        );
+            f.render_widget(
+                Paragraph::new(text)
+                    .style(style)
+                    .wrap(ParagraphWrap { trim: false }),
+                draft,
+            );
+        }
         self.hits.push((draft, Hit::Msg));
 
         let mut x = actions.x;
@@ -254,20 +320,21 @@ impl CommitPanel {
         if excluded != 0 {
             status.push_str(&format!(" · {excluded} excluded"));
         }
-        // Put the full scope on the separator if the compact action row is already occupied.
-        let w = status
-            .width()
-            .min(usize::from(rule.width.saturating_sub(2))) as u16;
+        // Leave the scope visible even when the compact action row is occupied.
+        let w = status.width() as u16;
         let r = if actions
             .right()
             .saturating_sub(if separate_options { submit_end } else { x })
             > w
         {
-            Rect::new(actions.right() - w, actions.y, w, 1)
+            Rect::new(actions.right() - w, actions.y, w, actions.height)
+        } else if bar.right().saturating_sub(tools_end) > w {
+            Rect::new(bar.right() - w, bar.y, w, bar.height)
         } else {
+            let w = w.min(rule.width);
             Rect::new(rule.right() - w, rule.y, w, rule.height)
         };
-        word(f, r, &fit(&status, usize::from(w)), fg(DIM));
+        word(f, r, &fit(&status, usize::from(r.width)), fg(DIM));
         if let Some(hint) = self.hover {
             let free = bar.right().saturating_sub(tools_end);
             let r = if usize::from(free) >= hint.width() {
@@ -371,9 +438,8 @@ impl CommitPanel {
     }
 
     fn draw_preview(&mut self, f: &mut Frame, area: Rect, c: &Context, compact: bool) {
-        let inner = area.inner(Margin::new(1, 0));
         let [header, body] =
-            Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
+            Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
         self.diff = body;
         let file = self.active().and_then(Row::file);
         let key = self.active().map_or("", |r| r.id.as_str());
@@ -398,7 +464,11 @@ impl CommitPanel {
             f,
             header,
             title,
-            bold(if self.focus == Focus::Diff { BLUE } else { INK }),
+            bold(if self.pane_focused(PaneId::Preview) {
+                BLUE
+            } else {
+                INK
+            }),
         );
         let close = if compact {
             format!("{} Tree", self.icons.glyph(Icon::Back))

@@ -24,7 +24,7 @@ fn text_selection_push_details_wrap_scroll_and_close_keep_push_scope() {
         p.preview.is_patch = true;
         let checked = p.checked.clone();
         draw(&mut p, &c, w, h);
-        let area = pane("", true).inner(p.zones[2]);
+        let area = pane("", true).inner(p.panes.rect(PaneId::PushDetails).unwrap());
         let first = "+中文 e\u{301}";
         let mut action = Action::None;
         for (kind, x) in [
