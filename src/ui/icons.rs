@@ -1,7 +1,7 @@
 //! Glyphs are a presentation preference. Callers measure the returned text in
 //! terminal cells; no entry includes padding or changes a Git path or status.
-use super::idea::{BLUE, DIM, GREEN, INK};
-use nerd_font_symbols::{cod, md, oct, seti};
+use super::idea::{BLUE, DIM, GREEN, INK, RED};
+use nerd_font_symbols::{cod, dev, md, oct, seti};
 use ratatui::style::Color;
 use std::{path::Path, str::FromStr};
 
@@ -109,19 +109,55 @@ glyphs! {
     GenericFile => cod::COD_FILE, "▤", "F";
     TypeScript  => seti::SETI_TYPESCRIPT, "TS", "TS";
     JavaScript  => seti::SETI_JAVASCRIPT, "JS", "JS";
+    ReactTs     => seti::SETI_REACT, "TSX", "TSX";
+    ReactJs     => seti::SETI_REACT, "JSX", "JSX";
     Vue         => seti::SETI_VUE, "V", "V";
+    Svelte      => seti::SETI_SVELTE, "Sv", "Sv";
+    Astro       => seti::CUSTOM_ASTRO, "As", "As";
+    Java        => seti::SETI_JAVA, "Jv", "Jv";
+    Kotlin      => seti::CUSTOM_KOTLIN, "Kt", "Kt";
+    Scala       => seti::SETI_SCALA, "Sc", "Sc";
+    Groovy      => dev::DEV_GROOVY, "Gy", "Gy";
+    C           => seti::SETI_C, "C", "C";
+    Cpp         => seti::SETI_CPP, "C++", "C++";
+    CSharp      => seti::SETI_C_SHARP, "C#", "C#";
+    FSharp      => seti::SETI_F_SHARP, "F#", "F#";
+    Swift       => seti::SETI_SWIFT, "Sw", "Sw";
+    Dart        => seti::SETI_DART, "Da", "Da";
+    Php         => seti::SETI_PHP, "PHP", "PHP";
+    Ruby        => seti::CUSTOM_RUBY, "Rb", "Rb";
+    Lua         => seti::SETI_LUA, "Lua", "Lua";
+    Perl        => seti::SETI_PERL, "Pl", "Pl";
+    R           => seti::SETI_R, "R", "R";
+    Julia       => seti::SETI_JULIA, "Jl", "Jl";
+    Elixir      => seti::CUSTOM_ELIXIR, "Ex", "Ex";
+    Erlang      => dev::DEV_ERLANG, "Erl", "Erl";
+    Haskell     => seti::SETI_HASKELL, "Hs", "Hs";
+    Clojure     => seti::SETI_CLOJURE, "Clj", "Clj";
+    Zig         => seti::SETI_ZIG, "Zig", "Zig";
     Json        => seti::SETI_JSON, "{}", "{}";
+    Xml         => seti::SETI_XML, "XML", "XML";
     Markdown    => seti::SETI_MARKDOWN, "M↓", "MD";
     Config      => seti::SETI_CONFIG, "≡", "CF";
     Rust        => seti::SETI_RUST, "Rs", "Rs";
     Docker      => seti::SETI_DOCKER, "▦", "DK";
     GitFile     => seti::SETI_GIT, "G", "G";
     Python      => seti::SETI_PYTHON, "Py", "Py";
+    Notebook    => seti::SETI_NOTEBOOK, "Nb", "Nb";
     Go          => seti::SETI_GO, "Go", "Go";
     ShellScript => seti::SETI_SHELL, "$", "$";
+    PowerShell  => seti::SETI_POWERSHELL, "PS", "PS";
+    Batch       => seti::CUSTOM_MSDOS, "Bat", "Bat";
     Html        => seti::SETI_HTML, "<>", "<>";
     Css         => seti::SETI_CSS, "#", "#";
+    Sass        => seti::SETI_SASS, "Sass", "Sass";
     Sql         => seti::SETI_DB, "DB", "DB";
+    Graphql     => seti::SETI_GRAPHQL, "GQL", "GQL";
+    Terraform   => seti::SETI_TERRAFORM, "TF", "TF";
+    Maven       => seti::SETI_MAVEN, "Mvn", "Mvn";
+    Gradle      => seti::SETI_GRADLE, "Gr", "Gr";
+    Makefile    => seti::SETI_MAKEFILE, "Mk", "Mk";
+    CMake       => dev::DEV_CMAKE, "CM", "CM";
     Lockfile    => seti::SETI_LOCK, "§", "LK";
 }
 
@@ -158,34 +194,95 @@ impl IconMode {
     /// not valid UTF-8. These colours describe file types, not Git statuses.
     pub(crate) fn file(self, path: &Path) -> (&'static str, Color) {
         use Icon::*;
-        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        let (kind, tint) = match name {
-            "Dockerfile"
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        // Recognisable filenames and compound suffixes take precedence over
+        // the final extension (e.g. pom.xml and build.gradle.kts).
+        let (kind, tint) = match name.as_str() {
+            "dockerfile"
+            | "containerfile"
             | ".dockerignore"
             | "compose.yml"
             | "compose.yaml"
             | "docker-compose.yml"
             | "docker-compose.yaml" => (Docker, BLUE),
-            _ if name.starts_with("Dockerfile.") => (Docker, BLUE),
+            _ if name.starts_with("dockerfile.") || name.starts_with("containerfile.") => {
+                (Docker, BLUE)
+            }
             ".gitignore" | ".gitattributes" | ".gitmodules" | ".gitconfig" => (GitFile, RUST),
             ".editorconfig" | ".env" => (Config, DIM),
             _ if name.starts_with(".env.") => (Config, DIM),
+            ".bashrc" | ".bash_profile" | ".bash_login" | ".profile" | ".zshrc" | ".zshenv"
+            | ".zprofile" | ".zlogin" | ".kshrc" => (ShellScript, GREEN),
+            "pom.xml" => (Maven, RUST),
+            _ if name.ends_with(".gradle.kts") => (Gradle, GREEN),
+            "makefile" | "gnumakefile" => (Makefile, GREEN),
+            "cmakelists.txt" => (CMake, BLUE),
+            "gemfile" | "rakefile" | "vagrantfile" => (Ruby, RED),
+            "jenkinsfile" => (Groovy, BLUE),
+            "go.mod" | "go.sum" | "go.work" => (Go, BLUE),
             _ => {
                 let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+                // .C and .H conventionally denote C++, unlike .c and .h.
+                if matches!(ext, "C" | "H") {
+                    return (self.glyph(Cpp), BLUE);
+                }
                 match ext.to_ascii_lowercase().as_str() {
-                    "ts" | "tsx" | "mts" | "cts" => (TypeScript, BLUE),
-                    "js" | "jsx" | "cjs" | "mjs" => (JavaScript, GOLD),
+                    "ts" | "mts" | "cts" => (TypeScript, BLUE),
+                    "js" | "cjs" | "mjs" => (JavaScript, GOLD),
+                    "tsx" => (ReactTs, BLUE),
+                    "jsx" => (ReactJs, CYAN),
                     "vue" => (Vue, GREEN),
-                    "json" | "jsonc" => (Json, PURPLE),
+                    "svelte" => (Svelte, RUST),
+                    "astro" => (Astro, RUST),
+                    "java" => (Java, RUST),
+                    "kt" | "kts" => (Kotlin, PURPLE),
+                    "scala" | "sc" | "sbt" => (Scala, RED),
+                    "groovy" | "gvy" | "gy" | "gsh" => (Groovy, BLUE),
+                    "c" | "h" => (C, BLUE),
+                    "cc" | "cpp" | "cxx" | "c++" | "hh" | "hpp" | "hxx" | "h++" | "ipp" | "tpp"
+                    | "inl" => (Cpp, BLUE),
+                    "cs" | "csx" => (CSharp, GREEN),
+                    "fs" | "fsi" | "fsx" => (FSharp, BLUE),
+                    "swift" => (Swift, RUST),
+                    "dart" => (Dart, BLUE),
+                    "php" | "phtml" => (Php, PURPLE),
+                    "rb" | "rake" | "gemspec" | "erb" => (Ruby, RED),
+                    "lua" => (Lua, BLUE),
+                    "pl" | "pm" | "t" => (Perl, BLUE),
+                    "r" | "rmd" => (R, BLUE),
+                    "jl" => (Julia, PURPLE),
+                    "ex" | "exs" => (Elixir, PURPLE),
+                    "erl" | "hrl" => (Erlang, RED),
+                    "hs" | "lhs" => (Haskell, PURPLE),
+                    "clj" | "cljs" | "cljc" | "edn" => (Clojure, GREEN),
+                    "zig" | "zon" => (Zig, GOLD),
+                    "json" | "jsonc" | "json5" => (Json, PURPLE),
+                    "xml" | "xsd" | "xsl" | "xslt" | "dtd" | "xaml" | "plist" | "csproj"
+                    | "fsproj" | "vbproj" => (Xml, RUST),
                     "md" | "mdx" | "markdown" => (Markdown, BLUE),
-                    "toml" | "yaml" | "yml" | "ini" | "conf" | "cfg" => (Config, DIM),
+                    "toml" | "yaml" | "yml" | "ini" | "conf" | "cfg" | "properties" => {
+                        (Config, DIM)
+                    }
                     "rs" => (Rust, RUST),
-                    "py" | "pyi" => (Python, GOLD),
+                    "py" | "pyi" | "pyw" => (Python, GOLD),
+                    "ipynb" => (Notebook, GOLD),
                     "go" => (Go, BLUE),
-                    "sh" | "bash" | "zsh" | "fish" => (ShellScript, GREEN),
+                    "sh" | "bash" | "zsh" | "fish" | "ksh" => (ShellScript, GREEN),
+                    "ps1" | "psm1" | "psd1" => (PowerShell, BLUE),
+                    "bat" | "cmd" => (Batch, GREEN),
                     "html" | "htm" => (Html, RUST),
-                    "css" | "scss" | "sass" | "less" => (Css, PURPLE),
+                    "css" | "less" => (Css, PURPLE),
+                    "scss" | "sass" => (Sass, PURPLE),
                     "sql" => (Sql, BLUE),
+                    "graphql" | "gql" => (Graphql, PURPLE),
+                    "tf" | "tfvars" => (Terraform, PURPLE),
+                    "gradle" => (Gradle, GREEN),
+                    "mk" | "mak" => (Makefile, GREEN),
+                    "cmake" => (CMake, BLUE),
                     "lock" => (Lockfile, DIM),
                     _ => (GenericFile, INK),
                 }
@@ -198,6 +295,7 @@ impl IconMode {
 const GOLD: Color = Color::Rgb(225, 190, 98);
 const PURPLE: Color = Color::Rgb(185, 146, 240);
 const RUST: Color = Color::Rgb(215, 169, 127);
+const CYAN: Color = Color::Rgb(97, 190, 208);
 
 #[cfg(test)]
 mod tests {
@@ -234,7 +332,7 @@ mod tests {
             ("infra/values.yaml", seti::SETI_CONFIG),
             ("nested/.gitignore", seti::SETI_GIT),
             ("nested/.env.development.example", seti::SETI_CONFIG),
-            ("src/界面/App.TSX", seti::SETI_TYPESCRIPT),
+            ("src/ｕｉ/App.TSX", seti::SETI_REACT),
             ("folder.rs/README", cod::COD_FILE),
         ] {
             assert_eq!(icons.file(Path::new(path)).0, want);

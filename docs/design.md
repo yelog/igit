@@ -30,6 +30,8 @@
 
 **图标与字体。** 四屏及 Roots 用同一套仓库、子模块、文件和勾选标记。默认 `nerd-font` 使用具名字形；`--icons unicode` 使用标准符号，`--icons ascii` 使用文字标记。图标没有固定宽度：例如 ASCII 的 `[x]` 占三格，整枚框都是点击目标；文件标记放不下时优先留文件名。输入光标、当前行和可提交状态各有独立含义。示意图中的具体字形随模式变化。
 
+File lists and existing file-preview titles share the [file type mapping](../src/ui/icons.rs). Icon color indicates type, while filename color still indicates Git status. Java uses a coffee cup, Python its language marker, and React JSX / TSX a React marker (cyan/blue respectively); ordinary JS / TS retain their own icons. Common JVM, systems, scripting, and mobile languages, XML, and build files have dedicated markers. Detection checks filenames and compound suffixes such as `pom.xml` and `build.gradle.kts` before extensions. Matching generally ignores ASCII case, while preserving the `.C` / `.H` convention for C++. Detection uses paths only, without reading content. Unknown types use a generic file icon; Unicode / ASCII modes retain readable abbreviations.
+
 ## 1 · Log：对照 IDEA Git 工具窗口
 
 [实际终端渲染 · 180×42](reference/IGit-Log-Graph.png) 使用[临时历史工作区](../examples/demo-log.sh)，选中了 `User: me` 和 `Paths: atlas-web`。筛选值、作者、文件和引用均来自 Git。图中是已有布局的参考画面。当前文件标记随图标模式变化；ASCII 图用 `*` / `@` 标普通提交 / HEAD，用 `|`、`-` 等字符连线。

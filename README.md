@@ -34,6 +34,8 @@ cargo install --locked --path .
 | `unicode` | 无专用字体；用标准符号和文件类型缩写，如 `☑`、`TS`。 |
 | `ascii` | 用 ASCII 字符显示图标和提交图，例如 `[x]`、`[-]`、`[ ]`、`[!]`。界面文字、边框、文件名和补丁仍可包含 Unicode。 |
 
+Commit, Log, Push, and Merge share file icons for common languages, including Java, Kotlin, Scala, Groovy, Python, Go, Rust, C / C++ / C# / F#, Swift, Dart, PHP, Ruby, and Lua. React `.jsx` / `.tsx` files use React icons distinct from ordinary JavaScript / TypeScript. Vue, Svelte, Astro, XML, SQL, GraphQL, Shell, PowerShell, and common build files also have dedicated markers. Unicode / ASCII modes use readable abbreviations such as `Jv`, `Py`, `JSX`, and `TSX`; unknown types keep a generic file icon.
+
 IGit 不探测或安装字体。通过 SSH 使用时，由本机终端的字体决定字形。
 
 ![同一演练仓的 Commit 清单：Nerd Font、Unicode 和 ASCII 图标对照](docs/reference/IGit-Icon-Modes.png)
