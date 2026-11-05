@@ -292,6 +292,11 @@ impl Shell {
                 self.notice(s)
             }
             Action::Go(n) => self.go(SHORTCUTS[n.min(3)]),
+            Action::CloseDialog => {
+                if self.tool.is_some() && self.can_leave_panel() {
+                    self.go(Split(self.focus));
+                }
+            }
             Action::Confirm { title, body, token } => {
                 self.cancel_key_sequences();
                 self.pop = Some(Popup::Confirm {

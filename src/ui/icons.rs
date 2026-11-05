@@ -102,7 +102,6 @@ glyphs! {
     Cursor      => "▏", "▏", "|";
     Dot         => "·", "·", ".";
     Divider     => "│", "│", "|";
-    TreeEnd     => "└", "└", "`-";
     Diff        => cod::COD_DIFF, "⇆", "+-";
     Console     => cod::COD_TERMINAL, ">_", ">_";
 

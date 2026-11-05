@@ -87,6 +87,8 @@ enum Hit {
     MenuSurface,
     Group(Group),
     Details,
+    EditTarget,
+    Cancel,
     Send,
     Retry,
     Hooks,
@@ -949,6 +951,12 @@ impl Panel for PushPanel {
                     }
                 }
                 Hit::Details => self.toggle_details(c),
+                Hit::EditTarget => {
+                    if let Some((i, _)) = self.selected() {
+                        self.target(i);
+                    }
+                }
+                Hit::Cancel => return Action::CloseDialog,
                 Hit::GroupBy => self.group_menu = Some(Group::Directory),
                 Hit::MenuSurface | Hit::Group(_) => (),
                 Hit::Check(i) => self.toggle(i),
@@ -1329,8 +1337,10 @@ mod tests {
             );
         };
         key(&mut p, KeyCode::Char('o'));
-        for _ in Group::ALL {
-            key(&mut p, KeyCode::Char(' '));
+        for group in Group::ALL {
+            if p.grouping.enabled(group) {
+                key(&mut p, KeyCode::Char(' '));
+            }
             key(&mut p, KeyCode::Down);
         }
         key(&mut p, KeyCode::Esc);

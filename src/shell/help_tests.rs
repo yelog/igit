@@ -656,7 +656,7 @@ fn help_executes_push_grouping_and_window_close_preserves_it() {
     assert!(
         text.contains("[ ] Directory")
             && text.contains("[x] Repository")
-            && text.contains("[x] Module")
+            && text.contains("[ ] Module")
     );
     app.dispatch(&key(KeyCode::Char('p')));
     app.dispatch(&key(KeyCode::Char('1')));

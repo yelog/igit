@@ -237,17 +237,21 @@ impl Shell {
             (work.height / 16).min(3),
         ));
         let (name, icon) = match tool {
-            Push => ("Push", Icon::Push),
-            Merge => ("Merge", Icon::Merge),
+            Push => (self.push.window_title(&self.ctx), Icon::Push),
+            Merge => ("Merge".into(), Icon::Merge),
         };
         // Only the receiving pane (or its editor) owns the accent border.
-        let frame = pane(format!("{} {name}", self.icons.glyph(icon)), false);
+        let close = format!(" Esc {} ", self.icons.glyph(Icon::Close));
+        let help = format!(" {} ", self.icons.glyph(Icon::Help));
+        let title = crate::ui::idea::clipped(
+            &format!("{} {name}", self.icons.glyph(icon)),
+            usize::from(window.width).saturating_sub(close.width() + help.width() + 4),
+        );
+        let frame = pane(title, false);
         let inner = frame.inner(window);
         f.render_widget(Clear, window);
         f.render_widget(frame, window);
         self.regions.tool_body = inner;
-        let close = format!(" Esc {} ", self.icons.glyph(Icon::Close));
-        let help = format!(" {} ", self.icons.glyph(Icon::Help));
         let mut right = inner.right();
         for (label, r) in [
             (close, &mut self.regions.close),

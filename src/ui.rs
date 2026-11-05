@@ -24,6 +24,7 @@ pub enum Action {
     },
     Refresh(String),
     Go(usize),
+    CloseDialog,
     Confirm {
         title: String,
         body: String,

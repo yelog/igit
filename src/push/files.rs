@@ -92,7 +92,7 @@ pub(super) struct Grouping([bool; Group::ALL.len()]);
 
 impl Default for Grouping {
     fn default() -> Self {
-        Self([true; Group::ALL.len()])
+        Self([true, true, false])
     }
 }
 
@@ -467,7 +467,7 @@ mod tests {
     #[test]
     fn regroup_reveals_the_same_file_and_preserves_unrelated_folds() {
         let files = changes(&["src/a/index.rs", "src/b/index.rs"]);
-        let mut groups = Grouping::default();
+        let mut groups = Grouping([true; Group::ALL.len()]);
         let mut tree = FileTree::new(&files, groups);
         for dir in ["src/a", "src/b"] {
             tree.cursor = tree.visible.iter().position(|&id| {
@@ -523,7 +523,7 @@ mod tests {
         assert_eq!(tree.visible, [0]);
         assert_eq!(tree.file_index(), None);
         tree.fold_all(false);
-        assert_eq!(tree.visible.len(), tree.nodes.len());
+        assert_eq!(tree.visible.len() + 1, tree.nodes.len());
         assert_eq!(tree.file_index(), None);
     }
 

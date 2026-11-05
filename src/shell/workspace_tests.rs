@@ -219,6 +219,35 @@ fn split_workspace_tool_windows_block_background_and_restore_the_original_pane()
 }
 
 #[test]
+fn push_cancel_closes_the_dialog_and_restores_focus_even_with_details_open() {
+    let (_dir, mut app) = fixture();
+    let before = snapshot(&app.ctx.repos[0].path);
+    for (width, height) in [(44, 12), (80, 24), (120, 36)] {
+        for (shortcut, pane) in [('1', Log), ('2', Commit)] {
+            for details in [false, true] {
+                app.dispatch(&key(KeyCode::Char(shortcut)));
+                app.dispatch(&key(KeyCode::Char('3')));
+                if details {
+                    app.dispatch(&key(KeyCode::Char('d')));
+                }
+                let text = screen(&mut app, width, height);
+                assert_eq!(text.matches("Push Commits").count(), 1, "{text}");
+                let (y, line) = text
+                    .lines()
+                    .enumerate()
+                    .find(|(_, s)| s.contains(" Cancel "))
+                    .unwrap();
+                let x = line[..line.find("Cancel").unwrap()].width() as u16;
+                app.dispatch(&mouse(MouseEventKind::Down(MouseButton::Left), x, y as u16));
+                assert_eq!(app.surface(), Split(pane));
+                assert!(app.pop.is_none());
+            }
+        }
+    }
+    assert_eq!(snapshot(&app.ctx.repos[0].path), before);
+}
+
+#[test]
 fn split_workspace_commit_and_push_refreshes_both_panes_and_keeps_reviews_separate() {
     let (dir, mut app) = fixture();
     let repo = app.ctx.repos[0].path.clone();

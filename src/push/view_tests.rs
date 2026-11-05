@@ -43,6 +43,7 @@ fn fixture(icons: IconMode) -> (PushPanel, Context) {
         ("src/locales/zh_CN/system.ts", b'A'),
         ("package.json", b'T'),
         ("scripts/renamed.mjs", b'R'),
+        ("src/copied.js", b'C'),
     ]
     .into_iter()
     .map(|(path, status)| Change {
@@ -150,8 +151,8 @@ fn push_group_by_menu_supports_mouse_and_keys_without_checking_a_root() {
             }
             let buf = draw(&mut p, &c, width, height);
             assert!(p.editing(), "Group By must capture input");
-            let item = |buf: &Buffer, label: &str| {
-                let needle = format!("{} {label}", icons.check(true));
+            let item = |buf: &Buffer, label: &str, checked| {
+                let needle = format!("{} {label}", icons.check(checked));
                 (0..height)
                     .find_map(|y| {
                         let row = Rect::new(0, y, width, 1);
@@ -161,9 +162,9 @@ fn push_group_by_menu_supports_mouse_and_keys_without_checking_a_root() {
                     })
                     .unwrap_or_else(|| panic!("{needle} missing at {width}×{height}"))
             };
-            item(&buf, "Directory");
-            let repo = item(&buf, "Repository");
-            item(&buf, "Module");
+            item(&buf, "Directory", true);
+            let repo = item(&buf, "Repository", true);
+            item(&buf, "Module", false);
             let popup = p
                 .hits
                 .iter()
@@ -175,6 +176,8 @@ fn push_group_by_menu_supports_mouse_and_keys_without_checking_a_root() {
             click(&mut p, &c, repo);
             key(&mut p, &c, KeyCode::Char('j'));
             key(&mut p, &c, KeyCode::Char(' ')); // Module
+            assert!(p.grouping.enabled(Group::Module));
+            key(&mut p, &c, KeyCode::Char(' '));
             key(&mut p, &c, KeyCode::Home);
             key(&mut p, &c, KeyCode::Enter); // Directory
             let buf = draw(&mut p, &c, width, height);
@@ -208,7 +211,7 @@ fn flat_rows_show_distinct_parent_paths_and_their_original_status() {
     key(&mut p, &c, KeyCode::Esc);
     for width in [80, 150] {
         let buf = draw(&mut p, &c, width, 24);
-        for (name, status) in [("en_US", "M"), ("zh_CN", "A")] {
+        for (name, color) in [("en_US", ACCENT), ("zh_CN", GREEN)] {
             let row = p.hits.iter().find_map(|(r, h)| match *h {
                 Hit::File(i) if matches!(p.preview.tree.nodes[p.preview.tree.visible[i]].kind, Kind::File(file)
                     if p.preview.files[file].path == Path::new(&format!("src/locales/{name}/system.ts"))) => Some(*r),
@@ -216,9 +219,10 @@ fn flat_rows_show_distinct_parent_paths_and_their_original_status() {
             }).unwrap();
             let line = text_at(&buf, row);
             assert!(
-                line.contains(&format!("system.ts {status}")) && line.contains(name),
+                line.contains("system.ts  ") && line.contains(name),
                 "{line}"
             );
+            assert_eq!(buf[(find_text(&buf, row, "system.ts"), row.y)].fg, color);
             assert_eq!(buf[(find_text(&buf, row, name), row.y)].fg, MUTED);
         }
     }
@@ -262,7 +266,7 @@ fn push_columns_align_sources_targets_counts_and_submodules_in_terminal_cells() 
 #[test]
 fn long_repo_and_branch_columns_clip_without_moving_controls_or_targets() {
     for icons in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
-        for (width, height) in [(44, 12), (80, 24), (120, 36), (180, 36)] {
+        for (width, height) in [(38, 10), (44, 12), (80, 24), (120, 36), (180, 36)] {
             let (mut p, mut c) = fixture(icons);
             c.repos[0].name = "ｕｉ👩‍💻-a-very-long-repository-name".repeat(3);
             p.entries[0].source = "feature/client-service-with-a-long-branch".into();
@@ -339,7 +343,7 @@ fn push_file_tree_uses_change_colours_and_independent_file_type_icons() {
             let name = file.path.file_name().unwrap().to_str().unwrap();
             let x = find_text(&buf, row, name);
             let color = match file.status {
-                b'A' => GREEN,
+                b'A' | b'C' => GREEN,
                 b'D' => RED,
                 b'R' | b'T' => crate::ui::idea::CONFLICT,
                 _ => ACCENT,
@@ -348,10 +352,103 @@ fn push_file_tree_uses_change_colours_and_independent_file_type_icons() {
             let (glyph, tint) = icons.file(&file.path);
             let x = find_text(&buf, row, glyph);
             assert_eq!(buf[(x, row.y)].fg, tint, "{name}");
-            assert!(text_at(&buf, row).contains(&format!(" {}", char::from(file.status))));
+            assert!(text_at(&buf, row).trim_end().ends_with(name));
         }
         assert!((0..buf.area.height)
             .any(|y| text_at(&buf, Rect::new(90, y, 90, 1)).contains("dev/iframe-proxy 3 files")));
+    }
+}
+
+#[test]
+fn push_toolbars_and_footer_fit_without_overlapping_in_every_icon_mode() {
+    for icons in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
+        for (width, height) in [(38, 10), (44, 12), (80, 24), (120, 36), (180, 36)] {
+            let (mut p, c) = fixture(icons);
+            let buf = draw(&mut p, &c, width, height);
+            let hit = |p: &PushPanel, matches: fn(&Hit) -> bool| {
+                p.hits.iter().find(|(_, h)| matches(h)).unwrap().0
+            };
+            let send = hit(&p, |h| matches!(h, Hit::Send));
+            let cancel = hit(&p, |h| matches!(h, Hit::Cancel));
+            let tags = hit(&p, |h| matches!(h, Hit::Tags));
+            let hooks = hit(&p, |h| matches!(h, Hit::Hooks));
+            assert_eq!(text_at(&buf, send), " Push 1 ");
+            assert_eq!(text_at(&buf, cancel), " Cancel ");
+            assert_eq!(send.right(), width);
+            assert_eq!(cancel.y, send.y);
+            assert!(cancel.right() < send.x);
+            assert!(hooks.y < cancel.y || hooks.right() < cancel.x);
+            assert_eq!(buf[(tags.x, tags.y)].bg, BG);
+            assert_eq!(buf[(send.x, send.y)].bg, SEL);
+            if width == 38 {
+                assert!(text_at(&buf, Rect::new(19, 0, 19, 1)).contains("Files · 9"));
+            }
+            assert_eq!(
+                hit(&p, |h| matches!(h, Hit::Row(0))).y,
+                hit(&p, |h| matches!(h, Hit::File(0))).y
+            );
+            assert!(!p
+                .preview
+                .tree
+                .visible
+                .iter()
+                .any(|&id| { matches!(p.preview.tree.nodes[id].kind, Kind::Module) }));
+            for action in [Hit::EditTarget, Hit::Fetch] {
+                let r = p
+                    .hits
+                    .iter()
+                    .find(|(_, h)| std::mem::discriminant(h) == std::mem::discriminant(&action))
+                    .unwrap()
+                    .0;
+                assert_eq!(p.panes.at(r.x, r.y), Some(PaneId::Outgoing));
+            }
+            assert!(!p.hits.iter().any(|(_, h)| matches!(h, Hit::Retry)));
+            p.results.insert(7, Err("offline".into()));
+            draw(&mut p, &c, width, height);
+            let retry = hit(&p, |h| matches!(h, Hit::Retry));
+            assert_eq!(p.panes.at(retry.x, retry.y), Some(PaneId::Outgoing));
+            for (r, _) in &p.hits {
+                assert!(!r.is_empty() && r.right() <= width && r.bottom() <= height);
+            }
+            assert_eq!(p.checked, BTreeSet::from([0]));
+            assert!(p.review.is_empty() && p.inflight.is_none());
+        }
+    }
+}
+
+#[test]
+fn push_footer_disables_empty_hidden_and_busy_selections() {
+    for icons in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
+        let (mut p, mut c) = fixture(icons);
+        p.checked.clear();
+        draw(&mut p, &c, 44, 12);
+        assert!(!p.hits.iter().any(|(_, h)| matches!(h, Hit::Send)));
+        p.checked.insert(0);
+        let (_tx, rx) = mpsc::channel();
+        p.inflight = Some(rx);
+        p.busy = "Pushing…".into();
+        let buf = draw(&mut p, &c, 44, 12);
+        assert!(!p
+            .hits
+            .iter()
+            .any(|(_, h)| matches!(h, Hit::Send | Hit::Fetch)));
+        assert!((0..12).any(|y| text_at(&buf, Rect::new(0, y, 44, 1)).contains("Pushing…")));
+        let close = p
+            .hits
+            .iter()
+            .find(|(_, h)| matches!(h, Hit::Cancel))
+            .unwrap()
+            .0;
+        assert_eq!(text_at(&buf, close), " Close ");
+        p.inflight = None;
+        c.scope.remove(&0);
+        p.entries.retain(|e| e.idx != 0);
+        let buf = draw(&mut p, &c, 44, 12);
+        assert!(!p.hits.iter().any(|(_, h)| matches!(h, Hit::Send)));
+        assert!((0..12).any(|y| {
+            text_at(&buf, Rect::new(0, y, 44, 1)).contains("1 selected roots hidden")
+        }));
+        assert_eq!(p.checked, BTreeSet::from([0]));
     }
 }
 
@@ -381,7 +478,7 @@ fn file_tree_mouse_keyboard_scrolling_and_pane_cycle_keep_push_selection() {
         assert_eq!(p.checked, BTreeSet::from([0]));
         assert!(!p.show_details);
         key(&mut p, &c, KeyCode::Char('l'));
-        assert_eq!(p.preview.tree.visible.len(), p.preview.tree.nodes.len());
+        assert_eq!(p.preview.tree.visible.len() + 1, p.preview.tree.nodes.len());
         key(&mut p, &c, KeyCode::Char('['));
         assert_eq!(p.preview.tree.visible, [0]);
         key(&mut p, &c, KeyCode::Char(']'));

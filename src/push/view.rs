@@ -1,6 +1,7 @@
 //! Push presentation uses shared column geometry for text and mouse controls.
 use super::*;
 use crate::ui::idea::{button_style, clipped, clipped_path, diff_line, repo_tint, CONFLICT};
+use ratatui::widgets::{Block, Borders};
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy, Default)]
@@ -166,11 +167,54 @@ fn filename(path: &Path, width: usize) -> String {
 }
 
 impl PushPanel {
+    pub(crate) fn window_title(&self, c: &Context) -> String {
+        if let Some(&root) = c.scope.first().filter(|_| c.scope.len() == 1) {
+            format!("Push Commits to {}", label(Path::new(&c.repos[root].name)))
+        } else {
+            format!("Push Commits · {} repositories", c.scope.len())
+        }
+    }
+
+    fn push_count(&self, c: &Context) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| {
+                c.scope.contains(&e.idx)
+                    && self.checked.contains(&e.idx)
+                    && e.n > 0
+                    && e.error.is_empty()
+            })
+            .count()
+    }
+
+    fn footer_options(&self) -> [(String, Hit); 2] {
+        [
+            (
+                format!("{} Follow tags", self.icons.check(self.follow_tags)),
+                Hit::Tags,
+            ),
+            (
+                format!("{} Hooks", self.icons.check(!self.skip_hooks)),
+                Hit::Hooks,
+            ),
+        ]
+    }
+
+    fn footer_wraps(&self, width: u16, c: &Context) -> bool {
+        let options = self
+            .footer_options()
+            .iter()
+            .map(|(label, _)| label.width() + 2)
+            .sum::<usize>();
+        options + format!(" Cancel   Push {} ", self.push_count(c)).width() + 2 > usize::from(width)
+    }
+
     pub(super) fn draw_panel(&mut self, f: &mut Frame, area: Rect, c: &Context) {
         self.hits.clear();
         self.panes.begin();
-        let [header, body, controls] =
-            Layout::vertical([C::Length(1), C::Min(2), C::Length(2)]).areas(area);
+        let hidden = self.checked.iter().any(|i| !c.scope.contains(i));
+        let footer_height = 2 + u16::from(self.footer_wraps(area.width, c)) + u16::from(hidden);
+        let [body, controls] = Layout::vertical([C::Min(2), C::Length(footer_height)]).areas(area);
         let [outgoing, right] = self.panes.divide(
             SplitId::PushColumns,
             body,
@@ -194,27 +238,6 @@ impl PushPanel {
         if self.show_details {
             self.panes.add(PaneId::PushDetails, details);
         }
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    format!(" {} Push Commits", self.icons.glyph(Icon::Push)),
-                    Style::new().fg(FG).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("  /  {} roots", self.entries.len()),
-                    Style::new().fg(MUTED),
-                ),
-                Span::styled(
-                    if self.busy() {
-                        format!("   {}", self.busy)
-                    } else {
-                        String::new()
-                    },
-                    Style::new().fg(ACCENT),
-                ),
-            ])),
-            header,
-        );
         self.draw_repositories(f, outgoing, c);
         self.draw_files(f, files, c);
         if self.show_details {
@@ -271,9 +294,37 @@ impl PushPanel {
     }
 
     fn draw_repositories(&mut self, f: &mut Frame, area: Rect, c: &Context) {
-        let block = pane("Outgoing commits", self.active_pane(PaneId::Outgoing));
-        let inner = block.inner(area);
+        let title = if area.width >= 20 {
+            "Outgoing commits"
+        } else {
+            "Commits"
+        };
+        let block = pane(title, self.active_pane(PaneId::Outgoing))
+            .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT);
+        let content = block.inner(area);
         f.render_widget(block, area);
+        let [toolbar, inner] = Layout::vertical([C::Length(1), C::Min(0)]).areas(content);
+        if self.busy() {
+            f.render_widget(
+                Paragraph::new(format!(" {}", self.busy)).style(Style::new().fg(ACCENT)),
+                toolbar,
+            );
+        } else {
+            let mut controls = vec![
+                (Icon::Remote, "Target", Hit::EditTarget),
+                (Icon::Refresh, "Fetch", Hit::Fetch),
+            ];
+            if !self.last_fetch
+                && self.entries.iter().any(|e| {
+                    c.scope.contains(&e.idx)
+                        && e.n > 0
+                        && matches!(self.results.get(&e.idx), Some(Err(_)))
+                })
+            {
+                controls.push((Icon::Undo, "Retry", Hit::Retry));
+            }
+            self.draw_toolbar(f, toolbar, &controls);
+        }
         let rows = self.rows();
         let height = usize::from(inner.height);
         self.offset = self.offset.min(rows.len().saturating_sub(height));
@@ -295,12 +346,7 @@ impl PushPanel {
             if let Some(index) = commit {
                 let h = &e.logs[index];
                 // IDEA keeps the subject directly below its repository name.
-                let end = icons.glyph(Icon::TreeEnd);
-                pad_to(
-                    &mut line,
-                    columns.name.start.saturating_sub(end.width() + 1),
-                );
-                line.push_span(Span::styled(format!("{end} "), muted));
+                pad_to(&mut line, columns.name.start);
                 line.push_span(Span::raw(h.msg.clone()));
             } else {
                 let repo = &c.repos[id];
@@ -464,8 +510,7 @@ impl PushPanel {
                 b'R' | b'T' => CONFLICT,
                 _ => ACCENT,
             };
-            let status = format!(" {}", char::from(file.status));
-            let room = width.saturating_sub(line.width() + status.width());
+            let room = width.saturating_sub(line.width());
             let parent = file
                 .path
                 .parent()
@@ -479,7 +524,6 @@ impl PushPanel {
                 filename(&file.path, room - reserve),
                 Style::new().fg(color),
             ));
-            line.push_span(Span::styled(status, Style::new().fg(MUTED)));
             if let Some(parent) = parent {
                 let room = width.saturating_sub(line.width() + 2);
                 if room > 0 {
@@ -546,51 +590,40 @@ impl PushPanel {
 
     fn draw_files(&mut self, f: &mut Frame, area: Rect, c: &Context) {
         let icons = self.icons;
-        let block = pane(
-            format!("Changed files · {}", self.preview.files.len()),
-            self.active_pane(PaneId::PushFiles),
-        );
+        let count = self.preview.files.len();
+        let title = format!("Changed files · {count}");
+        let title = if title.width() + 4 <= usize::from(area.width) {
+            title
+        } else {
+            format!("Files · {count}")
+        };
+        let block = pane(title, self.active_pane(PaneId::PushFiles))
+            .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT);
         let inner = block.inner(area);
         f.render_widget(block, area);
         if inner.is_empty() {
             return;
         }
-        let controls = [
-            (icons.glyph(Icon::Preview), "Group By", Hit::GroupBy),
-            (icons.glyph(Icon::Diff), "Details", Hit::Details),
-            (icons.glyph(Icon::ExpandAll), "Expand", Hit::FoldAll(false)),
-            (
-                icons.glyph(Icon::CollapseAll),
-                "Collapse",
-                Hit::FoldAll(true),
-            ),
-        ];
-        let compact = controls
-            .iter()
-            .map(|(glyph, label, _)| glyph.width() + label.width() + 3)
-            .sum::<usize>()
-            > usize::from(inner.width);
-        let mut x = inner.x;
-        for (glyph, label, hit) in controls {
-            let text = if compact {
-                format!(" {glyph} ")
-            } else {
-                format!(" {glyph} {label} ")
-            };
-            let width = (text.width() as u16).min(inner.right() - x);
-            if width == 0 {
-                break;
-            }
-            let row = Rect::new(x, inner.y, width, 1);
-            let active = matches!(hit, Hit::GroupBy) && self.group_menu.is_some()
-                || matches!(hit, Hit::Details) && self.show_details;
-            f.render_widget(
-                Paragraph::new(text).style(Style::new().fg(if active { ACCENT } else { MUTED })),
-                row,
-            );
-            self.hits.push((row, hit));
-            x += width;
-        }
+        let folds_width =
+            (icons.glyph(Icon::ExpandAll).width() + icons.glyph(Icon::CollapseAll).width() + 4)
+                .min(usize::from(inner.width)) as u16;
+        let tools_width = inner.width - folds_width;
+        self.draw_toolbar(
+            f,
+            Rect::new(inner.x, inner.y, tools_width, 1),
+            &[
+                (Icon::Preview, "Group By", Hit::GroupBy),
+                (Icon::Diff, "Details", Hit::Details),
+            ],
+        );
+        self.draw_toolbar(
+            f,
+            Rect::new(inner.x + tools_width, inner.y, folds_width, 1),
+            &[
+                (Icon::ExpandAll, "", Hit::FoldAll(false)),
+                (Icon::CollapseAll, "", Hit::FoldAll(true)),
+            ],
+        );
         let height = usize::from(inner.height.saturating_sub(1));
         if self.preview.tree.nodes.is_empty() && self.preview.body.is_empty() {
             if height > 0 {
@@ -658,55 +691,112 @@ impl PushPanel {
         }
     }
 
-    fn draw_controls(&mut self, f: &mut Frame, area: Rect, c: &Context) {
-        let n = self
-            .entries
+    fn draw_toolbar(&mut self, f: &mut Frame, area: Rect, controls: &[(Icon, &str, Hit)]) {
+        if area.is_empty() {
+            return;
+        }
+        let compact = controls
             .iter()
-            .filter(|e| self.checked.contains(&e.idx) && e.n > 0)
-            .count();
-        let hidden = self.checked.iter().filter(|i| !c.scope.contains(i)).count();
-        let controls = [
-            (
-                format!("{} Follow tags", self.icons.check(self.follow_tags)),
-                Hit::Tags,
-            ),
-            (
-                format!("{} Hooks", self.icons.check(!self.skip_hooks)),
-                Hit::Hooks,
-            ),
-            (
-                " Target ".into(),
-                Hit::Target(self.selected().map(|r| r.0).unwrap_or(0)),
-            ),
-            (" Fetch ".into(), Hit::Fetch),
-            (" Retry ".into(), Hit::Retry),
-            (format!(" Push {n} "), Hit::Send),
-        ];
+            .map(|(icon, label, _)| self.icons.glyph(*icon).width() + label.width() + 3)
+            .sum::<usize>()
+            > usize::from(area.width);
+        let labels_fit = controls
+            .iter()
+            .map(|(icon, label, _)| {
+                if label.is_empty() {
+                    self.icons.glyph(*icon).width() + 2
+                } else {
+                    label.width() + 2
+                }
+            })
+            .sum::<usize>()
+            <= usize::from(area.width);
         let mut x = area.x;
-        let mut y = area.y;
-        for (label, hit) in controls {
-            let width = label.width() as u16;
-            if x != area.x && x.saturating_add(width) > area.right() {
-                y = y.saturating_add(1);
-                x = area.x;
-            }
-            if y >= area.bottom() {
+        for &(icon, label, hit) in controls {
+            let glyph = self.icons.glyph(icon);
+            let text = if compact && labels_fit && !label.is_empty() {
+                format!(" {label} ")
+            } else if compact || label.is_empty() {
+                format!(" {glyph} ")
+            } else {
+                format!(" {glyph} {label} ")
+            };
+            let width = text.width() as u16;
+            if width > area.right().saturating_sub(x) {
                 break;
             }
-            let primary = matches!(hit, Hit::Send);
-            if primary {
-                x = area.right().saturating_sub(width.min(area.width)).max(x);
-            }
-            let row = Rect::new(x, y, width.min(area.right() - x), 1);
-            f.render_widget(Paragraph::new(label).style(button_style(primary)), row);
+            let row = Rect::new(x, area.y, width, 1);
+            let active = matches!(hit, Hit::GroupBy) && self.group_menu.is_some()
+                || matches!(hit, Hit::Details) && self.show_details;
+            let style = if active {
+                button_style(false).fg(ACCENT)
+            } else {
+                Style::new().fg(MUTED)
+            };
+            f.render_widget(Paragraph::new(text).style(style), row);
             self.hits.push((row, hit));
-            x = row.right().saturating_add(1);
+            x += width;
         }
-        if hidden > 0 && area.height > 1 && y == area.y {
+    }
+
+    fn draw_controls(&mut self, f: &mut Frame, area: Rect, c: &Context) {
+        if area.height < 2 {
+            return;
+        }
+        f.render_widget(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::new().fg(LINE)),
+            Rect::new(area.x, area.y, area.width, 1),
+        );
+        let n = self.push_count(c);
+        let hidden = self.checked.iter().filter(|i| !c.scope.contains(i)).count();
+        let wrap = self.footer_wraps(area.width, c);
+        let y = area.y + 1;
+        let mut x = area.x;
+        for (label, hit) in self.footer_options() {
+            let row = cell(
+                Rect::new(area.x, y, area.width, 1),
+                usize::from(x - area.x),
+                label.width(),
+            );
+            f.render_widget(
+                Paragraph::new(label).style(Style::new().fg(MUTED).bg(BG)),
+                row,
+            );
+            self.hits.push((row, hit));
+            x = row.right().saturating_add(2);
+        }
+        let action_y = (y + u16::from(wrap)).min(area.bottom() - 1);
+        let actions = [
+            (format!(" Push {n} "), Hit::Send),
+            (
+                if self.busy() { " Close " } else { " Cancel " }.into(),
+                Hit::Cancel,
+            ),
+        ];
+        let mut right = area.right();
+        for (label, hit) in actions {
+            let width = (label.width() as u16).min(right - area.x);
+            let row = Rect::new(right - width, action_y, width, 1);
+            let primary = matches!(hit, Hit::Send);
+            let enabled = !primary || n > 0 && !self.busy();
+            let style = if enabled {
+                button_style(primary)
+            } else {
+                button_style(false).fg(MUTED)
+            };
+            f.render_widget(Paragraph::new(label).style(style), row);
+            if enabled && !row.is_empty() {
+                self.hits.push((row, hit));
+            }
+            right = row.x.saturating_sub(1).max(area.x);
+        }
+        if hidden > 0 && action_y + 1 < area.bottom() {
             f.render_widget(
                 Paragraph::new(format!(" {hidden} selected roots hidden"))
                     .style(Style::new().fg(MUTED)),
-                Rect::new(area.x, area.y + 1, area.width, 1),
+                Rect::new(area.x, action_y + 1, area.width, 1),
             );
         }
     }

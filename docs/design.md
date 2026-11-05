@@ -159,23 +159,25 @@ Both groups start expanded. Within each repository, files sort case-insensitivel
 ## 3 · Push: Review Source, Destination, and Scope
 
 ```text
- Push Commits / roots in scope
+ Push Commits · 2 repositories
  Outgoing commits                         │ Changed files · 3
- ▸ [ ] api   main → origin:main ↑1        │ Group By  Details  Expand  Collapse
- ▾ [x] web   main → origin:main ↑2        │ ▾ web 3 files
-       └ Commit message                   │   ▾ web 3 files
-                                          │     ▾ src 2 files
-                                          │         App.vue M
-                                          │         main.ts A
-                                          │       README.md M
- Follow tags  Hooks  Target  Fetch  Retry               Push N
+ Target  Fetch                            │ Group By  Details          [+] [-]
+ ▸ [ ] api   main → origin:main ↑1        │ ▾ web 3 files
+ ▾ [x] web   main → origin:main ↑2        │   ▾ src 2 files
+       Commit message                     │       App.vue
+                                          │       main.ts
+                                          │     README.md
+ ─────────────────────────────────────────────────────────────
+ [ ] Follow tags  [x] Hooks                       Cancel  Push N
 ```
+
+The window has one contextual title: `Push Commits to <repository>` for a single repository, or a repository count for a batch. Pane headings and toolbars align. Target / Fetch sit above outgoing commits; Retry appears there only after a push failure in visible scope. Tree grouping/details sit on the right, with compact expand/collapse icons at its far edge. Both lists meet a shared footer separator rather than separate bottom borders. The footer uses quiet inline options, a secondary Cancel button, and one highlighted Push N button. At narrow widths, actions move onto a separate row; hidden checked repositories retain a separate notice. Toolbars keep text labels where possible; pane headings shorten to preserve complete counts. Push N counts only visible, checked repositories eligible for review and is disabled with no candidates or while a remote operation runs. Cancel closes the window and restores the original workspace focus, including when Details is open; target editing must first be saved or canceled. During a remote operation it reads Close, since closing the window leaves that operation running.
 
 Left/right proportions are about **50%** each. The left sorts by repository name, with separate left-aligned columns for name, source branch, arrow, target, outgoing count, and submodule. Success/failure markers do not shift branch columns. Pushable targets are blue; repositories with no outgoing commits are dim. Narrow layouts hide secondary columns first. Long text clips only within its own column; Target and details still expose the full destination.
 
-The right defaults to a full-height repository → content root → directory → file tree. Consecutive single-child directories compress to paths such as `dev/iframe-proxy`; directories show descendant file counts. Icons share Log / Commit type colors. Filenames use change colors: added/copied green, modified blue, deleted red, renamed/type changes amber, retaining `A/M/D/R/C/T` text status. Only file rows open a file Diff; repository/directory details summarize scope. Opening details splits the right side about 60/40%; closing restores the same tree row.
+The right defaults to a full-height repository → directory → file tree, avoiding a repeated content-root name. Consecutive single-child directories compress to paths such as `dev/iframe-proxy`; directories show descendant file counts. Icons share Log / Commit type colors. Filenames use change colors: added/copied green, modified blue, deleted red, renamed/type changes amber, without trailing status letters. Only file rows open a file Diff; repository/directory details summarize scope. Opening details splits the right side about 60/40%; closing restores the same tree row.
 
-Click the eye or press `o` for the [Group By menu](reference/IGit-Push-Group-By.png). Directory, Repository, and Module (the repository's content root) start enabled and allow any combination. Without Directory, files sort flat by name, then repository-relative path, with gray parent paths at the end. Disabling Repository or Module only removes that level. Switching preserves the current file and open patch; if a selected container is hidden, a still-visible parent is preferred. Grouping persists across repository/commit changes, refresh, and reopening Push within the workspace session.
+Click the eye or press `o` for the Group By menu. Directory and Repository start enabled; Module (the repository's content root) starts disabled and can be enabled independently. All eight combinations remain available. Without Directory, files sort flat by name, then repository-relative path, with gray parent paths at the end. Disabling Repository or Module only removes that level. Switching preserves the current file and open patch; if a selected container is hidden, a still-visible parent is preferred. Grouping persists across repository/commit changes, refresh, and reopening Push within the workspace session.
 
 Repository rows preview the batch; commit rows preview that commit. Merge commit files/Diffs compare against the first parent. If the current repository has no outgoing commits or no row is selected, the file area centers `No commits selected` without empty repository nodes; read failures still show specific reasons. The push unit is always the repository's target branch; an intermediate commit cannot be pushed alone. At most 60 recent commits per repository are displayed, but counts and execution use the full branch.
 
@@ -184,7 +186,7 @@ Repository rows preview the batch; commit rows preview that commit. Merge commit
 | Select and inspect | Boxes check repositories, triangles expand/collapse, rows update the right side, and files open Diff. | `j/k` browses; `h/l` or left/right collapses/expands; `h` in files can visit the parent. `Space` checks the owning repository; `Enter` expands/collapses containers or opens files; `Tab/F6` changes area. |
 | Change file grouping | Click Group By on the right, then options; the menu stays open for further changes. | `o` opens, `j/k` or ↑/↓ selects, `Space/Enter` toggles, and `Esc/o` closes. Space in the menu changes only grouping. |
 | File tree and details | Toolbar Expand / Collapse changes all nodes; Details toggles summary/Diff. | `[/]` collapses/expands all in files; `d` toggles details and `Esc` closes back to the tree. |
-| Review target and options | Click the blue target or bottom Target to edit; Follow tags / Hooks toggles options; Fetch updates remote state in scope. | `t` edits remote:branch; Enter saves and Esc cancels. `v/x` toggles Follow tags/hooks; `f` fetches. |
+| Review target and options | Click the blue target or outgoing toolbar's Target to edit; Follow tags / Hooks toggles options; Fetch updates remote state in scope. | `t` edits remote:branch; Enter saves and Esc cancels. `v/x` toggles Follow tags/hooks; `f` fetches. |
 | Execute and handle failures | Push N → review each source SHA and target → Confirm; inspect failed rows and click Retry. | `p` reviews, `y` confirms, and `R` retries only failed repositories still in scope with outgoing work. |
 
 On first direct entry, a repository with outgoing commits is selected. Entry from Commit & Push sets checkboxes from the repositories that just committed successfully. Success is not rolled back because another repository failed. Changed remote tips, non-fast-forwards, and unverifiable changed submodule pointers show reasons, not success. Implementation: [push.rs](../src/push.rs), [push/submodules.rs](../src/push/submodules.rs).
