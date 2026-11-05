@@ -17,6 +17,44 @@ IGit is a Rust terminal application. Both entry points, [igit](../src/bin/igit.r
 
 ## The Path of a Keypress or Click
 
+[Configuration](../src/config.rs) loads optional user TOML over the embedded
+[defaults](../config/default.toml) before repository discovery or raw mode.
+Unknown fields, invalid values, and duplicate/prefix conflicts in overlapping
+normal-mode contexts fail startup. CLI presentation overrides apply afterward.
+The [command catalogue](../src/config/keys.rs) owns stable command names,
+contexts, key parsing/normalization, and trusted built-in execution sequences.
+Preferences stay separate from workspace state and are carried across rescans.
+
+[Shell's configuration adapter](../src/shell/configuration.rs) intercepts prefixes
+affected by overrides, suppresses replaced keys, and sends complete trusted
+sequences through the existing dispatch path without recursively remapping them.
+Unchanged prefixes retain their panel handlers and window-count behavior. Custom
+prefixes share the existing hint picker and its configurable display deadline.
+Editors, menus, selection-copy controls, and confirmation dialogs retain their
+context-owned input. Help carries display labels separately from static command
+identity, so searching or choosing a custom binding cannot create a new Git
+execution path. No settings are loaded from repositories or written by the app.
+
+Smart focus is a typed command rather than a synthetic key sequence. Shell
+consumes its configured chords before editor/review handlers, moving only in
+normal mode. [Pane routing](../src/shell/panes.rs) uses current geometry before
+falling back to [Kitty](../src/shell/kitty.rs). One background request at a time
+executes `kitten @ action --match id:<source>`, with a one-second timeout,
+cancellation on drop, and nonfatal errors polled by Shell. It never invokes Git.
+The terminal guard registers/clears `IS_IGIT` for opted-in Kitty sessions and
+pushes/pops supported keyboard enhancement flags. The Kitty adapter survives
+workspace rescans; unit-test Shell constructors never discover a live terminal.
+
+Smart resize is another native action, accepting press/repeat events. Geometry
+distinguishes a missing divider from one at its limit: only a missing panel
+divider can fall back to the outer workspace divider. An exhausted selected
+divider hands off to Kitty. The same worker invokes the installed
+[igit_resize.py](../contrib/kitty/igit_resize.py) helper via `kitten @ kitten
+--match id:<source>`. It chooses the size increment from axis neighbors and
+calls `tab.resize_window_by` with the explicit source ID, without activating
+another window. Smart focus or resize enables the terminal marker. The helper
+has no dependency on the user's Neovim or LazyDB helper.
+
 1. [shell::run](../src/shell.rs) creates the workspace and four panels, enabling alternate screen, raw mode, mouse reporting, and bracketed paste. The event loop handles input, polls background results, and redraws when needed. Exit restores terminal modes.
 2. [Workspace layout](../src/shell/workspace.rs) records the actual positions of vertical splits, operation dialogs, and their controls. `Shell::dispatch` handles top-level overlays such as help/review first, then routes to the operation window or focused split. Opening Push/Merge preserves background split focus; mouse events outside a dialog do not activate background controls. Panels report text input through `editing()` so ordinary characters do not trigger global commands. [Pane geometry](../src/ui/panes.rs) registers pane rectangles/dividers each frame; adjustable sizes are stored in session character cells. Keyboard and mouse share bounds and size preferences; restoring defaults reallocates against the current terminal size. [Pane routing](../src/shell/panes.rs) handles Tab in registration order, finds directional neighbors by actual edges/overlap, and keeps an entire drag with the divider that received the press. Operation dialogs expose only their own panes. Text selection and file dragging keep their original panel event routes.
 3. The active panel receives `Panel::event` and returns an `Action`. It owns its selected row, focus, and scroll position. Shell owns panel switching, notifications, and confirmation. To request confirmation, the panel stores a concrete plan and returns `Confirm { title, body, token }`. Shell records the requesting panel, initially selects Cancel, and calls that panel's `confirm(token, context)` only after confirmation.
@@ -83,6 +121,7 @@ Batch commit/push means selecting multiple repositories in one operation; it gua
 
 | Change | Verification entry point |
 | --- | --- |
+| Settings, key parsing, or contextual remapping | `cargo test --locked config::` and `cargo test --locked configuration_`; use `--check-config` for user files. |
 | Discovery, duplicate names, submodules, or workspace boundaries | [tests/discovery.rs](../tests/discovery.rs); run `cargo test --locked --test discovery`. |
 | Graphs, filters, keyboard/mouse coordination | `cargo test --locked log::`; check focus changes, narrowing, and hit areas after scrolling in a temporary multi-repository workspace. |
 | Commit selection or snapshots | `cargo test --locked commit::`; inspect the actual commit tree and compare unchecked staging/working-tree content, not just command success. |

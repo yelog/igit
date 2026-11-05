@@ -219,7 +219,10 @@ impl PushPanel {
         self.draw_files(f, files, c);
         if self.show_details {
             let block = pane(
-                "Details / Diff · d / Esc close",
+                format!(
+                    "Details / Diff · {} / Esc close",
+                    self.shortcut_labels.get("d").map_or("d", String::as_str)
+                ),
                 self.active_pane(PaneId::PushDetails),
             );
             let inner = block.inner(details);

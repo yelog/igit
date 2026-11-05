@@ -27,6 +27,29 @@ The table records the 0.1.0 delivery baseline. Items marked partial or next step
 
 ## Required Operation Semantics
 
+**User configuration (R7/R8 extension).** Optional TOML settings support partial
+overrides of embedded defaults, global/pane/panel normal-mode shortcuts, aliases,
+multi-key sequences, unbinding, icons, mouse capture, and sequence hint delay.
+Invalid settings and overlapping binding/prefix conflicts fail before terminal
+startup. CLI presentation options take precedence. Context help and sequence
+hints follow effective keys; editors and confirmation controls retain their
+existing input rules. No repository-local configuration or live reload is
+included. See the [configuration reference](configuration.md).
+
+**Kitty smart focus (R7/R8 extension).** Four optional modified-chord commands
+match LazyDB's `smart-focus-pane-*` names. Navigate actual visible pane geometry
+first; at an edge, request the adjacent Kitty window using the source window's
+ID. Default bindings remain unchanged. Editors and reviews retain focus and
+input; navigation never changes Git state. Kitty errors are nonfatal and
+bounded by a timeout. Neovim continues to use its existing smart-splits mappings.
+
+**Kitty smart resize (R7/R8 extension).** Optional `smart-resize-pane-*` commands
+move visible dividers by three cells, accepting key repeats. Directional
+movement is consistent from both sides of a divider. A missing or clamped
+divider hands off to Kitty through IGit's installed resize helper; target
+window identity and focus are preserved. Editors/reviews block resizing, and
+tool dialogs cannot resize the background workspace. Defaults remain unbound.
+
 - **Scope, preview, selection, and execution are separate.** Roots changes only visible/executable scope; filtered-out repositories cannot join the current commit/push. The row cursor identifies what is being viewed; checkboxes identify candidates. Review shows actual repositories, files, or targets. Hiding and restoring a selected repository preserves its session selection.
 - **The committed version must be explainable.** A selected file with staged changes commits its index version; only files without a staged version use working-tree changes. Changes to files, staging, or HEAD that affect a reviewed plan require review again. Unchecked staged items remain untouched. Partial success must not be reported as total failure or automatically rolled back. Real hooks may rewrite content; report actual results.
 - **Push checks availability.** Repositories are execution units; previewing a commit does not allow skipping its ancestors. A remote target changed after review stops execution; no history-overwriting force push is offered. Added/changed gitlinks, or changes only to their declared sources, require verification that each child commit is available from the source in that version. If verification fails, identify the missing repository/commit without silently expanding selection.
@@ -98,3 +121,58 @@ Context help recheck (R7, R8): open help in each area of Log, Commit, Push, and 
 Text selection/copy recheck (A13, R7/R8): at 120×36, 80×24, and 44×12, drag-select in Log commit details / Diff, Commit Edit commit message / Diff preview, and Push Details / Diff. Dragging highlights without copying; release copies exactly once and clears highlight without a shortcut. Clicks, empty selections, and repeated release do not copy. Separately check keyboard select-all with Ctrl-C / Ctrl-Insert and read-only `y`. Verify wide Unicode characters, combining characters, emoji, reverse selections, and multiline selections. Soft wraps must not add newlines; original blank lines/indentation remain, without separators/padding. Scrolling during dragging still copies the correct source; keyboard selection survives scrolling. Dragging parent hashes does not navigate, while ordinary clicks do. Hiding/changing an object removes stale selections. In the message editor, verify typing at the mouse-copy endpoint, Shift+Arrow / Home / End, select-all then type/paste/delete, F2 save, and two Esc presses to cancel. F1 help blocks copying underneath and restores keyboard selection afterward. Run `cargo test --locked ui::selection::` and `cargo test --locked text_selection`; tests capture copy actions without changing the clipboard and verify unchanged checkboxes, HEAD, index, and working tree. Clipboard command byte-input/failure paths remain covered by `cargo test --locked ui::clipboard::`.
 
 Run `cargo test --locked` for the full regression suite. Acceptance records should identify terminal size, demo workspace, and cases actually passed. Static screenshots alone cannot prove correct preview scope, Git writes, or mouse hit areas.
+
+Configuration recheck (R7/R8): use `--check-config` with missing, partial, invalid,
+and conflicting settings. Remap Commit review, pane focus, and a Log copy
+sequence; unbind another command. Verify old bindings stop, new labels appear,
+help/sequence candidates execute the same action, and message/search input keeps
+its characters. Cancel a remapped review with mixed staged/unstaged content and
+an unchecked staged file; compare HEAD, real index, and working tree. Reopen the
+workspace and verify settings persist. Run `cargo test --locked config::`,
+`cargo test --locked configuration_`, and `cargo test --locked --test configuration_cli`.
+
+Kitty focus recheck: run `cargo test --locked smart_focus` and
+`cargo test --locked shell::kitty`. In an isolated Kitty tab, use the same
+Cmd+Ctrl+h/j/k/l chords through IGit's internal panes and across the Kitty edge
+to Neovim splits, then return. Check that `IS_IGIT` is present only during an
+opted-in IGit session, clears on exit, and is absent with default settings.
+Verify edits, review choices, HEAD, index, and working tree remain unchanged.
+
+**Kitty focus verification, 2026-11-05:** Kitty 0.47.4 on macOS, in isolated
+test tabs with a 57-row terminal and a disposable `demo-commit.sh` repository.
+Kitty's actual mapping dispatcher forwarded Cmd+Ctrl+h/j/k/l using `IS_IGIT`.
+Internal navigation and horizontal/vertical Kitty handoffs passed. Neovim's
+installed smart-splits v2.0.0 passed internal navigation and the return to IGit
+while Kitty was the foreground app. Message editing and quit review preserved
+focus; normal exit cleared the marker and restored Kitty's mappings. Explicit
+default settings did not register the marker. HEAD, index, diff, and status
+were unchanged; test tabs were closed and the original tab restored.
+
+Kitty resize recheck: run `cargo test --locked smart_resize` and
+`PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s contrib/kitty -v`.
+Move dividers from both sides and in the middle of a three-pane row. Check
+repeats, fixed/minimum dividers, narrow layouts, focus preservation, tool
+isolation, and edited/reviewed content. In Kitty, exhaust internal width/height
+and verify handoff, the helper's source ID after focus/tab changes, and marker
+cleanup with a resize-only settings file.
+
+**Kitty resize verification, 2026-11-05:** Kitty 0.47.4 on macOS, isolated tabs
+using a fresh `demo-commit.sh` repository. Horizontal test windows began at
+142×57 (IGit) and 60×57 (Neovim); vertical tests began at 203×28 (IGit).
+Cmd+Ctrl+Shift+h/j/k/l passed Kitty's actual mapping dispatcher. Internal
+dividers moved three cells in both axes and reversed exactly. At internal
+limits, width/height adjustments reached Kitty without changing focus.
+Installed smart-splits v2.0.0 resized Neovim's internal splits and its Kitty
+window. The IGit helper resized an inactive source window and an inactive tab
+without activating them; stack layout was unchanged. Editors and quit review
+blocked resizing. Resize-only startup registered `IS_IGIT`; exit cleared it
+and restored Kitty's ordinary resize mappings. HEAD, real index, diff, and
+status stayed unchanged; all test tabs were closed and the original restored.
+
+**Configuration terminal verification, 2026-11-05:** a fresh
+`examples/demo-commit.sh` workspace was exercised through pseudo-terminals at
+120×36, 80×24, and 44×12. F8 focused Commit; the replaced `c` did nothing;
+Ctrl-r opened review; help showed Ctrl-r; a custom `Q Q` sequence displayed
+its continuation and opened quit review. Explicit ASCII/mouse-off CLI options
+overrode Nerd Font/mouse-on settings. Canceling review preserved HEAD, real
+index entries, working-tree diffs, and status in all three runs.

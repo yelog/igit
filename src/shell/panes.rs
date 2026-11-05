@@ -132,6 +132,43 @@ impl Shell {
         }
     }
 
+    pub(super) fn smart_focus(&mut self, direction: Direction) {
+        if self.pop.is_some() || self.panel().editing() || self.kitty.busy() {
+            return;
+        }
+        self.cancel_key_sequences();
+        self.cancel_drags();
+        if let Some(next) = neighbor(&self.reachable_panes(), self.focus_id(), direction) {
+            self.focus_pane(next);
+        } else {
+            self.kitty.focus(direction);
+        }
+    }
+
+    pub(super) fn smart_resize(&mut self, direction: Direction) {
+        if self.pop.is_some() || self.panel().editing() || self.kitty.busy() {
+            return;
+        }
+        self.cancel_key_sequences();
+        self.cancel_drags();
+        let surface = self.surface();
+        let moved = self.layout(surface).rect(self.focus_id()).and_then(|rect| {
+            self.layout_mut(surface)
+                .move_divider(rect, direction, kitty::RESIZE_STEP)
+                .or_else(|| {
+                    if self.tool.is_none() {
+                        self.work_panes
+                            .move_divider(rect, direction, kitty::RESIZE_STEP)
+                    } else {
+                        None
+                    }
+                })
+        });
+        if moved != Some(true) {
+            self.kitty.resize(direction);
+        }
+    }
+
     pub(super) fn run_window_key(&mut self, key: char) {
         let count = i32::from(self.window_prefix.and_then(|p| p.count).unwrap_or(1));
         self.cancel_key_sequences();
@@ -206,7 +243,8 @@ impl Shell {
             let mask = self.window_mask();
             if mask != 0 {
                 self.window_prefix = Some(WindowPrefix { mask, count: None });
-                self.key_picker = KeySequencePicker::pending(Instant::now());
+                self.key_picker =
+                    KeySequencePicker::pending_with_delay(Instant::now(), self.config.hint_delay);
             }
             return true;
         }

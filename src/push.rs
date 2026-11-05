@@ -95,6 +95,7 @@ enum Hit {
 }
 #[derive(Default)]
 pub struct PushPanel {
+    pub(crate) shortcut_labels: BTreeMap<&'static str, String>,
     pub(crate) icons: IconMode,
     pub(crate) panes: PaneLayout,
     entries: Vec<Entry>,

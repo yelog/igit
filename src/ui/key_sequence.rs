@@ -1,6 +1,8 @@
 //! Transient chooser for the suffixes of an already pending panel shortcut.
 use super::{idea::clipped, inside, pane, ACCENT, BG, FG, SEL};
-use crossterm::event::{Event, KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind};
+use crossterm::event::{
+    Event, KeyCode as K, KeyEvent, KeyModifiers as M, MouseButton, MouseEventKind,
+};
 use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
@@ -11,6 +13,7 @@ use ratatui::{
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthStr;
 
+#[cfg(test)]
 const HINT_DELAY: Duration = Duration::from_millis(200);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,19 +69,31 @@ pub(crate) enum SequenceEvent {
     Run(char),
 }
 
+pub(crate) enum PickerEvent {
+    Pass,
+    Handled,
+    Cancel,
+    Run(usize),
+}
+
 #[derive(Default)]
 pub(crate) struct KeySequencePicker {
     show_at: Option<Instant>,
     selected: usize,
     columns: usize,
     area: Rect,
-    hits: Vec<(Rect, char)>,
+    hits: Vec<(Rect, usize)>,
 }
 
 impl KeySequencePicker {
+    #[cfg(test)]
     pub fn pending(now: Instant) -> Self {
+        Self::pending_with_delay(now, HINT_DELAY)
+    }
+
+    pub fn pending_with_delay(now: Instant, delay: Duration) -> Self {
         Self {
-            show_at: Some(now + HINT_DELAY),
+            show_at: Some(now + delay),
             ..Self::default()
         }
     }
@@ -105,72 +120,121 @@ impl KeySequencePicker {
         inside(self.area, x, y)
     }
 
+    /// Keep default suffixes and picker controls ahead of newly configured commands.
+    pub fn accepts_key(&self, key: &KeyEvent, sequence: KeySequence) -> bool {
+        if key.code == K::Esc || key.code == K::Char('c') && key.modifiers == M::CONTROL {
+            return true;
+        }
+        if self.show_at.is_none()
+            && key.modifiers.is_empty()
+            && matches!(key.code, K::Enter | K::Up | K::Down | K::Left | K::Right)
+        {
+            return true;
+        }
+        let K::Char(ch) = key.code else {
+            return false;
+        };
+        if matches!(sequence, KeySequence::Window(_))
+            && (key.modifiers == M::CONTROL && matches!(ch, 'w' | 'h' | 'j' | 'k' | 'l')
+                || key.modifiers.is_empty() && ch.is_ascii_digit())
+        {
+            return true;
+        }
+        (key.modifiers.is_empty() || key.modifiers == M::SHIFT)
+            && sequence.shortcuts().iter().any(|(suffix, _)| *suffix == ch)
+    }
+
     pub fn event(&mut self, event: &Event, sequence: KeySequence) -> SequenceEvent {
+        let shortcuts = sequence.shortcuts();
+        match self.event_items(event, shortcuts.len()) {
+            PickerEvent::Pass => SequenceEvent::Pass,
+            PickerEvent::Handled => SequenceEvent::Handled,
+            PickerEvent::Cancel => SequenceEvent::Cancel,
+            PickerEvent::Run(index) => SequenceEvent::Run(shortcuts[index].0),
+        }
+    }
+
+    pub fn event_items(&mut self, event: &Event, count: usize) -> PickerEvent {
         match event {
             Event::Mouse(m) if self.contains(m.column, m.row) => {
                 if m.kind == MouseEventKind::Down(MouseButton::Left) {
-                    if let Some((_, suffix)) = self
+                    if let Some((_, index)) = self
                         .hits
                         .iter()
                         .find(|(rect, _)| inside(*rect, m.column, m.row))
                     {
-                        return SequenceEvent::Run(*suffix);
+                        return PickerEvent::Run(*index);
                     }
                 }
                 // Borders, padding, wheel events and releases never reach content below.
-                SequenceEvent::Handled
+                PickerEvent::Handled
             }
             Event::Key(k) => {
                 if k.code == K::Esc || k.code == K::Char('c') && k.modifiers == M::CONTROL {
-                    return SequenceEvent::Cancel;
+                    return PickerEvent::Cancel;
                 }
                 if self.show_at.is_some() || !k.modifiers.is_empty() {
-                    return SequenceEvent::Pass;
+                    return PickerEvent::Pass;
                 }
-                let shortcuts = sequence.shortcuts();
-                if shortcuts.is_empty() {
-                    return SequenceEvent::Pass;
+                if count == 0 {
+                    return PickerEvent::Pass;
                 }
-                self.selected = self.selected.min(shortcuts.len() - 1);
+                self.selected = self.selected.min(count - 1);
                 match k.code {
-                    K::Enter => SequenceEvent::Run(shortcuts[self.selected].0),
+                    K::Enter => PickerEvent::Run(self.selected),
                     K::Up | K::Down | K::Left | K::Right => {
-                        let rows = shortcuts.len().div_ceil(self.columns.max(1));
+                        let rows = count.div_ceil(self.columns.max(1));
                         let column = self.selected / rows;
                         let row = self.selected % rows;
                         let start = column * rows;
-                        let count = rows.min(shortcuts.len() - start);
+                        let column_count = rows.min(count - start);
                         self.selected = match k.code {
-                            K::Up => start + (row + count - 1) % count,
-                            K::Down => start + (row + 1) % count,
+                            K::Up => start + (row + column_count - 1) % column_count,
+                            K::Down => start + (row + 1) % column_count,
                             K::Left if column > 0 => start - rows + row,
-                            K::Right if start + rows < shortcuts.len() => {
-                                (start + rows + row).min(shortcuts.len() - 1)
-                            }
+                            K::Right if start + rows < count => (start + rows + row).min(count - 1),
                             _ => self.selected,
                         };
-                        SequenceEvent::Handled
+                        PickerEvent::Handled
                     }
-                    _ => SequenceEvent::Pass,
+                    _ => PickerEvent::Pass,
                 }
             }
-            _ => SequenceEvent::Pass,
+            _ => PickerEvent::Pass,
         }
     }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect, sequence: KeySequence) {
+        let prefix = match sequence {
+            KeySequence::Window(WindowPrefix { count: Some(n), .. }) => format!("Ctrl-W {n}"),
+            _ => sequence.prefix().into(),
+        };
+        let shortcuts = sequence
+            .shortcuts()
+            .into_iter()
+            .map(|(key, description)| (key.to_string(), description))
+            .collect::<Vec<_>>();
+        self.draw_items(f, area, &prefix, &shortcuts);
+    }
+
+    pub fn draw_items(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        prefix: &str,
+        shortcuts: &[(String, &str)],
+    ) {
         self.clear_geometry();
         if self.show_at.is_some() || area.width < 16 || area.height < 3 {
             return;
         }
-        let shortcuts = sequence.shortcuts();
         if shortcuts.is_empty() {
             return;
         }
         let inner_width = usize::from(area.width.saturating_sub(4));
         let cell_width = shortcuts
             .iter()
-            .map(|(_, description)| description.width() + 5)
+            .map(|(key, description)| key.width() + description.width() + 4)
             .max()
             .unwrap_or(1)
             .max(26);
@@ -180,10 +244,6 @@ impl KeySequencePicker {
         self.selected = self.selected.min(shortcuts.len() - 1);
         let height = (rows as u16 + 2).min(area.height);
         self.area = Rect::new(area.x + 1, area.bottom() - height, area.width - 2, height);
-        let prefix = match sequence {
-            KeySequence::Window(WindowPrefix { count: Some(n), .. }) => format!("Ctrl-W {n}"),
-            _ => sequence.prefix().into(),
-        };
         let title = if area.width >= 64 {
             format!("{prefix}  Arrows select  Enter run  Esc/Ctrl-C cancel")
         } else {
@@ -212,15 +272,18 @@ impl KeySequencePicker {
             f.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled(
-                        format!(" {suffix}  "),
+                        format!(" {}  ", clipped(suffix, width.saturating_sub(3))),
                         Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
                     ),
-                    Span::raw(clipped(description, width.saturating_sub(5))),
+                    Span::raw(clipped(
+                        description,
+                        width.saturating_sub(suffix.width() + 4),
+                    )),
                 ]))
                 .style(Style::new().fg(FG).bg(background)),
                 rect,
             );
-            self.hits.push((rect, *suffix));
+            self.hits.push((rect, i));
         }
     }
 }

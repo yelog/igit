@@ -4,6 +4,31 @@
 
 ## Workspace and Focus
 
+Shortcuts below describe the built-in defaults. Optional
+[`settings.toml`](configuration.md) overrides normal-mode commands by name,
+including multi-key sequences, aliases, and unbinding. Help, sequence candidates,
+split titles, and shortcut-bearing controls show the effective keys. Text entry,
+selection, menus, and write confirmations keep their own controls; F1 and Esc
+remain available. Mouse capture and icons are startup settings, and the sequence
+hint delay is configurable (200ms by default). Changing a binding never changes
+the action's repository scope or review requirements.
+
+Optional `smart-focus-pane-left/down/up/right` bindings share directional focus
+with Kitty and Neovim. Internal visible panes take precedence; an application
+edge hands focus to the neighboring Kitty window without wrapping. Push/Merge
+navigation stays within the open tool before handing off. Editors, menus, help,
+Diff overlays, and confirmation windows consume these chords without changing
+focus or text. Commands are unbound by default; see the
+[Kitty setup](configuration.md#shared-focus-shortcuts-with-kitty-and-neovim).
+
+Optional `smart-resize-pane-left/down/up/right` commands move the nearest
+right/bottom divider, otherwise the left/top divider, by three cells in the
+requested direction. Press and repeat events resize; release events do not.
+When that divider is absent or clamped, the command resizes the originating
+Kitty window. Focus and checkbox selections stay in place, and the same
+editor/overlay guards apply. Existing Ctrl-W size controls retain their
+behavior. See [resize setup](configuration.md#shared-resize-shortcuts-with-kitty-and-neovim).
+
 Run `igit` or `ig` from the working directory. The area between the top bar and bottom status line is split equally by default, with a movable divider. Startup focus is the lower Git Log commit list. The active split title has `>`; a blue border marks the pane receiving keyboard input, while other borders are gray. Below five rows of height, only side borders remain to preserve content space. Real practice-workspace screenshots: [Vertical split](reference/IGit-Split-Workspace.png) · [Push dialog](reference/IGit-Push-Dialog.png).
 
 ```text

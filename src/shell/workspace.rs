@@ -159,14 +159,15 @@ impl Shell {
 
     fn pane_header(&self, f: &mut Frame, row: Rect, pane: WorkspacePane) -> Rect {
         let active = self.surface() == Split(pane) && self.pop.is_none();
-        let (icon, name) = match pane {
-            Commit => (Icon::Commit, "Commit [2]"),
-            Log => (Icon::Log, "Git Log [1]"),
+        let (icon, name, action) = match pane {
+            Commit => (Icon::Commit, "Commit", "focus-commit"),
+            Log => (Icon::Log, "Git Log", "focus-log"),
         };
         let label = format!(
-            "{} {} {name} ",
+            "{} {} {name} [{}] ",
             if active { ">" } else { " " },
-            self.icons.glyph(icon)
+            self.icons.glyph(icon),
+            self.config.label("global", action)
         );
         let [title, rest] = Layout::horizontal([
             Constraint::Length(label.width() as u16),
@@ -283,9 +284,9 @@ impl Shell {
             self.push.panes.begin();
             self.merge.panes.begin();
             f.render_widget(
-                Paragraph::new(
-                    "IGit · Terminal too small\nMinimum 44 × 12; recommended 120 × 36.\nq Quit, y Confirm.",
-                )
+                Paragraph::new(format!(
+                    "IGit · Terminal too small\nMinimum 44 × 12; recommended 120 × 36.\n{} Quit, y Confirm.", self.config.label("global", "quit")
+                ))
                 .wrap(Wrap { trim: false }),
                 a,
             );
@@ -299,7 +300,7 @@ impl Shell {
         .areas(a);
         self.draw_header(f, header);
         if self.ctx.repos.is_empty() {
-            let empty = "No Git working trees found.\n\nUse : Actions → Open / rescan workspace, or start igit /path/to/workspace.";
+            let empty = format!("No Git working trees found.\n\nUse {} Actions → Open / rescan workspace, or start igit /path/to/workspace.", self.config.label("global", "actions"));
             f.render_widget(
                 Paragraph::new(empty)
                     .wrap(Wrap { trim: true })
@@ -321,8 +322,13 @@ impl Shell {
         } else {
             "NORMAL"
         };
+        let configured_hint = self.configured_footer();
         let (hint, color) = if !self.msg.is_empty() {
             (self.msg.as_str(), ACCENT)
+        } else if self.config.changed() && self.pop.is_some() {
+            ("F1 Help   Esc Back", MUTED)
+        } else if self.config.changed() && self.pop.is_none() && !self.panel().editing() {
+            (configured_hint.as_str(), MUTED)
         } else if self.tool.is_some() {
             (self.panel().help(), MUTED)
         } else if self.panel().editing() {
@@ -345,7 +351,15 @@ impl Shell {
             .style(Style::new().bg(TAG)),
             foot,
         );
-        if let Some(sequence) = self.key_sequence() {
+        if let Some(pending) = &self.pending_keys {
+            let bounds = if self.tool.is_some() {
+                self.regions.tool_body
+            } else {
+                work
+            };
+            self.key_picker
+                .draw_items(f, bounds, &pending.prefix_label(), &pending.hints());
+        } else if let Some(sequence) = self.key_sequence() {
             let bounds = if self.tool.is_some() {
                 self.regions.tool_body
             } else if matches!(sequence, KeySequence::Window(_)) {

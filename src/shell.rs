@@ -1,3 +1,5 @@
+mod configuration;
+mod kitty;
 mod panes;
 mod workspace;
 
@@ -8,6 +10,7 @@ use self::{
 };
 use crate::{
     commit::CommitPanel,
+    config::{keys::CommandAction, AppConfig},
     core::{Context, Repo},
     log::LogPanel,
     merge::MergePanel,
@@ -26,7 +29,8 @@ use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
         EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers, MouseButton, MouseEventKind,
+        KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEventKind,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -67,6 +71,10 @@ const HEADER: &str = "IGit 0.1.0 — terminal Git workbench";
 const HELP: &str = "Usage: igit [OPTIONS] [DIRECTORY]  (alias: ig)
 
   --icons MODE               nerd-font (default), unicode or ascii
+  --mouse MODE               on or off (overrides settings)
+  --config PATH              use an explicit settings.toml
+  --check-config             validate settings without opening the TUI
+  --print-default-config     print the complete built-in TOML settings
   --list-roots [DIRECTORY]   print detected Git worktrees
   -h, --help                 show this help
   -V, --version              print version
@@ -99,6 +107,9 @@ enum Popup {
     },
 }
 struct Shell {
+    config: AppConfig,
+    kitty: kitty::Kitty,
+    pending_keys: Option<configuration::PendingKeys>,
     ctx: Context,
     icons: IconMode,
     log: LogPanel,
@@ -120,8 +131,22 @@ struct Shell {
     window_prefix: Option<WindowPrefix>,
 }
 impl Shell {
+    #[cfg(test)]
     fn new(ctx: Context, icons: IconMode) -> Self {
+        Self::with_config(
+            ctx,
+            AppConfig {
+                icons,
+                ..AppConfig::default()
+            },
+        )
+    }
+    fn with_config(ctx: Context, config: AppConfig) -> Self {
+        let icons = config.icons;
         let mut s = Self {
+            config,
+            kitty: kitty::Kitty::default(),
+            pending_keys: None,
             ctx,
             icons,
             log: Default::default(),
@@ -146,6 +171,8 @@ impl Shell {
         s.commit.icons = icons;
         s.push.icons = icons;
         s.merge.icons = icons;
+        s.merge.shortcut_labels = s.config.shortcut_labels("merge");
+        s.push.shortcut_labels = s.config.shortcut_labels("push");
         s.refresh();
         s
     }
@@ -174,6 +201,7 @@ impl Shell {
         }
     }
     fn cancel_key_sequences(&mut self) {
+        self.pending_keys = None;
         self.window_prefix = None;
         self.log.cancel_key_sequence();
         self.merge.cancel_key_sequence();
@@ -191,7 +219,7 @@ impl Shell {
         let after = self.key_sequence();
         if after != before || after.is_some() && matches!(ev, Event::Key(_)) {
             self.key_picker = if after.is_some() {
-                KeySequencePicker::pending(Instant::now())
+                KeySequencePicker::pending_with_delay(Instant::now(), self.config.hint_delay)
             } else {
                 KeySequencePicker::default()
             };
@@ -440,7 +468,7 @@ impl Shell {
         let content = self.help_content();
         let origin = self.pop.take().map(Box::new);
         self.pop = Some(Popup::Help {
-            state: HelpState::new(content),
+            state: HelpState::configured(content, &self.config),
             origin,
         });
     }
@@ -469,9 +497,13 @@ impl Shell {
                         if self.help_content().context() != state.content.context() {
                             self.open_help();
                             self.notice("Context changed. Reopen help to choose a shortcut".into());
+                        } else if let CommandAction::SmartFocus(direction) = command.action {
+                            self.smart_focus(direction);
+                        } else if let CommandAction::SmartResize(direction) = command.action {
+                            self.smart_resize(direction);
                         } else if let Some(events) = command.events() {
                             for event in events {
-                                self.dispatch(&event);
+                                self.dispatch_builtin(&event);
                             }
                         } else {
                             self.notice("This shortcut is unavailable".into());
@@ -625,7 +657,9 @@ impl Shell {
                     }
                     match Context::discover(std::path::Path::new(&path)) {
                         Ok(c) => {
-                            *self = Self::new(c, self.icons);
+                            let kitty = std::mem::take(&mut self.kitty);
+                            *self = Self::with_config(c, self.config.clone());
+                            self.kitty = kitty;
                             return;
                         }
                         Err(e) => self.notice(e.to_string()),
@@ -653,6 +687,17 @@ impl Shell {
         !self.panel().editing()
     }
     fn dispatch(&mut self, ev: &Event) {
+        if !self.config.mouse && matches!(ev, Event::Mouse(_)) {
+            return;
+        }
+        if matches!(ev, Event::Key(k) if k.kind == KeyEventKind::Release) {
+            return;
+        }
+        if !self.smart_pane_event(ev) && !self.configured_event(ev) {
+            self.dispatch_builtin(ev);
+        }
+    }
+    fn dispatch_builtin(&mut self, ev: &Event) {
         if matches!(ev,Event::Key(k) if k.kind==KeyEventKind::Release) {
             return;
         }
@@ -773,6 +818,10 @@ impl Shell {
     }
     fn poll(&mut self) -> bool {
         let mut change = self.key_picker.poll(Instant::now());
+        if let Some(Err(error)) = self.kitty.poll() {
+            self.notice(error);
+            change = true;
+        }
         match self.log.poll_preview(&self.ctx) {
             Ok(redraw) => change |= redraw,
             Err(e) => {
@@ -949,15 +998,21 @@ impl Shell {
             }
             Popup::Menu { row } => {
                 for (i, s) in [
-                    "1  Focus Git Log",
-                    "2  Focus Commit",
-                    "3  Open Push…",
-                    "4  Open Merge…",
-                    "Roots / Select repositories",
-                    "Refresh workspace",
-                    "Open / rescan workspace…",
-                    "Console",
-                    "Quit",
+                    format!(
+                        "{}  Focus Git Log",
+                        self.config.label("global", "focus-log")
+                    ),
+                    format!(
+                        "{}  Focus Commit",
+                        self.config.label("global", "focus-commit")
+                    ),
+                    format!("{}  Open Push…", self.config.label("global", "open-push")),
+                    format!("{}  Open Merge…", self.config.label("global", "open-merge")),
+                    "Roots / Select repositories".into(),
+                    "Refresh workspace".into(),
+                    "Open / rescan workspace…".into(),
+                    "Console".into(),
+                    "Quit".into(),
                 ]
                 .iter()
                 .enumerate()
@@ -965,7 +1020,7 @@ impl Shell {
                 {
                     let r = Rect::new(inner.x, inner.y + i as u16, inner.width, 1);
                     f.render_widget(
-                        Paragraph::new(*s).style(Style::default().bg(if i == *row {
+                        Paragraph::new(s.as_str()).style(Style::default().bg(if i == *row {
                             SEL
                         } else {
                             BG
@@ -1000,23 +1055,38 @@ impl Shell {
         }
     }
 }
-struct Tty;
+#[derive(Default)]
+struct Tty {
+    kitty_marker: bool,
+    enhanced_keys: bool,
+}
 impl Drop for Tty {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
+        let mut out = io::stdout();
+        if self.kitty_marker {
+            let _ = kitty::set_user_var(&mut out, false);
+        }
+        if self.enhanced_keys {
+            let _ = execute!(out, PopKeyboardEnhancementFlags);
+        }
         let _ = execute!(
-            io::stdout(),
+            out,
             DisableFocusChange,
             DisableBracketedPaste,
             DisableMouseCapture,
             LeaveAlternateScreen,
             Show
         );
+        let _ = disable_raw_mode();
     }
 }
 pub fn run() -> Result<()> {
     let mut list = false;
-    let mut icons = IconMode::default();
+    let mut icons = None;
+    let mut mouse = None;
+    let mut config_path = None;
+    let mut check_config = false;
+    let mut print_config = false;
     let mut path = None;
     let mut args = env::args_os().skip(1);
     while let Some(a) = args.next() {
@@ -1032,9 +1102,31 @@ pub fn run() -> Result<()> {
             let value = args.next().ok_or_else(|| {
                 anyhow::anyhow!("Missing --icons mode: expected nerd-font, unicode or ascii")
             })?;
-            icons = parse_icons(&value.to_string_lossy())?;
+            icons = Some(parse_icons(&value.to_string_lossy())?);
         } else if let Some(value) = a.to_str().and_then(|s| s.strip_prefix("--icons=")) {
-            icons = parse_icons(value)?;
+            icons = Some(parse_icons(value)?);
+        } else if a == "--config" {
+            config_path = Some(PathBuf::from(
+                args.next()
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("Missing --config path"))?,
+            ));
+        } else if let Some(value) = a.to_str().and_then(|s| s.strip_prefix("--config=")) {
+            if value.is_empty() {
+                bail!("Missing --config path");
+            }
+            config_path = Some(PathBuf::from(value));
+        } else if a == "--mouse" {
+            let value = args
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("Missing --mouse mode: expected on or off"))?;
+            mouse = Some(parse_mouse(&value.to_string_lossy())?);
+        } else if let Some(value) = a.to_str().and_then(|s| s.strip_prefix("--mouse=")) {
+            mouse = Some(parse_mouse(value)?);
+        } else if a == "--check-config" {
+            check_config = true;
+        } else if a == "--print-default-config" {
+            print_config = true;
         } else if a.to_string_lossy().starts_with('-') {
             bail!("Unknown option: {}\n{HELP}", a.to_string_lossy())
         } else if path.is_none() {
@@ -1042,6 +1134,30 @@ pub fn run() -> Result<()> {
         } else {
             bail!("{HELP}")
         }
+    }
+    if print_config {
+        print!("{}", crate::config::DEFAULT_TOML);
+        return Ok(());
+    }
+    let (config_path, required) = crate::config::settings_path(config_path)?;
+    let mut config = AppConfig::load(&config_path, required)?;
+    if let Some(icons) = icons {
+        config.icons = icons;
+    }
+    if let Some(mouse) = mouse {
+        config.mouse = mouse;
+    }
+    if check_config {
+        println!(
+            "Configuration valid: {}{}",
+            config_path.display(),
+            if config_path.exists() {
+                ""
+            } else {
+                " (built-in defaults; no user file)"
+            }
+        );
+        return Ok(());
     }
     let p = path.unwrap_or(env::current_dir()?);
     let ctx = Context::discover(&p)?;
@@ -1060,17 +1176,38 @@ pub fn run() -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!("IGit needs an interactive terminal. Try igit --list-roots or igit --help.")
     }
-    let mut app = Shell::new(ctx, icons);
+    let mut app = Shell::with_config(ctx, config);
     let mut out = io::stdout();
-    let _guard = Tty;
+    let mut guard = Tty::default();
     enable_raw_mode()?;
     execute!(
         out,
         EnterAlternateScreen,
-        EnableMouseCapture,
         EnableFocusChange,
         EnableBracketedPaste
     )?;
+    if app.config.mouse {
+        execute!(out, EnableMouseCapture)?;
+    }
+    if app.config.smart_panes_enabled() {
+        app.kitty = kitty::Kitty::from_env();
+        if app.kitty.available() {
+            guard.kitty_marker = true;
+            kitty::set_user_var(&mut out, true)?;
+        }
+    }
+    // The Kitty protocol preserves Super/Cmd and other modified chords. It is
+    // negotiated for all configurations so custom non-pane commands work too.
+    if crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false) {
+        guard.enhanced_keys = true;
+        execute!(
+            out,
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+            )
+        )?;
+    }
     let mut term = Terminal::new(CrosstermBackend::new(out))?;
     term.clear()?;
     let mut dirty = true;
@@ -1087,12 +1224,13 @@ pub fn run() -> Result<()> {
             };
             match &e {
                 Event::Mouse(m) if m.kind == MouseEventKind::Moved => {
-                    dirty = app.hover(m.column, m.row);
+                    dirty = app.config.mouse && app.hover(m.column, m.row);
                 }
                 _ => {
                     let motion = app.surface() == Split(Log)
                         && app.pop.is_none()
                         && app.key_sequence().is_none()
+                        && app.pending_keys.is_none()
                         && app.log.graph_motion(&e);
                     app.dispatch(&e);
                     dirty = true;
@@ -1127,9 +1265,19 @@ fn parse_icons(value: &str) -> Result<IconMode> {
         .map_err(|reason: &str| anyhow::anyhow!("Invalid --icons value '{value}': {reason}"))
 }
 
+fn parse_mouse(value: &str) -> Result<bool> {
+    match value {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        _ => bail!("Invalid --mouse value '{value}': expected on or off"),
+    }
+}
+
 #[cfg(test)]
 mod key_sequence_tests;
 
+#[cfg(test)]
+mod configuration_tests;
 #[cfg(test)]
 mod help_tests;
 #[cfg(test)]

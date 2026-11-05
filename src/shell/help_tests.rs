@@ -18,7 +18,11 @@ fn check_context(app: &mut Shell, expected: &str) {
         for section in &state.content.sections {
             for (sequence, _) in section.bindings {
                 assert!(
-                    crate::ui::help::HelpCommand { sequence }.events().is_some(),
+                    crate::ui::help::HelpCommand {
+                        action: CommandAction::Keys(sequence)
+                    }
+                    .events()
+                    .is_some(),
                     "non-executable shortcut: {sequence}"
                 );
             }

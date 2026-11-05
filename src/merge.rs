@@ -114,6 +114,7 @@ impl Editor {
 }
 #[derive(Default)]
 pub struct MergePanel {
+    pub(crate) shortcut_labels: std::collections::BTreeMap<&'static str, String>,
     pub(crate) icons: IconMode,
     pub(crate) panes: PaneLayout,
     items: Vec<Entry>,
@@ -181,6 +182,9 @@ fn offset_glyphs(line: &str, offset: usize) -> String {
         .collect()
 }
 impl MergePanel {
+    fn key_label(&self, key: &'static str) -> &str {
+        self.shortcut_labels.get(key).map_or(key, String::as_str)
+    }
     const SIDES: [PaneId; 3] = [PaneId::Current, PaneId::Result, PaneId::Incoming];
 
     pub(crate) fn focused_pane(&self) -> PaneId {
@@ -458,7 +462,7 @@ impl MergePanel {
                 }
                 if d.pending() > 0 {
                     return Action::Notice(format!(
-                        "{} blocks still require a decision (a = apply safe changes)",
+                        "{} blocks still require a decision (Apply non-conflicting first)",
                         d.pending()
                     ));
                 }
@@ -507,7 +511,7 @@ impl MergePanel {
             self.list_scroll = self.list_index + 1 - count
         }
         if self.items.is_empty() {
-            put(f,rect(body.x+1,body.y+1,body.width.saturating_sub(1),count as u16),"No unresolved files or ongoing merges in the selected roots.\nF5 refreshes after a Git operation.",style(MUTED))
+            put(f,rect(body.x+1,body.y+1,body.width.saturating_sub(1),count as u16),format!("No unresolved files or ongoing merges in the selected roots.\n{} refreshes after a Git operation.", self.key_label("F5")),style(MUTED))
         }
         for (i, item) in self
             .items
@@ -567,17 +571,23 @@ impl MergePanel {
         let open = selected.is_some_and(|x| x.file.is_some());
         let ready = selected.is_some_and(|x| x.file.is_none());
         let mut x = bar.x;
-        let open_label = format!("Open file [{}]", icons.glyph(Icon::Enter));
-        let continue_label = "Continue operation [C]";
+        let open_label = format!(
+            "Open file [{}]",
+            self.shortcut_labels
+                .get("Enter")
+                .map_or(icons.glyph(Icon::Enter), String::as_str)
+        );
+        let continue_label = format!("Continue operation [{}]", self.key_label("C"));
+        let compact_continue = format!("Continue [{}]", self.key_label("C"));
         self.button(f, bar, &mut x, &open_label, Hit::Open, open, true);
         self.button(
             f,
             bar,
             &mut x,
             if open_label.width() + continue_label.width() + 5 <= usize::from(bar.width) {
-                continue_label
+                &continue_label
             } else {
-                "Continue [C]"
+                &compact_continue
             },
             Hit::Continue,
             ready,
@@ -743,12 +753,20 @@ impl MergePanel {
             true,
             false,
         );
-        for (icon, key, dir) in [(Icon::Up, " [c", -1), (Icon::Down, " ]c", 1)] {
+        for (icon, key, dir) in [(Icon::Up, "[c", -1), (Icon::Down, "]c", 1)] {
             self.button(
                 f,
                 vert[1],
                 &mut x,
-                &format!("{}{}", icons.glyph(icon), if compact { "" } else { key }),
+                &format!(
+                    "{}{}",
+                    icons.glyph(icon),
+                    if compact {
+                        String::new()
+                    } else {
+                        format!(" {}", self.key_label(key))
+                    }
+                ),
                 Hit::Next(dir),
                 left > 0,
                 false,
@@ -757,14 +775,21 @@ impl MergePanel {
         let auto = if compact {
             format!("Safe {safe}")
         } else {
-            format!("Apply non-conflicting {dot} {safe} [a]")
+            format!(
+                "Apply non-conflicting {dot} {safe} [{}]",
+                self.key_label("a")
+            )
         };
         self.button(f, vert[1], &mut x, &auto, Hit::Auto, safe > 0, false);
         self.button(
             f,
             vert[1],
             &mut x,
-            if compact { "Undo" } else { "Undo [u]" },
+            &if compact {
+                "Undo".into()
+            } else {
+                format!("Undo [{}]", self.key_label("u"))
+            },
             Hit::Undo,
             !self.hist.is_empty(),
             false,
@@ -773,7 +798,11 @@ impl MergePanel {
             f,
             vert[1],
             &mut x,
-            if compact { "Zoom" } else { "Zoom [z]" },
+            &if compact {
+                "Zoom".into()
+            } else {
+                format!("Zoom [{}]", self.key_label("z"))
+            },
             Hit::Zoom,
             true,
             false,
@@ -953,7 +982,14 @@ impl MergePanel {
             f,
             vert[3],
             &mut x,
-            &format!("{take_left} Left{}", if compact { "" } else { " [H]" }),
+            &format!(
+                "{take_left} Left{}",
+                if compact {
+                    String::new()
+                } else {
+                    format!(" [{}]", self.key_label("H"))
+                }
+            ),
             Hit::Choice(self.idx, 0),
             change,
             false,
@@ -962,19 +998,42 @@ impl MergePanel {
             f,
             vert[3],
             &mut x,
-            &format!("Right {take_right}{}", if compact { "" } else { " [L]" }),
+            &format!(
+                "Right {take_right}{}",
+                if compact {
+                    String::new()
+                } else {
+                    format!(" [{}]", self.key_label("L"))
+                }
+            ),
             Hit::Choice(self.idx, 2),
             change,
             false,
         );
-        self.button(f, vert[3], &mut x, "Both [b]", Hit::Both, conflicted, false);
-        self.button(f, vert[3], &mut x, "Edit [i]", Hit::Edit, true, false);
+        self.button(
+            f,
+            vert[3],
+            &mut x,
+            &format!("Both [{}]", self.key_label("b")),
+            Hit::Both,
+            conflicted,
+            false,
+        );
+        self.button(
+            f,
+            vert[3],
+            &mut x,
+            &format!("Edit [{}]", self.key_label("i")),
+            Hit::Edit,
+            true,
+            false,
+        );
         let mut x = vert[4].x;
         self.button(
             f,
             vert[4],
             &mut x,
-            "Save session draft [s]",
+            &format!("Save session draft [{}]", self.key_label("s")),
             Hit::Save,
             true,
             false,
@@ -983,7 +1042,7 @@ impl MergePanel {
             f,
             vert[4],
             &mut x,
-            "Apply file [A]",
+            &format!("Apply file [{}]", self.key_label("A")),
             Hit::Apply,
             ready,
             true,

@@ -1,4 +1,5 @@
 pub mod commit;
+mod config;
 pub mod core;
 pub mod log;
 pub mod merge;

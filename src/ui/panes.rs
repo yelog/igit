@@ -71,7 +71,7 @@ impl Axis {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Direction {
     Left,
     Down,
@@ -238,14 +238,21 @@ impl PaneLayout {
                 handle.height = (area.bottom() - handle.y).min(2);
             }
         }
-        if !area.is_empty() && min[0] < max {
+        if sides.iter().all(|side| !side.is_empty()) {
+            // Keep fixed visible boundaries for smart resize: reaching one must
+            // hand off instead of selecting a different, outer divider.
+            let (min, max) = if min[0] < max {
+                (min[0], max)
+            } else {
+                (first, first)
+            };
             self.splits.push(Divider {
                 id,
                 axis,
                 sides,
                 handle,
                 first,
-                min: min[0],
+                min,
                 max,
             });
         }
@@ -266,7 +273,7 @@ impl PaneLayout {
         self.splits
             .iter()
             .rev()
-            .filter(|s| s.axis == axis)
+            .filter(|s| s.axis == axis && s.min < s.max)
             .find_map(|s| {
                 s.sides
                     .iter()
@@ -277,6 +284,41 @@ impl PaneLayout {
 
     pub fn can_resize(&self, rect: Rect, axis: Axis) -> bool {
         self.split_for(rect, axis).is_some()
+    }
+
+    /// Move the nearest right/bottom divider, or the left/top one at an edge.
+    /// None means absent; Some(false) means present but clamped. A clamped
+    /// divider hands off to Kitty instead of unexpectedly moving an ancestor.
+    pub fn move_divider(&mut self, rect: Rect, direction: Direction, amount: u16) -> Option<bool> {
+        if rect.is_empty() {
+            return None;
+        }
+        let (axis, sign) = match direction {
+            Direction::Left => (Axis::Width, -1),
+            Direction::Right => (Axis::Width, 1),
+            Direction::Up => (Axis::Height, -1),
+            Direction::Down => (Axis::Height, 1),
+        };
+        let split = [0, 1].into_iter().find_map(|side| {
+            self.splits
+                .iter()
+                .rev()
+                .find(|s| s.axis == axis && s.sides[side].intersection(rect) == rect)
+                .copied()
+        })?;
+        let current = self
+            .sizes
+            .get(&split.id)
+            .copied()
+            .unwrap_or(split.first)
+            .clamp(split.min, split.max);
+        let next = (i32::from(current) + sign * i32::from(amount))
+            .clamp(i32::from(split.min), i32::from(split.max));
+        if next == i32::from(current) {
+            return Some(false);
+        }
+        self.set(split, next);
+        Some(true)
     }
 
     pub fn resize(&mut self, rect: Rect, axis: Axis, step: i32) -> bool {
@@ -320,7 +362,7 @@ impl PaneLayout {
                     .splits
                     .iter()
                     .rev()
-                    .find(|s| inside(s.handle, m.column, m.row))
+                    .find(|s| s.min < s.max && inside(s.handle, m.column, m.row))
                     .map(|s| Drag {
                         id: s.id,
                         pointer: s.axis.pointer(m),
@@ -373,6 +415,93 @@ pub(crate) fn pane_frame(f: &mut Frame, area: Rect, focused: bool) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn smart_resize_moves_the_divider_in_the_same_direction_from_both_sides() {
+        for (axis, negative, positive) in [
+            (Axis::Width, Direction::Left, Direction::Right),
+            (Axis::Height, Direction::Up, Direction::Down),
+        ] {
+            for side in 0..2 {
+                let mut layout = PaneLayout::default();
+                let draw = |layout: &mut PaneLayout| {
+                    layout.begin();
+                    layout.divide(
+                        SplitId::Workspace,
+                        Rect::new(0, 0, 120, 120),
+                        axis,
+                        40,
+                        [12, 24],
+                    )
+                };
+                let rect = draw(&mut layout)[side];
+                assert_eq!(layout.move_divider(rect, positive, 3), Some(true));
+                // Repeated input before a new frame accumulates from the saved size.
+                assert_eq!(layout.move_divider(rect, positive, 3), Some(true));
+                let panes = draw(&mut layout);
+                assert_eq!(axis.interval(panes[0]).1, 46);
+                assert_eq!(layout.move_divider(panes[side], negative, 3), Some(true));
+                assert_eq!(axis.interval(draw(&mut layout)[0]).1, 43);
+            }
+        }
+    }
+
+    #[test]
+    fn smart_resize_keeps_a_fixed_inner_boundary_instead_of_moving_its_parent() {
+        let mut layout = PaneLayout::default();
+        let [main, _] = layout.divide(
+            SplitId::LogInspector,
+            Rect::new(0, 0, 120, 20),
+            Axis::Width,
+            36,
+            [36, 16],
+        );
+        let [refs, _] = layout.divide(SplitId::LogRefs, main, Axis::Width, 12, [12, 24]);
+        assert_eq!(layout.move_divider(refs, Direction::Right, 3), Some(false));
+        assert!(layout.sizes.is_empty());
+        assert!(!layout.mouse(&MouseEvent {
+            kind: M::Down(MouseButton::Left),
+            column: 11,
+            row: 4,
+            modifiers: crossterm::event::KeyModifiers::NONE
+        }));
+    }
+
+    #[test]
+    fn smart_resize_prefers_the_right_divider_and_hands_off_at_its_limit() {
+        let mut layout = PaneLayout::default();
+        let draw = |layout: &mut PaneLayout| {
+            layout.begin();
+            let [main, inspector] = layout.divide(
+                SplitId::LogInspector,
+                Rect::new(0, 0, 120, 20),
+                Axis::Width,
+                80,
+                [36, 16],
+            );
+            let [refs, graph] = layout.divide(SplitId::LogRefs, main, Axis::Width, 20, [12, 24]);
+            [refs, graph, inspector]
+        };
+        let [_, graph, _] = draw(&mut layout);
+        assert_eq!(layout.move_divider(graph, Direction::Right, 3), Some(true));
+        let [refs, graph, inspector] = draw(&mut layout);
+        assert_eq!((refs.width, graph.width, inspector.width), (20, 63, 37));
+        assert_eq!(
+            layout.move_divider(graph, Direction::Right, 100),
+            Some(true)
+        );
+        let [_, graph, inspector] = draw(&mut layout);
+        assert_eq!(inspector.width, 16);
+        assert_eq!(layout.move_divider(graph, Direction::Right, 3), Some(false));
+        assert_eq!(layout.move_divider(graph, Direction::Left, 3), Some(true));
+        assert_eq!(draw(&mut layout)[2].width, 19);
+        layout.begin();
+        assert_eq!(layout.move_divider(graph, Direction::Left, 3), None);
+        assert_eq!(
+            layout.move_divider(Rect::default(), Direction::Down, 3),
+            None
+        );
+    }
 
     #[test]
     fn resizing_from_a_clamped_width_has_no_hidden_steps() {

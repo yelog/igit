@@ -1,5 +1,6 @@
 //! Contextual shortcut palette, matching LazyDB's KEYMAP panel.
 use super::{icons::IconMode, idea::clipped, inside};
+use crate::config::keys::{self, CommandAction};
 use crossterm::event::{
     Event, KeyCode as K, KeyEvent, KeyModifiers as M, MouseButton, MouseEventKind,
 };
@@ -86,6 +87,7 @@ pub(crate) fn global_section() -> HelpSection {
             (":", "Open Actions"),
             ("F5", "Refresh workspace and open dialog"),
             ("F1", "Open help for current pane"),
+            ("?", "Open help for current pane"),
             ("q", "Review and quit IGit"),
         ],
     )
@@ -93,26 +95,27 @@ pub(crate) fn global_section() -> HelpSection {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct HelpCommand {
-    pub sequence: &'static str,
+    pub action: CommandAction,
 }
 
 impl HelpCommand {
     /// Only static catalogue sequences are parsed, never the search query.
     pub fn events(self) -> Option<Vec<Event>> {
+        let sequence = self.action.keys()?;
         if let Some((keys, _)) = super::panes::WINDOW_KEYS
             .iter()
-            .find(|(keys, _)| *keys == self.sequence)
+            .find(|(keys, _)| *keys == sequence)
         {
             return Some(vec![
                 Event::Key(KeyEvent::new(K::Char('w'), M::CONTROL)),
                 Event::Key(KeyEvent::new(K::Char(keys.chars().last()?), M::NONE)),
             ]);
         }
-        if self.sequence.contains(char::is_whitespace) {
+        if sequence.contains(char::is_whitespace) {
             return None;
         }
         let mut events = vec![];
-        for token in self.sequence.split_whitespace() {
+        for token in sequence.split_whitespace() {
             if matches!(token, "gg" | "yy" | "ym" | "ya" | "[c" | "]c") {
                 events.extend(
                     token
@@ -180,6 +183,8 @@ pub(crate) struct HelpState {
     search: Rect,
     close: Rect,
     scrollbar: Rect,
+    labels: std::collections::BTreeMap<&'static str, Vec<String>>,
+    native_commands: Vec<(String, &'static str, CommandAction)>,
 }
 
 impl HelpState {
@@ -194,10 +199,46 @@ impl HelpState {
             search: Rect::default(),
             close: Rect::default(),
             scrollbar: Rect::default(),
+            labels: Default::default(),
+            native_commands: vec![],
         }
     }
 
-    fn entries(&self) -> Vec<Binding> {
+    pub fn configured(content: HelpContent, config: &crate::config::AppConfig) -> Self {
+        let context = crate::config::keys::context(content.context());
+        let labels = content
+            .sections
+            .iter()
+            .filter(|section| section.title != "Text Selection")
+            .flat_map(|section| section.bindings)
+            .filter_map(|(key, _)| {
+                config
+                    .help_labels(context, key)
+                    .map(|labels| (*key, labels))
+            })
+            .collect();
+        Self {
+            labels,
+            native_commands: config
+                .active(context)
+                .filter(|c| c.command.action.is_smart_pane() && !c.sequences.is_empty())
+                .map(|c| {
+                    (
+                        c.sequences
+                            .iter()
+                            .map(|s| keys::label(s))
+                            .collect::<Vec<_>>()
+                            .join(" / "),
+                        c.command.action.description(),
+                        c.command.action,
+                    )
+                })
+                .collect(),
+            ..Self::new(content)
+        }
+    }
+
+    fn entries(&self) -> Vec<(String, &'static str, CommandAction)> {
         let tokens: Vec<_> = self
             .query
             .split_whitespace()
@@ -205,25 +246,42 @@ impl HelpState {
             .collect();
         let mut entries = vec![];
         let mut seen = std::collections::BTreeSet::new();
+        let mut displayed = std::collections::BTreeSet::new();
         for section in &self.content.sections {
             for binding in section.bindings {
                 if !seen.insert(binding.0) {
                     continue;
                 }
-                let text = format!("{} {} {}", section.title, binding.0, binding.1).to_lowercase();
+                let keys = match self.labels.get(binding.0) {
+                    Some(labels) if labels.is_empty() => continue,
+                    Some(labels) => labels.join(" / "),
+                    None => binding.0.to_string(),
+                };
+                if !displayed.insert(keys.clone()) {
+                    continue;
+                }
+                let text = format!("{} {} {}", section.title, keys, binding.1).to_lowercase();
                 if tokens.iter().all(|token| text.contains(token)) {
-                    entries.push(*binding);
+                    entries.push((keys, binding.1, CommandAction::Keys(binding.0)));
                 }
             }
         }
+        entries.extend(
+            self.native_commands
+                .iter()
+                .filter(|(keys, description, _)| {
+                    let text = format!("Panes {keys} {description}").to_lowercase();
+                    tokens.iter().all(|token| text.contains(token))
+                })
+                .cloned(),
+        );
         entries
     }
 
     fn command(&self) -> Option<HelpCommand> {
-        let binding = *self.entries().get(self.selected)?;
-        Some(HelpCommand {
-            sequence: binding.0,
-        })
+        let entries = self.entries();
+        let binding = entries.get(self.selected)?;
+        Some(HelpCommand { action: binding.2 })
     }
 
     fn normalize(&mut self) {
@@ -498,7 +556,13 @@ impl HelpState {
                 .sections
                 .iter()
                 .flat_map(|section| section.bindings)
-                .map(|(keys, _)| keys.width() + 2)
+                .map(|(keys, _)| {
+                    self.labels
+                        .get(keys)
+                        .map(|labels| labels.join(" / ").width())
+                        .unwrap_or_else(|| keys.width())
+                        + 2
+                })
                 .max()
                 .unwrap_or(2)
                 .min(18)
@@ -511,7 +575,7 @@ impl HelpState {
             .enumerate()
             .skip(self.scroll)
             .take(self.viewport.height as usize)
-            .map(|(i, (keys, description))| {
+            .map(|(i, (keys, description, _))| {
                 let marker = if i == self.selected { ">" } else { " " };
                 let key = clipped(keys, key_width);
                 Line::from(vec![
@@ -735,12 +799,14 @@ mod tests {
         help.event(&key(K::Down));
         assert_eq!(
             help.event(&key(K::Enter)),
-            HelpEvent::Run(HelpCommand { sequence: "z" })
+            HelpEvent::Run(HelpCommand {
+                action: CommandAction::Keys("z")
+            })
         );
         help.event(&key(K::Up));
         help.event(&key(K::Up));
         assert_eq!(help.selected, help.entries().len() - 1);
-        assert_eq!(help.command().unwrap().sequence, "q");
+        assert_eq!(help.command().unwrap().action, CommandAction::Keys("q"));
         help.event(&Event::Paste("no such shortcut".into()));
         assert_eq!(help.event(&key(K::Enter)), HelpEvent::Keep);
         assert!(draw(&mut help, 44, 12).contains("No matching shortcuts"));
@@ -820,23 +886,35 @@ mod tests {
     #[test]
     fn help_commands_decode_modifiers_sequences_and_reject_non_shortcut_labels() {
         for sequence in ["gg", "yy", "ym", "ya", "[c", "]c"] {
-            let events = HelpCommand { sequence }.events().unwrap();
+            let events = HelpCommand {
+                action: CommandAction::Keys(sequence),
+            }
+            .events()
+            .unwrap();
             assert_eq!(events.len(), 2);
         }
         assert_eq!(
-            HelpCommand { sequence: "Ctrl-f" }.events().unwrap(),
+            HelpCommand {
+                action: CommandAction::Keys("Ctrl-f")
+            }
+            .events()
+            .unwrap(),
             vec![Event::Key(KeyEvent::new(K::Char('f'), M::CONTROL))]
         );
         assert_eq!(
             HelpCommand {
-                sequence: "Shift-Tab"
+                action: CommandAction::Keys("Shift-Tab")
             }
             .events()
             .unwrap(),
             vec![Event::Key(KeyEvent::new(K::BackTab, M::SHIFT))]
         );
         for sequence in ["Input text", "j / k", "F99", "Run-arbitrary"] {
-            assert!(HelpCommand { sequence }.events().is_none());
+            assert!(HelpCommand {
+                action: CommandAction::Keys(sequence)
+            }
+            .events()
+            .is_none());
         }
     }
 }

@@ -51,6 +51,44 @@ igit "$demo_workspace"
 
 The workspace contains two ordinary repositories, one initialized submodule, and three bare remotes. Each ordinary repository has changes to commit and commits to push. The submodule has one real conflict and two independent changes. The script prints the workspace path and leaves your practice results in place.
 
+## Configuration
+
+Customize shortcuts and presentation in `~/.config/igit/settings.toml`
+(macOS/Linux), or `%APPDATA%\igit\settings.toml` (Windows). `XDG_CONFIG_HOME`,
+`IGIT_CONFIG_HOME`, and `--config PATH` can select another location. Only include
+settings you want to change:
+
+```toml
+[ui]
+icons = "unicode"
+
+[keybindings.commit]
+review = ["Ctrl-r"]
+
+[keybindings.panes]
+focus-left = ["Ctrl-w h", "Alt-h"]
+```
+
+Run `igit --check-config` to validate, or `igit --print-default-config` to inspect
+every setting and command. Arrays replace defaults; `[]` disables a binding.
+Changes take effect after restarting. Help and sequence hints show the effective
+keys. Text editing and confirmation controls remain context-owned; `F1` and
+`Esc` stay available. See the [configuration reference](docs/configuration.md)
+for key syntax, conflict handling, mouse settings, paths, and precedence.
+Shortcuts documented below are the built-in defaults.
+
+To share `Cmd+Ctrl+h/j/k/l` with Kitty, Neovim, and LazyDB, configure
+`keybindings.panes.smart-focus-pane-left/down/up/right` and Kitty's `IS_IGIT`
+pass-through mappings. These commands move within IGit first and cross into
+Kitty at an edge. See [Kitty smart focus](docs/configuration.md#shared-focus-shortcuts-with-kitty-and-neovim)
+for the complete setup.
+
+`smart-resize-pane-left/down/up/right` can similarly bind
+`Cmd+Ctrl+Shift+h/j/k/l`: move an internal divider by three cells, then hand
+off to Kitty when the divider is unavailable or at its limit. Install the
+IGit kitten helper and pass through these chords as described in
+[shared resize shortcuts](docs/configuration.md#shared-resize-shortcuts-with-kitty-and-neovim).
+
 ## Global Controls
 
 [Workspace screenshot](docs/reference/IGit-Split-Workspace.png): Commit is above Git Log, with equal heights by default. At startup, a blue border marks the Log commit list as the keyboard target. Push and Merge open as needed; closing them restores the previous focus.
