@@ -662,8 +662,8 @@ mod tests {
             parents: vec!["aaaaaaaa0123".into(), "bbbbbbbb0123".into()],
             ts: 0,
             date: "2026/1/2, 13:45".into(),
-            author: "李平".into(),
-            subject: "修复界面渲染：换行、滚动，并保留链接".into(),
+            author: "Lee Park".into(),
+            subject: "Fix UI rendering: wrap, scroll, and preserve links".into(),
             refs: String::new(),
             ..Default::default()
         });
@@ -676,14 +676,14 @@ mod tests {
                     status: "M".into(),
                 })
                 .collect(),
-            body: "The extended description of this revision.\n第二行含有 🌱 和中文".into(),
+            body: "The extended description of this revision.\nSecond line with 🌱 and ＵＩ".into(),
             email: "lp@example.invalid".into(),
             branches: [
                 (model::RefKind::Head, "HEAD"),
                 (model::RefKind::Current, "main"),
                 (model::RefKind::Remote, "origin/main"),
                 (model::RefKind::Local, "release/older"),
-                (model::RefKind::Local, "feature/用户"),
+                (model::RefKind::Local, "feature/ｕｓｅｒ"),
             ]
             .map(|(kind, name)| (kind, name.to_owned()))
             .into(),
@@ -862,7 +862,7 @@ mod tests {
             t.draw(|f| p.draw_info(f, f.area(), &c)).unwrap();
         };
         draw(&mut p, &mut terminal);
-        assert!(text_at(terminal.backend().buffer(), Rect::new(0, 0, 27, 1)).contains("修复界面"));
+        assert!(text_at(terminal.backend().buffer(), Rect::new(0, 0, 27, 1)).contains("Fix UI"));
         let mut saw_last_branch = false;
         for _ in 0..=p.inspector.info_max {
             for y in 0..5 {
@@ -871,7 +871,7 @@ mod tests {
             }
             if (0..5).any(|y| {
                 text_at(terminal.backend().buffer(), Rect::new(0, y, 27, 1))
-                    .contains("feature/用户")
+                    .contains("feature/ｕｓｅｒ")
             }) {
                 saw_last_branch = true;
                 break;

@@ -505,7 +505,9 @@ impl LogPanel {
                             self.focus = Pane::Graph;
                             self.select_row(n)
                         } else {
-                            anyhow::bail!("父提交不在当前范围 / 尚未加载")
+                            anyhow::bail!(
+                                "Parent commit is outside the current scope or not loaded"
+                            )
                         }
                     }
                 }
@@ -629,7 +631,7 @@ impl Panel for LogPanel {
         }
     }
     fn help(&self) -> &'static str {
-        "j/k 浏览 · gg/G 首/末 · H/M/L 屏顶/中/底 · Ctrl-F/B 整页 · Ctrl-D/U 半页 · yy/ym/ya 复制 · Tab 切窗格 · Ctrl-w h/j/k/l 定向切换 · / 搜索 · b/a/d/p 筛选 · o 显示选项 · Enter Diff · Ctrl-t 新建 Log 页 · Ctrl-w c 关闭"
+        "j/k Navigate · gg/G First/last · H/M/L Screen top/middle/bottom · Ctrl-F/B Page · Ctrl-D/U Half-page · yy/ym/ya Copy · Tab Panes · Ctrl-W h/j/k/l Focus · / Search · b/a/d/p Filter · o View · Enter Diff · Ctrl-T New Log tab · Ctrl-W c Close"
     }
     fn draw(&mut self, f: &mut Frame, a: Rect, c: &Context) {
         self.draw_content(f, a, c);

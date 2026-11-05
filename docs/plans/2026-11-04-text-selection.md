@@ -1,57 +1,57 @@
-# 文本选择与复制 Implementation Plan
+# Text Selection and Copying Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Log 详情和 Diff、Commit 消息编辑器和预览、Push Details / Diff 均可选择并复制原始文本。
+**Goal:** Allow original text to be selected and copied in Log details and Diff, the Commit message editor and preview, and Push Details / Diff.
 
-**Architecture:** 增加共享文本布局与选区组件，以原始文本字节位置保存选区，将终端字符格、软换行和滚动映射回同一份原文。面板只负责区域焦点与生命周期，复制沿用 `Action::Copy` 和系统剪贴板；Shell 在存在文本选区时优先将 Ctrl-C 交给面板。编辑器复用选区，支持鼠标、Shift 导航、Ctrl-A 与选区替换。
+**Architecture:** Add shared text layout and selection components. Store selection as byte positions in the original text, mapping terminal cells, soft wrapping, and scrolling back to that same source. Panels own only region focus and lifecycle. Copying reuses `Action::Copy` and the system clipboard; Shell gives the panel priority for Ctrl-C when a text selection exists. Editors reuse selection for mouse interaction, Shift navigation, Ctrl-A, and replacing selected text.
 
-**Tech Stack:** Rust、Ratatui 0.29 / TestBackend、Crossterm、现有 Unicode 字符格能力和剪贴板实现；不增加依赖。
+**Tech Stack:** Rust, Ratatui 0.29 / TestBackend, Crossterm, existing Unicode cell-width support and clipboard implementation; no new dependencies.
 
 ---
 
-### Task 1: 共用布局与选区
+### Task 1: Shared layout and selection
 
-**Files:** `src/ui/selection.rs`、`src/ui.rs`。
+**Files:** `src/ui/selection.rs`, `src/ui.rs`.
 
-1. 覆盖正反向、多行、空行、中文／组合字符、水平与垂直滚动、软换行、边界拖动及原文变更失效。
-2. 实现共享布局投影、选区高亮、鼠标命中、复制动作；软换行不写入复制结果，保留原始缩进和换行。
-3. 运行 `cargo test --locked ui::selection::`。
+1. Cover forward/reverse selection, multiple lines, empty lines, Chinese/combining characters, horizontal and vertical scrolling, soft wrapping, edge dragging, and invalidation when source text changes.
+2. Implement shared layout projection, selection highlighting, mouse hit testing, and copy actions. Do not include soft wraps in copied output; preserve original indentation and line breaks.
+3. Run `cargo test --locked ui::selection::`.
 
-### Task 2: 面板接入与编辑器
+### Task 2: Panel integration and editors
 
-**Files:** `src/log.rs`、`src/log/inspector.rs`、`src/log/preview.rs`、`src/commit.rs`、`src/commit/view.rs`、`src/push.rs`、`src/push/view.rs`、`src/shell.rs`、对应 view tests 与 keymap。
+**Files:** `src/log.rs`, `src/log/inspector.rs`, `src/log/preview.rs`, `src/commit.rs`, `src/commit/view.rs`, `src/push.rs`, `src/push/view.rs`, `src/shell.rs`, and corresponding view tests and keymaps.
 
-1. Log 详情、Log Diff、Commit Diff／摘要、Push 详情统一接入布局与选择；拖动文本不触发链接、树拖放或分隔线调整。
-2. 鼠标左拖选择，松开即复制一次并清除选区；单击、空选区与重复释放不复制，编辑光标保留在拖选终点。键盘选区保留 Ctrl-C / Ctrl-Insert 及只读区域的 y；Esc 先清键盘选区，再按原逻辑关闭。
-3. Commit 消息支持 Shift+方向键／Home／End、Ctrl-A、复制与输入／粘贴／删除替换选区；保存和取消仍沿用原行为。
-4. 切换对象、打开遮挡弹窗及隐藏区域时清除过期命中与选区，滚动同一文本保留选区；Shell 的 Ctrl-C 无选区时仍走原退出行为。
-5. 在 120×36、80×24、44×12 用 TestBackend 验证事件、可见高亮、消息草稿和 Git 只读性；测试不访问系统剪贴板。
+1. Integrate shared layout and selection in Log details, Log Diff, Commit Diff/summaries, and Push details. Dragging text must not activate links, tree drag-and-drop, or divider resizing.
+2. Select by dragging with the left mouse button; on release, copy once and clear the selection. Single clicks, empty selections, and repeated releases do not copy. Keep the editing cursor at the selection endpoint. Keyboard selections retain Ctrl-C / Ctrl-Insert and y in read-only regions. Esc clears a keyboard selection before following the existing close behavior.
+3. Commit messages support Shift+arrows/Home/End, Ctrl-A, copying, and replacement of selected text by typing/pasting/deletion. Preserve existing save and cancel behavior.
+4. Clear stale hit targets and selections when switching objects, opening covering dialogs, or hiding regions. Scrolling the same text preserves selection. Shell's Ctrl-C retains its existing exit behavior when there is no selection.
+5. Use TestBackend at 120×36, 80×24, and 44×12 to validate events, visible highlighting, message drafts, and read-only Git behavior. Tests do not access the system clipboard.
 
-### Task 3: 文档和回归
+### Task 3: Documentation and regression checks
 
-**Files:** `README.md`、`docs/design.md`、`docs/prd.md`、`docs/architecture.md`。
+**Files:** `README.md`, `docs/design.md`, `docs/prd.md`, `docs/architecture.md`.
 
-1. 说明选择、复制、取消、编辑替换及终端快捷键约束，并加入验收案例。
-2. 运行 `cargo test --locked`、`cargo fmt --all --check`、`cargo clippy --locked --all-targets -- -D warnings`。
-3. 保留工作区原有改动，不执行 commit、push 或仓库历史操作。
+1. Explain selection, copying, cancellation, edit replacement, and terminal shortcut constraints; add acceptance cases.
+2. Run `cargo test --locked`, `cargo fmt --all --check`, and `cargo clippy --locked --all-targets -- -D warnings`.
+3. Preserve existing workspace changes. Do not commit, push, or perform repository history operations.
 
-## 验证记录（2026-11-04）
+## Validation record (2026-11-04)
 
-- `cargo test --locked`：169 个单元测试及 3 个集成测试通过；新增行为另经 `cargo test --locked text_selection --lib` 和共享选区测试验证。
-- `cargo fmt --all --check`、`cargo clippy --locked --all-targets -- -D warnings`、`cargo build --locked --bins`、`git diff --check` 通过。
-- TestBackend 覆盖 120×36、80×24、44×12；真实 120×36 PTY 通过 SGR 鼠标拖选、Ctrl-C、Ctrl-A、Shift+Left 及五处区域的复制，高亮 ANSI 输出与正常退出均已核对。
-- 剪贴板使用线程局部／临时命令接收器核对字节，不改真实剪贴板；临时演练仓的 HEAD、index、工作区及操作范围保持不变。
+- `cargo test --locked`: 169 unit tests and 3 integration tests passed. New behavior was also verified with `cargo test --locked text_selection --lib` and shared selection tests.
+- `cargo fmt --all --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo build --locked --bins`, and `git diff --check` passed.
+- TestBackend covered 120×36, 80×24, and 44×12. A real 120×36 PTY passed SGR mouse drag selection, Ctrl-C, Ctrl-A, Shift+Left, and copying in all five regions; highlighted ANSI output and normal exit were checked.
+- Thread-local/temporary command receivers verified clipboard bytes without changing the real clipboard. HEAD, index, worktree, and operation scope in the temporary demo repositories remained unchanged.
 
-### 后续交互调整：松开即复制
+### Interaction follow-up: Copy on release
 
-- 按用户补充要求，五处文本区域统一在左键释放时返回复制动作并清除选区，保留编辑光标终点；普通单击、空选区和重复释放不复制，父提交拖选不跳转。
-- 完整回归通过 172 个单元测试与 3 个集成测试；fmt、Clippy、构建及 diff 检查通过。
-- 真实 120×36 PTY 已验证：鼠标拖选期间不复制，松开后无需复制键即可将准确文本写入临时剪贴板命令；紧接着输入仍在拖选终点，Git 状态未变。
+- As additionally requested by the user, all five text regions now return a copy action and clear selection on left-button release, retaining the editing cursor endpoint. Ordinary clicks, empty selections, and repeated releases do not copy. Drag-selecting parent commits does not navigate.
+- Full regression passed 172 unit tests and 3 integration tests; fmt, Clippy, build, and diff checks passed.
+- A real 120×36 PTY verified that dragging does not copy; release writes the exact text to a temporary clipboard command without a copy key. Subsequent typing remains at the selection endpoint, and Git state is unchanged.
 
-### 修复复制后单击误复制
+### Fix: Single click incorrectly copies after a previous copy
 
-- 已复现：旧选区已折叠清空，但旧实现将鼠标按下直接视为拖动，释放时再次映射坐标。“已复制”通知被下一次按下清除后，编辑器重排；同一屏幕坐标在 Down／Up 对应不同原文位置，从而凭空产生新选区。
-- 共享组件分别记录按下坐标和实际拖动；仅收到跨字符格的 Drag 后才允许释放复制。普通单击及同字符格移动保持按下时的光标，不重新生成选区。
-- 新增共享组件与 Shell 的 `click_after_copy` 回归；修复前两项均失败，Shell 在 120×35 中从预期一次复制变成两次。修复后 120×35、80×25、44×13 的重排场景、视口滚动、释放坐标抖动与原有五处区域复制测试均通过。
-- 完整回归通过 176 个单元测试与 3 个集成测试；fmt、Clippy、构建及 diff 检查通过。真实 120×35 PTY 已复验“拖选复制 → 通知出现 → 再次单击触发重排 → 继续编辑”，临时剪贴板接收文件的内容与修改时间均保持不变，后续编辑、正常复制及 Git 状态核对通过。
+- Reproduced: the old selection was already collapsed and cleared, but the old implementation treated mouse down as dragging and remapped coordinates on release. The next press cleared the "Copied" notification and caused editor reflow. Identical screen coordinates then mapped to different source positions on Down/Up, creating a selection that did not exist.
+- The shared component now records the press coordinates separately from actual dragging. Release may copy only after a Drag crosses a character-cell boundary. An ordinary click or movement inside one cell keeps the cursor from mouse down and does not recreate a selection.
+- Added `click_after_copy` regressions for the shared component and Shell. Both failed before the fix; at 120×35, Shell copied twice instead of once. After the fix, reflow cases at 120×35, 80×25, and 44×13, viewport scrolling, release-coordinate jitter, and existing copy tests for all five regions passed.
+- Full regression passed 176 unit tests and 3 integration tests; fmt, Clippy, build, and diff checks passed. A real 120×35 PTY rechecked "drag to copy → notification appears → click again and trigger reflow → continue editing". The temporary clipboard receiver file's content and modification time remained unchanged; subsequent editing, normal copying, and Git state checks passed.

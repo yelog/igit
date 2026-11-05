@@ -2,44 +2,44 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** 严格按 lazydb 的帮助样式与交互实现默认输入、上下选择、回车执行。
+**Goal:** Match lazydb's help style and interaction precisely: typing by default, up/down selection, and Enter to execute.
 
-**Architecture:** 帮助改为固定 Search 输入和紧凑候选列表，沿用 lazydb 的 74 列、圆角、深蓝背景、青色标题、蓝色按键和 `>` 选择标记。将多动作摘要拆为独立静态按键序列，只列当前上下文可用的区域、面板通用和全局动作；Shell 恢复原状态并经既有事件路径执行，保留 Git 审查与验证。
+**Architecture:** Replace help with a fixed Search input and compact candidate list, using lazydb's 74-column width, rounded border, dark-blue background, cyan title, blue keys, and `>` selection marker. Split multi-action summaries into separate static key sequences. List only region, shared panel, and global actions available in the current context. Shell restores the original state and executes through existing event paths, preserving Git review and validation.
 
-**Tech Stack:** 现有 Rust / Ratatui / Crossterm / unicode-width，无新依赖。
+**Tech Stack:** Existing Rust / Ratatui / Crossterm / unicode-width; no new dependencies.
 
 ---
 
-### Task 1: 输入与候选交互
+### Task 1: Input and candidate interaction
 
 **Files:** `src/ui/help.rs`, `src/shell/help_tests.rs`.
 
-1. 首先测试默认输入光标、中文编辑、方向选择、筛选后重置、空结果 Enter、可见区及鼠标选择。
-2. 替换分组正文和浏览模式，按 lazydb 的渲染尺寸、色值、边框、列宽和底栏绘制。
-3. 执行 `cargo test --locked ui::help::`。
+1. First test the default input cursor, Chinese text editing, arrow selection, reset after filtering, Enter with no results, the visible viewport, and mouse selection.
+2. Replace grouped body text and browse mode. Match lazydb's rendering dimensions, colors, borders, column widths, and footer.
+3. Run `cargo test --locked ui::help::`.
 
-### Task 2: 可执行快捷键
+### Task 2: Executable shortcuts
 
 **Files:** `src/{log,commit,push,merge}/keymap.rs`, `src/log/branches.rs`, `src/shell.rs`.
 
-1. 每行只表示一个明确动作，为多键序列、修饰键建立可验证的执行数据；对照 lazydb 只显示当前上下文可用的动作。
-2. Enter 恢复原弹窗／编辑状态，校验上下文并派发原快捷键。
-3. 测试实际导航、搜索、面板切换、多键序列、编辑动作及提交审查；取消和仅搜索时核对 HEAD、index、工作区不变。
+1. Give each row one explicit action and verifiable execution data for multi-key sequences and modifier keys. As in lazydb, show only actions available in the current context.
+2. Enter restores the previous dialog/editing state, validates context, and dispatches the original shortcut.
+3. Test real navigation, search, panel switching, multi-key sequences, editing actions, and commit review. Verify that cancellation and search alone leave HEAD, index, and worktree unchanged.
 
-### Task 3: 文档与验证
+### Task 3: Documentation and validation
 
 **Files:** `README.md`, `docs/design.md`, `docs/architecture.md`, `docs/prd.md`.
 
-1. 更新 Search、选择执行和样式说明，替换上一版只读浏览的描述。
-2. 检查 120×36、80×24、44×12 实际绘制结果。
-3. 运行 `cargo fmt --all --check`、`cargo test --locked`、`cargo clippy --locked --all-targets -- -D warnings` 和 `git diff --check`。
+1. Update Search, selection/execution, and style documentation, replacing the previous read-only browsing description.
+2. Inspect actual rendering at 120×36, 80×24, and 44×12.
+3. Run `cargo fmt --all --check`, `cargo test --locked`, `cargo clippy --locked --all-targets -- -D warnings`, and `git diff --check`.
 
-直接执行，不提交或推送，不更改 lazydb。
+Execute directly; do not commit, push, or change lazydb.
 
-## 实施与验收记录
+## Implementation and acceptance record
 
-- 已完成 lazydb 样式的默认 Search 焦点、紧凑单行候选、上下选择、回车执行、输入编辑、鼠标选择和滚动；当前区域、通用、全局动作按优先级去重。
-- 19 项帮助测试通过，包括真实按键序列执行、原输入／弹窗恢复、上下文失效校验和提交审查边界。搜索文本不会成为执行数据，Git 写操作仍进入原审查路径。
-- 全量 `cargo test --locked`：146 项单元测试、3 项集成测试通过。`cargo fmt --all --check`、`cargo clippy --locked --all-targets -- -D warnings`、`git diff --check` 和文档相对链接检查通过。
-- 已检查 120×36、80×24、44×12 的 TestBackend 实际绘制结果，包含默认输入光标与筛选后的候选标记；临时导出测试已移除。
-- 合入工作区并行新增的 Commit View Options 帮助上下文，并调整其鼠标 match 分支以通过 Clippy；保留菜单内其他鼠标按钮的原有拦截行为，相应定向用例通过。
+- Completed lazydb-style default Search focus, compact single-line candidates, up/down selection, Enter execution, input editing, mouse selection, and scrolling. Deduplicate current-region, shared, and global actions by priority.
+- All 19 help tests passed, including real key-sequence execution, original input/dialog restoration, stale-context validation, and commit review boundaries. Search text never becomes execution data; Git writes still follow the original review path.
+- Full `cargo test --locked`: 146 unit tests and 3 integration tests passed. `cargo fmt --all --check`, `cargo clippy --locked --all-targets -- -D warnings`, `git diff --check`, and documentation relative-link checks passed.
+- Inspected actual TestBackend rendering at 120×36, 80×24, and 44×12, including the default input cursor and filtered candidate markers. Temporary export tests were removed.
+- Integrated the concurrently added Commit View Options help context and adjusted its mouse match branch to pass Clippy. Preserved interception of other mouse buttons within the menu; the corresponding targeted cases passed.

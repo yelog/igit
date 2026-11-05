@@ -57,7 +57,7 @@ impl Shell {
                 if self.can_leave_panel() {
                     self.go(Split(self.focus));
                 } else {
-                    self.notice("请先保存或取消当前编辑 (Esc)".into());
+                    self.notice("Save or cancel the current edit first (Esc)".into());
                 }
             } else if press && inside(self.regions.tool_help, x, y) {
                 self.open_help();
@@ -88,7 +88,7 @@ impl Shell {
         if pane != self.focus {
             if press {
                 if !self.can_leave_panel() {
-                    self.notice("先确认或退出当前输入 (Esc)".into());
+                    self.notice("Finish or cancel the current input first (Esc)".into());
                     return;
                 }
                 self.go(Split(pane));
@@ -284,7 +284,7 @@ impl Shell {
             self.merge.panes.begin();
             f.render_widget(
                 Paragraph::new(
-                    "IGit · 窗口过小\n至少 44 列 × 12 行；推荐 120 × 36。\nq 退出，y 确认。",
+                    "IGit · Terminal too small\nMinimum 44 × 12; recommended 120 × 36.\nq Quit, y Confirm.",
                 )
                 .wrap(Wrap { trim: false }),
                 a,

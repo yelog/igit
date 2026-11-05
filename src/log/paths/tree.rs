@@ -108,10 +108,11 @@ impl PathTree {
             dir.canonicalize()
                 .with_context(|| dir.display().to_string())?
                 == dir,
-            "目录已变为符号链接，请重新打开路径树"
+            "Directory became a symlink. Reopen the path tree"
         );
         let mut children = Vec::new();
-        for entry in fs::read_dir(&dir).with_context(|| format!("无法展开 {}", dir.display()))?
+        for entry in
+            fs::read_dir(&dir).with_context(|| format!("Cannot expand {}", dir.display()))?
         {
             let e = entry?;
             if e.file_name() == ".git" {

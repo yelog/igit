@@ -82,17 +82,17 @@ pub(crate) enum Direction {
 // Used by both executable help and the Ctrl-W suffix picker. The last
 // character of each binding is its suffix; the mask only lists applicable ones.
 pub(crate) const WINDOW_KEYS: &[(&str, &str)] = &[
-    ("Ctrl-w h", "聚焦左侧 pane"),
-    ("Ctrl-w j", "聚焦下方 pane"),
-    ("Ctrl-w k", "聚焦上方 pane"),
-    ("Ctrl-w l", "聚焦右侧 pane"),
-    ("Ctrl-w >", "增加当前 pane 宽度"),
-    ("Ctrl-w <", "减少当前 pane 宽度"),
-    ("Ctrl-w +", "增加当前 pane 高度"),
-    ("Ctrl-w -", "减少当前 pane 高度"),
-    ("Ctrl-w =", "恢复默认分屏尺寸"),
-    ("Ctrl-w w", "聚焦下一个 pane"),
-    ("Ctrl-w c", "关闭当前 Log 页"),
+    ("Ctrl-w h", "Focus left pane"),
+    ("Ctrl-w j", "Focus pane below"),
+    ("Ctrl-w k", "Focus pane above"),
+    ("Ctrl-w l", "Focus right pane"),
+    ("Ctrl-w >", "Increase pane width"),
+    ("Ctrl-w <", "Decrease pane width"),
+    ("Ctrl-w +", "Increase pane height"),
+    ("Ctrl-w -", "Decrease pane height"),
+    ("Ctrl-w =", "Reset pane sizes"),
+    ("Ctrl-w w", "Focus next pane"),
+    ("Ctrl-w c", "Close current Log tab"),
 ];
 
 pub(crate) fn window_keys(

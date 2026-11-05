@@ -1,10 +1,10 @@
-# IDEA Commit 工具窗对照实现计划
+# IDEA Commit Tool Window Implementation Plan
 
-**目标：** 按提供的 IDEA 截图，让提交清单默认直接呈现分组、仓库、文件名和父路径；实际提交仍按可见仓库中已勾选且审查过的内容执行。
+**Goal:** Match the supplied IDEA screenshot so that the default commit list directly shows groups, repositories, filenames, and parent paths. Actual commits still use only checked, reviewed content within visible repositories.
 
-**架构：** 在现有原生 Ratatui 面板上更改树的投影、绘制和事件命中；文件仍用仓库与原始路径标识。目录树、容器摘要、文件 Diff 和逐仓消息改为按需查看，复用现有 Git 后端。
+**Architecture:** Change tree projection, rendering, and event hit testing in the existing native Ratatui panel. Continue identifying files by repository and raw path. Make the directory tree, container summaries, file Diff, and per-repository messages available on demand, reusing the existing Git backend.
 
-1. `src/commit/tree.rs`：实现按文件名排序的平铺清单，保留目录模式；覆盖同名文件、折叠、视图切换和勾选独立性。
-2. `src/commit/rows.rs`、`src/commit/view.rs`：对齐复选框、文件类型图标、状态色、父路径、仓库色块与分支徽标；用实际绘制坐标区分展开、勾选和浏览。
-3. `src/commit.rs`、`src/shell.rs`：收起默认预览，接入工具栏及键盘操作；保留打开补丁、编辑消息、Amend 和提交审查的鼠标入口。
-4. 使用临时仓库重现 11 个跟踪变更、8 个未跟踪文件；在 120×36 和 80×24 核对列表、Diff、选择与审查。运行 `cargo test --locked`、`cargo fmt --all --check` 和 `cargo clippy --locked --all-targets -- -D warnings`；更新真实截图与使用说明。
+1. `src/commit/tree.rs`: implement a flat list sorted by filename while preserving directory mode. Cover duplicate filenames, collapsing, view switching, and independent checkbox state.
+2. `src/commit/rows.rs`, `src/commit/view.rs`: align checkboxes, file-type icons, status colors, parent paths, repository color blocks, and branch badges. Distinguish expansion, checking, and browsing using actual rendered coordinates.
+3. `src/commit.rs`, `src/shell.rs`: hide the preview by default and connect toolbar and keyboard actions. Preserve mouse access to patches, message editing, Amend, and commit review.
+4. Reproduce 11 tracked changes and 8 untracked files in temporary repositories. Check the list, Diff, selection, and review at 120×36 and 80×24. Run `cargo test --locked`, `cargo fmt --all --check`, and `cargo clippy --locked --all-targets -- -D warnings`; update actual screenshots and usage documentation.

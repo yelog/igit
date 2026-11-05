@@ -55,15 +55,18 @@ impl HelpContent {
     pub fn with_selection(mut self, selected: bool, read_only: bool) -> Self {
         if selected {
             self.sections.push(HelpSection::new(
-                "文本选区",
+                "Text Selection",
                 if read_only {
                     &[
-                        ("Ctrl-c", "复制选中文本"),
-                        ("Ctrl-Insert", "复制选中文本"),
-                        ("y", "复制选中文本"),
+                        ("Ctrl-c", "Copy selected text"),
+                        ("Ctrl-Insert", "Copy selected text"),
+                        ("y", "Copy selected text"),
                     ]
                 } else {
-                    &[("Ctrl-c", "复制选中文本"), ("Ctrl-Insert", "复制选中文本")]
+                    &[
+                        ("Ctrl-c", "Copy selected text"),
+                        ("Ctrl-Insert", "Copy selected text"),
+                    ]
                 },
             ));
         }
@@ -73,17 +76,17 @@ impl HelpContent {
 
 pub(crate) fn global_section() -> HelpSection {
     HelpSection::new(
-        "全局操作",
+        "Global Actions",
         &[
-            ("1", "聚焦下半区 Git Log"),
-            ("2", "聚焦上半区 Commit"),
-            ("3", "打开 Push 弹窗"),
-            ("4", "打开 Merge 弹窗"),
-            ("r", "打开 Roots 仓库范围"),
-            (":", "打开动作列表"),
-            ("F5", "刷新分屏和当前操作窗口"),
-            ("F1", "打开当前区域的帮助"),
-            ("q", "审查并退出 IGit"),
+            ("1", "Focus Git Log below"),
+            ("2", "Focus Commit above"),
+            ("3", "Open Push dialog"),
+            ("4", "Open Merge dialog"),
+            ("r", "Open Roots repo scope"),
+            (":", "Open Actions"),
+            ("F5", "Refresh workspace and open dialog"),
+            ("F1", "Open help for current pane"),
+            ("q", "Review and quit IGit"),
         ],
     )
 }
@@ -487,6 +490,22 @@ impl HelpState {
             );
             self.viewport.width = self.viewport.width.saturating_sub(1);
         }
+        // Keep the normal column spacing, but give English descriptions the
+        // spare padding on narrow surfaces. Use the whole catalogue so typing
+        // in Search does not shift the description column.
+        let key_width = if self.viewport.width < 60 {
+            self.content
+                .sections
+                .iter()
+                .flat_map(|section| section.bindings)
+                .map(|(keys, _)| keys.width() + 2)
+                .max()
+                .unwrap_or(2)
+                .min(18)
+        } else {
+            18
+        };
+        let description_width = usize::from(self.viewport.width).saturating_sub(key_width + 2);
         let lines: Vec<_> = entries
             .iter()
             .enumerate()
@@ -494,17 +513,17 @@ impl HelpState {
             .take(self.viewport.height as usize)
             .map(|(i, (keys, description))| {
                 let marker = if i == self.selected { ">" } else { " " };
-                let key = clipped(keys, 18);
+                let key = clipped(keys, key_width);
                 Line::from(vec![
                     Span::styled(
                         format!(
                             "{marker} {key}{}",
-                            " ".repeat(18usize.saturating_sub(key.width()))
+                            " ".repeat(key_width.saturating_sub(key.width()))
                         ),
                         Style::new().fg(ACTION).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        clipped(description, self.viewport.width.saturating_sub(20) as usize),
+                        clipped(description, description_width),
                         Style::new().fg(TEXT),
                     ),
                 ])
@@ -549,9 +568,17 @@ impl HelpState {
             ));
             f.render_widget(Paragraph::new(lines), self.scrollbar);
         }
+        let footer = [
+            "Up/Down select   Enter run   Esc close   Ctrl-W/U/A/E edit",
+            "Up/Down select  Enter run  Esc close",
+            "Enter run  Esc close",
+            "Esc close",
+        ]
+        .into_iter()
+        .find(|hint| hint.width() <= usize::from(inner.width))
+        .unwrap_or("");
         f.render_widget(
-            Paragraph::new("Up/Down select   Enter run   Esc close   Ctrl-W/U/A/E edit")
-                .style(Style::new().fg(MUTED)),
+            Paragraph::new(footer).style(Style::new().fg(MUTED)),
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
         );
     }
@@ -568,11 +595,11 @@ mod tests {
     fn help() -> HelpState {
         HelpState::new(HelpContent::new(
             HelpSection::new(
-                "Log / 文件树",
+                "Log / File Tree",
                 &[
-                    ("Enter", "查看文件 Diff"),
-                    ("z", "收起全部目录"),
-                    ("Z", "展开全部目录"),
+                    ("Enter", "View file diff"),
+                    ("z", "Collapse all folders"),
+                    ("Z", "Expand all folders"),
                 ],
             ),
             vec![global_section()],
@@ -618,12 +645,12 @@ mod tests {
     fn help_opens_with_search_cursor_and_uses_lazydb_flat_keymap_style() {
         let mut help = help();
         let text = draw(&mut help, 120, 36);
-        assert!(text.contains("KEYMAP // LOG / 文件树"));
+        assert!(text.contains("KEYMAP // LOG / FILE TREE"));
         assert!(text.contains("Search "));
         assert!(text.contains("> Enter"));
         assert!(text.contains("Up/Down select   Enter run   Esc close"));
-        assert!(!text.contains("当前区域 ·"));
-        assert!(!text.contains("全局操作"));
+        assert!(!text.contains("Current pane ·"));
+        assert!(!text.contains("Global Actions"));
         assert!(text.contains('╭') && text.contains('╰'));
         help.event(&key(K::Char('j')));
         assert_eq!(help.query, "j", "letters edit Search instead of navigating");
@@ -631,35 +658,70 @@ mod tests {
     }
 
     #[test]
+    fn help_narrow_layout_keeps_long_keys_and_english_actions_readable() {
+        const BINDINGS: &[Binding] = &[
+            ("Shift-Right", "Extend selection right"),
+            ("Ctrl-Insert", "Copy selected text"),
+            ("Ctrl-w h", "Focus left pane"),
+        ];
+        for (width, height) in [(44, 12), (80, 24), (120, 36)] {
+            let mut help = HelpState::new(HelpContent::new(
+                HelpSection::new("Commit / Text Selection", BINDINGS),
+                vec![global_section()],
+            ));
+            let text = draw(&mut help, width, height);
+            for (keys, description) in BINDINGS {
+                assert!(
+                    text.lines()
+                        .any(|line| line.contains(keys) && line.contains(description)),
+                    "{width}x{height}: {keys} and its action should fit together\n{text}"
+                );
+            }
+            let footer = text
+                .lines()
+                .find(|line| line.contains("Up/Down select"))
+                .unwrap();
+            assert!(footer.contains("Enter run") && footer.contains("Esc close"));
+            if width >= 80 {
+                assert!(footer.contains("Ctrl-W/U/A/E edit"));
+            }
+        }
+    }
+
+    #[test]
     fn help_search_and_unicode_cursor_editing_reset_selection() {
         let mut help = help();
-        help.event(&Event::Paste("文件树 enter".into()));
+        help.event(&Event::Paste("file tree enter".into()));
         assert_eq!(help.entries().len(), 1);
         help.event(&ctrl('u'));
         help.event(&key(K::Down));
         assert_eq!(help.selected, 1);
-        help.event(&Event::Paste("目录".into()));
+        help.event(&Event::Paste("folders".into()));
         assert_eq!(help.selected, 0);
         assert_eq!(help.entries().len(), 2);
+        help.event(&ctrl('u'));
+        // Fullwidth letters preserve multi-byte, two-cell cursor coverage.
+        help.event(&Event::Paste("ＡＢ".into()));
+        draw(&mut help, 44, 12);
         help.event(&key(K::Left));
-        help.event(&key(K::Char('新')));
-        assert_eq!(help.query, "目新录");
+        help.event(&key(K::Char('Ｃ')));
+        assert_eq!(help.query, "ＡＣＢ");
         help.event(&key(K::Backspace));
         help.event(&key(K::Delete));
-        assert_eq!(help.query, "目");
+        assert_eq!(help.query, "Ａ");
         help.event(&ctrl('a'));
         help.event(&Event::Paste("hello world ".into()));
         help.event(&ctrl('w'));
-        assert_eq!(help.query, "hello 目");
+        assert_eq!(help.query, "hello Ａ");
         help.event(&ctrl('e'));
         assert_eq!(help.caret, help.query.len());
         help.event(&ctrl('u'));
         assert!(help.query.is_empty());
         help.content.sections.push(HelpSection::new(
-            "面板通用",
-            &[("Enter", "不应替代当前区域的描述")],
+            "General",
+            &[("Enter", "Must not replace the current pane description")],
         ));
-        help.event(&Event::Paste("不应替代".into()));
+        help.event(&Event::Paste("must not replace".into()));
         assert!(
             help.entries().is_empty(),
             "filtering must preserve the current region's key precedence"
@@ -698,6 +760,7 @@ mod tests {
             help.event(&key(K::Up));
             let text = draw(&mut help, width, height);
             assert!(text.contains("> q"), "{text}");
+            assert!(text.contains("Review and quit IGit"), "{text}");
             assert!(
                 help.selected >= help.scroll
                     && help.selected < help.scroll + help.viewport.height as usize
@@ -772,7 +835,7 @@ mod tests {
             .unwrap(),
             vec![Event::Key(KeyEvent::new(K::BackTab, M::SHIFT))]
         );
-        for sequence in ["输入文本", "j / k", "F99", "Run-arbitrary"] {
+        for sequence in ["Input text", "j / k", "F99", "Run-arbitrary"] {
             assert!(HelpCommand { sequence }.events().is_none());
         }
     }

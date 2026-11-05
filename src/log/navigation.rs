@@ -109,7 +109,7 @@ impl LogPanel {
 
     fn yank_commit(&self, key: char, c: &Context) -> Result<Action> {
         let Some(rev) = self.rev() else {
-            return Ok(Action::Notice("Log: 没有选中的提交".into()));
+            return Ok(Action::Notice("Log: no commit selected".into()));
         };
         let (text, label) = match key {
             'y' => (rev.oid.clone(), "commit ID"),
@@ -126,9 +126,9 @@ impl LogPanel {
                         "--",
                     ],
                 )?,
-                "提交信息",
+                "commit message",
             ),
-            _ => (format!("{} <{}>", rev.author, rev.email), "作者信息"),
+            _ => (format!("{} <{}>", rev.author, rev.email), "author details"),
         };
         Ok(Action::Copy { text, label })
     }

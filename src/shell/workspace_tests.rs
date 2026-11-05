@@ -37,17 +37,17 @@ fn pane_navigation_crosses_the_workspace_and_keeps_git_state() {
         "scrolling under the pointer keeps keyboard focus"
     );
     ctrl_w(&mut app, 'h');
-    assert_eq!(app.help_content().context(), "Log / 分支树");
+    assert_eq!(app.help_content().context(), "Log / Branch Tree");
     ctrl_w(&mut app, 'h');
-    assert_eq!(app.help_content().context(), "Log / 分支树");
+    assert_eq!(app.help_content().context(), "Log / Branch Tree");
     ctrl_w(&mut app, 'k');
-    assert_eq!(app.help_content().context(), "Commit / 提交说明");
+    assert_eq!(app.help_content().context(), "Commit / Message");
     ctrl_w(&mut app, 'k');
-    assert_eq!(app.help_content().context(), "Commit / 变更清单");
+    assert_eq!(app.help_content().context(), "Commit / Changes");
     app.dispatch(&key(KeyCode::BackTab));
-    assert_eq!(app.help_content().context(), "Log / 提交详情");
+    assert_eq!(app.help_content().context(), "Log / Commit Details");
     app.dispatch(&key(KeyCode::Tab));
-    assert_eq!(app.help_content().context(), "Commit / 变更清单");
+    assert_eq!(app.help_content().context(), "Commit / Changes");
     assert_eq!(snapshot(&app.ctx.repos[0].path), before);
 }
 
@@ -124,11 +124,11 @@ fn pane_navigation_help_prefix_and_log_close_are_distinct_from_editing() {
         two,
         "the prefix alone must leave both Log tabs open"
     );
-    assert!(screen(&mut app, 120, 36).contains("聚焦右侧 pane"));
+    assert!(screen(&mut app, 120, 36).contains("Focus right pane"));
     app.dispatch(&key(KeyCode::Esc));
     assert!(app.key_sequence().is_none() && app.pop.is_none());
     app.dispatch(&key(KeyCode::F(1)));
-    app.dispatch(&Event::Paste("聚焦右侧 pane".into()));
+    app.dispatch(&Event::Paste("Focus right pane".into()));
     app.dispatch(&key(KeyCode::Enter));
     assert_eq!(app.log.focused_pane(), PaneId::Files);
     ctrl_w(&mut app, 'c');
@@ -191,8 +191,11 @@ fn split_workspace_tool_windows_block_background_and_restore_the_original_pane()
         })
     };
     app.dispatch(&click(top));
-    assert_eq!(app.help_content().context(), "Commit / 变更清单");
-    for (open, expected) in [('3', "Push / 仓库与提交"), ('4', "Merge / 冲突文件")] {
+    assert_eq!(app.help_content().context(), "Commit / Changes");
+    for (open, expected) in [
+        ('3', "Push / Repos and Commits"),
+        ('4', "Merge / Conflicted Files"),
+    ] {
         app.dispatch(&key(KeyCode::Char(open)));
         screen(&mut app, 120, 36);
         app.dispatch(&click(0));
@@ -203,7 +206,7 @@ fn split_workspace_tool_windows_block_background_and_restore_the_original_pane()
         app.dispatch(&key(KeyCode::Esc));
         assert_eq!(app.help_content().context(), expected);
         app.dispatch(&key(KeyCode::Esc));
-        assert_eq!(app.help_content().context(), "Commit / 变更清单");
+        assert_eq!(app.help_content().context(), "Commit / Changes");
     }
     app.dispatch(&key(KeyCode::Char('1')));
     app.dispatch(&key(KeyCode::Char('3')));
@@ -211,7 +214,7 @@ fn split_workspace_tool_windows_block_background_and_restore_the_original_pane()
     app.dispatch(&key(KeyCode::Esc)); // Close Details before the Push window.
     assert!(app.help_content().context().starts_with("Push /"));
     app.dispatch(&key(KeyCode::Esc));
-    assert_eq!(app.help_content().context(), "Log / 提交列表");
+    assert_eq!(app.help_content().context(), "Log / Commits");
     assert_eq!(snapshot(&app.ctx.repos[0].path), before);
 }
 

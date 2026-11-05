@@ -69,21 +69,21 @@ impl BranchFilter {
     pub(in crate::log) fn parse(input: &str, known: &BTreeSet<&str>) -> Result<Option<Self>> {
         let mut terms = vec![];
         let resolve = |name: &str, exclude| -> Result<Term> {
-            ensure!(!name.is_empty(), "缺少分支名");
+            ensure!(!name.is_empty(), "Branch name is required");
             let mut matches = known.iter().copied().filter(|s| short_ref(s) == name);
             let (value, pattern) = if known.contains(name) {
                 (name.to_owned(), None)
             } else if let Some(full) = matches.next() {
                 ensure!(
                     matches.next().is_none(),
-                    "多个引用同名，请选择完整引用：{name}"
+                    "Ambiguous ref name: {name}. Use the full ref name"
                 );
                 (full.to_owned(), None)
             } else {
                 let re = Regex::new(&format!("^(?:{name})$"))?;
                 ensure!(
                     known.iter().any(|s| re.is_match(short_ref(s))),
-                    "没有匹配的分支或标签：{name}"
+                    "No matching branch or tag: {name}"
                 );
                 (name.to_owned(), Some(re))
             };
@@ -105,13 +105,13 @@ impl BranchFilter {
         {
             if let Some((from, to)) = part.split_once("..") {
                 if part.starts_with('-') || to.starts_with('.') {
-                    bail!("请输入有效的起止分支：{part}");
+                    bail!("Enter valid start and end branches: {part}");
                 }
                 let start = resolve(if from.is_empty() { "HEAD" } else { from }, false)?;
                 let mut end = resolve(if to.is_empty() { "HEAD" } else { to }, false)?;
                 ensure!(
                     start.pattern.is_none() && end.pattern.is_none(),
-                    "范围两端须使用确切的引用名：{part}"
+                    "Use exact ref names at both ends of the range: {part}"
                 );
                 end.range_start = Some(start.value);
                 terms.push(end);

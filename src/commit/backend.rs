@@ -202,11 +202,11 @@ fn safe(repo: &Path) -> Result<()> {
         "sequencer",
     ] {
         if git_path(repo, n)?.exists() {
-            bail!("{n} 进行中；请先完成或终止当前 Git 操作")
+            bail!("{n} in progress; finish or abort the current Git operation first")
         }
     }
     if !g(repo, None, &["ls-files", "-u", "-z"])?.is_empty() {
-        bail!("有未解决冲突，先进入 Merge")
+        bail!("Unresolved conflicts. Open Merge first")
     }
     Ok(())
 }
@@ -308,7 +308,7 @@ fn snapshot(repo: &Path, files: &[Change], base: &str, di: &TempDir) -> Result<(
     g(repo, Some(&at), &["read-tree", base])?;
     for f in files {
         if f.conflict {
-            bail!("未解决: {}", f.label())
+            bail!("Unresolved: {}", f.label())
         }
         if f.staged() {
             // The cached version wins, even for MM/MD.
@@ -333,7 +333,10 @@ fn snapshot(repo: &Path, files: &[Change], base: &str, di: &TempDir) -> Result<(
                     .symlink_metadata()
                     .is_ok_and(|m| m.is_dir())
             {
-                bail!("{} 是嵌套仓库或目录；请在其仓库中提交", f.label())
+                bail!(
+                    "{} is a nested repository or directory; commit in its own repository",
+                    f.label()
+                )
             }
             exact_path(repo, Some(&at), &["add", "-A"], &f.path)?;
         }
@@ -373,23 +376,25 @@ fn check_tree_scope(repo: &Path, base: &str, tree: &str, files: &[Change]) -> Re
     )?;
     let mut fields = changed.split(|b| *b == 0);
     while let Some(kind) = fields.next().filter(|s| !s.is_empty()) {
-        let path = fields.next().context("Git 返回了缺少路径的文件变更")?;
+        let path = fields
+            .next()
+            .context("Git returned a file change without a path")?;
         let Some(deleted) = expected.remove(path) else {
             bail!(
-                "文件与目录的替换还会改动未勾选路径 {}；请一并勾选相关路径后重新审查",
+                "Replacing a file with a directory or vice versa also affects unselected path {}. Select all affected paths and review again",
                 super::display_path(Path::new(&raw(path)))
             )
         };
         if deleted != (kind == b"D") {
             bail!(
-                "所选版本无法同时保留在提交中：{}；请检查文件与目录的替换，刷新后重新审查",
+                "The selected versions cannot coexist in one commit: {}. Check file/directory replacements, refresh, and review again",
                 super::display_path(Path::new(&raw(path)))
             )
         }
     }
     if let Some((path, _)) = expected.first_key_value() {
         bail!(
-            "快照未包含勾选项 {} 的变更；请检查选区，刷新后重新审查",
+            "The snapshot has no changes for selected path {}. Check your selection, refresh, and review again",
             super::display_path(Path::new(&raw(path)))
         )
     }
@@ -425,7 +430,7 @@ fn check_sources(repo: &Path, files: &[Change]) -> Result<()> {
                 .get(&f.path)
                 .is_none_or(|x| x.conflict || x.staged() != f.staged())
     }) {
-        bail!("文件或暂存状态已变化；按 F5 后重新审查")
+        bail!("Files or staging state changed. Press F5 and review again")
     }
     Ok(())
 }
@@ -437,16 +442,16 @@ pub fn plan(
     amend: bool,
 ) -> Result<Plan> {
     if msg.trim().is_empty() {
-        bail!("缺少提交说明")
+        bail!("Commit message is required")
     }
     if files.is_empty() {
-        bail!("没有勾选文件")
+        bail!("No files selected")
     }
     safe(repo)?;
     check_sources(repo, &files)?;
     let head = oid(repo)?;
     if amend && head.is_none() {
-        bail!("尚无可修改的提交")
+        bail!("No commit to amend")
     }
     if amend
         && !g(
@@ -462,7 +467,7 @@ pub fn plan(
         )?
         .is_empty()
     {
-        bail!("HEAD 已可从远端跟踪引用到达，拒绝 Amend")
+        bail!("Cannot amend: HEAD is already reachable from a remote-tracking ref")
     }
     let idx = git_path(repo, "index")?;
     let d = tempfile::Builder::new()
@@ -471,7 +476,7 @@ pub fn plan(
     let old = base_tree(repo, head.as_deref())?;
     let (_, tree) = snapshot(repo, &files, &old, &d)?;
     if tree == old && !amend {
-        bail!("所选内容没有可提交的变更（如子模块仅有未提交文件，请先提交子仓）")
+        bail!("No committable changes selected. If a submodule only has uncommitted files, commit them in the submodule first")
     }
     // Derive review text from the exact two trees, not from a possibly stale
     // render-time worktree diff. Keep the row summary visible above patches.
@@ -480,7 +485,7 @@ pub fn plan(
     let mut preview = String::new();
     for (i, l) in patch.lines().enumerate() {
         if i >= 500 || preview.len() > 48000 {
-            preview.push_str("… 预览过长；其余路径见上方清单。");
+            preview.push_str("… Preview truncated; see the file list above for remaining paths.");
             break;
         }
         preview.extend(l.chars().take(1800));
@@ -515,7 +520,7 @@ fn branch_ref(repo: &Path) -> Result<String> {
     } else if v.status.code() == Some(1) {
         Ok("HEAD".into())
     } else {
-        Err(anyhow!("无法核对当前分支"))
+        Err(anyhow!("Cannot verify the current branch"))
     }
 }
 struct Guard(PathBuf, bool);
@@ -559,7 +564,7 @@ fn reset_index_paths<'a>(
         .filter(unchecked)
         .ne(after.split(|b| *b == 0).filter(unchecked))
     {
-        bail!("文件与目录的替换会覆盖未勾选的暂存项；请检查真实暂存区后重新审查")
+        bail!("Replacing a file with a directory or vice versa would overwrite unselected staged entries. Check the real index and review again")
     }
     Ok(())
 }
@@ -572,13 +577,13 @@ pub fn execute(p: &Plan) -> Result<Outcome> {
         .create_new(true)
         .write(true)
         .open(&lock)
-        .context("无法锁定 Git index；请等待其他操作完成")?;
+        .context("Cannot lock the Git index; wait for other operations to finish")?;
     let mut guard = Guard(lock.clone(), false);
     if stages(repo, &p.files)? != p.stages {
-        bail!("暂存内容已变更，请重新审查")
+        bail!("Staged content changed. Review again")
     }
     if oid(repo)? != p.head || branch_ref(repo)? != p.branch {
-        bail!("分支或 HEAD 已变更，请重新审查")
+        bail!("Branch or HEAD changed. Review again")
     }
     let d = tempfile::Builder::new()
         .prefix("igit-commit-")
@@ -597,7 +602,7 @@ pub fn execute(p: &Plan) -> Result<Outcome> {
         )?
         .is_empty()
     {
-        bail!("HEAD 已在远端跟踪引用中，请重新审查")
+        bail!("HEAD is now reachable from a remote-tracking ref. Review again")
     }
     let before = base_tree(repo, p.head.as_deref())?;
     let staged_before = g(
@@ -619,7 +624,7 @@ pub fn execute(p: &Plan) -> Result<Outcome> {
     .collect::<std::collections::BTreeSet<_>>();
     let (at, tree) = snapshot(repo, &p.files, &before, &d)?;
     if tree != p.tree {
-        bail!("勾选内容已变化，请刷新后重新审查")
+        bail!("Selected content changed. Refresh and review again")
     }
     // Start the next real index from the *current* live index, which is locked.
     // Replace selected entries only; every other staged path stays untouched.
@@ -646,7 +651,7 @@ pub fn execute(p: &Plan) -> Result<Outcome> {
     checked(run(repo, Some(&at), &aa, Some(p.msg.as_bytes()))?)?;
     guard.1 = true;
     let hash = txt(g(repo, None, &["rev-parse", "--short", "HEAD"])
-        .context("提交已创建，无法读 HEAD；保留 index.lock，勿重试")?);
+        .context("Commit created, but HEAD could not be read. Keep index.lock; do not retry")?);
     let finalized = (|| -> Result<Option<String>> {
         let actual = txt(g(repo, None, &["rev-parse", "HEAD^{tree}"])?);
         if actual == tree {
@@ -686,15 +691,16 @@ pub fn execute(p: &Plan) -> Result<Outcome> {
         replacement.as_file().sync_all()?;
         replacement.persist(&lock)?;
         Ok(Some(format!(
-            "hook 改写实际提交：{}；推送前请复核",
+            "A hook changed the committed content: {}. Review before pushing",
             names.join(", ")
         )))
     })()
     .with_context(|| {
-        format!("提交 {hash} 已生成，未能对齐实际 index；保留 index.lock，勿重复提交")
+        format!("Commit {hash} created, but the real index could not be reconciled. Keep index.lock; do not commit again")
     })?;
-    fs::rename(&lock, &idx)
-        .context("提交已生成，但发布 index 失败；保留 index.lock，勿重试提交")?;
+    fs::rename(&lock, &idx).context(
+        "Commit created, but publishing the index failed. Keep index.lock; do not retry the commit",
+    )?;
     Ok(Outcome {
         hash,
         warning: finalized,
@@ -705,7 +711,7 @@ pub fn diff(repo: &Path, f: &Change) -> Result<String> {
         return Ok("Ignored by Git · read-only\nExcluded from commits and AI patches.".into());
     }
     if f.conflict {
-        return Ok("Unmerged path — 在 Merge 面板处理".into());
+        return Ok("Unmerged path — resolve in the Merge panel".into());
     }
     if f.xy == *b"??" {
         let path = repo.join(&f.path);
@@ -755,10 +761,10 @@ pub fn patch(repo: &Path, files: &[Change]) -> Result<String> {
     let (_, tree) = snapshot(repo, files, &base, &di)?;
     let b = tree_patch(repo, &base, &tree)?;
     if b.is_empty() {
-        bail!("选区没有补丁")
+        bail!("No patch for the selected files")
     }
     if b.len() > 160_000 {
-        bail!("选区超过 160KB，请缩小选区后生成说明")
+        bail!("Selected patch exceeds 160 KB. Select fewer files before generating a message")
     }
     Ok(String::from_utf8_lossy(&b).into_owned())
 }
@@ -835,7 +841,7 @@ mod tests {
         let d = setup();
         let r = d.path();
         let paths = [
-            PathBuf::from("src/[literal]*?/界面/selected.rs"),
+            PathBuf::from("src/[literal]*?/ｕｉ/selected.rs"),
             PathBuf::from(r"src/[literal]*?/back\slash.rs"),
             #[cfg(not(target_os = "macos"))]
             PathBuf::from(raw(b"src/[literal]*?/bad\xff.rs")),

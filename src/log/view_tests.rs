@@ -261,9 +261,10 @@ fn navigation_pages_use_the_actual_visible_height_and_clamp_at_bounds() {
 fn navigation_yanks_the_selected_roots_commit_without_waiting_for_preview() {
     let one = init();
     let two = init();
-    let message_one = "修复导航\n\n保留完整的提交正文。\n第二行含有 $HOME 和 `literal`。";
+    let message_one =
+        "Fix navigation\n\nKeep the full commit body.\nSecond line includes $HOME and `literal`.";
     let message_two = "another repository\n\nA different message body.";
-    git(one.path(), &["config", "user.name", "作者一"]);
+    git(one.path(), &["config", "user.name", "Author One"]);
     git(one.path(), &["config", "user.email", "one@example.invalid"]);
     commit(one.path(), "one", message_one);
     git(two.path(), &["config", "user.name", "Author Two"]);
@@ -289,7 +290,7 @@ fn navigation_yanks_the_selected_roots_commit_without_waiting_for_preview() {
             (
                 'a',
                 if root == 0 {
-                    "作者一 <one@example.invalid>"
+                    "Author One <one@example.invalid>"
                 } else {
                     "Author Two <two@example.invalid>"
                 }
@@ -972,7 +973,7 @@ fn date_range_rejects_invalid_drafts_and_restores_the_applied_range() {
     let Action::Notice(error) = key(&mut p, K::Enter, Mods::NONE, &c) else {
         panic!("reversed range should fail");
     };
-    assert!(error.contains("开始日期"));
+    assert!(error.contains("Start date"));
     assert_eq!(p.filter.date, Some(DateFilter::Last7Days));
 
     render(&mut p, &mut t, &c);

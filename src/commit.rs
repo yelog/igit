@@ -356,7 +356,7 @@ impl CommitPanel {
                     || n == IGNORED
                     || self.saved.groups.iter().any(|v| v == n)
                 {
-                    bail!("请输入唯一的分组名称")
+                    bail!("Enter a unique changelist name")
                 }
                 self.saved.groups.push(n.to_string());
             }
@@ -396,7 +396,7 @@ impl CommitPanel {
         let mut plans = vec![];
         let rs = self.checked_repos(c);
         if rs.is_empty() {
-            bail!("请先勾选文件")
+            bail!("Select files first")
         }
         for r in rs {
             let fs = self
@@ -414,7 +414,7 @@ impl CommitPanel {
             if msg.trim().is_empty() {
                 self.repo = r;
                 self.edit_message(c);
-                bail!("请填写 {} 的提交说明", c.repos[r].name)
+                bail!("Enter a commit message for {}", c.repos[r].name)
             }
             plans.push(
                 backend::plan(r, &c.repos[r].path, fs, msg, self.amend.contains(&r))
@@ -449,7 +449,11 @@ impl CommitPanel {
         self.plans = plans;
         self.push = push;
         Ok(Action::Confirm {
-            title: format!("审查提交 · {} 仓", self.plans.len()),
+            title: format!(
+                "Review commits · {} repo{}",
+                self.plans.len(),
+                if self.plans.len() == 1 { "" } else { "s" }
+            ),
             body,
             token: "commit".into(),
         })
@@ -460,7 +464,10 @@ impl CommitPanel {
         let mut failed: BTreeSet<usize> = BTreeSet::new();
         for p in std::mem::take(&mut self.plans) {
             if !c.scope.contains(&p.root) {
-                out.push(format!("{} 超出范围，未提交", c.repos[p.root].name));
+                out.push(format!(
+                    "{} is outside the current scope; not committed",
+                    c.repos[p.root].name
+                ));
                 failed.insert(p.root);
                 continue;
             }
@@ -471,7 +478,10 @@ impl CommitPanel {
                         .any(|f| p.repo.join(&f.path) == c.repos[r].path)
             });
             if dep {
-                out.push(format!("{} 因子仓失败已跳过", c.repos[p.root].name));
+                out.push(format!(
+                    "{} skipped because a child repository failed",
+                    c.repos[p.root].name
+                ));
                 failed.insert(p.root);
                 continue;
             }
@@ -506,7 +516,7 @@ impl CommitPanel {
             }
         }
         if let Err(e) = self.save(c) {
-            out.push(format!("保存本地状态失败: {e}"))
+            out.push(format!("Failed to save local state: {e}"))
         }
         Action::Committed {
             repos: success.clone(),
@@ -544,7 +554,7 @@ impl CommitPanel {
     }
     fn launch(&mut self, h: Hit, c: &Context) -> Action {
         match h {
-            Hit::Refresh => return Action::Refresh("变更列表已刷新".into()),
+            Hit::Refresh => return Action::Refresh("Changes refreshed".into()),
             Hit::UndoCheck => {
                 for (key, was) in self.last_check.drain(..) {
                     self.checks.insert(key, was);
@@ -709,7 +719,7 @@ impl Panel for CommitPanel {
         self.poll_ai();
         if pending && self.ai_pending.is_none() {
             if self.ai_error.is_empty() {
-                Action::Notice("AI 候选稿已就绪，进入 Commit 审查".into())
+                Action::Notice("AI drafts ready. Open Commit to review".into())
             } else {
                 Action::Notice(self.ai_error.clone())
             }
@@ -828,7 +838,7 @@ impl Panel for CommitPanel {
                                 || file.change.xy == *b"??"
                                 || file.change.ignored()
                             {
-                                return err("未跟踪和忽略文件独立分组，仅跟踪文件可移组");
+                                return err("Only tracked files can move between changelists. Untracked and ignored files have their own groups");
                             }
                             self.saved.membership.insert(file.key.clone(), g.clone());
                             self.files[i].group = g;
@@ -1056,7 +1066,19 @@ impl CommitPanel {
         if inn.height < 3 {
             return;
         }
-        let hint=match ed{Edit::Group=>"新分组名称 · Enter 保存 · Esc 取消",Edit::Message=>"拖选松开即复制 · Shift+方向键选择 · Enter 换行 · Ctrl-A 全选",Edit::Move=>"j/k 选择组 · Enter 应用 · Esc 取消",Edit::AISettings=>"三行依次为：完整 HTTP(S) chat/completions URL、模型、提示词。Token: IGIT_LLM_API_KEY",Edit::AIDraft=>"逐仓候选（保存将替换对应说明；Esc 放弃）"};
+        let hint = match ed {
+            Edit::Group => "Enter Save · Esc Cancel",
+            Edit::Message if inn.width >= 60 => {
+                "Drag to copy · Shift+arrows Select · Enter Newline · Ctrl-A All"
+            }
+            Edit::Message => "Drag to copy · F1 Help",
+            Edit::Move => "j/k Select · Enter Apply · Esc Cancel",
+            Edit::AISettings if inn.width >= 62 => {
+                "Lines: chat/completions URL, model, prompt. Key: IGIT_LLM_API_KEY"
+            }
+            Edit::AISettings => "Lines: API URL, model, prompt",
+            Edit::AIDraft => "Save replaces messages · Esc Discard",
+        };
         word(f, slice(inn, 0), hint, Style::default().fg(MUTED));
         let text = Rect::new(inn.x, inn.y + 1, inn.width, inn.height - 2);
         if matches!(ed, Edit::Move) {
@@ -1409,11 +1431,11 @@ impl CommitPanel {
 impl CommitPanel {
     fn ai_review(&mut self, c: &Context) -> Result<Action> {
         if self.ai_pending.is_some() {
-            bail!("模型正在处理，请稍候")
+            bail!("AI request in progress. Please wait")
         }
         if self.saved.endpoint.trim().is_empty() || self.saved.model.trim().is_empty() {
             self.launch(Hit::Settings, c);
-            return Ok(err("先设置完整服务 URL、模型及提示词"));
+            return Ok(err("Set the full service URL, model, and prompt first"));
         }
         let ep = self.saved.endpoint.as_str();
         if !(ep.starts_with("https://")
@@ -1424,11 +1446,11 @@ impl CommitPanel {
             || ep.contains('#')
             || ep.chars().any(char::is_whitespace)
         {
-            bail!("使用 HTTPS URL 或带端口的本机 HTTP URL；凭据放 IGIT_LLM_API_KEY")
+            bail!("Use HTTPS or a localhost HTTP URL with a port. Set credentials in IGIT_LLM_API_KEY")
         }
         let mut items = vec![];
         let mut body = format!(
-            "提交以下选区的补丁至 {}\n模型：{}。每仓一份。生成后可预览候选，原稿不会自动覆盖。\n",
+            "Send the selected patches to {}\nModel: {}. One request per repository. Review generated drafts before replacing your messages.\n",
             ep, self.saved.model
         );
         for r in self.checked_repos(c) {
@@ -1446,11 +1468,11 @@ impl CommitPanel {
             items.push((rid(c, r), patch))
         }
         if items.is_empty() {
-            bail!("请先选择文件")
+            bail!("Select files first")
         }
         self.ai_payload = items;
         Ok(Action::Confirm {
-            title: "AI · 发送所选补丁？".into(),
+            title: "AI · Send selected patches?".into(),
             body,
             token: "commit-ai".into(),
         })
@@ -1460,7 +1482,7 @@ impl CommitPanel {
         use std::process::{Command, Stdio};
         let req = std::mem::take(&mut self.ai_payload);
         if req.is_empty() {
-            bail!("空选区")
+            bail!("No files selected")
         }
         let ep = self.saved.endpoint.clone();
         let model = self.saved.model.clone();
@@ -1515,20 +1537,24 @@ impl CommitPanel {
                         .write_all(&serde_json::to_vec(&payload)?)?;
                     let out = proc.wait_with_output()?;
                     if !out.status.success() {
-                        bail!("模型服务请求失败: curl {}", out.status)
+                        bail!("AI service request failed: curl {}", out.status)
                     }
                     let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
                     let s = v["choices"][0]["message"]["content"]
                         .as_str()
                         .filter(|s| !s.trim().is_empty())
-                        .ok_or_else(|| anyhow::anyhow!("服务未返回有效的 message.content"))?;
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("The service returned no valid message.content")
+                        })?;
                     map.insert(k, s.trim().to_string());
                 }
                 Ok(map)
             })();
             let _ = tx.send(result.map_err(|e| e.to_string()));
         });
-        Ok(err("正在生成逐仓提交说明，可继续浏览"))
+        Ok(err(
+            "Generating commit messages per repository. You can keep browsing",
+        ))
     }
     fn poll_ai(&mut self) {
         if self.edit.is_some() {
@@ -1549,7 +1575,7 @@ impl CommitPanel {
                 self.ai_pending = None
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.ai_error = "生成工作线程已结束".into();
+                self.ai_error = "AI worker stopped".into();
                 self.ai_pending = None
             }
             _ => {}
@@ -1607,7 +1633,7 @@ mod flow_tests {
             panic!("missing commit result");
         };
         assert!(
-            repos.is_empty() && message.contains("分支或 HEAD 已变更"),
+            repos.is_empty() && message.contains("Branch or HEAD changed"),
             "{message}"
         );
         for rev in ["reviewed", "feature/first"] {

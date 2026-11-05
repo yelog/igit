@@ -1,105 +1,108 @@
-# IGit 交互设计：四个面板与 Commit 改进基线
+# IGit Interaction Design: Four Panels and the Commit Baseline
 
-**基线：0.1.0 原生 TUI。** 布局说明以原生客户端为准；Commit 一节对照 IDEA 的变更清单，末节记录复验方法。启动及依赖见 [README](../README.md)。原始[交互原型](reference/IGit.html)、[设计稿](reference/IGit-Design.html)和[四屏概览](reference/IGit-Overview.png)可离线查看；原型中的按钮和键位不等于已实现能力。
+**Baseline: the native 0.1.0 TUI.** Layout descriptions refer to the native client. The Commit section compares its changes list with IDEA; the final section describes how to repeat acceptance checks. See [README](../README.md) for startup and dependencies. The original [interactive prototype](reference/IGit.html), [design notes](reference/IGit-Design.html), and [four-panel overview](reference/IGit-Overview.png) are available offline; prototype buttons and shortcuts do not imply implemented features.
 
-## 工作区与焦点
+## Workspace and Focus
 
-从工作目录运行 `igit` 或 `ig`。顶栏和底部状态行之间默认上下等分，分隔线可以移动。启动时焦点在下方 Git Log 的提交列表；活动分屏标题有 `>`，实际接收键盘输入的窗格用蓝色边框标明，其余边框为灰色。高度不足五行时保留左右边线，把行数留给正文。演练仓的实际终端画面：[上下分屏](reference/IGit-Split-Workspace.png) · [Push 弹窗](reference/IGit-Push-Dialog.png)。
+Run `igit` or `ig` from the working directory. The area between the top bar and bottom status line is split equally by default, with a movable divider. Startup focus is the lower Git Log commit list. The active split title has `>`; a blue border marks the pane receiving keyboard input, while other borders are gray. Below five rows of height, only side borders remain to preserve content space. Real practice-workspace screenshots: [Vertical split](reference/IGit-Split-Workspace.png) · [Push dialog](reference/IGit-Push-Dialog.png).
 
 ```text
  IGit  workspace                                    Roots N/M    ⋯ Actions    ?
    Commit [2]
-   变更清单 / 可选 Diff 预览                                上半区默认 50%
-   提交说明与提交按钮
+   Changes / optional Diff preview                       Top half: 50%
+   Commit messages and commit buttons
  > Git Log [1]   Log   +
-   分支树              提交图与筛选器         文件与详情     下半区默认 50%
+   Branch tree       Commit graph + filters   Files/details
+                                                        Bottom half: 50%
  NORMAL   3 Push   4 Merge   ·   : Actions   ? Help
 ```
 
-- **四种选择不要混用。** 高亮行决定正在看什么；复选框决定本次准备操作什么；Roots 限定可以操作哪些仓库；写操作的审查框决定是否执行。切换高亮行不应偷偷勾选它。Commit/Push 过滤掉的已选项保留，但不参与此次操作。工作区中至少有一个仓库时，不能应用空 Roots。
-- 点击分屏或按 `1`（Log）／`2`（Commit）切换键盘焦点；滚轮只浏览指针所在的分屏。上下分屏各自保留光标、勾选和筛选。Log 自己的筛选页签和 `+` 在下半区标题旁。
-- `3`（Push）／`4`（Merge）或 ⋯ 动作列表打开居中弹窗。鼠标不会穿透到背景；`Esc` 先关闭编辑、详情或冲突文档，再关闭弹窗，回到原分屏。窗口标题的 ? 打开帮助，× 关闭窗口；文本编辑中先保存或取消。Commit & Push 在提交完成后打开同一 Push 窗口，推送需要单独审查。
-- 点 Roots 或按 `r` 打开仓库筛选；`j/k` 移动、`Space` 切换、`a` 全选、`Enter` 应用、`Esc` 取消。`F5` 刷新两个分屏及已打开的操作窗口；重新发现仓库用 Actions → Open / rescan workspace。
-- 普通模式下 `Tab` / `Shift-Tab` 正向／反向循环（`F6` 同义）。顺序是 Commit 变更、预览（打开时）、说明，再到 Log 分支、提交、文件、详情。隐藏的侧栏跳过；窄屏折叠成页签的区域仍可切到。Push、Merge 各自形成独立循环。先按 `Ctrl-W` 再按 `h/j/k/l` 可直接聚焦左／下／上／右的相邻窗格，到外边缘停留。浏览焦点与文件勾选无关。
-- `Ctrl-W` 接 `>` / `<` 增／减当前窗格宽度，接 `+` / `-` 增／减高度；前缀后可输入格数，如 `Ctrl-W 10 +`。优先移动窗格内部最近一级的同向分隔线；Log 提交列表增高时移动 Commit / Log 分隔线。鼠标可直接拖目标边框，在边界处停止，松手结束。正文中的拖选／文件拖放仍由起点所在的区域接收。`Ctrl-W =` 恢复当前工作区或操作弹窗的默认比例，不影响其他窗口。单列模式没有左右分隔线。
-- 编辑器、筛选、帮助和审查保留自己的 Tab 与输入规则；Shell 审查框优先于面板接收事件，默认选 **Cancel**，`y` 明确确认，`n/Esc` 取消，正文较长可滚动。
-- **文本选区。** Log 提交详情／Diff、Commit 消息编辑／Diff preview、Push Details / Diff 支持左键拖选与蓝底高亮；松开左键立即复制一次并清除选区，空选区与普通单击不复制，拖选不触发链接。鼠标释放后编辑光标保留在拖选终点。键盘选区仍支持 `Ctrl-C`、`Ctrl-Insert` 复制，只读文本可按 `y`，`Ctrl-A` 全选当前文本区域；`Esc` 有选区时先清除，再执行原返回行为。选区按原文保存，中文、组合字符、emoji 不拆开；软换行与装饰分隔线不进入剪贴板，原始空行、缩进和换行保留。拖选中的选区及键盘选区随滚动和缩放保留，更换对象或隐藏区域清除过期选区；弹窗优先接收事件，帮助取消后恢复键盘选区。父提交链接在松开鼠标且未拖选时执行。Commit 编辑器支持 Shift+方向键／Home／End，输入或粘贴替换键盘选区，Backspace／Delete 删除键盘选区；滚轮可浏览长消息，按键移动时仅在光标越过视口边缘后滚动。文本拖选不改变文件勾选、分组或 Git 状态。
-- **上下文帮助。** `?` / `F1` / 顶栏 Help 以打开时的焦点或弹窗为上下文。严格沿用 lazydb 的帮助样式：居中最多 74 列、34 行，圆角边框，深蓝底、青色 `KEYMAP // 区域` 标题和 Search，蓝色粗体按键、白色说明、灰色底栏；列表无分组标题和计数行。每项占一行，左侧 `>` 标记当前候选，按键列宽 18 格，长说明按字符格截断。Search 打开即有光标，普通字符（包括 j/k/g/G）直接输入；左右、Home/End、Backspace/Delete 和 Ctrl-W/U/A/E 编辑。↑/↓ 循环选择候选，PgUp/PgDn 翻页选择，鼠标单击只选择，滚轮或滚动条改变可见区；选择始终保持可见。Enter 关闭帮助、恢复原区域或弹窗，再执行该候选的静态快捷键序列；空结果时 Enter 保持面板打开。按当前区域、面板通用、全局顺序列出当前上下文可用的动作，重复按键只保留优先项；其他区域的动作在切换焦点后查看。输入和弹窗只列对应操作，F1 与顶栏 Help 不取消原输入。Esc/F1 取消帮助并原样恢复；提交、推送、合并应用等动作走原审查路径。
-- **组合键前缀提示。** 普通模式下的 `Ctrl-W`、Log 提交列表的 `g` / `y` 和 Merge 冲突文档的 `[` / `]` 停留 200ms 且未按下其他键后，打开底部候选浮层，只列出当前前缀可用的后续键和说明。直接输入后续键立即执行；延迟期间完成或取消组合键不显示提示，新的前缀重新计时。浮层出现后，方向键按可见列选择、Enter 执行，点击候选也执行；显示前不截获这些候选导航操作。高亮候选不会改变提交或冲突块；Esc/Ctrl-C 只取消前缀，Merge 保留当前文档。候选按实际字符格宽度排成一至三列，不覆盖底部通知或模式栏；边框、留白与滚轮拦截底下的控件，点外部取消并继续执行该次点击。其他操作、切焦点、打开浮层、粘贴、失焦或窗口缩放清除前缀，文本输入不触发候选。
-- 推荐 **120×36 字符格**；低于 44 列或 12 行，Shell 提示窗口过小。四个面板及 Roots 弹窗沿用 Commit 的[共享色板](../src/ui/idea.rs)：深灰背景 `#1C1D22`、正文 `#CFD2DB`、次要文字 `#8B8F9A`、蓝色焦点 `#74A4F8`、选中行背景 `#314675`。蓝底表示当前浏览行，是否勾选看复选框。Push 与 Commit 的补丁都用绿／红区分增删；Merge 用琥珀色警告标记表示未解决冲突、绿色完成标记表示已解决块。底部共用一行显示模式、操作提示或最近消息；消息不会挤动分屏。
+- **Keep four kinds of selection distinct.** The highlighted row determines what is being viewed; checkboxes determine candidates for the operation; Roots limits which repositories are available; write review determines whether to execute. Moving the highlight must not silently check a row. Commit/Push retain selections hidden by filters, but exclude them from the current operation. When a workspace has at least one repository, global Roots cannot be applied empty.
+- Click a split or press `1` (Log) / `2` (Commit) to move keyboard focus. The wheel scrolls only the split under the pointer. Each split retains its cursor, checkboxes, and filters. Log's own filter tabs and `+` sit beside the lower split's title.
+- `3` (Push), `4` (Merge), or the ⋯ action list opens a centered dialog. Mouse events do not reach the background. `Esc` first closes editing, details, or the conflict document, then closes the dialog and returns to the original split. The title's ? opens help; × closes the window. Finish or cancel text editing first. Commit & Push opens the same Push window after committing; pushing requires a separate review.
+- Click Roots or press `r` for repository filtering: `j/k` moves, `Space` toggles, `a` selects all, `Enter` applies, and `Esc` cancels. `F5` refreshes both splits and any open operation window. Actions → Open / rescan workspace reruns discovery.
+- In normal mode, `Tab` / `Shift-Tab` cycles forward/backward (`F6` is equivalent). Order: Commit changes, preview (if open), message; then Log branches, commits, files, and details. Hidden sidebars are skipped; panes collapsed into narrow-screen tabs remain reachable. Push and Merge each have a separate cycle. `Ctrl-W` followed by `h/j/k/l` focuses the adjacent left/down/up/right pane and stops at the outside edge. Browsing focus is independent of file checkboxes.
+- `Ctrl-W` followed by `>` / `<` increases/decreases the current pane's width; `+` / `-` changes height. A count can follow the prefix, such as `Ctrl-W 10 +`. Resizing moves the nearest internal divider in the requested direction first; increasing the Log commit list's height moves the Commit / Log divider. Drag a target border directly; movement stops at its bounds and ends on release. Text selection and file dragging still belong to the area where the gesture began. `Ctrl-W =` restores default proportions for the current workspace or operation dialog without affecting other windows. Single-column mode has no vertical divider.
+- Editors, filters, help, and review retain their own Tab and input rules. Shell review dialogs receive events before panels, initially select **Cancel**, require `y` to confirm, and accept `n/Esc` to cancel. Long review content scrolls.
+- **Text selection.** Log commit details / Diff, Commit message editing / Diff preview, and Push Details / Diff support left-button dragging with a blue highlight. Release copies once and clears the selection. Empty selections and ordinary clicks do not copy; dragging does not activate links. The editing caret stays at the drag endpoint after release. Keyboard selections support `Ctrl-C`, `Ctrl-Insert`, and `y` in read-only text; `Ctrl-A` selects the current text area. `Esc` clears a selection before its normal back action. Selection refers to original text and does not split wide Unicode characters, combining characters, or emoji. Soft wraps and decorative separators are excluded from the clipboard; original blank lines, indentation, and line breaks remain. Drag and keyboard selections survive scrolling/resizing; changing the object or hiding the area clears stale selection. Dialogs take event priority; canceling help restores keyboard selection. Parent commit links activate on release only without dragging. The Commit editor supports Shift+Arrow / Home / End; typing/pasting replaces keyboard selection, while Backspace/Delete removes it. The wheel scrolls long messages; keyboard movement scrolls only when the caret leaves the viewport. Text dragging does not change file checkboxes, groups, or Git state.
+- **Context help.** `?` / `F1` / top-bar Help captures the current focus or dialog as context. It follows lazydb's help style: centered, at most 74 columns × 34 rows, rounded borders, dark blue background, cyan `KEYMAP // area` title and Search, bold blue keys, white descriptions, and a gray footer. The list has no group headings or count row. Each item uses one line, with `>` for the current candidate and descriptions clipped by terminal cell width. At normal widths, the key column is 18 cells; below 60 columns, it uses the longest shortcut plus two cells, capped at 18, to leave more room for descriptions. The footer selects a complete hint that fits and retains Esc to close. Search opens with a caret; ordinary characters including j/k/g/G enter text. Left/right, Home/End, Backspace/Delete, and Ctrl-W/U/A/E edit. ↑/↓ cycles candidates; PgUp/PgDn changes selection by a page. Clicking only selects, while the wheel/scrollbar changes the viewport; selection stays visible. Enter closes help, restores the original area or dialog, then executes the candidate's static key sequence. With no results, Enter leaves help open. Available actions appear in current-area, panel-wide, then global order; duplicate keys keep the higher-priority entry. Switch focus to see another area's actions. Input fields and dialogs list only applicable actions; F1 and top-bar Help do not cancel input. Esc/F1 cancels help and restores state unchanged. Commit, push, and merge application keep their existing review paths.
+- **Key sequence hints.** Normal-mode `Ctrl-W`, Log commit-list `g` / `y`, and Merge conflict-document `[` / `]` open a bottom overlay after 200ms without another key. It lists only valid continuation keys and descriptions for the current prefix. Typing a continuation executes immediately; completing/canceling during the delay never shows the hint, and a new prefix restarts the timer. Once visible, arrows select by displayed columns; Enter or clicking executes. Candidate navigation is not intercepted before the overlay appears. Highlighting a candidate does not change the selected commit/conflict block. Esc/Ctrl-C cancels only the prefix and keeps Merge's document open. Candidates use one to three columns based on actual cell width, without covering the bottom notification/mode line. Borders, padding, and wheel events block underlying controls; clicking outside cancels and passes through that click. Other actions, focus changes, overlays, paste, loss of focus, or resizing clear the prefix. Text input never opens candidates.
+- Recommended size: **120×36 cells**. Below 44 columns or 12 rows, Shell shows a terminal-too-small message. All four panels and Roots use Commit's [shared palette](../src/ui/idea.rs): dark gray background `#1C1D22`, body text `#CFD2DB`, secondary text `#8B8F9A`, blue focus `#74A4F8`, and selected-row background `#314675`. Blue marks the browsing row; checkboxes indicate inclusion. Push and Commit patches use green/red for additions/deletions. Merge uses amber warnings for unresolved conflicts and green completion markers for resolved blocks. A shared bottom line displays mode, action hints, or the latest message without moving the splits.
 
-**图标与字体。** 四屏及 Roots 用同一套仓库、子模块、文件和勾选标记。默认 `nerd-font` 使用具名字形；`--icons unicode` 使用标准符号，`--icons ascii` 使用文字标记。图标没有固定宽度：例如 ASCII 的 `[x]` 占三格，整枚框都是点击目标；文件标记放不下时优先留文件名。输入光标、当前行和可提交状态各有独立含义。示意图中的具体字形随模式变化。
+**Language and text width.** Product-owned labels, messages, help, and documentation use English. Use short action labels and measure terminal cell widths when positioning text or hit areas. User-provided repository names, paths, messages, and content retain Unicode support.
+
+**Icons and fonts.** All panels and Roots share repository, submodule, file, and selection markers. Default `nerd-font` uses named glyphs; `--icons unicode` uses standard symbols; `--icons ascii` uses text markers. Icon widths are not fixed: ASCII `[x]` occupies three cells, all of which form its hit area. When a file marker cannot fit, preserve the filename first. The input caret, current row, and committable state each have independent meanings. Exact glyphs in diagrams vary by mode.
 
 File lists and existing file-preview titles share the [file type mapping](../src/ui/icons.rs). Icon color indicates type, while filename color still indicates Git status. Java uses a coffee cup, Python its language marker, and React JSX / TSX a React marker (cyan/blue respectively); ordinary JS / TS retain their own icons. Common JVM, systems, scripting, and mobile languages, XML, and build files have dedicated markers. Detection checks filenames and compound suffixes such as `pom.xml` and `build.gradle.kts` before extensions. Matching generally ignores ASCII case, while preserving the `.C` / `.H` convention for C++. Detection uses paths only, without reading content. Unknown types use a generic file icon; Unicode / ASCII modes retain readable abbreviations.
 
-## 1 · Log：对照 IDEA Git 工具窗口
+## 1 · Log: IDEA Git Tool Window Reference
 
-[实际终端渲染 · 180×42](reference/IGit-Log-Graph.png) 使用[临时历史工作区](../examples/demo-log.sh)，选中了 `User: me` 和 `Paths: atlas-web`。筛选值、作者、文件和引用均来自 Git。图中是已有布局的参考画面。当前文件标记随图标模式变化；ASCII 图用 `*` / `@` 标普通提交 / HEAD，用 `|`、`-` 等字符连线。
+The [actual terminal render at 180×42](reference/IGit-Log-Graph.png) uses the [temporary history workspace](../examples/demo-log.sh), with `User: me` and `Paths: atlas-web`. Filter values, authors, files, and refs come from Git. The image is a reference for the existing layout. Current file markers depend on icon mode; the ASCII graph uses `*` / `@` for ordinary commits / HEAD and characters such as `|` and `-` for edges.
 
-| 旧画面的问题 | 当前的处理 |
+| Previous layout issue | Current behavior |
 | --- | --- |
-| 每仓重复一套 Local/Remote；一长串 `origin/feat/…` 难以扫读 | 左栏固定 HEAD / Local / Remote / Tags。相同完整引用合为一行，只有部分 Roots 有它时标注仓库名；远端和斜杠前缀可折叠。当前分支钉在前面，跟踪上下游的领先／落后数来自 Git。 |
-| 大标题框、表头和底部仓库图例占行，长引用把提交标题推到屏幕外 | 宽屏左／中／右约 **17 / 57 / 26%**，右侧文件／详情约 **65 / 35%**。窗格使用可拖动的相邻边框，筛选值紧贴工具栏；每条提交占一行，先读作者、时间、图、标题，引用右对齐。 |
-| 仓库和分支线同色，看不出合并从何而来 | 左侧色条标仓库，金色主线和彩色分叉表示拓扑。淡蓝底是该仓 HEAD 可达的历史，选中行用更亮的蓝色；合并提交的正文降亮度。不同仓的同一 SHA 永不连线。 |
-| 连续提交的点偏在线旁，或滚动时竖线错列 | 整屏共用轨道坐标。普通提交的实心点和 HEAD 的环形点都在本轨中心；兼容终端把圆点和实际相接的线画在同一格。只有分叉、汇合或换轨才有横线。太宽时，边缘的 `‹/›` 表示还有轨道，`◀/▶` 表示该行的提交在屏外。选中屏外提交会平移整幅图。 |
-| 文件夹平铺，详情先露出哈希、标题靠后 | 右上是仓库 → 模块 → 紧凑目录 → 文件，容器显示文件数；右下先是完整标题，然后是 SHA、作者邮箱、本地日期与分钟、包含该提交的分支，后续可读正文与父提交。 |
+| Repeated Local/Remote groups per repository; long `origin/feat/…` lists were hard to scan | The left pane has fixed HEAD / Local / Remote / Tags groups. Identical full refs share one row, annotated with repository names when present in only some Roots. Remote and slash-prefix groups collapse. The current branch stays first; upstream ahead/behind counts come from Git. |
+| Large title boxes, headers, and a bottom repository legend consumed rows; long refs pushed subjects off screen | Wide layout proportions are about **17 / 57 / 26%** for left/center/right, with **65 / 35%** files/details on the right. Adjacent borders are draggable; filter values stay next to the toolbar. Each commit uses one row: author, time, graph, subject, then right-aligned refs. |
+| Repository and branch edges shared colors, obscuring merge origins | A left color strip identifies the repository; a gold main rail and colored branches show topology. Light blue marks history reachable from that repository's HEAD; selection uses brighter blue. Merge commit text is dimmed. Identical SHAs in different repositories never connect. |
+| Commit nodes sat beside rails, or vertical edges shifted while scrolling | All rows share rail coordinates. Filled ordinary nodes and ring-shaped HEAD nodes are centered on their rails; compatible terminals draw the node and connected edges in one cell. Horizontal lines appear only at branches, joins, or rail changes. At narrow widths, `‹/›` means additional rails exist; `◀/▶` means that row's commit is off screen. Selecting an off-screen commit pans the whole graph. |
+| Flat folders and details that put the hash before the subject | The upper right shows repository → module → compact directories → files, with container counts. Lower-right details begin with the full subject, then SHA, author email, local date/minute, and containing branches, followed by body and parent commits. |
 
-右上 Diff 文件树通过文件名颜色表示变更类型：新增／复制绿、修改蓝、删除红、重命名／类型变化金色；文件名后不再追加 `A/M/D/R/C/T` 状态字母，也不为它们预留宽度。文件类型图标保留独立的类型色。
+The upper-right Diff file tree uses filename colors for change types: green for added/copied, blue for modified, red for deleted, and gold for renamed/type changes. No `A/M/D/R/C/T` letters or reserved status-letter width follow filenames. File type icons keep their separate type colors.
 
-提交行的引用统一使用 IDEA 风格的轮廓标签图标：HEAD 黄色、远端紫色、本地绿色，当前本地分支保持绿色，Git tag 为暖橙色。HEAD 与本地分支同指一个提交时显示绿＋黄；上游也同指该提交时按紫＋绿＋黄显示，名称合为 `origin & main`。图标间隔一格，窄列优先缩短名称，保留首个引用的整组图标，紧凑引用和左右位置切换遵循同一规则。Detached HEAD 只有黄色图标，不虚构本地分支。Unicode／ASCII 模式分别用 `◇`／`#` 代替轮廓标签。
+Commit references use IDEA-style outlined tag icons: HEAD yellow, remote purple, local green (including the current branch), and Git tags warm orange. HEAD plus a local branch on the same commit shows green + yellow; matching upstream adds purple first, with the name combined as `origin & main`. Icons are separated by one cell. Narrow columns shorten names first and preserve the first reference's whole icon group; compact refs and left/right placement use the same rule. Detached HEAD has only a yellow icon and does not invent a local branch. Unicode / ASCII use `◇` / `#` instead of outlined tags.
 
-右下提交详情的包含分支列表始终全部展开，每个分支单独一行，前置与提交列表相同的标签图标及颜色；只有 HEAD 为黄色，所有本地分支（含当前分支）绿色，远端分支紫色。保留分支数量，移除 Show all／Show less 和空格键收展；列表超出区域时随详情滚动，长名称自动换行。
+The lower-right containing-branches list is always fully expanded, one branch per line with the same icons/colors as commit rows. Only HEAD is yellow; all local branches, including the current one, are green, and remote branches are purple. The count remains, but Show all / Show less and Space expansion are removed. Overflow scrolls with details; long names wrap.
 
-| 操作 | 鼠标 | 键盘 |
+| Action | Mouse | Keyboard |
 | --- | --- | --- |
-| 查分支或历史 | 点左栏 Branch or tag 或中栏 Text or hash；`.*` 开关正则，`Cc` 开关大小写 | 所在栏按 `/`。正文搜索输入时 `Alt-R` / `Alt-C` 也可切换；Enter 应用，Esc 取消。 |
-| 筛选 | 点 Branch、User、Date、Paths，在对应按钮下方选择候选。点清除按钮只清除该项 | `b/a/d/p` 在对应的顶部按钮下方打开菜单，方向键选候选或输入然后回车；`x` 清筛选。User 的 `me` 按各仓 Git 作者邮箱匹配。Paths 可逐行输入，也可展开仓库按目录或文件勾选。 |
-| 浏览与审查 | 点提交联动右栏，双击文件打开 Diff；包含分支始终展开；父提交可点击跳转 | 提交列表 `j/k` 浏览，`gg/G` 到首／末条，`H/M/L` 到本屏顶部／中间／底部；`Ctrl-F/B` 整页、`Ctrl-D/U` 半页，`PageDown/PageUp` 同整页。`h/l` 收展或换栏，`Tab/F6` 换栏。文件区 `z/Z` 全部收起／展开，Enter 查看补丁，Esc 返回；详情区 `j/k`、翻页键或滚轮浏览完整分支列表。 |
-| 复制提交 | — | 提交列表 `yy` 复制完整 commit ID，`ym` 复制完整提交消息（标题与正文），`ya` 复制 `姓名 <邮箱>`；显示成功或失败提示。 |
-| 调整视图 | 拖动可见的分隔线调整宽度或高度；点右上角眼睛，在 Show 中开关分支树、详情或引用标签，在 Highlight 中切换当前分支高亮 | `B/I` 隐藏或恢复左右侧栏；`+` 追加历史。提交列表的 `H/L` 用于定位。少于 82 列时用顶部页签切换可见区域。 |
-| 保留一组筛选 | 顶部 `+` 新开 Log，点页签切回，`×` 关闭当前 Log 页；全局 Roots 仍共用 | `Ctrl-T` 新建，`Ctrl-W c` 关闭，`[/]` 切换。回到原页会恢复该页筛选与可见的已选 SHA。 |
+| Find a branch or history | Click Branch or tag on the left or Text or hash in the center; `.*` toggles regex and `Cc` toggles case sensitivity | `/` in the relevant pane. While editing text search, `Alt-R` / `Alt-C` also toggle options; Enter applies and Esc cancels. |
+| Filter | Click Branch, User, Date, or Paths and select beneath that button. Clear removes only that filter. | `b/a/d/p` opens the corresponding menu; use arrows or type and press Enter. `x` clears filters. User `me` matches each repository's Git author email. Paths accepts lines of text or repository/directory/file checkboxes. |
+| Browse and review | Click a commit to update the right pane; double-click a file for Diff. Containing branches remain expanded; click parents to navigate. | Commit list: `j/k` browses, `gg/G` selects first/last, `H/M/L` selects top/middle/bottom on screen, `Ctrl-F/B` pages, `Ctrl-D/U` half-pages, and `PageDown/PageUp` pages. `h/l` collapses/expands or changes pane; `Tab/F6` changes pane. In files, `z/Z` collapses/expands all, Enter opens a patch, and Esc returns. In details, `j/k`, paging, or the wheel browses all branches. |
+| Copy a commit | — | In the commit list, `yy` copies the full ID, `ym` the complete subject/body, and `ya` `Name <email>`. A notification reports success/failure. |
+| Adjust the view | Drag visible dividers to resize. The top-right eye toggles branch tree, details, or reference labels under Show, and current-branch highlighting under Highlight. | `B/I` hides/restores left/right sidebars; `+` appends history. `H/L` in the commit list navigates within the screen. Below 82 columns, top tabs select the visible area. |
+| Keep a filter set | Top `+` opens a Log tab; click tabs to switch, or `×` to close. Global Roots remains shared. | `Ctrl-T` creates, `Ctrl-W c` closes, and `[/]` switches. Returning restores that tab's filters and visible selected SHA. |
 
-正文搜索框中的 `.*` 与 `Cc` 使用输入框底色，右边框位于 `Cc` 之后；开启的选项保留蓝色高亮，编辑时整个输入框两侧边框一起变蓝。
+The text search field's `.*` and `Cc` controls share its background, with the right border after `Cc`. Enabled options remain blue; both outer borders turn blue while editing.
 
-筛选菜单打开时，点菜单外会取消尚未应用的输入，同一次点击仍然生效：点 User 就切到 User，点提交行就选中它，点 Roots 就打开仓库选择。再点原按钮只收起菜单。点菜单边框或输入区不会选中下面的提交。
+Clicking outside an open filter menu cancels unapplied input and still performs the click: User switches to User, a commit row selects it, and Roots opens repository selection. Clicking the original filter button simply closes the menu. Clicking the border or input field does not select a commit underneath.
 
-**Branch** 在触发按钮下打开，主菜单依次为 `Select...`、`Favorites`（超过一项收藏时）、金色星标的分支、分隔线、`Local` 与各个 `远端/...`。仓库中存在的 main/master、远端默认分支及 HEAD 默认带星。移入或点击分组打开完整分支名列表；已收藏项显示实心星，未收藏项只在高亮时显示空心星。点击星标或按空格只改收藏，点击名称或按 Enter 才应用。方向键或 `j/k` 导航，`→` 展开，`←` / `Esc` 退一级，滚轮滚动；窄屏放不下两栏时，子菜单带返回行。
+**Branch** opens below its button. Main entries are `Select...`, `Favorites` (when more than one favorite exists), gold-starred branches, a separator, `Local`, and each `remote/...` group. Existing main/master branches, remote default branches, and HEAD are starred by default. Hovering/clicking a group opens full branch names. Favorites show a filled star; others show an outline only when highlighted. Clicking the star or pressing Space changes only the favorite; clicking the name or pressing Enter applies the filter. Arrows or `j/k` navigate, `→` expands, `←` / `Esc` returns one level, and the wheel scrolls. When two columns cannot fit, the submenu includes a back row.
 
-[终端实图：展开远端分支](reference/IGit-Log-Branch.png)。菜单的分组和星标点击行为对照 [IntelliJ 的 Branch 过滤器](https://github.com/JetBrains/intellij-community/blob/master/platform/vcs-log/impl/src/com/intellij/vcs/log/ui/filter/BranchFilterPopupComponent.java)。
+[Terminal screenshot: expanded remote branches](reference/IGit-Log-Branch.png). Grouping and star click behavior follow [IntelliJ's Branch filter](https://github.com/JetBrains/intellij-community/blob/master/platform/vcs-log/impl/src/com/intellij/vcs/log/ui/filter/BranchFilterPopupComponent.java).
 
-Branch 菜单中直接输入可搜索。`Select...` 支持 `|` 或粘贴多行来组合分支、`-分支` 排除可达历史、`A..B` 查看两分支差集，也可用 `origin/feat/.*` 匹配分支名。Tab 补全，Enter 或 Ctrl-Enter 应用，Esc 放弃草稿。分支与标签重名可输入 `refs/heads/…` 或 `refs/tags/…` 区分。`Favorites` 一次应用当前可见的收藏集合；清除 Branch 只移除筛选，保留收藏。
+Typing directly in Branch searches. `Select...` supports `|` or pasted lines to combine branches, `-branch` to exclude reachable history, `A..B` for the difference between branches, and expressions such as `origin/feat/.*` to match names. Tab completes; Enter or Ctrl-Enter applies; Esc discards the draft. Use `refs/heads/…` or `refs/tags/…` to distinguish a branch and tag with the same name. `Favorites` applies the currently visible favorite set at once. Clearing Branch removes the filter but preserves favorites.
 
-Paths 菜单从上到下是 **Select...**、**Select in Tree...** 和 **Roots** 仓库列表。
+Paths contains **Select...**, **Select in Tree...**, and the **Roots** repository list, in that order.
 
-- **Select...** 打开多行输入。每行是一个文件或目录，以仓库根目录为起点；只要提交改动了其中之一就会显示。`api/src` 指定名为 `api` 的仓库，`api/` 表示整仓；如果要在各仓匹配名为 `api/src` 的路径，则输入 `./api/src`。支持粘贴多行和已从工作区删除的历史路径。`Enter` 换行，`F2`、`Ctrl-S`、`Ctrl-Enter` 或 **Apply** 确认，清空后应用则移除路径条件。绝对路径或含 `..` 的行会提示位置并保留草稿。
-- **Select in Tree...** 先列出全局范围内的仓库和位置，默认折叠。点箭头或用 `h/l`、左右键收展；点复选框或按空格勾选，父项显示部分勾选。可在一次选择中混合整仓、目录和文件；本页 Roots 未勾选的仓库标为不可选。按 `Enter` 或 **OK** 应用。两个选择器都可用 `Esc` 或 **Cancel** 放弃修改。
-- **Roots** 默认勾选全局范围的全部仓库。点仓库行或上下键定位后按空格，立即更新本页并保留菜单。标题显示已选数／列出数；点标题或按 `Ctrl-A` 切换整组。全部取消时不显示提交。菜单内直接输入可快速查找仓库；按回车时，完整仓名只选该仓，其他文本作为路径。点 Paths 的清除按钮重置本页的仓库与路径，保留其他筛选和全局 Roots。
+- **Select...** opens multiline input. Each line is a file or directory relative to a repository root; commits changing any listed path are included. `api/src` targets the repository named `api`; `api/` selects the whole repository. To match a path literally named `api/src` in each repository, use `./api/src`. Multiline paste and historical paths deleted from the working tree are supported. `Enter` adds a line; `F2`, `Ctrl-S`, `Ctrl-Enter`, or **Apply** confirms. Applying empty input clears paths. Absolute paths or lines containing `..` report their position and preserve the draft.
+- **Select in Tree...** starts with collapsed repositories and locations within global scope. Arrows, `h/l`, or left/right expand/collapse. Checkboxes or Space toggle selection; parents show partial selection. One selection may combine repositories, directories, and files. Repositories unchecked in this tab's Roots are unavailable. `Enter` or **OK** applies. Both selectors accept `Esc` or **Cancel** to discard changes.
+- **Roots** initially checks all repositories in global scope. Clicking a row or pressing Space after up/down navigation updates the tab immediately and leaves the menu open. The heading shows selected/listed counts; clicking it or `Ctrl-A` toggles the entire group. Unchecking all produces an empty history. Typing searches repositories; Enter on an exact repository name selects only it, while other text is treated as a path. Clearing Paths resets this tab's repositories and paths while retaining other filters and global Roots.
 
-Date 菜单只显示三项，依次为 `Select...`、`Last 24 hours`、`Last 7 days`，没有文本搜索框。首次打开高亮 `Select...`，已有快捷时段时高亮当前选项；方向键或 `j/k` 移动，Enter 或点击选项生效。`Select...` 打开 From / To 两个日期字段，以 `YYYY-MM-DD` 输入，Tab / Shift-Tab 或点击切换字段，Ctrl-U 清空当前字段；Enter / Apply 应用，Esc / Cancel 取消。自定义范围包含本地起日的 00:00:00 至止日的 23:59:59，也允许首尾为同一天；无效日期、缺失日期或起日晚于止日时保留草稿并提示。取消不改变已应用条件，重新编辑会带入原范围。最近时段以查询时的当前时间为终点，刷新时重新计算；清除日期保留其他筛选。
+Date has exactly three entries: `Select...`, `Last 24 hours`, and `Last 7 days`, with no search field. Initial selection is `Select...`, or the currently applied preset. Arrows or `j/k` move; Enter or click applies. `Select...` opens From / To fields in `YYYY-MM-DD` format. Tab / Shift-Tab or clicking changes field; Ctrl-U clears it. Enter / Apply applies, and Esc / Cancel cancels. Custom ranges include local 00:00:00 on the start date through 23:59:59 on the end date, including same-day ranges. Invalid/missing dates or a start after the end preserve the draft and report the error. Cancel leaves the active condition unchanged; reopening restores it. Relative periods end at query time and are recalculated on refresh. Clearing dates preserves other filters.
 
-本地分支、远端跟踪分支、标签及有效 HEAD 是默认日志入口；不会因为存在 stash 就额外列出其 index 快照。文字、哈希和引用名在已加载结果中搜索；作者、日期和路径条件交给 Git。父提交未加载或被过滤时提示，不会跨仓跳转。
+Default history starts from local branches, remote-tracking branches, tags, and valid HEAD; the existence of a stash does not add its index snapshot. Text, hashes, and reference names are searched within loaded results; author, date, and path conditions are passed to Git. Missing/filtered parents produce a notice, never a jump across repositories.
 
-按住 `j/k` 或上下键时，高亮、右栏标题和哈希随选中行移动。停下后加载该行的文件、正文和包含分支；等待期间不显示上一行的文件。此时按 Enter 仍可打开当前提交的 Diff，Esc 可以取消等待。
+Holding `j/k` or up/down moves the highlight, right-pane title, and hash with selection. Once movement stops, files, body, and containing branches load for that row. Previous-row files are not shown while waiting. Enter can still open the current commit's Diff; Esc can cancel the wait.
 
-提交列表保持现有纵向视口；向下越过最后一条可见提交时才下滚，向上越过第一条时才上滚。`H/M/L` 只选择当前屏内的提交，不滚动；不足一屏时以实际提交计算中点和底部。整页／半页按扣除工具栏与错误提示后的行数移动视口和选中行，到历史边界截断，半页至少一行。窗口缩放、筛选和父提交跳转后保持选中项可见。单个 `g` 或 `y` 等待后续按键，其他操作、换区、点击或打开浮层取消未完成的序列；输入框中的 `g/y` 仍作为文本。复制始终针对当前提交所属仓库，不等待右栏预览加载；空列表不改动剪贴板。
+The commit list keeps its vertical viewport, scrolling down only after selection passes its last visible commit, or up after its first. `H/M/L` selects only within the current screen without scrolling; partial screens use actual commits to determine middle/bottom. Full/half pages move both viewport and selection by the usable rows after toolbar/error space, clamped to history bounds; half a page is at least one row. Resize, filtering, and parent jumps keep selection visible. A lone `g` or `y` waits for a continuation; other actions, focus changes, clicks, or overlays cancel the sequence. `g/y` in input fields remains text. Copy always targets the current commit's repository without waiting for preview; an empty list leaves the clipboard untouched.
 
-[实际终端菜单 · 180×42](reference/IGit-Log-View-Options.png) 展示了眼睛菜单与 Columns 子菜单；对应的 48×12、80×24、120×36 终端演练及鼠标命中也已验证。
+The [actual 180×42 terminal menu](reference/IGit-Log-View-Options.png) shows the eye menu and Columns submenu. Corresponding 48×12, 80×24, and 120×36 terminal walkthroughs and mouse hit areas have also been verified.
 
-**眼睛菜单（View Options）。** 图工具栏最右端使用单独的眼睛图标，空间预先保留；窄屏单区模式将入口放在 Refs / Graph / Files / Details 右端。`o` 打开或收起；`j/k`、上下键和滚轮选择，`Space/Enter` 即时切换。主菜单分为 Show / Highlight。Columns 点击、悬停或 `l/Right` 展开，`h/Left` 或 `Esc` 返回主菜单，再按 `Esc` 关闭。菜单优先在入口下方，子菜单放在右侧或左侧，放不下则替代主菜单；短窗口围绕当前项滚动。菜单边框与留白拦截底下的行，点外部收起并执行该次点击；点另一分屏可直接切焦点，点顶栏 Roots 可切换仓库范围。
+**Eye menu (View Options).** A dedicated eye at the far right of the graph toolbar has reserved space. In narrow single-area mode, it follows Refs / Graph / Files / Details. `o` opens/closes; `j/k`, up/down, and the wheel select; `Space/Enter` toggles immediately. The main menu has Show / Highlight sections. Click, hover, or `l/Right` opens Columns; `h/Left` or `Esc` returns, then `Esc` closes. The menu prefers below the trigger. Submenus use the right or left side, or replace the main menu when neither fits. Short windows scroll around selection. Borders/padding block underlying rows; clicking outside closes and performs that click. Clicking another split changes focus directly; top-bar Roots changes repository scope.
 
-Show、Highlight 和 Columns 子菜单的复选框沿用 Commit 变更清单：勾选使用 `#629DFF` 蓝色并加粗，未勾选使用 `#8B8F9A` 灰色。复选框独立于菜单文字着色，蓝底浏览行保留状态色，不可用项的文字继续置灰；Columns 入口只保留对齐空白和子菜单箭头。
+Show, Highlight, and Columns use Commit-list checkboxes: checked is bold blue `#629DFF`, unchecked gray `#8B8F9A`. Checkbox colors are independent of labels and survive blue row highlights; unavailable labels stay dim. The Columns entry has only aligned blank space and a submenu arrow.
 
-**列顺序。** Columns 初始列出 Author、Hash、Date、GPG Signature、Graph、Message。菜单从上到下对应日志行从左到右；例如把 Date 移到 Author 上方，日期就显示在作者左侧。`K/J` 或 `Shift+↑/↓` 将当前列前移／后移一位，也可点该行右端的上下箭头。移动后高亮跟随该列，首末行不能越界。点击复选框或列名只切换显隐，隐藏列仍保留在菜单里，可以提前定位。仓库标记固定在行首；Graph 可以移到任意列之间，跳转箭头随图移动。Message 带着标题和引用一起移动或隐藏，并使用其余列分配后的剩余宽度。
+**Column order.** Columns initially lists Author, Hash, Date, GPG Signature, Graph, and Message. Top-to-bottom corresponds to left-to-right in history; moving Date above Author puts dates to the left. `K/J` or `Shift+↑/↓` moves the selected column one position earlier/later; right-edge arrows do the same. Highlight follows the moved column; first/last items cannot wrap. Clicking a checkbox or name only toggles visibility. Hidden columns remain in the menu for advance positioning. Repository markers stay at the start. Graph can move between any columns, with its jump arrows. Message moves/hides its subject and refs together and takes the width left by other columns.
 
-Show 首项 **Branch or Tag** 控制左侧分支树。显示时分支树从左边缘开始；隐藏时提交列表使用这块空间，原分支筛选与选中提交保留。若焦点原在分支树，则回到提交列表。窄屏同样隐藏 Refs 页签，恢复入口始终是眼睛菜单或 `B`。Commit Details 控制右侧文件与详情，Reference Labels 控制提交行的引用标签。
+Show's first item, **Branch or Tag**, controls the left branch tree. When visible, it starts at the left edge; hiding it gives that space to commits while retaining branch filters and selected commit. Focus returns from a hidden branch tree to commits. Narrow mode also hides Refs; the eye menu or `B` always restores it. Commit Details controls the right-side files/details; Reference Labels controls commit-row refs.
 
-Root Names 展开仓库色标为名称，Compact References View 保留首个引用并显示剩余数量；Tag Names 只控制标签文字，关闭后仍有图标。Long Edges 关闭时，跨越超过 12 行且中途无汇入的边只保留两端与跳转箭头，开启后完整连接；共享轨道保持连续，不会补画已被过滤的父子。Commit Timestamp 在作者时间与提交时间之间切换，不改变拓扑与排序。References on the Left 将引用移到标题前。六列可独立开关。窄屏优先保留已开启的提交标题和图；关闭后释放的空间可供其他列使用。
+Root Names expands repository color markers into names. Compact References View keeps the first ref plus a remaining count. Tag Names controls only text; icons remain when disabled. With Long Edges off, edges longer than 12 rows with no intervening join show only endpoints and jump arrows; enabling it restores full connections. Shared rails remain continuous, without drawing filtered-out parent/child links. Commit Timestamp switches author/commit time without changing topology or sort order. References on the Left moves refs before subjects. All six columns toggle independently. Narrow views prioritize enabled subjects and graph; hiding them releases space for other columns.
 
-Highlight 中 My Commits 按每仓的 Git 作者邮箱匹配并加粗；Merge Commits 降低合并正文亮度；Current Branch 用蓝底表示 HEAD 可达历史，选中行始终更亮。Not Cherry-Picked Commits 只在 Branch 选了另一条本地／远端分支后可启用，按 `git cherry` 的等价补丁降低已应用提交亮度；不可用时菜单提示选择另一 Branch。默认开启 Branch or Tag、Commit Details、Reference Labels、Author、Date、Graph、Message 和前三种高亮，其他 Show 项及 cherry 高亮关闭；所有 Log 页共用本次会话的选项，重启恢复默认。日期默认是作者时间。签名只在启用列时检查，展示 Good、Unsigned、Untrusted、Bad、Expired、Key exp.、Revoked、Unchecked 或 Unknown；后两项不表示验证成功。实现见 [display.rs](../src/log/display.rs)。语义参考 [IDEA 官方 Log 文档](https://www.jetbrains.com/help/idea/log-tab.html)。
+Under Highlight, My Commits matches each repository's Git author email and uses bold. Merge Commits dims merge text. Current Branch uses blue for HEAD-reachable history; selection is always brighter. Not Cherry-Picked Commits becomes available only when Branch selects another local/remote branch, and dims equivalent applied patches using `git cherry`; otherwise, the menu asks for another Branch. Defaults enable Branch or Tag, Commit Details, Reference Labels, Author, Date, Graph, Message, and the first three highlights. Other Show options and cherry highlighting are off. All Log tabs share options for the session; restart restores defaults. Dates default to author time. Signatures are checked only when the column is enabled and display Good, Unsigned, Untrusted, Bad, Expired, Key exp., Revoked, Unchecked, or Unknown; the last two do not indicate successful verification. Implementation: [display.rs](../src/log/display.rs). Semantics reference: [official IDEA Log documentation](https://www.jetbrains.com/help/idea/log-tab.html).
 
-## 2 · Commit：IDEA 变更清单
+## 2 · Commit: IDEA Changes List
 
-[三种图标对照](reference/IGit-Icon-Modes.png)节选自同一[演练仓](../examples/demo-commit.sh)的终端输出：11 个跟踪变更和 8 个未跟踪文件。[110×36 平铺布局参考](reference/IGit-Commit-Flat.png)保留了改版前的字形。与[旧版常驻 Overview](reference/IGit-Commit.png)相比，默认画面把整块宽度留给清单。
+The [three icon modes](reference/IGit-Icon-Modes.png) show output from the same [practice repository](../examples/demo-commit.sh): 11 tracked changes and 8 untracked files. The [110×36 flat-layout reference](reference/IGit-Commit-Flat.png) retains glyphs from before the redesign. Compared with the [old permanent Overview](reference/IGit-Commit.png), the default gives the entire width to the list.
 
 ```text
  ▾ ☑ ▤ Changes 11 files
@@ -112,30 +115,30 @@ Highlight 中 My Commits 按每仓的 Git 作者邮箱匹配并加粗；Merge Co
        ☐ TS aihub.ts     moss-web/src/layouts/default/customer-service
 ```
 
-两组默认展开。每仓按文件名忽略大小写排序，同名再按父目录区分；修改用蓝色、新增用绿色、未跟踪用红色。仓库和目录使用随收展变化的文件夹图标，仓库沿用色标，目录为暖黄色；子模块保留专用标记。窄屏截断名称时仍优先保留文件夹标记。分支名放在灰色徽标里。只有首次出现且可提交的 Changes 文件默认勾选。蓝色行是浏览位置，复选框是提交候选；灰色父路径和标记不改变文件身份。Log 和 Commit 对同一文件使用相同的类型标记与颜色；Commit 可另行开启 Git 双列状态。
+Both groups start expanded. Within each repository, files sort case-insensitively by filename, then parent directory for duplicate names. Modified is blue, added green, and untracked red. Repositories and directories use expanded/collapsed folder icons; repositories retain their color markers, directories use warm yellow, and submodules retain a dedicated marker. Narrow layouts preserve folder markers before truncating names. Branch names use gray badges. Only newly encountered committable Changes files start checked. Blue rows indicate browsing, checkboxes indicate commit candidates; gray parent paths and markers do not change identity. Log and Commit use the same type markers/colors for a file; Commit can additionally show Git XY status.
 
-| 操作 | 鼠标 | 键盘 |
+| Action | Mouse | Keyboard |
 | --- | --- | --- |
-| 浏览与勾选 | 点行名浏览、箭头收展、复选框勾选；滚轮移动；工具栏悬停显示动作和键位。各自有独立命中区域 | `j/k` 浏览，`PgUp/PgDn` 翻页，`h/l` 收展或去父/子行，`Space` 勾选；`u` 只撤销上次勾选 |
-| 看补丁或范围 | 双击文件；工具栏的预览按钮在当前行打开预览。宽屏可继续点击左侧其他行；点关闭或返回清单按钮 | 文件上 `Enter` 看 Diff，`v` 开关预览；分组、仓库、目录预览其可见范围。92 列以上并排，更窄时预览占满工具窗。`Esc` 返回原行，`Tab/F6` 切换可用区域 |
-| 切布局或看原始状态 | 眼睛下拉打开 View Options，末尾两个按钮全部展开或收起；Diff 按钮打开当前行预览 | `o` 显示菜单，`t` 切目录，`s` 切 Git 双列状态，`z/Z` 全收/展开。文件身份和勾选不随布局变化 |
-| 管理分组 | 添加按钮建组；点移动按钮、用右键，或把跟踪文件拖到目标组 | `n/m` 新建组／移动到组。未跟踪文件保持单列；移组不执行 git add |
-| 写说明、提交 | 点底部仓名切换草稿、点消息区编辑。Amend 针对当前仓；Commit… 与 Commit & Push… 都先审查 | `[/]` 换仓、`i` 编辑、`F2/Ctrl-S` 保存、`Esc` 取消；`a` Amend，`c/P` 审查提交／提交后转 Push。AI 候选与设置是 `A/S` |
+| Browse and check | Row names browse, arrows expand/collapse, boxes check, and the wheel scrolls. Toolbar hover shows action/shortcut. Each target has its own hit area. | `j/k` browses, `PgUp/PgDn` pages, `h/l` collapses/expands or visits parent/child, `Space` checks; `u` undoes only the last checkbox change. |
+| Preview a patch or scope | Double-click a file; the toolbar preview button opens the current row. In wide mode, keep clicking other left-side rows. Use close/back-to-list to return. | `Enter` on a file opens Diff; `v` toggles preview. Groups, repositories, and directories preview their visible scope. At 92+ columns, preview is side by side; below that, it fills the tool window. `Esc` returns to the original row; `Tab/F6` switches available areas. |
+| Change layout or inspect raw status | The eye opens View Options; final two buttons expand/collapse all; Diff previews the current row. | `o` opens the menu, `t` toggles directories, `s` toggles Git XY status, and `z/Z` collapses/expands all. Layout does not change identity or checkboxes. |
+| Manage groups | Add creates a group; Move, right-click, or dragging tracked files moves them. | `n/m` creates/moves groups. Untracked files remain separate; regrouping does not run git add. |
+| Write messages and commit | Click a bottom repository name to change draft, or the message area to edit. Amend applies to that repository; Commit… and Commit & Push… both review first. | `[/]` changes repository, `i` edits, `F2/Ctrl-S` saves, and `Esc` cancels. `a` toggles Amend; `c/P` reviews commit / commit then Push. `A/S` opens AI candidates/settings. |
 
-**提交对象是实际补丁。** 文件若有已暂存内容，预览及提交都以 index 版本为准；同一文件之后的工作区改动保留。按文件取舍，不支持行级拆分。AI 先展示要发送的逐仓范围，确认后才请求；收到候选后还需确认才替换原稿。实现：[commit.rs](../src/commit.rs)、[commit/backend.rs](../src/commit/backend.rs)。
+**The commit target is the actual patch.** If a file has staged content, preview and commit use its index version; later working-tree edits remain. Selection is per file, without line-level splitting. AI first shows the per-repository scope to send and requests only after confirmation; accepting the returned candidate separately replaces the draft. Implementation: [commit.rs](../src/commit.rs), [commit/backend.rs](../src/commit/backend.rs).
 
-**显示菜单。** `Group By` 下的 Directory 与 Module 独立开关，Module 对应 Git 仓库，默认开启；Directory 默认关闭。仅 Module 时沿用平铺清单；两项都关闭时跨仓按文件名平铺，父路径保留仓名；仅 Directory 时按工作区相对路径建树，避免不同仓库的同名目录混淆。切换时优先保留当前文件与勾选；容器消失则回到仍存在的父节点，只展开当前行所需的祖先，其他折叠偏好保留。
+**Display menu.** Under `Group By`, Directory and Module toggle independently. Module means Git repository and defaults on; Directory defaults off. Module alone keeps the flat list. Both off produces a flat cross-repository filename list with repository names retained in parent paths. Directory alone builds a workspace-relative tree so identically named directories in different repositories stay distinct. Switching preserves the current file and checkboxes where possible. If a container disappears, selection moves to an existing parent. Only ancestors needed for the current row expand; other collapse preferences remain.
 
-`Show` 下提供 Ignored Files 与 Git Status，默认都关闭。Ignored Files 单独列出灰色只读项，使用不可选标记；忽略目录显示为带文件夹图标的单项，不递归读取内容，预览只说明忽略状态。忽略项不能移组、勾选或进入提交／AI。开启和关闭显示保留已有勾选与上次勾选的撤销记录；选项只保存于当前会话。菜单在入口下方打开并限制在窗口内；短窗口滚动到当前项。`j/k`、方向键、Tab、滚轮或悬停移动，`Space/Enter` 即时切换；`Esc/o` 关闭。边框和留白拦截下层行，点外部关闭并处理该次点击；点另一分屏可直接切焦点，点顶栏 Roots 可切换仓库范围。
+`Show` offers Ignored Files and Git Status, both off by default. Ignored Files adds gray, read-only entries with unavailable markers. Ignored directories remain single folder entries without recursive content reads; preview only explains their ignored status. Ignored items cannot move groups, be checked, or enter commit/AI plans. Toggling display preserves checkboxes and the last-checkbox undo record. Options last only for the session. The menu opens below its trigger and stays within the window; short windows scroll to selection. `j/k`, arrows, Tab, wheel, or hover moves; `Space/Enter` toggles immediately; `Esc/o` closes. Borders/padding block underlying rows. Clicking outside closes and performs that click; another split can take focus directly, and top-bar Roots can change scope.
 
-## 3 · Push：核对来源、目的地与范围
+## 3 · Push: Review Source, Destination, and Scope
 
 ```text
  Push Commits / roots in scope
  Outgoing commits                         │ Changed files · 3
  ▸ [ ] api   main → origin:main ↑1        │ Group By  Details  Expand  Collapse
  ▾ [x] web   main → origin:main ↑2        │ ▾ web 3 files
-       └ 说明                             │   ▾ web 3 files
+       └ Commit message                   │   ▾ web 3 files
                                           │     ▾ src 2 files
                                           │         App.vue M
                                           │         main.ts A
@@ -143,48 +146,48 @@ Highlight 中 My Commits 按每仓的 Git 作者邮箱匹配并加粗；Merge Co
  Follow tags  Hooks  Target  Fetch  Retry               Push N
 ```
 
-左右各约 **50%**。左侧按仓名排序，仓名、源分支、箭头、目标、待推数量和 submodule 分列左对齐；成功／失败标记不移动分支列。可推目标使用蓝色，无待推提交的仓库行置灰。窄屏先隐藏辅助列，长文本仅在自己的列中截断，仍能通过 Target 和详情查看完整目标。
+Left/right proportions are about **50%** each. The left sorts by repository name, with separate left-aligned columns for name, source branch, arrow, target, outgoing count, and submodule. Success/failure markers do not shift branch columns. Pushable targets are blue; repositories with no outgoing commits are dim. Narrow layouts hide secondary columns first. Long text clips only within its own column; Target and details still expose the full destination.
 
-右侧默认全高显示“仓库 → 内容根 → 目录 → 文件”，连续的单子目录压缩为 `dev/iframe-proxy`，目录后显示后代文件数。文件图标沿用 Log / Commit 的类型色；文件名按变更类型着色：新增／复制绿、修改蓝、删除红、重命名／类型变化琥珀，并保留 `A/M/D/R/C/T` 文字状态。只有文件行打开该文件的 Diff；目录／仓库详情是范围摘要。打开详情后右侧约 60/40% 分割，关闭回到同一树行。
+The right defaults to a full-height repository → content root → directory → file tree. Consecutive single-child directories compress to paths such as `dev/iframe-proxy`; directories show descendant file counts. Icons share Log / Commit type colors. Filenames use change colors: added/copied green, modified blue, deleted red, renamed/type changes amber, retaining `A/M/D/R/C/T` text status. Only file rows open a file Diff; repository/directory details summarize scope. Opening details splits the right side about 60/40%; closing restores the same tree row.
 
-点眼睛或按 `o` 打开 [Group By 菜单](reference/IGit-Push-Group-By.png)。Directory（目录）、Repository（仓库）和 Module（该仓库的内容根）默认全选，可任意组合。关闭 Directory 后按文件名平铺，同名按仓内路径排序，行尾灰字显示父目录；关闭 Repository 或 Module 只移除相应层级。切换时保留当前文件和已打开的补丁；隐藏当前容器后，优先定位仍可见的父节点。同一工作区会话内，换仓、换提交、刷新和切回 Push 均沿用分组。
+Click the eye or press `o` for the [Group By menu](reference/IGit-Push-Group-By.png). Directory, Repository, and Module (the repository's content root) start enabled and allow any combination. Without Directory, files sort flat by name, then repository-relative path, with gray parent paths at the end. Disabling Repository or Module only removes that level. Switching preserves the current file and open patch; if a selected container is hidden, a still-visible parent is preferred. Grouping persists across repository/commit changes, refresh, and reopening Push within the workspace session.
 
-仓库行预览整批，提交行预览该次提交；合并提交的文件和 Diff 都相对第一父提交。当前仓库没有待推提交或没有选中行时，右侧文件区居中显示 `No commits selected`，不显示空仓库节点；仓库读取错误仍显示具体原因。推送单位始终是仓库的目标分支，不能仅推中间一条提交。每仓展开最多显示最近 60 条，计数和执行基于完整分支。
+Repository rows preview the batch; commit rows preview that commit. Merge commit files/Diffs compare against the first parent. If the current repository has no outgoing commits or no row is selected, the file area centers `No commits selected` without empty repository nodes; read failures still show specific reasons. The push unit is always the repository's target branch; an intermediate commit cannot be pushed alone. At most 60 recent commits per repository are displayed, but counts and execution use the full branch.
 
-| 想做什么 | 鼠标 | Vim / 键盘 |
+| Task | Mouse | Vim / keyboard |
 | --- | --- | --- |
-| 选择和检查 | 点框勾仓、点三角收展、点行换右侧内容；点文件看差异 | `j/k` 浏览、`h/l` 或左右箭头收展，文件树中 `h` 可回父目录；`Space` 勾所属仓，`Enter` 收展容器／打开文件，`Tab/F6` 换区 |
-| 切换文件分组 | 点右栏 Group By，再点选项；菜单保持打开，可连续切换 | `o` 打开，`j/k` 或 ↑/↓ 选择，`Space/Enter` 切换，`Esc/o` 关闭。菜单内的空格只切分组 |
-| 文件树与详情 | 工具栏 Expand / Collapse 全部收展；Details 开关摘要／Diff | 文件区 `[/]` 全部收起／展开；`d` 开关详情、`Esc` 关闭并回文件树 |
-| 核对目标与选项 | 点蓝色目标或底部 Target 编辑目标，Follow tags / Hooks 切选项，Fetch 获取范围内的远端状态 | `t` 编辑 remote:branch，Enter 保存/Esc 取消；`v/x` 切 Follow tags/hooks，`f` fetch |
-| 执行并处理失败 | Push N → 核对每仓源 SHA 与目标 → Confirm；查看失败行详情，点 Retry | `p` 审查，`y` 确认；`R` 仅重试当前范围内失败且仍有待推内容的仓 |
+| Select and inspect | Boxes check repositories, triangles expand/collapse, rows update the right side, and files open Diff. | `j/k` browses; `h/l` or left/right collapses/expands; `h` in files can visit the parent. `Space` checks the owning repository; `Enter` expands/collapses containers or opens files; `Tab/F6` changes area. |
+| Change file grouping | Click Group By on the right, then options; the menu stays open for further changes. | `o` opens, `j/k` or ↑/↓ selects, `Space/Enter` toggles, and `Esc/o` closes. Space in the menu changes only grouping. |
+| File tree and details | Toolbar Expand / Collapse changes all nodes; Details toggles summary/Diff. | `[/]` collapses/expands all in files; `d` toggles details and `Esc` closes back to the tree. |
+| Review target and options | Click the blue target or bottom Target to edit; Follow tags / Hooks toggles options; Fetch updates remote state in scope. | `t` edits remote:branch; Enter saves and Esc cancels. `v/x` toggles Follow tags/hooks; `f` fetches. |
+| Execute and handle failures | Push N → review each source SHA and target → Confirm; inspect failed rows and click Retry. | `p` reviews, `y` confirms, and `R` retries only failed repositories still in scope with outgoing work. |
 
-首次直接进入选一个有待推内容的仓；从提交并推送进入时按刚成功的仓库设置选区。成功的仓库不会因为别仓失败而回滚。远端 tip 变化、非快进、无法验证修改后的子模块指针时显示原因，不把拒绝当成功。实现：[push.rs](../src/push.rs)、[push/submodules.rs](../src/push/submodules.rs)。
+On first direct entry, a repository with outgoing commits is selected. Entry from Commit & Push sets checkboxes from the repositories that just committed successfully. Success is not rolled back because another repository failed. Changed remote tips, non-fast-forwards, and unverifiable changed submodule pointers show reasons, not success. Implementation: [push.rs](../src/push.rs), [push/submodules.rs](../src/push/submodules.rs).
 
-## 4 · Merge：应用文件和继续仓库是两步
+## 4 · Merge: Apply File and Continue Repository Are Separate
 
 ```text
- 冲突列表（仓库 + 文件） → 打开文件
- 仓库 / 路径   操作类型   剩余冲突数
+ Conflict list (repository + file) → Open file
+ Repository / path   Operation   Remaining conflicts
  ‹ Files   ↑ [c   ↓ ]c   Apply non-conflicting [a]   Undo [u]   Zoom [z]
- Current（只读）   » │ Result（可编辑） │ «    Incoming（只读）
-                     │     共同基线     │
-     同一个变更块    │     当前结果     │      同一个变更块
- 块操作：取左 / 取右 / 取两侧 / 编辑       草稿 / Apply file
+ Current (read-only) » │ Result (editable) │ « Incoming (read-only)
+                      │    Common base    │
+   Same change block  │   Current result  │    Same change block
+ Block: Take left / Take right / Take both / Edit    Draft / Apply file
 ```
 
-| 想做什么 | 鼠标 | Vim / 键盘 |
+| Task | Mouse | Vim / keyboard |
 | --- | --- | --- |
-| 找文件和冲突块 | 双击列表文件或点 Open；顶栏箭头跳冲突，三栏共同垂直滚动 | 列表 `j/k`、`Enter`；正文 `[c` / `]c` 为依次按两键，`j/k` 换块，`h/l` 换栏 |
-| 处理变更 | Apply non-conflicting 只接收确定的部分；点左/右沟槽或块按钮，观察中栏 | `a` 应用安全块，`H/L` 取左/右，`b` 先左后右，`u` 撤销 |
-| 改写结果 | 在中栏编辑当前块，点编辑区按钮接受或取消；点 Zoom 放大当前栏 | `i` 编辑、`Ctrl-S` 或 `Ctrl-Enter` 接受、`Esc` 取消；`z` 单栏，`s` 保存会话草稿 |
-| 写入、继续 | Apply file → 审查并确认，此步只写入并暂存该路径。回到列表，在仓库操作上另选 Continue | 文档内 `A` 审查应用；列表中 `C` 审查继续。打开文件后 `Esc` 返回列表 |
+| Find files and conflict blocks | Double-click a file or click Open. Top arrows jump conflicts; all three panes scroll vertically together. | List: `j/k`, `Enter`. Document: `[c` / `]c` are two-key sequences; `j/k` changes block and `h/l` changes pane. |
+| Resolve changes | Apply non-conflicting takes only definite changes. Click left/right gutters or block buttons and inspect the center. | `a` applies safe blocks, `H/L` takes left/right, `b` takes left then right, and `u` undoes. |
+| Edit the result | Edit the current block in the center; use editor buttons to accept/cancel. Zoom enlarges the current pane. | `i` edits, `Ctrl-S` or `Ctrl-Enter` accepts, `Esc` cancels, `z` shows one pane, and `s` saves a session draft. |
+| Write and continue | Apply file → review and confirm writes/stages only that path. Return to the list and separately choose Continue for the repository operation. | `A` in the document reviews application; `C` in the list reviews continuation. `Esc` from a file returns to the list. |
 
-默认三栏等宽；低于 **72 列**只显示焦点栏，工具栏的 Apply non-conflicting 简写为 Safe，上一块和下一块按钮只显示方向。左右按真实操作显示来源，rebase 下为基底与被重放提交，不固定说“本地/远端”。文件已有外部编辑或索引已变化时拒绝覆盖；二进制、删除/修改、特殊属性等未支持情形转外部处理。没有冲突时显示空态。这里处理已有 Git 操作，不提供创建 merge/rebase 的分支按钮。实现：[merge.rs](../src/merge.rs)、[merge/engine.rs](../src/merge/engine.rs)。
+The default has three equal panes. Below **72 columns**, only the focused pane is shown; Apply non-conflicting becomes Safe, and previous/next block buttons show only directions. Side labels identify actual operation sources: rebase shows the base and replayed commit, not fixed local/remote labels. External file edits or changed index state cause refusal to overwrite. Unsupported binary, delete/modify, and special-attribute cases require external handling. No conflicts produces an empty state. This panel handles existing Git operations; it has no branch buttons to create merge/rebase operations. Implementation: [merge.rs](../src/merge.rs), [merge/engine.rs](../src/merge/engine.rs).
 
-## Commit 对照验收
+## Commit Comparison Acceptance
 
-1. 运行 [Commit 演练脚本](../examples/demo-commit.sh)，用其输出的路径启动 IGit，按 `2`。在 120×36 和 80×24 确认上半区可滚动浏览全部 19 项，下半区仍能看到历史。区分全选、半选、未选、不可选，以及独立的行高亮。再用 `--icons ascii` 点三格复选框的首尾，均应只切换当前项；点文件名只浏览。
-2. 分别打开两个 `index.vue`，核对路径和补丁。切目录树，折叠并展开祖先；切回平铺，仍对准同一文件。容器预览只列该范围，浏览、折叠和切换布局均不改勾选或 index。
-3. 只勾选 `scripts/iframe-proxy.mjs`，打开 Diff。它有已暂存和未暂存两份改动：预览和提交审查只含暂存版本。取消审查后比对 HEAD、真实索引和工作区。
-4. 多仓范围用[多仓演练脚本](../examples/demo-workspace.sh)复验：隐藏一个已勾选仓，打开提交审查，确认只列可见的候选。详见 [PRD A2 / A7 / A9](prd.md)。
+1. Run the [Commit practice script](../examples/demo-commit.sh), start IGit with the printed path, and press `2`. At 120×36 and 80×24, confirm all 19 items can be reached by scrolling the upper half while history remains visible below. Distinguish checked, partial, unchecked, unavailable, and independent row highlighting. With `--icons ascii`, click both ends of a three-cell checkbox: either end must toggle only that item; clicking a filename must only browse.
+2. Open both `index.vue` files and verify their paths/patches. Switch to directory mode, collapse/expand ancestors, and switch back to flat mode while retaining the same file. Container previews show only their scope. Browsing, collapsing, and layout switching must not change checkboxes or the index.
+3. Check only `scripts/iframe-proxy.mjs` and open Diff. It has both staged and unstaged changes; preview and commit review must contain only the staged version. Cancel review, then compare HEAD, the real index, and the working tree.
+4. Recheck repository scope with the [multi-repository practice script](../examples/demo-workspace.sh): hide a checked repository, open commit review, and confirm only visible candidates appear. See [PRD A2 / A7 / A9](prd.md).

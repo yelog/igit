@@ -2,20 +2,20 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Paths 菜单增加逐行输入和按仓库展开勾选两种入口，支持同时按多个文件或目录筛选真实提交。
+**Goal:** Add line-by-line input and an expandable repository checkbox tree to Paths, allowing real commits to be filtered by multiple files or directories at once.
 
-**Architecture:** 在 Log 页的 Filter 中保存相对路径和可选的仓库 ID；每个仓库只将适用的路径传给 Git。菜单沿用立即生效的 Roots，两个选择器单独维护草稿，确认后才重载历史。树仅在展开目录时读取其直接子项。
+**Architecture:** Store relative paths and optional repository IDs in the Log tab's Filter; pass only applicable paths to Git for each repository. Keep immediate-apply Roots behavior in the menu. The two selectors maintain separate drafts and reload history only on confirmation. The tree reads only a directory's direct children when it is expanded.
 
-**Tech Stack:** Rust、Ratatui、Crossterm、系统 Git；复用当前测试后端，不加依赖。
+**Tech Stack:** Rust, Ratatui, Crossterm, system Git; reuse the current test backend without new dependencies.
 
 ---
 
-1. **先验证入口和范围。** 在 `src/log/view_tests/path_selection.rs` 用临时仓库创建同名文件、带方括号的文件和目录。通过渲染命中区域和键盘操作验证菜单顺序、逐行粘贴、多路径并集、树勾选的仓库边界、取消与页签恢复。先用 `cargo test --locked paths_menu_offers` 复现缺少入口。
-2. **保存和查询路径。** 在 `src/log/model/path_filter.rs` 解析字面相对路径，在 `src/log/model.rs` 按仓构造 `git --literal-pathspecs log … -- path1 path2`。整仓不附加路径；只选其他仓的路径时跳过本仓历史。保留未限定名称的路径按每个勾选仓库匹配的能力。
-3. **接入选择器。** 在 `src/log/paths.rs`、`src/log/paths/` 实现菜单、带光标的多行编辑器和目录树。树使用独立的箭头与复选框命中，支持部分勾选和键盘收展。用 `src/log.rs`、`src/log/filters.rs`、`src/log/view.rs` 路由绘制、按键、鼠标和粘贴，`src/log/keymap.rs` 提供对应帮助。
-4. **验收。** 同步 README、交互设计、架构和 PRD。先运行 `cargo test --locked paths_`，再运行全量测试、格式和 Clippy；确认小屏仍能滚动到末仓，应用和取消均可点击。
+1. **Validate entry points and scope first.** In `src/log/view_tests/path_selection.rs`, create duplicate filenames, names containing brackets, and directories in temporary repositories. Use rendered hit targets and keyboard operations to verify menu order, multiline paste, the union of multiple paths, repository boundaries for tree selection, cancellation, and tab restoration. First reproduce the missing entry points with `cargo test --locked paths_menu_offers`.
+2. **Store and query paths.** Parse literal relative paths in `src/log/model/path_filter.rs`, and build `git --literal-pathspecs log … -- path1 path2` per repository in `src/log/model.rs`. Add no paths for an entire repository. Skip a repository's history when selected paths belong only to other repositories. Preserve matching unqualified paths in every checked repository.
+3. **Connect the selectors.** Implement the menu, multiline editor with a cursor, and directory tree in `src/log/paths.rs` and `src/log/paths/`. The tree has separate arrow and checkbox hit targets, partial selection, and keyboard expansion/collapse. Route drawing, keys, mouse, and paste through `src/log.rs`, `src/log/filters.rs`, and `src/log/view.rs`; provide corresponding help in `src/log/keymap.rs`.
+4. **Acceptance.** Update README, interaction design, architecture, and PRD. Run `cargo test --locked paths_` first, then full tests, formatting, and Clippy. Confirm that small screens can still scroll to the last repository and that Apply and Cancel remain clickable.
 
-### 验证记录（2026-11-04）
+### Validation record (2026-11-04)
 
-- 全量测试通过（182 项单元测试、3 项集成测试）；`cargo fmt --all --check`、`cargo clippy --locked --all-targets -- -D warnings` 和 `cargo build --locked --bin igit` 通过。
-- 在 140×32 伪终端运行 Log 演练工作区：粘贴两行后用 `Ctrl-S` 应用，再用树选择 `atlas-web/src`。两个仓库的引用、index 条目和工作区状态在操作前后一致。
+- Full tests passed (182 unit tests and 3 integration tests). `cargo fmt --all --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo build --locked --bin igit` passed.
+- Ran the Log demo workspace in a 140×32 pseudoterminal: pasted two lines and applied with `Ctrl-S`, then selected `atlas-web/src` in the tree. References, index entries, and worktree state remained unchanged in both repositories.

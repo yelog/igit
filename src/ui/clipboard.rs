@@ -36,7 +36,10 @@ pub(crate) fn copy(text: &str) -> Result<()> {
             Err(e) => failures.push(format!("{program}: {e:#}")),
         }
     }
-    bail!("无法写入系统剪贴板（{}）", failures.join("；"))
+    bail!(
+        "Cannot write to the system clipboard ({})",
+        failures.join("; ")
+    )
 }
 
 // Shell integration tests exercise the real dispatch without touching the user's
@@ -79,17 +82,19 @@ fn copy_with(command: &mut Command, text: &str) -> Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .context("启动剪贴板命令失败")?;
+        .context("Failed to start clipboard command")?;
     let written = child
         .stdin
         .take()
-        .context("剪贴板命令未提供输入管道")?
+        .context("Clipboard command did not provide an input pipe")?
         .write_all(bytes);
     // Always close stdin and reap the child, including a broken input pipe.
-    let status = child.wait().context("等待剪贴板命令失败")?;
-    written.context("写入剪贴板命令失败")?;
+    let status = child
+        .wait()
+        .context("Failed to wait for clipboard command")?;
+    written.context("Failed to write to clipboard command")?;
     if !status.success() {
-        bail!("剪贴板命令退出：{status}");
+        bail!("Clipboard command exited: {status}");
     }
     Ok(())
 }
@@ -102,7 +107,8 @@ mod tests {
     fn clipboard_command_receives_exact_text_on_stdin() {
         let d = tempfile::tempdir().unwrap();
         let path = d.path().join("copied.txt");
-        let text = "标题\n\n正文 $HOME `literal`\n作者 <author@example.invalid>";
+        let text =
+            "Title ＵＩ\n\nBody e\u{301} 👩‍💻 $HOME `literal`\nAuthor <author@example.invalid>";
         copy_with(
             Command::new("sh")
                 .args(["-c", "cat > \"$1\"", "clipboard-test"])

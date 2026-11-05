@@ -10,7 +10,7 @@ fn fixture(icons: IconMode) -> (PushPanel, Context) {
         "aps-hudong",
         "dcc",
         "devicemate",
-        "界面-ui",
+        "ｕｉ-ui",
         "maas",
         "mes",
         "mes-isg",
@@ -264,8 +264,8 @@ fn long_repo_and_branch_columns_clip_without_moving_controls_or_targets() {
     for icons in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
         for (width, height) in [(44, 12), (80, 24), (120, 36), (180, 36)] {
             let (mut p, mut c) = fixture(icons);
-            c.repos[0].name = "界面👩‍💻-a-very-long-repository-name".repeat(3);
-            p.entries[0].source = "feature/客户-service-with-a-long-branch".into();
+            c.repos[0].name = "ｕｉ👩‍💻-a-very-long-repository-name".repeat(3);
+            p.entries[0].source = "feature/client-service-with-a-long-branch".into();
             p.entries[0].t.dst = "release/a-very-long-target-branch".into();
             let buf = draw(&mut p, &c, width, height);
             for (r, _) in &p.hits {

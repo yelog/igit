@@ -326,7 +326,7 @@ mod tests {
                     "Zebra.rs",
                     "a/shared.rs",
                     "b/SHARED.rs",
-                    "界/shared.rs",
+                    "Ｗ/shared.rs",
                 ][..],
             ),
             (
@@ -395,7 +395,7 @@ mod tests {
                 "z/alpha.rs",
                 "a/shared.rs",
                 "b/SHARED.rs",
-                "界/shared.rs",
+                "Ｗ/shared.rs",
                 "Zebra.rs"
             ]
             .map(Path::new)
@@ -408,7 +408,7 @@ mod tests {
         panel.cursor = i;
         panel.toggle(i);
         assert_eq!(panel.check_counts(&panel.view[i]), (0, 1));
-        for (root, path) in [(0, "界/shared.rs"), (1, "a/shared.rs")] {
+        for (root, path) in [(0, "Ｗ/shared.rs"), (1, "a/shared.rs")] {
             let twin = &panel.view[file_row(&panel, root, path)];
             assert_eq!(panel.view[i].label, twin.label);
             assert_ne!(panel.view[i].id, twin.id);
@@ -521,7 +521,7 @@ mod tests {
         panel.set_all_expanded(true, &c);
         assert_eq!(panel.active().unwrap().label, NEW);
         assert!(panel.fold.contains(&was_closed) && !panel.fold.contains(&was_open));
-        panel.cursor = file_row(&panel, 0, "界/shared.rs");
+        panel.cursor = file_row(&panel, 0, "Ｗ/shared.rs");
         let key = panel.active().unwrap().id.clone();
         panel.set_all_expanded(true, &c);
         assert_eq!(panel.active().unwrap().id, key);

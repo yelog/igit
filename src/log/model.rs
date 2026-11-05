@@ -717,7 +717,7 @@ pub(super) fn patch(path: &Path, r: &Rev, file: &[u8]) -> Result<Vec<String>> {
     raw.truncate(LIMIT);
     let mut lines: Vec<_> = raw.split(|b| *b == b'\n').map(plain).collect();
     if cut {
-        lines.push("… Diff 限制 512 KiB · 可用 git show 查看全文".into())
+        lines.push("… Diff limited to 512 KiB · Use git show for the full patch".into())
     }
     Ok(lines)
 }

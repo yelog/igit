@@ -97,7 +97,7 @@ fn paths_multiline_matches_file_or_directory_literally_and_keeps_invalid_drafts(
     let Action::Notice(error) = key(&mut p, K::Char('s'), Mods::CONTROL, &c) else {
         panic!("an escaping path must keep the editor open")
     };
-    assert!(error.contains("第 2 行"));
+    assert!(error.contains("Line 2"));
     assert!(p.editing());
     key(&mut p, K::Esc, Mods::NONE, &c);
     assert_eq!(subjects(&p), expected);

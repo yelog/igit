@@ -31,7 +31,7 @@ fn copied(action: Action) -> String {
 fn text_selection_details_and_scrolled_diff_copy_without_navigation_or_git_writes() {
     let d = init();
     commit(d.path(), "file", "base");
-    commit(d.path(), "file", "复制中文");
+    commit(d.path(), "file", "Copy ＵＩ");
     let c = Context::discover(d.path()).unwrap();
     let snapshot = || {
         [

@@ -123,7 +123,7 @@ impl Menu {
     pub(super) fn open(hist: &History, filter: &Filter, c: &Context) -> Result<Self> {
         let file = c.state_dir.join("branch-favorites.json");
         let starred = match fs::read(&file) {
-            Ok(data) => serde_json::from_slice(&data).context("无法读取分支收藏")?,
+            Ok(data) => serde_json::from_slice(&data).context("Cannot read branch favorites")?,
             Err(e) if e.kind() == ErrorKind::NotFound => BTreeMap::new(),
             Err(e) => return Err(e.into()),
         };

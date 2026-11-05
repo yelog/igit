@@ -38,7 +38,7 @@ fn view_options_reorder_graph_and_message_with_long_titles_and_refs() {
     commit(
         d.path(),
         "one",
-        &format!("列布局 {}", "很长的标题".repeat(40)),
+        &format!("Layout {}", "ｗｉｄｅｒ".repeat(40)),
     );
     git(d.path(), &["tag", "layout-tag"]);
     let c = Context::discover(d.path()).unwrap();
@@ -75,12 +75,12 @@ fn view_options_reorder_graph_and_message_with_long_titles_and_refs() {
     };
     assert_text_order(
         &line(&mut p, &mut t),
-        &["Log tester", "列布局", "…", "layout-tag", "2026/", "◉"],
+        &["Log tester", "Layout", "…", "layout-tag", "2026/", "◉"],
     );
     view_item(&mut p, Item::RefsLeft, &c);
     assert_text_order(
         &line(&mut p, &mut t),
-        &["Log tester", "layout-tag", "列布局", "…", "2026/", "◉"],
+        &["Log tester", "layout-tag", "Layout", "…", "2026/", "◉"],
     );
 
     // Both columns remain available even in a short menu.
@@ -92,14 +92,14 @@ fn view_options_reorder_graph_and_message_with_long_titles_and_refs() {
     click_at(&mut p, graph, &c);
     key(&mut p, K::Char('o'), Mods::NONE, &c);
     let text = line(&mut p, &mut t);
-    assert!(text.contains("列布局") && !text.contains('◉'), "{text}");
+    assert!(text.contains("Layout") && !text.contains('◉'), "{text}");
     open_columns(&mut p, &c);
     key(&mut p, K::Down, Mods::NONE, &c); // Message, between Author and Hash
     key(&mut p, K::Char(' '), Mods::NONE, &c);
     key(&mut p, K::Char('o'), Mods::NONE, &c);
     let text = line(&mut p, &mut t);
     assert!(
-        !text.contains("列布局") && !text.contains("layout-tag") && !text.contains('◉'),
+        !text.contains("Layout") && !text.contains("layout-tag") && !text.contains('◉'),
         "{text}"
     );
     assert!(
@@ -109,14 +109,14 @@ fn view_options_reorder_graph_and_message_with_long_titles_and_refs() {
     view_column(&mut p, Graph, &c);
     let text = line(&mut p, &mut t);
     assert!(
-        text.contains('◉') && !text.contains("列布局") && !text.contains("layout-tag"),
+        text.contains('◉') && !text.contains("Layout") && !text.contains("layout-tag"),
         "{text}"
     );
     view_column(&mut p, Message, &c);
     t.backend_mut().resize(160, 24);
     assert_text_order(
         &line(&mut p, &mut t),
-        &["Log tester", "layout-tag", "列布局", "…", "2026/", "◉"],
+        &["Log tester", "layout-tag", "Layout", "…", "2026/", "◉"],
     );
     assert_eq!(p.rev().unwrap().oid, selected);
 }

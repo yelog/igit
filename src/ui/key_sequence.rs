@@ -41,14 +41,14 @@ impl KeySequence {
 
     fn shortcuts(self) -> Vec<(char, &'static str)> {
         let entries: &[(char, &str)] = match self {
-            Self::LogGoto => &[('g', "跳到第一条提交")],
+            Self::LogGoto => &[('g', "Go to first commit")],
             Self::LogYank => &[
-                ('y', "复制完整 commit ID"),
-                ('m', "复制完整提交消息"),
-                ('a', "复制作者姓名与邮箱"),
+                ('y', "Copy full commit ID"),
+                ('m', "Copy full commit message"),
+                ('a', "Copy author name and email"),
             ],
-            Self::MergePrevious => &[('c', "跳到上一个未解决冲突")],
-            Self::MergeNext => &[('c', "跳到下一个未解决冲突")],
+            Self::MergePrevious => &[('c', "Previous unresolved conflict")],
+            Self::MergeNext => &[('c', "Next unresolved conflict")],
             Self::Window(prefix) => {
                 return super::panes::window_keys(prefix.mask)
                     .map(|(keys, description)| (keys.chars().last().unwrap(), *description))

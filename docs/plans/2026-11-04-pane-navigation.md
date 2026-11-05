@@ -1,17 +1,17 @@
-# 工作区 pane 焦点和尺寸 Implementation Plan
+# Workspace Pane Focus and Sizing Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** 用边框标出实际接收输入的区域，用 Tab、Ctrl-W 方向键和拖动边框在同一套分屏内操作。
+**Goal:** Mark the region that actually receives input with a border, and use Tab, Ctrl-W direction keys, and border dragging within the same split workspace.
 
-**Architecture:** 面板绘制时登记可访问的 pane 与实际分隔线。Shell 只在当前工作区或操作窗口内查找目标；尺寸、拖动捕获和未完成的组合键只保留在会话中。调整布局不改变仓库选择，也不执行 Git。
+**Architecture:** Panels register accessible panes and actual dividers during rendering. Shell searches for targets only inside the current workspace or operation window. Sizes, drag capture, and pending key sequences remain session-only. Layout changes do not change repository selection or execute Git.
 
-**Tech Stack:** Rust、Ratatui、Crossterm、TestBackend、本地演练仓。
+**Tech Stack:** Rust, Ratatui, Crossterm, TestBackend, local demo repositories.
 
 ---
 
-1. 在 `src/shell/workspace_tests.rs` 走完整按键和鼠标路径：跨 Commit / Log 循环、方向移动、越界停留、键鼠调尺寸、还原、弹窗与编辑隔离；用 `cargo test --locked pane_navigation` 验证旧行为。
-2. 在 `src/ui/panes.rs` 保存每帧 pane、分隔线和有效尺寸；命中与键盘调整共享上下限。布局测试覆盖缩窗、抵达边界后反向调整以及拖动捕获。
-3. 在 Commit、Log、Push、Merge 的视图登记实际区域；更新边框样式、分隔线、留白命中与紧凑布局。各面板保留原选择、快捷键和页签。
-4. 在 `src/shell/workspace.rs`、`src/shell.rs` 接入跨分屏焦点、拖动和工具弹窗优先级；`src/ui/key_sequence.rs`、`src/ui/help.rs` 支持可执行的 Ctrl-W 后续键。
-5. 同步 README、设计、PRD 与架构说明，运行 `cargo fmt --all --check`、`cargo test --locked`、`cargo clippy --locked --all-targets -- -D warnings`，在临时演练仓中运行终端冒烟。
+1. Exercise complete keyboard and mouse paths in `src/shell/workspace_tests.rs`: cycle across Commit / Log, move by direction, stay put at boundaries, resize with keyboard and mouse, reset sizes, and isolate dialogs and editing. Use `cargo test --locked pane_navigation` to validate the old behavior.
+2. Store per-frame panes, dividers, and valid dimensions in `src/ui/panes.rs`. Hit testing and keyboard resizing share limits. Cover shrinking windows, resizing back after reaching a limit, and drag capture in layout tests.
+3. Register actual regions in Commit, Log, Push, and Merge views. Update border styles, dividers, blank-area hit testing, and compact layouts. Preserve each panel's selection, shortcuts, and tabs.
+4. Connect focus across splits, dragging, and tool-dialog priority in `src/shell/workspace.rs` and `src/shell.rs`. Support executable Ctrl-W continuations in `src/ui/key_sequence.rs` and `src/ui/help.rs`.
+5. Update README, design, PRD, and architecture documentation. Run `cargo fmt --all --check`, `cargo test --locked`, and `cargo clippy --locked --all-targets -- -D warnings`, plus a terminal smoke test in temporary demo repositories.

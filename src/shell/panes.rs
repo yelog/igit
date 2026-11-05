@@ -128,7 +128,7 @@ impl Shell {
         for binding in window_keys(self.window_mask()) {
             content
                 .sections
-                .push(HelpSection::new("窗格", std::slice::from_ref(binding)));
+                .push(HelpSection::new("Panes", std::slice::from_ref(binding)));
         }
     }
 

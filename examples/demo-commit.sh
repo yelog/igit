@@ -36,7 +36,7 @@ tracked() {
   write package.json '{' '  "name": "moss-web-demo",' '  "private": true,' "  \"description\": \"$mode service example\"" '}'
   write src/locales/lang/en_US/system.ts "export const labels = { $mode: 'Help' };"
   write src/locales/lang/es_MX/system.ts "export const labels = { $mode: 'Ayuda' };"
-  write src/locales/lang/zh_CN/system.ts "export const labels = { $mode: '帮助' };"
+  write src/locales/lang/en_GB/system.ts "export const labels = { $mode: 'Help' };"
 }
 tracked inline
 g add -- .

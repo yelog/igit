@@ -38,7 +38,7 @@ fn text_selection_message_mouse_keyboard_replace_save_and_cancel_preserve_index_
         let mut p = CommitPanel::default();
         p.refresh(&c).unwrap();
         let checks = p.checks.clone();
-        let original = "标题 中文 e\u{301} 👩‍💻\n第二行\n";
+        let original = "Title ＵＩ e\u{301} 👩‍💻\nSecond line\n";
         p.saved.drafts.insert(rid(&c, 0), original.into());
         p.edit_message(&c);
         p.caret = 0;
@@ -63,20 +63,20 @@ fn text_selection_message_mouse_keyboard_replace_save_and_cancel_preserve_index_
         assert_eq!(p.buf, original);
         press(&mut p, &c, K::Char('a'), Mod::CONTROL);
         assert_eq!(copy(press(&mut p, &c, K::Insert, Mod::CONTROL)), original);
-        p.event(&Event::Paste("替换\n内容 👩‍💻".into()), &c);
+        p.event(&Event::Paste("Replace\nBody 👩‍💻".into()), &c);
         // Selection and copying also work when several events precede the next draw.
         press(&mut p, &c, K::Left, Mod::SHIFT);
         assert_eq!(copy(press(&mut p, &c, K::Char('c'), Mod::CONTROL)), "👩‍💻");
         press(&mut p, &c, K::Delete, Mod::NONE);
-        assert_eq!(p.buf, "替换\n内容 ");
+        assert_eq!(p.buf, "Replace\nBody ");
         press(&mut p, &c, K::Home, Mod::SHIFT);
-        assert_eq!(copy(press(&mut p, &c, K::Char('c'), Mod::CONTROL)), "内容 ");
+        assert_eq!(copy(press(&mut p, &c, K::Char('c'), Mod::CONTROL)), "Body ");
         press(&mut p, &c, K::Char('g'), Mod::NONE);
         press(&mut p, &c, K::Char('y'), Mod::NONE);
-        assert_eq!(p.buf, "替换\ngy");
+        assert_eq!(p.buf, "Replace\ngy");
         press(&mut p, &c, K::F(2), Mod::NONE);
         assert!(p.edit.is_none());
-        assert_eq!(p.saved.drafts[&rid(&c, 0)], "替换\ngy");
+        assert_eq!(p.saved.drafts[&rid(&c, 0)], "Replace\ngy");
         p.edit_message(&c);
         p.event(&Event::Paste("discard me".into()), &c);
         press(&mut p, &c, K::Char('a'), Mod::CONTROL);
@@ -84,7 +84,7 @@ fn text_selection_message_mouse_keyboard_replace_save_and_cancel_preserve_index_
         assert!(p.edit.is_some() && p.selected_text().is_none());
         press(&mut p, &c, K::Esc, Mod::NONE);
         assert!(p.edit.is_none());
-        assert_eq!(p.saved.drafts[&rid(&c, 0)], "替换\ngy");
+        assert_eq!(p.saved.drafts[&rid(&c, 0)], "Replace\ngy");
         assert_eq!(p.checks, checks);
     }
     assert_eq!(
@@ -139,7 +139,7 @@ fn text_selection_message_drag_can_cross_a_scrolled_viewport_and_vertical_keys_k
     let mut p = CommitPanel::default();
     p.refresh(&c).unwrap();
     let message = (0..40)
-        .map(|i| format!("line{i:02} 中文"))
+        .map(|i| format!("line{i:02} ＵＩ"))
         .collect::<Vec<_>>()
         .join("\n");
     p.saved.drafts.insert(rid(&c, 0), message.clone());
@@ -178,7 +178,7 @@ fn text_selection_message_drag_can_cross_a_scrolled_viewport_and_vertical_keys_k
     press(&mut p, &c, K::Up, Mod::SHIFT);
     assert_eq!(
         copy(press(&mut p, &c, K::Char('c'), Mod::CONTROL)),
-        " 中文\nline04"
+        " ＵＩ\nline04"
     );
     press(&mut p, &c, K::Down, Mod::SHIFT);
     assert!(p.selected_text().is_none());

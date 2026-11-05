@@ -304,7 +304,7 @@ mod tests {
             ("src/locales/lang/en_US/system.ts", *b"MM", false),
             ("src/locales/lang/zh_CN/system.ts", *b" M", false),
             ("package.json", *b"AM", false),
-            ("docs/新文档.md", *b"??", false),
+            ("docs/new-document.md", *b"??", false),
             ("conflicts/App.vue", *b"UU", true),
             ("once.js", *b"D ", false),
         ] {
@@ -523,7 +523,8 @@ mod tests {
     #[test]
     fn unicode_truncation_never_splits_a_grapheme_or_exceeds_the_row() {
         let (mut p, c) = fixture();
-        p.files[0].change.path = "很长的工作区/复合e\u{301}👩‍💻/待审查的文件名👩‍💻.ts".into();
+        p.files[0].change.path =
+            "a-very-long-workspace/combined-e\u{301}👩‍💻/filename-under-review👩‍💻.ts".into();
         let row = leaf(&p, 0);
         let path = &p.files[0].change.path;
         for width in 0..=80 {

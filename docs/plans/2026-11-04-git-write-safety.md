@@ -1,12 +1,12 @@
-# Commit 与 Push 写入边界修复计划
+# Commit and Push Write Boundary Fix Plan
 
-目标：确认页描述的路径和分支必须与实际操作一致；推送不得改写远端历史，也不得发布从新声明来源取不到的子模块版本。
+Goal: Paths and branches described on the confirmation page must match the actual operation. Push must neither rewrite remote history nor publish submodule versions unavailable from a newly declared source.
 
-沿用现有的私有索引、提交计划、远端 tip 校验和 lease。每个场景先用临时 Git 仓库在旧实现上复现，再以工作区、索引、提交树或 bare 远端引用核对结果。
+Reuse the existing private index, commit plans, remote tip checks, and leases. Reproduce each case against the old implementation in temporary Git repositories, then verify the result against the worktree, index, committed tree, or bare remote references.
 
-1. **Commit 与 AI 的文件范围**（`src/commit/backend.rs`）：把已跟踪文件换成同名目录，只勾选原文件的删除项。验证未跟踪子文件既不进提交也不进 AI 补丁；反向替换时也不能连带删除未选路径。以实际变更路径核对勾选范围。
-2. **确认页的目标分支**（`src/commit.rs`、`src/shell.rs`）：从另一终端切到同一 SHA 上的新分支，刷新后审查并提交。确认页须显示计划绑定的分支；若审查后再切换，则应拒绝执行。
-3. **子模块来源**（`src/push/submodules.rs`）：保留 gitlink SHA，仅把 `.gitmodules` 的 URL 从含有该提交的远端换到空远端。即使更改只出现在一条中间提交中，父仓远端也必须保持不动。新来源确有该提交时可以正常推送。
-4. **推送快进关系**（`src/push.rs`）：用本地替换引用把两个无祖先关系的提交伪装成快进。用未替换的对象图校验，确认拒绝推送且 bare 端分支未动。保留检查之后的并发更新保护。
+1. **Commit and AI file scope** (`src/commit/backend.rs`): replace a tracked file with a directory of the same name, checking only deletion of the original file. Verify that untracked children enter neither the commit nor the AI patch. The reverse replacement must not delete unchecked paths either. Compare actual changed paths with the checked scope.
+2. **Target branch on the confirmation page** (`src/commit.rs`, `src/shell.rs`): from another terminal, switch to a new branch at the same SHA, then refresh, review, and commit. The confirmation page must show the branch bound to the plan. Switching again after review must reject execution.
+3. **Submodule sources** (`src/push/submodules.rs`): keep the gitlink SHA but change the `.gitmodules` URL from a remote containing that commit to an empty remote. The parent remote must remain unchanged even when the change appears only in an intermediate commit. Push may succeed when the new source actually contains the commit.
+4. **Push fast-forward relationship** (`src/push.rs`): use local replacement references to make unrelated commits appear to be a fast-forward. Validate against the unreplaced object graph, confirming that push is rejected and the bare remote branch remains unchanged. Preserve concurrent-update protection after the check.
 
-集成验证：`cargo test --locked`、`cargo fmt --all --check`、`cargo clippy --locked --all-targets -- -D warnings`。所有远端均在临时目录内，AI 回归不调用真实模型。
+Integration validation: `cargo test --locked`, `cargo fmt --all --check`, and `cargo clippy --locked --all-targets -- -D warnings`. All remotes reside in temporary directories; AI regressions do not call real models.

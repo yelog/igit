@@ -17,7 +17,7 @@ fn text_selection_push_details_wrap_scroll_and_close_keep_push_scope() {
         p.show_details = true;
         p.focus = 2;
         let text = format!(
-            "+中文 e\u{301}\n\n  {}\n",
+            "+ＵＩ e\u{301}\n\n  {}\n",
             "long wrapped original text ".repeat(15)
         );
         p.preview.body = text.clone();
@@ -25,7 +25,7 @@ fn text_selection_push_details_wrap_scroll_and_close_keep_push_scope() {
         let checked = p.checked.clone();
         draw(&mut p, &c, w, h);
         let area = pane("", true).inner(p.panes.rect(PaneId::PushDetails).unwrap());
-        let first = "+中文 e\u{301}";
+        let first = "+ＵＩ e\u{301}";
         let mut action = Action::None;
         for (kind, x) in [
             (MouseEventKind::Down(MouseButton::Left), area.x),

@@ -2,27 +2,27 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** 在 Log 的 Columns 子菜单显示、隐藏和移动 Author、Hash、Date、GPG Signature、Graph 和 Message，键盘和鼠标均可操作。
+**Goal:** Show, hide, and move Author, Hash, Date, GPG Signature, Graph, and Message in the Log Columns submenu using either keyboard or mouse.
 
-**Architecture:** 会话级显示选项保存包含隐藏列的完整顺序，菜单焦点按列身份跟随移动。仓库标记固定在行首，六个列共用一套布局：先计算元数据和拓扑图的宽度，再把剩余宽度分给 Message，最后按菜单顺序绘制。图的跳转命中属于 Graph，标题和引用属于 Message；移动和切换这两列只改变显示状态。
+**Architecture:** Session display options retain the complete order, including hidden columns. Menu focus follows column identity during moves. The repository marker remains fixed at the start of each row. All six columns share one layout: calculate metadata and graph widths first, give the remaining width to Message, then draw in menu order. Graph owns graph-jump hit targets; Message owns titles and references. Moving and toggling these columns changes only display state.
 
-**Tech Stack:** Rust、Ratatui、Crossterm、TestBackend、临时 Git 仓库。
+**Tech Stack:** Rust, Ratatui, Crossterm, TestBackend, temporary Git repositories.
 
 ---
 
-### Task 1: 用实际输入和渲染定义验收条件
+### Task 1: Define acceptance criteria through real input and rendering
 
-- 在 `src/log/view_tests/column_order.rs` 中通过 Columns 移动可见列和隐藏列；比较菜单行与提交行的文字位置，检查移动后的高亮、复选框、边界和当前提交。由 `src/log/view_tests.rs` 注册用例。
-- 测试点击行尾按钮与点击列名的不同结果；在窄屏、短窗口和切换 Log 页后复验顺序。先运行 `cargo test --locked view_options_reorder`，确认现有固定布局不能通过。
+- In `src/log/view_tests/column_order.rs`, move visible and hidden columns through Columns. Compare text positions in menu and commit rows, and check highlighting, checkboxes, boundaries, and the current commit after moving. Register cases in `src/log/view_tests.rs`.
+- Test the different effects of clicking a row-end button and a column name. Recheck order on narrow screens, short windows, and after switching Log tabs. First run `cargo test --locked view_options_reorder` and confirm that the existing fixed layout fails.
 
-### Task 2: 接通会话偏好、菜单和日志行
+### Task 2: Connect session preferences, menus, and log rows
 
-- 在 `src/log/display.rs` 中用固定长度的有序列设置同时承载身份与显隐；相邻交换不越过首尾。菜单用列身份处理悬停、点击、勾选和移动。
-- 在 Columns 内，`j/k` 和方向键只浏览，`K/J`、`Shift+Up/Down` 及每行的上下按钮向前／后移动。鼠标操作与键盘走同一次交换，不调用 Git 或重载历史。
-- 在 `src/log/view.rs` 中按现有规则先算每种列的宽度，再按偏好顺序绘制；在 `src/log/keymap.rs` 和菜单底部显示相应操作。
-- 复验 Graph 与 Message 位于首、中、末位及隐藏时的实际日志行：标题与引用不侵占后续列，旧图位置不再响应跳转，隐藏图后不保留箭头命中。
+- In `src/log/display.rs`, use a fixed-length ordered column configuration to hold both identity and visibility. Adjacent swaps stop at the ends. The menu handles hover, click, checkbox toggles, and moves by column identity.
+- In Columns, `j/k` and arrow keys only browse; `K/J`, `Shift+Up/Down`, and the up/down buttons on each row move a column earlier/later. Mouse and keyboard operations use the same swap without calling Git or reloading history.
+- In `src/log/view.rs`, calculate each column's width using the existing rules, then draw in preference order. Show the corresponding actions in `src/log/keymap.rs` and the menu footer.
+- Recheck actual log rows with Graph and Message first, in the middle, last, and hidden: titles and references must not overlap later columns; the old graph location must no longer trigger jumps; hiding the graph removes arrow hit targets.
 
-### Task 3: 文档与验证
+### Task 3: Documentation and validation
 
-- 同步 `README.md`、`docs/design.md`、`docs/prd.md` 中的使用方式、默认值、会话范围与验收条件。
-- 运行 `cargo test --locked view_options` 检查列调序与原菜单行为，再运行 `cargo test --locked`、`cargo fmt --all --check` 和 `cargo clippy --locked --all-targets -- -D warnings`。
+- Update usage, defaults, session scope, and acceptance criteria in `README.md`, `docs/design.md`, and `docs/prd.md`.
+- Run `cargo test --locked view_options` for column reordering and existing menu behavior, followed by `cargo test --locked`, `cargo fmt --all --check`, and `cargo clippy --locked --all-targets -- -D warnings`.

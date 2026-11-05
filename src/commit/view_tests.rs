@@ -10,8 +10,8 @@ fn fixture() -> (tempfile::TempDir, Context) {
     fs::create_dir(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]).unwrap();
     for (path, body) in [
-        ("src/界面/model/page.rs", "model body"),
-        ("src/界面/view/page.rs", "view body"),
+        ("src/ｕｉ/model/page.rs", "model body"),
+        ("src/ｕｉ/view/page.rs", "view body"),
     ] {
         let file = repo.join(path);
         fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -343,8 +343,8 @@ fn regrouped_commit_keeps_the_selected_index_version_and_unselected_staged_file(
         ],
     )
     .unwrap();
-    let selected = "src/界面/model/page.rs";
-    let unselected = "src/界面/view/page.rs";
+    let selected = "src/ｕｉ/model/page.rs";
+    let unselected = "src/ｕｉ/view/page.rs";
     fs::write(repo.join(selected), "selected index version\n").unwrap();
     fs::write(repo.join(unselected), "unselected index version\n").unwrap();
     git(repo, &["add", "--", selected, unselected]).unwrap();
@@ -415,7 +415,7 @@ fn regrouped_commit_keeps_the_selected_index_version_and_unselected_staged_file(
 fn ungrouped_directory_preview_uses_the_repo_root_when_launched_in_a_subdirectory() {
     use super::display::Item;
     let (_d, mut c) = fixture();
-    c.workspace = c.repos[0].path.join("src/界面");
+    c.workspace = c.repos[0].path.join("src/ｕｉ");
     let mut p = CommitPanel::default();
     p.refresh(&c).unwrap();
     p.toggle_view_item(Item::Module, &c).unwrap();
@@ -423,7 +423,7 @@ fn ungrouped_directory_preview_uses_the_repo_root_when_launched_in_a_subdirector
     p.cursor = p
         .view
         .iter()
-        .position(|r| matches!(&r.kind, Kind::Directory(path) if path == Path::new("src/界面")))
+        .position(|r| matches!(&r.kind, Kind::Directory(path) if path == Path::new("src/ｕｉ")))
         .unwrap();
     key(&mut p, &c, K::Char('v'));
     let mut t = Terminal::new(TestBackend::new(120, 36)).unwrap();
@@ -433,7 +433,7 @@ fn ungrouped_directory_preview_uses_the_repo_root_when_launched_in_a_subdirector
         .collect();
     assert!(preview.contains(&format!(
         "Workspace{}",
-        c.repos[0].path.join("src/界面").display()
+        c.repos[0].path.join("src/ｕｉ").display()
     )));
     assert_eq!(p.selection(&c).len(), 2);
 }
@@ -447,11 +447,11 @@ fn compacted_directories_keep_their_children_selection_and_hit_targets() {
     key(&mut p, &c, K::Char('t'));
     key(&mut p, &c, K::Char('v'));
     draw(&mut p, &mut t, &c);
-    let a = row_area(&p, "src/界面");
+    let a = row_area(&p, "src/ｕｉ");
     // Clicking indentation or the name only browses; the disclosure and checkbox are separate.
     click(&mut p, &c, a.x, a.y);
     draw(&mut p, &mut t, &c);
-    assert_eq!(p.active().unwrap().label, "src/界面");
+    assert_eq!(p.active().unwrap().label, "src/ｕｉ");
     assert!(p.view.iter().any(|r| r.label == "model"));
     assert!(p.view.iter().any(|r| r.label == "view"));
     let overview = read(t.backend().buffer(), p.diff);
@@ -462,15 +462,15 @@ fn compacted_directories_keep_their_children_selection_and_hit_targets() {
     let (_, check) = p.row_controls(view, a);
     click(&mut p, &c, check.x, check.y);
     assert_eq!(p.selection(&c).len(), 1);
-    assert_eq!(p.active().unwrap().label, "src/界面");
+    assert_eq!(p.active().unwrap().label, "src/ｕｉ");
     assert_eq!(p.check_counts(p.active().unwrap()), (1, 2));
     draw(&mut p, &mut t, &c);
-    let a = row_area(&p, "src/界面");
+    let a = row_area(&p, "src/ｕｉ");
     let (arrow, _) = p.row_controls(p.active().unwrap(), a);
     click(&mut p, &c, arrow.x, arrow.y);
     assert!(!p.view.iter().any(|r| r.label == "model"));
     p.refresh(&c).unwrap();
-    assert_eq!(p.active().unwrap().label, "src/界面");
+    assert_eq!(p.active().unwrap().label, "src/ｕｉ");
     assert_eq!(p.check_counts(p.active().unwrap()), (1, 2));
     assert_eq!(
         git(&c.repos[0].path, &["diff", "--cached", "--numstat"])
@@ -484,7 +484,7 @@ fn compacted_directories_keep_their_children_selection_and_hit_targets() {
 #[test]
 fn narrow_preview_wraps_the_actual_path_and_never_checks_a_browsed_file() {
     let (_d, c) = fixture();
-    let file = format!("{}/子目录/尾部.txt", "很长的目录".repeat(10));
+    let file = format!("{}/subdir/tail.txt", "ｌｏｎｇ".repeat(10));
     let path = c.repos[0].path.join(&file);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, "only in this draft").unwrap();
@@ -493,7 +493,7 @@ fn narrow_preview_wraps_the_actual_path_and_never_checks_a_browsed_file() {
     p.refresh(&c).unwrap();
     key(&mut p, &c, K::Char('G'));
     // Unversioned files are visible on first entry, even on a narrow terminal.
-    assert_eq!(p.active().unwrap().label, "尾部.txt");
+    assert_eq!(p.active().unwrap().label, "tail.txt");
     let cursor = p.cursor;
     draw(&mut p, &mut t, &c);
     assert!(p.diff.is_empty());
@@ -501,7 +501,7 @@ fn narrow_preview_wraps_the_actual_path_and_never_checks_a_browsed_file() {
     draw(&mut p, &mut t, &c);
     let preview = read(t.backend().buffer(), p.diff);
     assert!(
-        preview.contains("尾部.txt") && preview.contains("+only in this draft"),
+        preview.contains("tail.txt") && preview.contains("+only in this draft"),
         "{preview}"
     );
     assert!(p.tree.is_empty());
@@ -533,8 +533,8 @@ fn flat_default_and_mouse_preview_resolve_identical_filenames_to_the_right_patch
     draw(&mut p, &mut t, &c);
     assert!(p.diff.is_empty() && p.diff_key.is_empty());
     let list = read(t.backend().buffer(), p.tree);
-    assert!(list.contains("page.rs app/src/界面/model"));
-    assert!(list.contains("page.rs app/src/界面/view"));
+    assert!(list.contains("page.rs app/src/ｕｉ/model"));
+    assert!(list.contains("page.rs app/src/ｕｉ/view"));
     assert!(list.contains("Unversioned Files") && list.contains("notes.txt app"));
     assert_eq!(p.selection(&c).len(), 2);
     let target = p
@@ -606,7 +606,7 @@ fn ascii_checkbox_responds_on_both_brackets_and_disappears_when_it_cannot_fit() 
 #[test]
 fn clipped_draft_names_do_not_overlap_repo_navigation() {
     let (_d, mut c) = fixture();
-    c.repos[0].name = "很长的仓库名称".into();
+    c.repos[0].name = "a-very-long-repository-name".into();
     c.repos.push(Repo {
         name: "long-submodule-name".into(),
         submodule: true,

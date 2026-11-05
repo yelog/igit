@@ -242,7 +242,7 @@ impl Shell {
                 self.tool = None;
             }
             Dialog(_) if self.ctx.repos.is_empty() => {
-                self.notice("当前工作区没有 Git 仓库".into());
+                self.notice("No Git repositories in this workspace".into());
             }
             Dialog(tool) if self.tool != Some(tool) => {
                 self.tool = Some(tool);
@@ -256,8 +256,8 @@ impl Shell {
             Action::None => (),
             Action::Notice(s) => self.notice(s),
             Action::Copy { text, label } => match clipboard::copy(&text) {
-                Ok(()) => self.notice(format!("已复制 {label}")),
-                Err(e) => self.notice(format!("复制失败：{e:#}")),
+                Ok(()) => self.notice(format!("Copied {label}")),
+                Err(e) => self.notice(format!("Copy failed: {e:#}")),
             },
             Action::Refresh(s) => {
                 self.refresh();
@@ -297,7 +297,7 @@ impl Shell {
             return;
         }
         if self.push.busy() {
-            self.notice("请等待正在执行的远端操作".into());
+            self.notice("Wait for the remote operation to finish".into());
             return;
         }
         let a = match owner {
@@ -311,12 +311,14 @@ impl Shell {
     fn quit_box(&mut self) {
         self.cancel_key_sequences();
         if self.push.busy() {
-            self.notice("远端操作进行中，请等待结果后退出".into());
+            self.notice(
+                "A remote operation is running. Wait for it to finish before quitting".into(),
+            );
             return;
         }
         self.pop = Some(Popup::Confirm {
-            title: "退出 IGit？".into(),
-            body: "关闭终端工作台。未保存的编辑可能丢失；已完成的 Git 操作会保留。".into(),
+            title: "Quit IGit?".into(),
+            body: "Close the workbench? Unsaved edits may be lost. Completed Git operations will be kept.".into(),
             token: "__quit".into(),
             owner: self.surface(),
             scroll: 0,
@@ -339,7 +341,7 @@ impl Shell {
             4 => self.pop = Some(Popup::Journal),
             5 => {
                 self.refresh();
-                self.notice("工作区已刷新 / Refreshed".into())
+                self.notice("Workspace refreshed".into())
             }
             _ => (),
         }
@@ -348,60 +350,63 @@ impl Shell {
         match self.pop.as_ref() {
             Some(Popup::Scope { .. }) => HelpContent::new(
                 HelpSection::new(
-                    "Roots / 仓库范围",
+                    "Roots / Repository scope",
                     &[
-                        ("j", "选择下一个仓库"),
-                        ("k", "选择上一个仓库"),
-                        ("Space", "勾选或取消当前仓库"),
-                        ("a", "勾选全部仓库"),
-                        ("F5", "刷新仓库分支信息"),
-                        ("Enter", "应用仓库范围"),
-                        ("Esc", "取消修改，保留原仓库范围"),
+                        ("j", "Select next repository"),
+                        ("k", "Select previous repository"),
+                        ("Space", "Toggle repository selection"),
+                        ("a", "Select all repositories"),
+                        ("F5", "Refresh repository branches"),
+                        ("Enter", "Apply repository scope"),
+                        ("Esc", "Discard scope changes"),
                     ],
                 ),
                 vec![],
             ),
             Some(Popup::Confirm { .. }) => HelpContent::new(
                 HelpSection::new(
-                    "审查 / 确认操作",
+                    "Review / Confirm action",
                     &[
-                        ("j", "向下滚动审查正文"),
-                        ("k", "向上滚动审查正文"),
-                        ("Tab", "切换 Cancel 与 Confirm"),
-                        ("Enter", "执行当前选中的按钮"),
-                        ("y", "确认审查中的操作"),
-                        ("n", "取消审查，返回原面板"),
-                        ("Esc", "取消审查，返回原面板"),
+                        ("j", "Scroll review down"),
+                        ("k", "Scroll review up"),
+                        ("Tab", "Switch focused button"),
+                        ("Enter", "Activate selected button"),
+                        ("y", "Confirm reviewed action"),
+                        ("n", "Cancel review and return"),
+                        ("Esc", "Cancel review and return"),
                     ],
                 ),
                 vec![],
             ),
             Some(Popup::Menu { .. }) => HelpContent::new(
                 HelpSection::new(
-                    "Actions / 动作列表",
+                    "Actions / Command menu",
                     &[
-                        ("j", "选择下一个动作"),
-                        ("k", "选择上一个动作"),
-                        ("Enter", "执行选中的动作"),
-                        ("Esc", "关闭动作列表"),
+                        ("j", "Select next action"),
+                        ("k", "Select previous action"),
+                        ("Enter", "Run selected action"),
+                        ("Esc", "Close action menu"),
                     ],
                 ),
                 vec![],
             ),
             Some(Popup::Open { .. }) => HelpContent::new(
                 HelpSection::new(
-                    "工作区 / 路径输入",
+                    "Workspace / Path input",
                     &[
-                        ("Backspace", "删除目录输入的末尾字符"),
-                        ("Ctrl-u", "清空目录输入"),
-                        ("Enter", "打开或重新扫描当前输入的目录"),
-                        ("Esc", "取消打开工作区"),
+                        ("Backspace", "Delete last path character"),
+                        ("Ctrl-u", "Clear path"),
+                        ("Enter", "Open or rescan entered path"),
+                        ("Esc", "Cancel opening workspace"),
                     ],
                 ),
                 vec![],
             ),
             Some(Popup::Journal) => HelpContent::new(
-                HelpSection::new("Console / 会话消息", &[("Enter", "关闭会话消息")]),
+                HelpSection::new(
+                    "Console / Session messages",
+                    &[("Enter", "Close session messages")],
+                ),
                 vec![],
             ),
             Some(Popup::Help { .. }) => unreachable!("help content describes the origin"),
@@ -414,8 +419,8 @@ impl Shell {
                 };
                 if self.tool_at_root() {
                     content.sections.push(HelpSection::new(
-                        "操作窗口",
-                        &[("Esc", "关闭弹窗，返回原分屏")],
+                        "Tool dialog",
+                        &[("Esc", "Close dialog and return")],
                     ));
                 }
                 if !self.panel().editing() {
@@ -463,13 +468,13 @@ impl Shell {
                         self.pop = origin.map(|popup| *popup);
                         if self.help_content().context() != state.content.context() {
                             self.open_help();
-                            self.notice("原区域的状态已变化，请重新选择快捷键".into());
+                            self.notice("Context changed. Reopen help to choose a shortcut".into());
                         } else if let Some(events) = command.events() {
                             for event in events {
                                 self.dispatch(&event);
                             }
                         } else {
-                            self.notice("无法执行此快捷键".into());
+                            self.notice("This shortcut is unavailable".into());
                         }
                     }
                 }
@@ -838,7 +843,7 @@ impl Shell {
         let p = Rect::new(a.x + (a.width - w) / 2, a.y + (a.height - h) / 2, w, h);
         let title = match pop {
             Popup::Scope { .. } => "Workspace roots",
-            Popup::Help { .. } => "IGit · 快捷键",
+            Popup::Help { .. } => "IGit · Keyboard shortcuts",
             Popup::Confirm { title, .. } => title,
             Popup::Menu { .. } => "Actions",
             Popup::Journal => "Session console",
@@ -948,7 +953,7 @@ impl Shell {
                     "2  Focus Commit",
                     "3  Open Push…",
                     "4  Open Merge…",
-                    "Roots / 选仓库",
+                    "Roots / Select repositories",
                     "Refresh workspace",
                     "Open / rescan workspace…",
                     "Console",

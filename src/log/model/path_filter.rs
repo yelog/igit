@@ -52,7 +52,7 @@ impl PathFilter {
             let (root, rest) = Self::split(line, c);
             ensure!(
                 !line.contains('\0') && !Path::new(line).is_absolute(),
-                "第 {} 行：请输入仓库内的相对路径",
+                "Line {}: enter a repository-relative path",
                 n + 1
             );
             let mut path = PathBuf::new();
@@ -60,7 +60,7 @@ impl PathFilter {
                 match part {
                     Component::Normal(name) => path.push(name),
                     Component::CurDir => (),
-                    _ => bail!("第 {} 行：请输入相对路径，不可包含 ..", n + 1),
+                    _ => bail!("Line {}: enter a relative path without ..", n + 1),
                 }
             }
             paths.insert((root, path));
@@ -84,7 +84,7 @@ impl PathFilter {
             let line = Self::line(*root, path, c);
             ensure!(
                 path.to_str().is_some() && !line.contains(['\r', '\n']),
-                "所选文件名无法用逐行文本表示，请在 Select in Tree 中编辑"
+                "Some selected filenames cannot be represented as one path per line. Use Select in Tree"
             );
             lines.push(line);
         }

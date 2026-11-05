@@ -222,7 +222,7 @@ impl TextSelection {
         if copy_key(e) || read_only && k.code == KeyCode::Char('y') && k.modifiers.is_empty() {
             return self.selected_text().map(|s| Action::Copy {
                 text: s.to_owned(),
-                label: "选中文本",
+                label: "selected text",
             });
         }
         if k.code == KeyCode::Char('a') && k.modifiers == KeyModifiers::CONTROL {
@@ -263,7 +263,7 @@ impl TextSelection {
                     self.selected_text()
                         .map(|text| Action::Copy {
                             text: text.to_owned(),
-                            label: "选中文本",
+                            label: "selected text",
                         })
                         .unwrap_or(Action::None)
                 } else {
@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn selection_mouse_release_copies_once_clears_highlight_and_keeps_caret() {
-        let text = "中文 e\u{301}\n\n  body";
+        let text = "ＵＩ e\u{301}\n\n  body";
         let mut s = TextSelection::default();
         draw(&mut s, text, 20, 4, Wrap::Clip, 0, 0);
         for (from, to, caret) in [((0, 0), (19, 2), text.len()), ((19, 2), (0, 0), 0)] {
@@ -554,7 +554,8 @@ mod tests {
 
     #[test]
     fn selection_forward_reverse_multiline_and_padding_preserve_original_bytes() {
-        let text = "  中文 e\u{301} 👩‍💻\n\n\t+ tail  ";
+        // Fullwidth Latin letters exercise three-byte, two-cell characters.
+        let text = "  ＵＩ e\u{301} 👩‍💻\n\n\t+ tail  ";
         let mut s = TextSelection::default();
         draw(&mut s, text, 30, 4, Wrap::Clip, 0, 0);
         drag(&mut s, (0, 0), (29, 2));
@@ -569,7 +570,7 @@ mod tests {
 
     #[test]
     fn selection_soft_wrap_scroll_resize_and_source_changes() {
-        let text = "alpha beta 中文 gamma\n  +original";
+        let text = "alpha beta ＵＩ gamma\n  +original";
         let mut s = TextSelection::default();
         draw(&mut s, text, 10, 8, Wrap::Word, 0, 0);
         drag(&mut s, (0, 0), (10, 7));
@@ -578,9 +579,9 @@ mod tests {
         assert_eq!(s.selected_text(), Some(text));
         draw(&mut s, "other", 6, 3, Wrap::Word, 0, 0);
         assert!(s.selected_text().is_none());
-        draw(&mut s, "zero\n012中文xyz", 6, 1, Wrap::Clip, 1, 3);
+        draw(&mut s, "zero\n012ＵＩxyz", 6, 1, Wrap::Clip, 1, 3);
         drag(&mut s, (0, 0), (4, 0));
-        assert_eq!(s.selected_text(), Some("中文"));
+        assert_eq!(s.selected_text(), Some("ＵＩ"));
     }
 
     #[test]
@@ -599,9 +600,9 @@ mod tests {
         assert!(s.selected_text().is_none());
         drag(&mut s, (2, 1), (50, 50));
         assert_eq!(s.selected_text(), Some("head\n+body"));
-        draw(&mut s, "中文", 1, 1, Wrap::Word, 0, 0);
+        draw(&mut s, "ＵＩ", 1, 1, Wrap::Word, 0, 0);
         s.select_all();
-        assert_eq!(s.selected_text(), Some("中文"));
+        assert_eq!(s.selected_text(), Some("ＵＩ"));
     }
 
     #[test]
@@ -613,9 +614,9 @@ mod tests {
         assert_eq!(s.selected_text(), Some("\n"));
         assert_eq!(t.backend().buffer()[(0, 0)].bg, idea::SELECT);
         assert_eq!(t.backend().buffer()[(0, 1)].bg, idea::PANEL);
-        let t = draw(&mut s, "012中文xyz", 6, 1, Wrap::Clip, 0, 4);
+        let t = draw(&mut s, "012ＵＩxyz", 6, 1, Wrap::Clip, 0, 4);
         assert_eq!(t.backend().buffer()[(0, 0)].symbol(), " ");
         drag(&mut s, (0, 0), (3, 0));
-        assert_eq!(s.selected_text(), Some("文"));
+        assert_eq!(s.selected_text(), Some("Ｉ"));
     }
 }

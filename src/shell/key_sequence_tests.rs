@@ -53,15 +53,15 @@ fn key_sequence_hints_wait_200ms_and_wake_without_more_input() {
     app.dispatch(&key(KeyCode::Char('y')));
     let start = Instant::now();
     app.key_picker = KeySequencePicker::pending(start);
-    assert!(!screen(&mut app, 80, 24).contains("复制完整提交消息"));
+    assert!(!screen(&mut app, 80, 24).contains("Copy full commit message"));
     assert!(!app.key_picker.poll(start + Duration::from_millis(199)));
     assert_eq!(
         app.key_picker.wakeup(start + Duration::from_millis(199)),
         Some(Duration::from_millis(1))
     );
-    assert!(!screen(&mut app, 80, 24).contains("复制完整提交消息"));
+    assert!(!screen(&mut app, 80, 24).contains("Copy full commit message"));
     assert!(app.key_picker.poll(start + Duration::from_millis(200)));
-    assert!(screen(&mut app, 80, 24).contains("复制完整提交消息"));
+    assert!(screen(&mut app, 80, 24).contains("Copy full commit message"));
     assert!(!app.key_picker.poll(start + Duration::from_millis(201)));
 
     app.dispatch(&key(KeyCode::Esc));
@@ -69,7 +69,7 @@ fn key_sequence_hints_wait_200ms_and_wake_without_more_input() {
     app.key_picker = KeySequencePicker::pending(Instant::now() - Duration::from_millis(200));
     assert_eq!(app.poll_timeout(), Duration::ZERO);
     assert!(app.poll());
-    assert!(screen(&mut app, 80, 24).contains("跳到第一条提交"));
+    assert!(screen(&mut app, 80, 24).contains("Go to first commit"));
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn key_sequence_fast_completion_and_cancel_leave_no_delayed_popup() {
     let (_repo, mut app) = fixture();
     app.dispatch(&key(KeyCode::Char('G')));
     app.dispatch(&key(KeyCode::Char('g')));
-    assert!(!screen(&mut app, 80, 24).contains("跳到第一条提交"));
+    assert!(!screen(&mut app, 80, 24).contains("Go to first commit"));
     app.dispatch(&key(KeyCode::Char('g')));
     assert!(app.key_sequence().is_none());
     app.log.event(&key(KeyCode::Char('y')), &app.ctx);
@@ -95,7 +95,7 @@ fn key_sequence_fast_completion_and_cancel_leave_no_delayed_popup() {
         assert!(app.key_sequence().is_none());
         assert!(app.key_picker.wakeup(Instant::now()).is_none());
         assert!(!app.key_picker.poll(Instant::now() + Duration::from_secs(1)));
-        assert!(!screen(&mut app, 80, 24).contains("复制完整提交消息"));
+        assert!(!screen(&mut app, 80, 24).contains("Copy full commit message"));
         assert!(app.pop.is_none());
     }
 }
@@ -107,8 +107,8 @@ fn key_sequence_changing_prefix_restarts_the_hint_delay() {
     app.key_picker = KeySequencePicker::pending(Instant::now() - Duration::from_millis(200));
     app.dispatch(&key(KeyCode::Char('y')));
     assert!(app.key_picker.wakeup(Instant::now()).unwrap() > Duration::ZERO);
-    assert!(!screen(&mut app, 80, 24).contains("复制完整提交消息"));
-    assert!(show_hints(&mut app, 80, 24).contains("复制完整提交消息"));
+    assert!(!screen(&mut app, 80, 24).contains("Copy full commit message"));
+    assert!(show_hints(&mut app, 80, 24).contains("Copy full commit message"));
 }
 
 #[test]
@@ -118,20 +118,20 @@ fn key_sequence_hints_list_only_the_pending_prefix_and_adapt_to_window_width() {
         app.dispatch(&key(KeyCode::Char('y')));
         let text = show_hints(&mut app, width, height);
         for description in [
-            "复制完整 commit ID",
-            "复制完整提交消息",
-            "复制作者姓名与邮箱",
+            "Copy full commit ID",
+            "Copy full commit message",
+            "Copy author name and email",
         ] {
             assert!(text.contains(description), "{width}x{height}: {text}");
         }
-        assert!(!text.contains("跳到第一条提交"));
+        assert!(!text.contains("Go to first commit"));
         app.dispatch(&key(KeyCode::Esc));
-        assert!(!screen(&mut app, width, height).contains("复制完整提交消息"));
+        assert!(!screen(&mut app, width, height).contains("Copy full commit message"));
 
         app.dispatch(&key(KeyCode::Char('g')));
         let text = show_hints(&mut app, width, height);
-        assert!(text.contains("跳到第一条提交"), "{text}");
-        assert!(!text.contains("复制完整提交消息"));
+        assert!(text.contains("Go to first commit"), "{text}");
+        assert!(!text.contains("Copy full commit message"));
         app.dispatch(&key(KeyCode::Char('g')));
         assert!(app.key_sequence().is_none());
     }
@@ -212,7 +212,10 @@ fn key_sequence_context_changes_dismiss_hints_and_text_input_keeps_its_letters()
         assert!(app.key_sequence().is_some(), "{interrupt:?}");
         app.dispatch(&interrupt);
         assert!(app.key_sequence().is_none(), "{interrupt:?}");
-        assert!(!screen(&mut app, 80, 24).contains("复制完整提交消息"));
+        assert!(
+            !screen(&mut app, 80, 24).contains("y  Arrows select"),
+            "{interrupt:?} must dismiss the sequence overlay, even if Help lists the same action"
+        );
         app.pop = None;
     }
     app.go(Split(Log));
@@ -327,8 +330,10 @@ fn key_sequence_merge_hints_cancel_without_leaving_the_document_or_changing_git(
     app.dispatch(&key(KeyCode::Char('[')));
     assert!(app.key_sequence().is_none());
     app.dispatch(&key(KeyCode::Enter));
-    for (prefix, description) in [('[', "跳到上一个未解决冲突"), (']', "跳到下一个未解决冲突")]
-    {
+    for (prefix, description) in [
+        ('[', "Previous unresolved conflict"),
+        (']', "Next unresolved conflict"),
+    ] {
         app.dispatch(&key(KeyCode::Char(prefix)));
         app.key_picker = KeySequencePicker::pending(Instant::now() - Duration::from_millis(200));
         app.dispatch(&key(KeyCode::Char(prefix))); // Repeating a prefix also restarts its delay.

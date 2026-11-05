@@ -47,7 +47,7 @@ impl LogPanel {
                 RegexBuilder::new(q)
                     .case_insensitive(!self.case_sensitive)
                     .build()
-                    .context("无效的正则表达式")?,
+                    .context("Invalid regular expression")?,
             ))
         } else {
             Some(Needle::Literal(
@@ -243,10 +243,10 @@ impl LogPanel {
                 };
                 let [from, to] = &range.values;
                 if !valid_date(from) || !valid_date(to) {
-                    bail!("请输入有效的起止日期 YYYY-MM-DD");
+                    bail!("Enter valid start and end dates as YYYY-MM-DD");
                 }
                 if from > to {
-                    bail!("开始日期不能晚于结束日期");
+                    bail!("Start date must not be after end date");
                 }
                 self.filter.date = Some(DateFilter::Range {
                     from: from.clone(),
