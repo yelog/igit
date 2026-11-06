@@ -133,7 +133,7 @@ function Assert-IgitRelativeFile([string]$Name) {
 }
 
 function Expand-IgitArchive([string]$Archive, [string]$Destination, [string]$ReleaseVersion) {
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
     $bundle = [IO.Compression.ZipFile]::OpenRead($Archive)
     try {
         $prefix = "igit_$($ReleaseVersion)_$IgitTarget/"

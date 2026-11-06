@@ -41,7 +41,7 @@ function New-TestBinary([string]$Version) {
 }
 
 function New-TestArchive([string]$Version, [switch]$BadBinary, [switch]$Unsafe) {
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
     $archive = Join-Path $temporary ([Guid]::NewGuid().ToString('N') + '.zip')
     $bundle = [IO.Compression.ZipFile]::Open($archive, [IO.Compression.ZipArchiveMode]::Create)
     try {
