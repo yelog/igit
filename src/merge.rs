@@ -669,7 +669,10 @@ impl MergePanel {
         self.button(f, bar, &mut x, "Cancel", Hit::CancelEdit, true, false);
     }
     fn draw_doc(&mut self, f: &mut Frame, area: Rect, c: &Context) {
-        if area.height < 5 {
+        if area.is_empty() || area.height < 5 {
+            for id in Self::SIDES {
+                self.panes.add(id, Rect::default());
+            }
             return;
         }
         let vert = Layout::default()
@@ -814,7 +817,7 @@ impl MergePanel {
             format!("Incoming {dot} {}", d.right_label),
         ];
         let body = vert[2];
-        let cols = if self.zoom || compact {
+        let cols = if self.panes.maximized || self.zoom || compact {
             let mut cols = [Rect::default(); 3];
             cols[self.side] = body;
             cols
@@ -1118,6 +1121,8 @@ impl Panel for MergePanel {
     fn draw(&mut self, f: &mut Frame, area: Rect, c: &Context) {
         self.panes.begin();
         self.hits.clear();
+        self.rows_height = 0;
+        self.rows_total = 0;
         if self.doc.is_some() {
             self.draw_doc(f, area, c)
         } else {

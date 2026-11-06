@@ -103,7 +103,13 @@ impl CommitPanel {
         self.tree = Rect::default();
         self.diff = Rect::default();
         self.stacked = area.width < SPLIT_AT;
-        let [sidebar, preview] =
+        let [sidebar, preview] = if self.panes.maximized {
+            if self.focus == Focus::Diff {
+                [Rect::default(), area]
+            } else {
+                [area, Rect::default()]
+            }
+        } else {
             if !self.preview_open || (self.stacked && self.focus != Focus::Diff) {
                 [area, Rect::default()]
             } else if self.stacked {
@@ -116,8 +122,15 @@ impl CommitPanel {
                     (u32::from(area.width) * 54 / 100) as u16,
                     [34, 24],
                 )
-            };
-        let [changes, message] = if sidebar.is_empty() {
+            }
+        };
+        let [changes, message] = if self.panes.maximized {
+            if self.focus == Focus::Message {
+                [Rect::default(), sidebar]
+            } else {
+                [sidebar, Rect::default()]
+            }
+        } else if sidebar.is_empty() {
             [Rect::default(); 2]
         } else {
             let message_height = match sidebar.height {
@@ -138,6 +151,9 @@ impl CommitPanel {
             self.panes.add(PaneId::Preview, preview);
         }
         self.panes.add(PaneId::Message, message);
+        if message.is_empty() {
+            self.message_selection.reset();
+        }
         if !sidebar.is_empty() {
             self.draw_sidebar(f, changes, message, c);
         }
@@ -151,7 +167,9 @@ impl CommitPanel {
         let mut list = pane_frame(f, changes, self.pane_focused(PaneId::Changes));
         let composer = pane_frame(f, message, self.pane_focused(PaneId::Message));
         let last_row = slice(changes, changes.height.saturating_sub(1));
-        let rule = if list.bottom() < changes.bottom() {
+        let rule = if changes.is_empty() || message.is_empty() {
+            Rect::default()
+        } else if list.bottom() < changes.bottom() {
             // Only the real facing borders can resize; a compact composer's
             // first row contains the repository tabs and the editable draft.
             if composer.y == message.y {
@@ -195,11 +213,13 @@ impl CommitPanel {
             Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(list);
         self.tree = tree;
         let tools_end = self.draw_tools(f, bar);
-        self.offset = self
-            .offset
-            .min(self.cursor)
-            .min(self.view.len().saturating_sub(tree.height as usize))
-            .max((self.cursor + 1).saturating_sub(tree.height as usize));
+        if !tree.is_empty() {
+            self.offset = self
+                .offset
+                .min(self.cursor)
+                .min(self.view.len().saturating_sub(tree.height as usize))
+                .max((self.cursor + 1).saturating_sub(tree.height as usize));
+        }
         for (i, row) in self
             .view
             .iter()

@@ -45,6 +45,17 @@ The terminal guard registers/clears `IS_IGIT` for opted-in Kitty sessions and
 pushes/pops supported keyboard enhancement flags. The Kitty adapter survives
 workspace rescans; unit-test Shell constructors never discover a live terminal.
 
+Pane maximize is a session-only Shell flag propagated into each `PaneLayout`.
+The active panel receives the available work area; hidden panes retain their
+logical Tab order with empty rectangles and clear their hit/selection geometry.
+No split preferences change until the user restores and resizes. Smart maximize
+uses the same worker: `ls` resolves the source window's owning tab and layout
+groups, a tab-scoped `goto-layout stack` or `last-used-layout` changes the layout,
+and a second `ls` verifies it. One deadline covers the operation; captured stdout
+uses a temporary file with a size limit. Shell consumes input while the request
+is pending to keep its focus/editor context stable, then applies the verified
+target (or local toggle for one group). Errors preserve local maximize state.
+
 Smart resize is another native action, accepting press/repeat events. Geometry
 distinguishes a missing divider from one at its limit: only a missing panel
 divider can fall back to the outer workspace divider. An exhausted selected

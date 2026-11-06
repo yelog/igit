@@ -187,20 +187,27 @@ impl Shell {
     }
 
     fn draw_split(&mut self, f: &mut Frame, work: Rect) {
-        let [commit, log] = self.work_panes.divide(
-            SplitId::Workspace,
-            work,
-            Axis::Height,
-            work.height.div_ceil(2),
-            [6, 5],
-        );
+        let [commit, log] = if self.pane_maximized {
+            match self.focus {
+                Commit => [work, Rect::default()],
+                Log => [Rect::default(), work],
+            }
+        } else {
+            self.work_panes.divide(
+                SplitId::Workspace,
+                work,
+                Axis::Height,
+                work.height.div_ceil(2),
+                [6, 5],
+            )
+        };
         self.regions.commit = commit;
         self.regions.log = log;
         let pane = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]);
         // Give the workspace divider its own cells; it must never steal a
         // press on the commit buttons or on the Log tab strip.
         let mut above = commit;
-        if work.height > 10 {
+        if !self.pane_maximized && work.height > 10 {
             above.height = above.height.saturating_sub(1);
             let boundary = Rect::new(commit.x, above.bottom(), commit.width, 1);
             self.work_panes.handle(SplitId::Workspace, boundary);
@@ -219,7 +226,9 @@ impl Shell {
         self.log.panes.active = self.surface() == Split(Log) && self.pop.is_none();
         self.commit.draw_content(f, changes, &self.ctx);
         self.log.draw_content(f, history, &self.ctx);
-        self.log.draw_tabs(f, tabs, &self.ctx);
+        if !tabs.is_empty() {
+            self.log.draw_tabs(f, tabs, &self.ctx);
+        }
         match self.focus {
             Commit => self.commit.draw_overlays(
                 f,
@@ -232,10 +241,14 @@ impl Shell {
     }
 
     fn draw_tool(&mut self, f: &mut Frame, work: Rect, tool: ToolWindow) {
-        let window = work.inner(Margin::new(
-            (work.width / 24).clamp(1, 6),
-            (work.height / 16).min(3),
-        ));
+        let window = if self.pane_maximized {
+            work
+        } else {
+            work.inner(Margin::new(
+                (work.width / 24).clamp(1, 6),
+                (work.height / 16).min(3),
+            ))
+        };
         let (name, icon) = match tool {
             Push => (self.push.window_title(&self.ctx), Icon::Push),
             Merge => ("Merge".into(), Icon::Merge),
@@ -277,6 +290,10 @@ impl Shell {
         let a = f.area();
         self.regions = Regions::default();
         self.work_panes.begin();
+        self.commit.panes.maximized = self.pane_maximized;
+        self.log.panes.maximized = self.pane_maximized;
+        self.push.panes.maximized = self.pane_maximized;
+        self.merge.panes.maximized = self.pane_maximized;
         self.tools.clear();
         self.pop_hits.clear();
         self.key_picker.clear_geometry();
@@ -311,7 +328,7 @@ impl Shell {
                     .block(pane("Workspace", true)),
                 work,
             );
-        } else {
+        } else if !(self.pane_maximized && self.tool.is_some()) {
             self.draw_split(f, work);
         }
         if let Some(tool) = self.tool {
@@ -323,11 +340,15 @@ impl Shell {
             "DIALOG"
         } else if self.panel().editing() {
             "INPUT"
+        } else if self.pane_maximized {
+            "MAX"
         } else {
             "NORMAL"
         };
         let configured_hint = self.configured_footer();
-        let (hint, color) = if !self.msg.is_empty() {
+        let (hint, color) = if self.maximize_pending {
+            ("Synchronizing Kitty layout…", ACCENT)
+        } else if !self.msg.is_empty() {
             (self.msg.as_str(), ACCENT)
         } else if self.config.changed() && self.pop.is_some() {
             ("F1 Help   Esc Back", MUTED)

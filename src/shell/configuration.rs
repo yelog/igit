@@ -52,6 +52,9 @@ impl Shell {
             CommandAction::SmartFocus(direction) if key.kind == KeyEventKind::Press => {
                 self.smart_focus(direction)
             }
+            CommandAction::SmartMaximize if key.kind == KeyEventKind::Press => {
+                self.smart_maximize()
+            }
             CommandAction::SmartResize(direction)
                 if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
             {
@@ -178,7 +181,9 @@ impl Shell {
                 .iter()
                 .find(|c| c.sequence.len() == pending.prefix.len())
             {
-                self.run_configured(candidate.target, pending.count);
+                if candidate.target != "Ctrl-w f" || raw_key.kind == KeyEventKind::Press {
+                    self.run_configured(candidate.target, pending.count);
+                }
                 return true;
             }
             if !pending.candidates.is_empty() {
@@ -187,7 +192,15 @@ impl Shell {
                     KeySequencePicker::pending_with_delay(Instant::now(), self.config.hint_delay);
                 return true;
             }
+            let removed_default = self.config.commands.iter().any(|command| {
+                command.command.contexts & context != 0
+                    && command.changed()
+                    && command.defaults.contains(&pending.prefix)
+            });
             self.cancel_key_sequences();
+            if removed_default {
+                return true;
+            }
             // An invalid continuation may itself start a different shortcut.
         } else if let Some(sequence) = self.key_sequence() {
             if self.key_picker.accepts_key(raw_key, sequence) {
@@ -266,7 +279,9 @@ impl Shell {
             })
             .collect::<Vec<_>>();
         if let Some(candidate) = candidates.iter().find(|c| c.sequence.len() == 1) {
-            self.run_configured(candidate.target, None);
+            if candidate.target != "Ctrl-w f" || raw_key.kind == KeyEventKind::Press {
+                self.run_configured(candidate.target, None);
+            }
         } else if !candidates.is_empty() {
             self.cancel_key_sequences();
             self.cancel_drags();

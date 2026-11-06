@@ -93,6 +93,7 @@ pub(crate) const WINDOW_KEYS: &[(&str, &str)] = &[
     ("Ctrl-w =", "Reset pane sizes"),
     ("Ctrl-w w", "Focus next pane"),
     ("Ctrl-w c", "Close current Log tab"),
+    ("Ctrl-w f", "Maximize / restore focused pane"),
 ];
 
 pub(crate) fn window_keys(
@@ -157,6 +158,7 @@ struct Drag {
 
 pub(crate) struct PaneLayout {
     pub active: bool,
+    pub maximized: bool,
     nodes: Vec<(PaneId, Rect)>,
     splits: Vec<Divider>,
     sizes: BTreeMap<SplitId, u16>,
@@ -167,6 +169,7 @@ impl Default for PaneLayout {
     fn default() -> Self {
         Self {
             active: true,
+            maximized: false,
             nodes: vec![],
             splits: vec![],
             sizes: BTreeMap::new(),

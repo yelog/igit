@@ -882,6 +882,106 @@ mod tests {
     }
 
     #[test]
+    fn maximized_merge_keeps_side_order_actions_and_existing_zoom_preference() {
+        use crate::{
+            core::Context,
+            merge::{Hit, MergePanel},
+            ui::{
+                panes::{Axis, PaneId},
+                Panel,
+            },
+        };
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        use ratatui::{backend::TestBackend, layout::Rect, Terminal};
+
+        let td = fixture();
+        let ctx = Context::discover(td.path()).unwrap();
+        let original = fs::read(td.path().join("config with spaces.txt")).unwrap();
+        let mut p = MergePanel::default();
+        p.refresh(&ctx).unwrap();
+        p.event(
+            &Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &ctx,
+        );
+        let before = (p.idx, p.doc.as_ref().unwrap().pending());
+        let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        let draw = |p: &mut MergePanel, term: &mut Terminal<TestBackend>| {
+            term.draw(|f| p.draw(f, f.area(), &ctx)).unwrap();
+        };
+        draw(&mut p, &mut term);
+        let current = p.panes.rect(PaneId::Current).unwrap();
+        assert!(p.panes.resize(current, Axis::Width, 7));
+        draw(&mut p, &mut term);
+        let restored = p.panes.nodes().to_vec();
+
+        p.panes.maximized = true;
+        for (side, id) in MergePanel::SIDES.into_iter().enumerate() {
+            p.focus_pane(id);
+            draw(&mut p, &mut term);
+            assert_eq!(
+                p.panes.nodes(),
+                &MergePanel::SIDES.map(|other| (
+                    other,
+                    if id == other {
+                        Rect::new(0, 2, 120, 20)
+                    } else {
+                        Rect::default()
+                    }
+                ))
+            );
+            let visible = p.panes.rect(id).unwrap();
+            assert!(!p.panes.can_resize(visible, Axis::Width));
+            for (area, hit) in &p.hits {
+                if let Hit::Select(_, target) = hit {
+                    assert_eq!(*target, side);
+                    assert_eq!(area.intersection(visible), *area);
+                }
+            }
+            for matches in [
+                (|hit: &Hit| matches!(hit, Hit::List)) as fn(&Hit) -> bool,
+                |hit| matches!(hit, Hit::Edit),
+                |hit| matches!(hit, Hit::Save),
+            ] {
+                assert!(p.hits.iter().any(|(_, hit)| matches(hit)));
+            }
+            assert!(!p.zoom);
+            assert_eq!((p.idx, p.doc.as_ref().unwrap().pending()), before);
+        }
+        p.panes.maximized = false;
+        draw(&mut p, &mut term);
+        assert_eq!(p.panes.nodes(), restored);
+
+        p.zoom = true;
+        p.panes.maximized = true;
+        draw(&mut p, &mut term);
+        p.panes.maximized = false;
+        draw(&mut p, &mut term);
+        assert!(p.zoom);
+        assert_eq!(
+            p.panes
+                .nodes()
+                .iter()
+                .filter(|(_, area)| !area.is_empty())
+                .count(),
+            1
+        );
+        p.panes.maximized = true;
+        for (width, height) in [(1, 5), (44, 4), (0, 0)] {
+            term.draw(|f| p.draw(f, Rect::new(0, 0, width, height), &ctx))
+                .unwrap();
+            assert_eq!(p.panes.nodes().len(), 3);
+        }
+        assert_eq!(p.rows_height, 0);
+        assert_eq!(p.rows_total, 0);
+        assert!(p.hits.is_empty());
+        assert_eq!(
+            fs::read(td.path().join("config with spaces.txt")).unwrap(),
+            original
+        );
+        assert_eq!(conflicts(0, td.path()).unwrap().len(), 1);
+    }
+
+    #[test]
     fn multi_root_tui_keyboard_and_mouse_apply_to_one_root() {
         use crate::{
             core::{Context, Repo},

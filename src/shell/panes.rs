@@ -97,7 +97,9 @@ impl Shell {
         let layout = self.layout(self.surface());
         let Some(r) = layout.rect(id) else { return 0 };
         let resizable = |axis| {
-            layout.can_resize(r, axis) || self.tool.is_none() && self.work_panes.can_resize(r, axis)
+            !self.pane_maximized
+                && (layout.can_resize(r, axis)
+                    || self.tool.is_none() && self.work_panes.can_resize(r, axis))
         };
         WINDOW_KEYS
             .iter()
@@ -112,7 +114,8 @@ impl Shell {
                     match key {
                         'w' => nodes.len() > 1,
                         'c' => self.surface() == Split(Log) && self.log.can_close_tab(),
-                        '=' => true,
+                        '=' => !self.pane_maximized,
+                        'f' => true,
                         _ => false,
                     }
                 };
@@ -151,6 +154,10 @@ impl Shell {
         }
         self.cancel_key_sequences();
         self.cancel_drags();
+        if self.pane_maximized {
+            self.kitty.resize(direction);
+            return;
+        }
         let surface = self.surface();
         let moved = self.layout(surface).rect(self.focus_id()).and_then(|rect| {
             self.layout_mut(surface)
@@ -169,6 +176,30 @@ impl Shell {
         }
     }
 
+    pub(super) fn set_pane_maximized(&mut self, maximized: bool) {
+        self.cancel_key_sequences();
+        self.cancel_drags();
+        self.pane_maximized = maximized;
+    }
+
+    pub(super) fn smart_maximize(&mut self) {
+        if self.pop.is_some()
+            || self.panel().editing()
+            || self.kitty.busy()
+            || self.ctx.repos.is_empty()
+        {
+            return;
+        }
+        self.cancel_key_sequences();
+        self.cancel_drags();
+        if self.kitty.available() {
+            self.maximize_pending = true;
+            self.kitty.toggle_maximized();
+        } else {
+            self.set_pane_maximized(!self.pane_maximized);
+        }
+    }
+
     pub(super) fn run_window_key(&mut self, key: char) {
         let count = i32::from(self.window_prefix.and_then(|p| p.count).unwrap_or(1));
         self.cancel_key_sequences();
@@ -179,6 +210,9 @@ impl Shell {
                 self.focus_pane(next);
             }
         } else if let Some((axis, step)) = size_change(key) {
+            if self.pane_maximized {
+                return;
+            }
             if let Some(rect) = self.layout(surface).rect(id) {
                 if !self.layout_mut(surface).resize(rect, axis, count * step) && self.tool.is_none()
                 {
@@ -187,7 +221,7 @@ impl Shell {
             }
         } else {
             match key {
-                '=' => {
+                '=' if !self.pane_maximized => {
                     if self.tool.is_some() {
                         self.layout_mut(surface).reset();
                     } else {
@@ -199,6 +233,7 @@ impl Shell {
                 'w' => {
                     self.cycle_pane(false);
                 }
+                'f' => self.set_pane_maximized(!self.pane_maximized),
                 'c' if surface == Split(Log) => {
                     if let Err(error) = self.log.close_tab(&self.ctx) {
                         self.notice(format!("Log: {error:#}"));
@@ -267,6 +302,9 @@ impl Shell {
     /// Capture the gesture where it starts, including a release in a different
     /// pane. A text drag that only crosses a divider can never start resizing.
     pub(super) fn resize_mouse(&mut self, m: &MouseEvent) -> bool {
+        if self.pane_maximized {
+            return false;
+        }
         if matches!(m.kind, MouseEventKind::Down(_)) {
             self.cancel_drags();
         } else {

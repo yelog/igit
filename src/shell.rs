@@ -109,6 +109,8 @@ enum Popup {
 struct Shell {
     config: AppConfig,
     kitty: kitty::Kitty,
+    pane_maximized: bool,
+    maximize_pending: bool,
     pending_keys: Option<configuration::PendingKeys>,
     ctx: Context,
     icons: IconMode,
@@ -146,6 +148,8 @@ impl Shell {
         let mut s = Self {
             config,
             kitty: kitty::Kitty::default(),
+            pane_maximized: false,
+            maximize_pending: false,
             pending_keys: None,
             ctx,
             icons,
@@ -506,6 +510,8 @@ impl Shell {
                             self.smart_focus(direction);
                         } else if let CommandAction::SmartResize(direction) = command.action {
                             self.smart_resize(direction);
+                        } else if let CommandAction::SmartMaximize = command.action {
+                            self.smart_maximize();
                         } else if let Some(events) = command.events() {
                             for event in events {
                                 self.dispatch_builtin(&event);
@@ -692,6 +698,12 @@ impl Shell {
         !self.panel().editing()
     }
     fn dispatch(&mut self, ev: &Event) {
+        // Keep the reviewed focus/input context stable while synchronizing Kitty.
+        // Resize and focus notifications still run; the worker has a short deadline.
+        if self.maximize_pending && matches!(ev, Event::Key(_) | Event::Mouse(_) | Event::Paste(_))
+        {
+            return;
+        }
         if !self.config.mouse && matches!(ev, Event::Mouse(_)) {
             return;
         }
@@ -823,8 +835,15 @@ impl Shell {
     }
     fn poll(&mut self) -> bool {
         let mut change = self.key_picker.poll(Instant::now());
-        if let Some(Err(error)) = self.kitty.poll() {
-            self.notice(error);
+        if let Some(result) = self.kitty.poll() {
+            self.maximize_pending = false;
+            match result {
+                Ok(kitty::Outcome::Maximized(target)) => {
+                    self.set_pane_maximized(target.unwrap_or(!self.pane_maximized));
+                }
+                Ok(kitty::Outcome::Done) => (),
+                Err(error) => self.notice(error),
+            }
             change = true;
         }
         match self.log.poll_preview(&self.ctx) {
@@ -1285,6 +1304,8 @@ mod key_sequence_tests;
 mod configuration_tests;
 #[cfg(test)]
 mod help_tests;
+#[cfg(test)]
+mod maximize_tests;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]

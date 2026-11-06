@@ -215,32 +215,47 @@ impl PushPanel {
         let hidden = self.checked.iter().any(|i| !c.scope.contains(i));
         let footer_height = 2 + u16::from(self.footer_wraps(area.width, c)) + u16::from(hidden);
         let [body, controls] = Layout::vertical([C::Min(2), C::Length(footer_height)]).areas(area);
-        let [outgoing, right] = self.panes.divide(
-            SplitId::PushColumns,
-            body,
-            Axis::Width,
-            body.width / 2,
-            [18, 18],
-        );
-        let [files, details] = if self.show_details {
-            self.panes.divide(
-                SplitId::PushDetails,
-                right,
-                Axis::Height,
-                (u32::from(right.height) * 3 / 5) as u16,
-                [4, 3],
-            )
+        let [outgoing, files, details] = if self.panes.maximized {
+            Self::PANES.map(|id| {
+                if id == self.focused_pane() {
+                    body
+                } else {
+                    Rect::default()
+                }
+            })
         } else {
-            [right, Rect::default()]
+            let [outgoing, right] = self.panes.divide(
+                SplitId::PushColumns,
+                body,
+                Axis::Width,
+                body.width / 2,
+                [18, 18],
+            );
+            let [files, details] = if self.show_details {
+                self.panes.divide(
+                    SplitId::PushDetails,
+                    right,
+                    Axis::Height,
+                    (u32::from(right.height) * 3 / 5) as u16,
+                    [4, 3],
+                )
+            } else {
+                [right, Rect::default()]
+            };
+            [outgoing, files, details]
         };
         self.panes.add(PaneId::Outgoing, outgoing);
         self.panes.add(PaneId::PushFiles, files);
         if self.show_details {
             self.panes.add(PaneId::PushDetails, details);
         }
-        self.draw_repositories(f, outgoing, c);
-        self.draw_files(f, files, c);
-        if self.show_details {
+        if !outgoing.is_empty() {
+            self.draw_repositories(f, outgoing, c);
+        }
+        if !files.is_empty() {
+            self.draw_files(f, files, c);
+        }
+        if self.show_details && !details.is_empty() {
             let block = pane(
                 format!(
                     "Details / Diff · {} / Esc close",

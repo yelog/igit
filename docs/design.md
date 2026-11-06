@@ -1,5 +1,19 @@
 # IGit Interaction Design: Four Panels and the Commit Baseline
 
+**Pane maximize:** `Ctrl-W f` shows the focused pane across the workspace, with
+`MAX` in the footer. Tab changes the maximized pane in the usual order; normal
+panel shortcuts retain their behavior. Hidden panes clear their mouse targets
+and selections. Restoring preserves the prior split sizes, including after a
+terminal resize. Divider dragging and local size changes are suspended while
+maximized. Push and Merge retain their essential actions. Merge's existing `z`
+zoom remains a separate document preference.
+
+An optional `smart-toggle-pane-maximized` binding synchronizes with Kitty's
+stack/previous layout, following LazyDB. It uses an explicit verified target
+state, falls back to local toggle for a single Kitty group or outside Kitty,
+and ignores repeats and editor/review contexts. See
+[configuration](configuration.md#pane-maximize-and-kitty-synchronization).
+
 **Baseline: the native 0.1.0 TUI.** Layout descriptions refer to the native client. The Commit section compares its changes list with IDEA; the final section describes how to repeat acceptance checks. See [README](../README.md) for startup and dependencies. The original [interactive prototype](reference/IGit.html), [design notes](reference/IGit-Design.html), and [four-panel overview](reference/IGit-Overview.png) are available offline; prototype buttons and shortcuts do not imply implemented features.
 
 ## Workspace and Focus

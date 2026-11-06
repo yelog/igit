@@ -27,18 +27,22 @@ pub enum CommandAction {
     Keys(&'static str),
     SmartFocus(Direction),
     SmartResize(Direction),
+    SmartMaximize,
 }
 
 impl CommandAction {
     pub fn keys(self) -> Option<&'static str> {
         match self {
             Self::Keys(keys) => Some(keys),
-            Self::SmartFocus(_) | Self::SmartResize(_) => None,
+            Self::SmartFocus(_) | Self::SmartResize(_) | Self::SmartMaximize => None,
         }
     }
 
     pub fn is_smart_pane(self) -> bool {
-        matches!(self, Self::SmartFocus(_) | Self::SmartResize(_))
+        matches!(
+            self,
+            Self::SmartFocus(_) | Self::SmartResize(_) | Self::SmartMaximize
+        )
     }
 
     pub fn description(self) -> &'static str {
@@ -51,6 +55,7 @@ impl CommandAction {
             Self::SmartResize(Direction::Down) => "Move divider down or resize Kitty window",
             Self::SmartResize(Direction::Up) => "Move divider up or resize Kitty window",
             Self::SmartResize(Direction::Right) => "Move divider right or resize Kitty window",
+            Self::SmartMaximize => "Maximize / restore pane and Kitty layout",
             Self::Keys(_) => "",
         }
     }
@@ -65,6 +70,7 @@ pub struct Command {
 }
 
 macro_rules! commands {
+    (@action (maximize)) => { CommandAction::SmartMaximize };
     (@action $keys:literal) => { CommandAction::Keys($keys) };
     (@action $direction:ident) => { CommandAction::SmartFocus(Direction::$direction) };
     (@action (resize $direction:ident)) => { CommandAction::SmartResize(Direction::$direction) };
@@ -102,6 +108,8 @@ commands! {
         "smart-resize-pane-down" => (resize Down), ALL;
         "smart-resize-pane-up" => (resize Up), ALL;
         "smart-resize-pane-right" => (resize Right), ALL;
+        "smart-toggle-pane-maximized" => (maximize), ALL;
+        "toggle-pane-maximized" => "Ctrl-w f", ALL;
         "cycle" => "Ctrl-w w", ALL;
         "increase-width" => "Ctrl-w >", ALL;
         "decrease-width" => "Ctrl-w <", ALL;

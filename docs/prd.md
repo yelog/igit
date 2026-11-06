@@ -12,6 +12,16 @@ Product-owned interface text, help, errors, examples, and documentation use Engl
 
 ## Requirements and Delivery Status
 
+**Pane maximize (R7/R8 extension).** `Ctrl-W f` maximizes/restores the focused
+pane without changing saved split sizes. Tab retains access to all enabled
+panes; normal panel shortcuts remain available. `MAX` identifies the state.
+Optional `smart-toggle-pane-maximized` synchronizes Kitty's owning tab with
+stack/previous layout, using layout groups to avoid counting overlays as splits.
+Single-group and non-Kitty sessions toggle locally. Verified remote outcomes
+set the local state explicitly; failures preserve it. Editors/reviews and held
+key repeats cannot trigger synchronization. Configuration examples include an
+`IS_IGIT`-scoped `Cmd+Ctrl+F` mapping.
+
 The table records the 0.1.0 delivery baseline. Items marked partial or next steps are not release claims. See P0, A7, and A9 for the current Commit changes and observed checks, and A11 for Push comparison.
 
 | ID | Original requirement | Delivered behavior and limits |
@@ -178,3 +188,15 @@ Ctrl-r opened review; help showed Ctrl-r; a custom `Q Q` sequence displayed
 its continuation and opened quit review. Explicit ASCII/mouse-off CLI options
 overrode Nerd Font/mouse-on settings. Canceling review preserved HEAD, real
 index entries, working-tree diffs, and status in all three runs.
+
+**Pane maximize verification, 2026-11-06:** regression tests cover all workspace
+and tool panes, Tab traversal, saved split restoration, narrow layouts,
+rebound shortcuts, hidden mouse/selection targets, and failed Kitty requests.
+An isolated Kitty 0.47.4 instance loaded the user's actual configuration and
+ran the release binary against a fresh practice workspace. Its mapping
+dispatcher passed `Cmd+Ctrl+F` through to IGit: a 60×36 split became 120×36
+stack with IGit in `MAX`, and the next press restored both layouts exactly.
+Repeat/release events did not toggle; editors and quit review blocked the
+action. With one Kitty window, only IGit changed. The test instance was closed;
+HEAD, the real index, working-tree diff, and status stayed unchanged in all
+three practice repositories.

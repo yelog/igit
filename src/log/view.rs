@@ -304,7 +304,7 @@ impl LogPanel {
         if !self.pane_visible(self.focus) {
             self.focus = Pane::Graph;
         }
-        let areas = if a.width < 82 {
+        let areas = if self.panes.maximized || a.width < 82 {
             let mut navigation = Rect::new(a.x, a.y, a.width, 1);
             self.view_button(f, &mut navigation);
             for (pane, label) in [
@@ -318,7 +318,12 @@ impl LogPanel {
                     self.button(f, tab, label, self.focus == pane, Hit::Pane(pane));
                 }
             }
-            let content = Rect::new(a.x, navigation.bottom(), a.width, a.height - 1);
+            let content = Rect::new(
+                a.x,
+                navigation.bottom(),
+                a.width,
+                a.height.saturating_sub(1),
+            );
             // Keep every enabled tab reachable; only the current tab occupies screen cells.
             Pane::ORDER.map(|p| {
                 if p == self.focus {
@@ -403,7 +408,7 @@ impl LogPanel {
     fn graph_toolbar(&mut self, f: &mut Frame, area: Rect, c: &Context) -> u16 {
         let two = area.width < 56 && area.height >= 5;
         let mut a = one(area.x, area.y, area.width);
-        if self.bounds.width >= 82 {
+        if self.bounds.width >= 82 && !self.panes.maximized {
             self.view_button(f, &mut a);
         }
         let field_w = if two {

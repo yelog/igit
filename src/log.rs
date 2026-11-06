@@ -549,9 +549,16 @@ impl LogPanel {
         self.graph_height = 0;
         if !a.is_empty() {
             self.draw_layout(f, a, c);
+        } else {
+            for pane in Pane::ORDER {
+                if self.pane_visible(pane) {
+                    self.panes.add(pane.id(), Rect::default());
+                }
+            }
         }
         if self.panes.rect(PaneId::Info).is_none_or(|r| r.is_empty()) {
             self.info_selection.reset();
+            self.info_click = None;
         }
     }
     pub(crate) fn draw_overlays(&mut self, f: &mut Frame, a: Rect, c: &Context) {

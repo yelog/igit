@@ -100,11 +100,14 @@ IGit kitten helper and pass through these chords as described in
 | Filter repositories | `r` → `j/k` → `Space` to toggle; `a` selects all; `Enter` applies | Click Roots, repository rows, and Apply. |
 | Switch panes | `Tab` / `Shift-Tab` cycles forward/backward (also `F6` / `Shift-F6`); press `Ctrl-W`, then `h/j/k/l` for left/down/up/right | Click the target pane. |
 | Resize panes | After `Ctrl-W`, use `>` / `<` to increase/decrease width, `+` / `-` for height, or `=` to restore defaults | Drag the divider between adjacent panes; drag the horizontal Commit / Git Log divider to change split heights. |
+| Maximize or restore a pane | `Ctrl-W f`; optional Kitty synchronization uses `smart-toggle-pane-maximized` | In maximized mode, only the focused pane is shown; Tab still switches panes. |
 | Actions and help | `:` action list; `?` / `F1` help for the current area | Click ⋯ (Actions) or ? (Help). |
 | Refresh and quit | `F5` refreshes; `q` or normal-mode `Ctrl-C` opens quit confirmation | Click ⋯ → Refresh workspace or Quit. |
 | Review writes | `y` confirms; Cancel has initial focus, `n/Esc` cancels; scroll long content with `j/k` or arrow keys | Click Confirm / Cancel; use the wheel to scroll. |
 
 In normal mode, Tab moves between Commit and Git Log. With Push or Merge open, it cycles only within that dialog. Hidden sidebars are skipped; narrow terminals still allow Tab to reach panes collapsed into tabs. Resizing defaults to one cell at a time; specify a count after the prefix, such as `Ctrl-W 8 >` to widen by eight columns. Sizes last only for the current run.
+
+`Ctrl-W f` maximizes the focused pane across the workspace and restores its saved split sizes on the next press. The footer shows `MAX`; Tab and panel shortcuts switch the maximized view. Local resizing and divider dragging are suspended while maximized. To make `Cmd+Ctrl+F` toggle both Kitty's stack layout and IGit's focused pane, see [pane maximize configuration](docs/configuration.md#pane-maximize-and-kitty-synchronization).
 
 The current row determines the preview; checkboxes determine the operation. Filtered-out repositories do not participate. While entering text, letters and digits are treated as text and do not trigger global shortcuts. Actions → Open / rescan workspace reruns discovery. Opening a workspace restarts panel sessions, so finish any current input first.
 

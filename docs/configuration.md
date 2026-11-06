@@ -100,7 +100,7 @@ binding; the action's mouse button remains available.
 | `ui.icons` | `"nerd-font"` | Icon mode; CLI `--icons` overrides it |
 | `keybindings.hint_delay_ms` | `200` | Delay before showing sequence continuations, from `0` to `10000` milliseconds |
 | `keybindings.global` | See defaults | Focus Log/Commit, open Push/Merge, Roots, Actions, refresh, help, quit |
-| `keybindings.panes` | See defaults | Focus/cycle panes, optional Kitty smart focus/resize, resize/reset sizes, close a Log tab |
+| `keybindings.panes` | See defaults | Focus/cycle panes, resize/reset sizes, maximize/restore, optional Kitty synchronization, close a Log tab |
 | `keybindings.log` | See defaults | Movement, paging, copying, filtering, tabs, display options |
 | `keybindings.commit` | See defaults | Movement, checkboxes, groups, preview, messages, AI and commit review |
 | `keybindings.push` | See defaults | Movement, repository selection, targets, fetch, push review and retry |
@@ -249,7 +249,7 @@ Push and Merge resize only their own visible panes. Editors, menus, help, Diff
 overlays, and confirmation dialogs consume the chords without changing size,
 focus, or input. Normal-mode help can execute a configured resize action.
 All four commands are unbound by default and require a single Ctrl, Alt, or
-Super/Cmd modified chord. Either smart focus or smart resize enables `IS_IGIT`.
+Super/Cmd modified chord. Any configured smart pane command enables `IS_IGIT`.
 
 Install the [IGit resize helper](../contrib/kitty/igit_resize.py) into Kitty's
 configuration directory. For the default directory, run from the IGit source:
@@ -279,3 +279,49 @@ configuration and restart IGit. Existing Neovim `<D-C-S-h/j/k/l>` mappings to
 ordinary Kitty resize mappings can continue to use their existing setup.
 If a remote resize fails, check the status message, remote-control settings,
 and that `igit_resize.py` is installed. Requests retain the one-second timeout.
+
+## Pane maximize and Kitty synchronization
+
+`toggle-pane-maximized` defaults to `Ctrl-w f`. It fills the workspace with the
+focused pane, retaining the header, footer, and relevant panel controls. Tab
+continues through enabled panes; `1` / `2` switches Log and Commit, and `3` / `4`
+opens the corresponding tool. The next press restores the saved split sizes.
+Maximizing is session-only. Local divider resize/reset and mouse resizing are
+disabled while maximized; smart resize can still hand off to Kitty.
+
+The optional `smart-toggle-pane-maximized` command follows LazyDB's behavior:
+
+- In a Kitty tab with multiple layout groups, switch to `stack` and maximize
+  IGit's focused pane. From `stack`, restore the previous Kitty layout and the
+  IGit split layout.
+- With one Kitty group, or outside Kitty, toggle only the IGit pane. Overlays
+  belonging to the same Kitty group do not count as extra splits.
+- The originating `KITTY_WINDOW_ID` identifies the tab, even if another tab
+  currently has focus. IGit verifies Kitty's resulting layout before updating
+  its own state. Failures show a status message and leave IGit's layout intact.
+- Editors, menus, help, Diff overlays, and review dialogs consume the shortcut
+  without changing input or layout. Held-key repeats do not toggle repeatedly.
+
+Add this to the existing `[keybindings.panes]` table in `settings.toml`:
+
+```toml
+smart-toggle-pane-maximized = ["Cmd+Ctrl+f"]
+```
+
+Alongside the existing remote-control settings in `kitty.conf`, use:
+
+```conf
+allow_remote_control yes
+listen_on unix:/tmp/kitty
+enabled_layouts splits,stack
+map --when-focus-on var:IS_IGIT cmd+ctrl+f
+```
+
+Keep your existing socket and enabled layouts if already configured; include
+`stack` in the layout list. This binding synchronizes **pane maximize**, not
+macOS window fullscreen. It applies only while IGit owns the terminal, leaving
+LazyDB, Neovim, and ordinary Kitty mappings available in their own contexts.
+No additional kitten script is required. Reload Kitty's configuration and
+restart IGit after building/installing the version supporting these commands.
+The empty Kitty mapping passes the original key event through, preserving
+press/repeat/release information so a held shortcut cannot toggle repeatedly.

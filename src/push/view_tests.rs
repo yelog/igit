@@ -592,3 +592,101 @@ fn pane_navigation_push_resizes_around_the_diff_without_copying_or_checking() {
     assert_eq!(p.selected(), Some((0, None)));
     assert!(p.review.is_empty() && p.inflight.is_none());
 }
+
+#[test]
+fn maximized_push_preserves_footer_scope_and_saved_dividers() {
+    let (mut p, c) = fixture(IconMode::Ascii);
+    p.show_details = true;
+    draw(&mut p, &c, 120, 36);
+    let outgoing = p.panes.rect(PaneId::Outgoing).unwrap();
+    assert!(p.panes.resize(outgoing, Axis::Width, 7));
+    let details = p.panes.rect(PaneId::PushDetails).unwrap();
+    assert!(p.panes.resize(details, Axis::Height, 3));
+    draw(&mut p, &c, 120, 36);
+    let restored = p.panes.nodes().to_vec();
+    let checked = p.checked.clone();
+    let selected = p.selected();
+    let file_cursor = p.preview.tree.cursor;
+
+    p.focus_pane(PaneId::PushDetails);
+    draw(&mut p, &c, 120, 36);
+    p.detail_selection.select_all();
+    assert!(p.detail_selection.selected_text().is_some());
+    p.panes.maximized = true;
+    for id in PushPanel::PANES {
+        p.focus_pane(id);
+        draw(&mut p, &c, 120, 36);
+        assert_eq!(
+            p.panes
+                .nodes()
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>(),
+            PushPanel::PANES
+        );
+        for &(other, area) in p.panes.nodes() {
+            assert_eq!(!area.is_empty(), id == other);
+            if other == id {
+                assert_eq!(area, Rect::new(0, 0, 120, 34));
+                assert!(!p.panes.can_resize(area, Axis::Width));
+                assert!(!p.panes.can_resize(area, Axis::Height));
+            }
+        }
+        for (_, hit) in &p.hits {
+            match hit {
+                Hit::Row(_) | Hit::Check(_) | Hit::Fold(_) | Hit::EditTarget | Hit::Fetch => {
+                    assert_eq!(id, PaneId::Outgoing)
+                }
+                Hit::File(_) | Hit::FileFold(_) | Hit::FoldAll(_) | Hit::GroupBy | Hit::Details => {
+                    assert_eq!(id, PaneId::PushFiles)
+                }
+                _ => {}
+            }
+        }
+        assert!(p.hits.iter().any(|(_, hit)| matches!(hit, Hit::Send)));
+        assert!(p.hits.iter().any(|(_, hit)| matches!(hit, Hit::Cancel)));
+        assert!(p.detail_selection.selected_text().is_none());
+        assert_eq!(p.checked, checked);
+        assert_eq!(p.selected(), selected);
+        assert_eq!(p.preview.tree.cursor, file_cursor);
+    }
+    p.panes.maximized = false;
+    draw(&mut p, &c, 120, 36);
+    assert_eq!(p.panes.nodes(), restored);
+    assert!(p.review.is_empty() && p.inflight.is_none());
+}
+
+#[test]
+fn maximized_push_hides_details_selection_geometry_and_skips_closed_details() {
+    let (mut p, c) = fixture(IconMode::Ascii);
+    p.show_details = true;
+    p.focus_pane(PaneId::PushDetails);
+    draw(&mut p, &c, 120, 36);
+    let detail = pane("", true).inner(p.panes.rect(PaneId::PushDetails).unwrap());
+    p.panes.maximized = true;
+    p.focus_pane(PaneId::Outgoing);
+    draw(&mut p, &c, 120, 36);
+    assert!(p
+        .detail_selection
+        .mouse(&MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: detail.x,
+            row: detail.y,
+            modifiers: KeyModifiers::NONE,
+        })
+        .is_none());
+    key(&mut p, &c, KeyCode::Char('d'));
+    assert!(!p.show_details);
+    for (width, height) in [(44, 12), (1, 1)] {
+        draw(&mut p, &c, width, height);
+        assert_eq!(
+            p.panes
+                .nodes()
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>(),
+            [PaneId::Outgoing, PaneId::PushFiles]
+        );
+        assert_eq!(p.focused_pane(), PaneId::Outgoing);
+    }
+}
