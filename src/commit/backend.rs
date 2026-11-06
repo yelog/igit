@@ -9,7 +9,9 @@ use std::{
 };
 use tempfile::TempDir;
 
-#[derive(Clone, Debug)]
+pub(super) mod discard;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Change {
     pub path: PathBuf,
     pub xy: [u8; 2],
@@ -771,7 +773,7 @@ pub fn patch(repo: &Path, files: &[Change]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn setup() -> TempDir {
+    pub(super) fn setup() -> TempDir {
         let d = TempDir::new().unwrap();
         let r = d.path();
         for args in [
@@ -785,10 +787,10 @@ mod tests {
         }
         d
     }
-    fn put(r: &Path, n: &str, s: &str) {
+    pub(super) fn put(r: &Path, n: &str, s: &str) {
         fs::write(r.join(n), s).unwrap()
     }
-    fn commit_all(r: &Path) {
+    pub(super) fn commit_all(r: &Path) {
         g(r, None, &["add", "-A"]).unwrap();
         g(r, None, &["commit", "-qm", "base"]).unwrap();
     }
@@ -800,7 +802,7 @@ mod tests {
             .collect();
         plan(0, r, selected, "selected".into(), false).unwrap()
     }
-    fn get(r: &Path, args: &[&str]) -> String {
+    pub(super) fn get(r: &Path, args: &[&str]) -> String {
         txt(g(r, None, args).unwrap())
     }
     #[test]

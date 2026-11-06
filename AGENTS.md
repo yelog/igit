@@ -11,7 +11,7 @@ IGit is a standalone terminal workspace for multiple Git repositories. `igit` an
 | Change Git commands, state, or operations across repositories | [Architecture](docs/architecture.md) | [core.rs](src/core.rs) owns repository discovery and shared Git calls; transaction details live in the individual panels. |
 | Launch the app, try workflows, or configure AI | [README](README.md) | Use the local practice workspace; external repositories and model configuration are not required. |
 
-**Current handoff point (2026-11-04):** Commit defaults to IDEA's flat changes list: group → repository → file, with the parent directory after the filename. Untracked files are expanded but unchecked. `t` switches to a directory tree; `v` opens the preview (file → Diff, container → scope summary). Start with the [tree model](src/commit/tree.rs), [row rendering and hit areas](src/commit/rows.rs), [view](src/commit/view.rs), and [events](src/commit.rs). Use PRD A7 to check repository scope, and A9 plus the [practice repository](examples/demo-commit.sh) to check duplicate filenames, narrow terminals, and staged content.
+**Current handoff point (2026-11-06):** Commit opens a directory tree with Directory on and Module off. Untracked files are expanded but unchecked. `t` toggles directory grouping; `v` opens the preview (file → Diff, container → scope summary). Start with the [tree model](src/commit/tree.rs), [row rendering and hit areas](src/commit/rows.rs), [view](src/commit/view.rs), and [events](src/commit.rs). Use PRD A7 to check repository scope, and A9 plus the [practice repository](examples/demo-commit.sh) to check duplicate filenames, narrow terminals, and staged content.
 
 ## Behavior to Preserve
 

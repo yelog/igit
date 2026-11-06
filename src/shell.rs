@@ -10,7 +10,7 @@ use self::{
     WorkspacePane::{Commit, Log},
 };
 use crate::{
-    commit::CommitPanel,
+    commit::{CommitPanel, Rollback, RollbackEvent},
     config::{keys::CommandAction, AppConfig},
     core::{Context, Repo},
     log::LogPanel,
@@ -84,6 +84,7 @@ Focus: 1 Git Log / 2 Commit   Dialogs: 3 Push / 4 Merge   p Pull / f Fetch
 r repositories   ? / F1 help   q quit
 Runs Git on your local working trees; mutations require a reviewed confirmation.";
 enum Popup {
+    Rollback(Box<Rollback>),
     Update(update::Dialog),
     Scope {
         picked: BTreeSet<usize>,
@@ -304,6 +305,11 @@ impl Shell {
                     self.go(Split(self.focus));
                 }
             }
+            Action::ReviewRollback => {
+                self.cancel_key_sequences();
+                self.cancel_drags();
+                self.pop = self.commit.take_rollback().map(Popup::Rollback);
+            }
             Action::Confirm { title, body, token } => {
                 self.cancel_key_sequences();
                 self.pop = Some(Popup::Confirm {
@@ -399,6 +405,7 @@ impl Shell {
     }
     fn help_content(&self) -> HelpContent {
         match self.pop.as_ref() {
+            Some(Popup::Rollback(dialog)) => dialog.keymap(),
             Some(Popup::Update(dialog)) => dialog.keymap(),
             Some(Popup::Scope { .. }) => HelpContent::new(
                 HelpSection::new(
@@ -541,6 +548,24 @@ impl Shell {
             }
             return;
         }
+        if let Some(Popup::Rollback(dialog)) = self.pop.as_mut() {
+            match dialog.event(ev, &self.ctx) {
+                RollbackEvent::Keep => (),
+                RollbackEvent::Close => self.pop = None,
+                RollbackEvent::Help => self.open_help(),
+                RollbackEvent::Apply if self.push.busy() => {
+                    self.notice("Wait for the remote operation to finish".into())
+                }
+                RollbackEvent::Apply => {
+                    let Some(Popup::Rollback(dialog)) = self.pop.take() else {
+                        unreachable!()
+                    };
+                    let action = dialog.apply(&self.ctx);
+                    self.action(action);
+                }
+            }
+            return;
+        }
         let key = if let Event::Key(k) = ev {
             Some(k.code)
         } else {
@@ -577,6 +602,7 @@ impl Shell {
         }
         let popup = self.pop.take().unwrap();
         self.pop = match popup {
+            Popup::Rollback(_) => unreachable!("rollback events are handled above"),
             Popup::Update(_) => unreachable!("update events are handled above"),
             Popup::Confirm {
                 title,
@@ -715,7 +741,13 @@ impl Shell {
     fn can_leave_panel(&mut self) -> bool {
         match self.surface() {
             Split(Log) => self.log.dismiss_filter_dropdown(),
-            Split(Commit) => self.commit.dismiss_view_menu(),
+            Split(Commit) => {
+                self.commit.dismiss_view_menu();
+                if let Err(error) = self.commit.finish_message(&self.ctx) {
+                    self.notice(format!("Commit message: {error:#}"));
+                    return false;
+                }
+            }
             Dialog(Push) => self.push.dismiss_group_menu(),
             Dialog(Merge) => (),
         }
@@ -811,6 +843,14 @@ impl Shell {
             return;
         }
         if let Event::Key(k) = ev {
+            if self.surface() == Split(Commit)
+                && self.commit.message_editing()
+                && matches!(k.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::F(6))
+                && (k.modifiers.is_empty() || k.modifiers == KeyModifiers::SHIFT)
+                && !self.can_leave_panel()
+            {
+                return;
+            }
             let editing = self.panel().editing();
             if !editing && !self.ctx.repos.is_empty() && self.pane_key(k) {
                 return;
@@ -949,6 +989,10 @@ impl Shell {
             .map_or(timeout, |remaining| remaining.min(timeout))
     }
     fn draw_popup(&mut self, f: &mut Frame, a: Rect) {
+        if let Some(Popup::Rollback(dialog)) = self.pop.as_mut() {
+            dialog.draw(f, a, &self.ctx);
+            return;
+        }
         if let Some(Popup::Update(dialog)) = self.pop.as_mut() {
             dialog.draw(f, a, self.icons, &mut self.pop_hits);
             return;
@@ -977,6 +1021,7 @@ impl Shell {
         .min(a.width - 4);
         let p = Rect::new(a.x + (a.width - w) / 2, a.y + (a.height - h) / 2, w, h);
         let title = match pop {
+            Popup::Rollback(_) => unreachable!("rollback is rendered above"),
             Popup::Update(_) => unreachable!("update is rendered above"),
             Popup::Scope { .. } => "Workspace roots",
             Popup::Help { .. } => "IGit · Keyboard shortcuts",
@@ -1002,6 +1047,7 @@ impl Shell {
         );
         let mut controls = vec![];
         match pop {
+            Popup::Rollback(_) => unreachable!("rollback is rendered above"),
             Popup::Update(_) => unreachable!("update is rendered above"),
             Popup::Confirm {
                 body: text,
@@ -1377,6 +1423,8 @@ mod key_sequence_tests;
 #[cfg(test)]
 mod configuration_tests;
 #[cfg(test)]
+mod discard_tests;
+#[cfg(test)]
 mod help_tests;
 #[cfg(test)]
 mod maximize_tests;
@@ -1450,6 +1498,15 @@ mod tests {
                 .join("\n")
         };
         key(&mut app, KeyCode::Char('2'));
+        // Enable Module so the repository row and its branch badge are visible.
+        for k in [
+            KeyCode::Char('o'),
+            KeyCode::Down,
+            KeyCode::Enter,
+            KeyCode::Esc,
+        ] {
+            key(&mut app, k);
+        }
         key(&mut app, KeyCode::Char('j')); // Highlight the repository.
         key(&mut app, KeyCode::Char('v'));
         assert!(screen(&mut app).contains("on main"));

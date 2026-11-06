@@ -79,18 +79,28 @@ impl CommitPanel {
                 ),
             };
             let extra = if matches!(edit, Edit::Message) {
-                vec![Section::new(
-                    "Commit / Text Selection",
-                    &[
-                        ("Ctrl-a", "Select entire message"),
-                        ("Shift-Left", "Extend selection left"),
-                        ("Shift-Right", "Extend selection right"),
-                        ("Shift-Up", "Extend selection up"),
-                        ("Shift-Down", "Extend selection down"),
-                        ("Shift-Home", "Select to line start"),
-                        ("Shift-End", "Select to line end"),
-                    ],
-                )]
+                vec![
+                    Section::new(
+                        "Commit / Message Navigation",
+                        &[
+                            ("Tab", "Save message and focus next pane"),
+                            ("Shift-Tab", "Save message and focus previous pane"),
+                            ("F6", "Save message and focus next pane"),
+                        ],
+                    ),
+                    Section::new(
+                        "Commit / Text Selection",
+                        &[
+                            ("Ctrl-a", "Select entire message"),
+                            ("Shift-Left", "Extend selection left"),
+                            ("Shift-Right", "Extend selection right"),
+                            ("Shift-Up", "Extend selection up"),
+                            ("Shift-Down", "Extend selection down"),
+                            ("Shift-Home", "Select to line start"),
+                            ("Shift-End", "Select to line end"),
+                        ],
+                    ),
+                ]
             } else {
                 vec![]
             };
@@ -112,6 +122,7 @@ impl CommitPanel {
                     ("PgDn", "Page down"),
                     ("PgUp", "Page up"),
                     ("m", "Move current scope to another changelist"),
+                    ("d", "Review rollback for the highlighted scope"),
                 ],
             ),
             Focus::Diff => Section::new(

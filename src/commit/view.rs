@@ -13,7 +13,7 @@ use ratatui::{
     layout::{Constraint, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Wrap as ParagraphWrap},
+    widgets::Paragraph,
     Frame,
 };
 use unicode_width::UnicodeWidthStr;
@@ -102,6 +102,7 @@ impl CommitPanel {
         self.hits.clear();
         self.tree = Rect::default();
         self.diff = Rect::default();
+        self.edit_view.0 = Rect::default();
         self.stacked = area.width < SPLIT_AT;
         let [sidebar, preview] = if self.panes.maximized {
             if self.focus == Focus::Diff {
@@ -265,27 +266,30 @@ impl CommitPanel {
             .get(self.repo)
             .and_then(|_| self.saved.drafts.get(&rid(c, self.repo)))
             .filter(|s| !s.trim().is_empty());
-        let style = fg(if msg.is_some() { INK } else { DIM });
-        let text = msg.map_or("Commit message…", String::as_str);
-        if draft.height <= 1 {
-            let subject = text
-                .lines()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or("");
-            word(f, draft, &fit(subject, draft.width.into()), style);
+        if self.message_editing() {
+            self.draw_input(f, draft, false);
         } else {
-            f.render_widget(
-                Paragraph::new(text)
-                    .style(style)
-                    .wrap(ParagraphWrap { trim: false }),
+            self.edit_view = (draft, 0, 0);
+            self.message_selection.render(
+                f,
                 draft,
+                TextLayout::plain(msg.map_or("", String::as_str), draft.width, Wrap::Clip),
+                0,
+                0,
             );
+            if msg.is_none() {
+                word(f, slice(draft, 0), "Commit message…", fg(DIM));
+            }
         }
         self.hits.push((draft, Hit::Msg));
 
         let mut x = actions.x;
         self.hit_button(f, actions, &mut x, "Commit…", Hit::Submit(false));
         self.hit_button(f, actions, &mut x, "Commit & Push…", Hit::Submit(true));
+        if self.message_editing() {
+            self.hit_button(f, actions, &mut x, "Save", Hit::EditSave);
+            self.hit_button(f, actions, &mut x, "Cancel", Hit::EditCancel);
+        }
         let submit_end = x;
         let options = if separate_options {
             x = options.x;

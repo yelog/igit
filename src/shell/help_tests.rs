@@ -108,6 +108,10 @@ fn text_selection_click_after_copy_survives_notice_clear_and_resize() {
         screen(&mut app, width, height);
         app.dispatch(&key(KeyCode::Char('i')));
         app.dispatch(&Event::Paste("first line\nsecond line\nthird line".into()));
+        // The inline composer may show only one line; navigate its viewport.
+        for code in [KeyCode::Home, KeyCode::Up, KeyCode::Up] {
+            app.dispatch(&key(code));
+        }
         let find = |text: String, needle: &str| {
             text.lines()
                 .enumerate()
@@ -134,6 +138,7 @@ fn text_selection_click_after_copy_survives_notice_clear_and_resize() {
         assert_eq!(capture.texts().last().unwrap(), "first");
         assert!(app.panel().selected_text().is_none());
         assert!(app.msg.contains("Copied"));
+        app.dispatch(&key(KeyCode::Down));
         let (x, y) = find(screen(&mut app, width, height), "second line");
         app.dispatch(&mouse(MouseEventKind::Down(MouseButton::Left), x + 2, y));
         assert!(app.msg.is_empty());

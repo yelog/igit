@@ -1,5 +1,5 @@
 //! The controls and text in a single Changes row share the same cell geometry.
-use super::{display_path, Change, CommitPanel, Context, Kind, Row, IGNORED, NEW};
+use super::{display_path, tree::Tree, Change, CommitPanel, Context, Kind, Row, IGNORED, NEW};
 use crate::ui::{
     icons::Icon,
     idea::{clipped, clipped_path, repo_tint, BLUE, CHECK, CONFLICT, DIM, INK},
@@ -85,6 +85,21 @@ fn parent_hint(repo: &str, path: &Path, width: usize) -> String {
 }
 
 impl CommitPanel {
+    pub(super) fn row_controls(&self, row: &Row, area: Rect) -> (Rect, Rect) {
+        self.changes_tree().row_controls(row, area)
+    }
+
+    pub(super) fn change_row(&self, row: &Row, c: &Context, width: u16) -> Line<'static> {
+        self.changes_tree().change_row(row, c, width)
+    }
+
+    #[cfg(test)]
+    fn row_line(&self, row: &Row, c: &Context, width: u16, mono: bool) -> Line<'static> {
+        self.changes_tree().row_line(row, c, width, mono)
+    }
+}
+
+impl Tree<'_> {
     fn row_cells(&self, row: &Row, area: Rect) -> Cells {
         let mut x = area.x.saturating_add(row.indent(area.width));
         let mut slot = |glyph: &'static str, style, visible| {
@@ -337,6 +352,7 @@ mod tests {
     #[test]
     fn same_named_files_keep_their_parent_and_root_files_have_no_trailing_slash() {
         let (mut p, c) = fixture();
+        p.options.directories = false;
         for mode in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
             p.icons = mode;
             for (i, lang) in [(0, "en_US"), (1, "zh_CN")] {

@@ -1,4 +1,6 @@
-use super::{display_path, keypart, CommitPanel, Context, DEF, IGNORED, NEW};
+use super::{
+    display, display_path, keypart, CommitPanel, Context, File, IconMode, DEF, IGNORED, NEW,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
@@ -19,6 +21,17 @@ pub(super) struct Row {
     pub depth: u16,
     pub files: Vec<usize>,
     pub kind: Kind,
+}
+
+pub(super) struct Tree<'a> {
+    pub files: &'a [File],
+    // A missing check leaves a visible file read-only.
+    pub checks: &'a BTreeMap<String, bool>,
+    pub fold: &'a BTreeSet<String>,
+    pub groups: &'a [String],
+    pub options: &'a display::Options,
+    pub icons: IconMode,
+    pub show_empty_groups: bool,
 }
 
 impl Row {
@@ -66,7 +79,7 @@ struct Directory<'a> {
 impl Directory<'_> {
     fn append(
         self,
-        panel: &CommitPanel,
+        tree: &Tree<'_>,
         folds: &BTreeSet<String>,
         rows: &mut Vec<Row>,
         repo_id: &str,
@@ -91,26 +104,23 @@ impl Directory<'_> {
                 kind: Kind::Directory(path.clone()),
             });
             if open {
-                dir.append(panel, folds, rows, repo_id, &path, depth + 1);
+                dir.append(tree, folds, rows, repo_id, &path, depth + 1);
             }
         }
-        rows.extend(self.leaves.into_iter().map(|i| panel.file_row(i, depth)));
+        rows.extend(self.leaves.into_iter().map(|i| tree.file_row(i, depth)));
     }
 }
 
 impl CommitPanel {
-    fn file_row(&self, i: usize, depth: u16) -> Row {
-        let file = &self.files[i];
-        let mut label = display_path(Path::new(file.change.path.file_name().unwrap_or_default()));
-        if file.change.directory() {
-            label.push('/');
-        }
-        Row {
-            id: file.key.clone(),
-            label,
-            depth,
-            files: vec![i],
-            kind: Kind::File(i),
+    pub(super) fn changes_tree(&self) -> Tree<'_> {
+        Tree {
+            files: &self.files,
+            checks: &self.checks,
+            fold: &self.fold,
+            groups: &self.saved.groups,
+            options: &self.options,
+            icons: self.icons,
+            show_empty_groups: true,
         }
     }
 
@@ -186,9 +196,34 @@ impl CommitPanel {
     }
 
     fn rows_with_folds(&self, c: &Context, folds: &BTreeSet<String>) -> Vec<Row> {
+        self.changes_tree().rows_with_folds(c, folds)
+    }
+
+    pub(super) fn check_counts(&self, row: &Row) -> (usize, usize) {
+        self.changes_tree().check_counts(row)
+    }
+}
+
+impl Tree<'_> {
+    fn file_row(&self, i: usize, depth: u16) -> Row {
+        let file = &self.files[i];
+        let mut label = display_path(Path::new(file.change.path.file_name().unwrap_or_default()));
+        if file.change.directory() {
+            label.push('/');
+        }
+        Row {
+            id: file.key.clone(),
+            label,
+            depth,
+            files: vec![i],
+            kind: Kind::File(i),
+        }
+    }
+
+    pub(super) fn rows_with_folds(&self, c: &Context, folds: &BTreeSet<String>) -> Vec<Row> {
         let mut rows = vec![];
         for group in std::iter::once(DEF)
-            .chain(self.saved.groups.iter().map(String::as_str))
+            .chain(self.groups.iter().map(String::as_str))
             .chain(std::iter::once(NEW))
             .chain(self.options.ignored.then_some(IGNORED))
         {
@@ -198,7 +233,7 @@ impl CommitPanel {
                     repos.entry(file.root).or_default().push(i);
                 }
             }
-            if (group == NEW || group == IGNORED) && repos.is_empty() {
+            if (!self.show_empty_groups || group == NEW || group == IGNORED) && repos.is_empty() {
                 continue;
             }
             let id = format!("g:{group}");
@@ -301,9 +336,13 @@ impl CommitPanel {
         let mut eligible = 0;
         for &i in &row.files {
             let file = &self.files[i];
-            if file.change.selectable() {
+            if let Some(&check) = self
+                .checks
+                .get(&file.key)
+                .filter(|_| file.change.selectable())
+            {
                 eligible += 1;
-                checked += usize::from(self.checks.get(&file.key) == Some(&true));
+                checked += usize::from(check);
             }
         }
         (checked, eligible)
@@ -380,6 +419,7 @@ mod tests {
     #[test]
     fn flat_rows_sort_by_filename_and_select_the_exact_git_path() {
         let (_d, c, mut panel) = fixture();
+        panel.set_grouping(false, true, &c);
         let paths: Vec<_> = panel
             .view
             .iter()
@@ -427,7 +467,7 @@ mod tests {
     fn regrouping_reveals_the_active_file_and_preserves_other_directory_folds() {
         let (_d, c, mut panel) = fixture();
         let checks = panel.checks.clone();
-        panel.set_directory_grouping(true, &c);
+        panel.set_module_grouping(true, &c);
         let sibling = panel.view[dir_row(&panel, 1, "pkg/src/model")].id.clone();
         for path in ["pkg/src/model", "pkg/src/view", "pkg/src"] {
             panel.fold(dir_row(&panel, 1, path), Some(true), &c);
@@ -502,7 +542,7 @@ mod tests {
     #[test]
     fn bulk_folds_preserve_the_active_group_checks_and_filtered_root_folds() {
         let (_d, mut c, mut panel) = fixture();
-        panel.set_directory_grouping(true, &c);
+        panel.set_module_grouping(true, &c);
         let i = dir_row(&panel, 1, "pkg/src/model");
         let was_closed = panel.view[i].id.clone();
         let was_open = panel.view[dir_row(&panel, 1, "pkg/src/view")].id.clone();

@@ -25,6 +25,7 @@ pub enum Action {
     Refresh(String),
     Go(usize),
     CloseDialog,
+    ReviewRollback,
     Confirm {
         title: String,
         body: String,

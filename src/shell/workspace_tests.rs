@@ -3,6 +3,7 @@ use crate::core::git;
 use crate::ui::panes::PaneId;
 use crossterm::event::MouseEvent;
 use std::fs;
+mod inline_message;
 
 fn window_prefix(app: &mut Shell) {
     app.dispatch(&Event::Key(KeyEvent::new(

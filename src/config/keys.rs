@@ -169,6 +169,7 @@ commands! {
         "page-down" => "PgDn", COMMIT;
         "page-up" => "PgUp", COMMIT;
         "toggle" => "Space", CHANGES;
+        "discard" => "d", CHANGES;
         "open" => "Enter", COMMIT;
         "move-to-group" => "m", COMMIT;
         "preview" => "v", COMMIT;

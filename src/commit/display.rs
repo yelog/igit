@@ -1,6 +1,6 @@
 //! Session-local Commit presentation; none of these options changes the index.
 use super::*;
-use crate::ui::idea::{clipped, DIM, EDGE, INK, SELECT};
+use crate::ui::idea::{checkbox, clipped, DIM, EDGE, INK, SELECT};
 use ratatui::{style::Stylize, text::Span, widgets::BorderType};
 use unicode_width::UnicodeWidthStr;
 
@@ -14,8 +14,8 @@ pub(super) struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            directories: false,
-            modules: true,
+            directories: true,
+            modules: false,
             ignored: false,
             status: false,
         }
@@ -243,19 +243,14 @@ impl CommitPanel {
                     } else {
                         PANEL
                     });
-                    let text = format!(
-                        " {} {}",
-                        self.icons.check(item.checked(&self.options)),
-                        item.label()
-                    );
-                    f.render_widget(
-                        Paragraph::new(Line::from(Span::styled(
-                            clipped(&text, row.width.into()),
-                            style,
-                        )))
-                        .style(style),
-                        row,
-                    );
+                    let mark = checkbox(self.icons, item.checked(&self.options));
+                    let label_width = usize::from(row.width).saturating_sub(mark.width() + 2);
+                    let line = Line::from(vec![
+                        Span::raw(" "),
+                        mark,
+                        Span::raw(format!(" {}", clipped(item.label(), label_width))),
+                    ]);
+                    f.render_widget(Paragraph::new(line).style(style), row);
                     self.hits.push((row, Hit::ViewItem(item)));
                 }
             }

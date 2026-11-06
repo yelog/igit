@@ -1,4 +1,5 @@
 use super::*;
+mod inline_message;
 mod text_selection;
 use crate::core::{git, Repo};
 use crossterm::event::{KeyEvent, MouseEvent};
@@ -218,7 +219,16 @@ fn compact_commit_keeps_the_only_tree_row_clickable_and_frames_the_visible_focus
 #[test]
 fn view_options_menu_keeps_checks_and_blocks_underlying_actions_in_all_icon_modes() {
     use super::display::Item;
+    use crate::ui::idea::{CHECK, DIM, SELECT};
+    use ratatui::style::Modifier;
+
     let (_d, c) = fixture();
+    let item_area = |p: &CommitPanel, item| {
+        p.hits
+            .iter()
+            .find_map(|(r, h)| matches!(h, Hit::ViewItem(i) if *i == item).then_some(*r))
+            .unwrap()
+    };
     for mode in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
         for (width, height) in [(44, 12), (80, 24), (120, 36)] {
             let mut p = CommitPanel {
@@ -244,17 +254,23 @@ fn view_options_menu_keeps_checks_and_blocks_underlying_actions_in_all_icon_mode
             assert!(p.editing());
             let menu = p.view_menu.as_ref().unwrap().area;
             assert!(menu.right() <= width && menu.bottom() <= height);
-            let text = read(t.backend().buffer(), menu);
-            for label in [
-                "Group By",
-                "Directory",
-                "Module",
-                "Show",
-                "Ignored Files",
-                "Git Status",
-            ] {
+            let buffer = t.backend().buffer();
+            let text = read(buffer, menu);
+            for label in ["Group By", "Show", "Ignored Files", "Git Status"] {
                 assert!(text.contains(label), "{width}x{height}: {text}");
             }
+            let directory = item_area(&p, Item::Directory);
+            let module = item_area(&p, Item::Module);
+            for (row, label, checked, color) in [
+                (directory, "Directory", true, CHECK),
+                (module, "Module", false, DIM),
+            ] {
+                assert!(read(buffer, row).contains(&format!("{} {label}", mode.check(checked))));
+                let mark = &buffer[(row.x + 1, row.y)];
+                assert_eq!(mark.fg, color);
+                assert_eq!(mark.modifier.contains(Modifier::BOLD), checked);
+            }
+            assert_eq!(buffer[(directory.x + 1, directory.y)].bg, SELECT);
             // The menu border sits over tree rows and must not browse or toggle them.
             let cursor = p.cursor;
             click(&mut p, &c, menu.x, menu.y + 1);
@@ -262,18 +278,12 @@ fn view_options_menu_keeps_checks_and_blocks_underlying_actions_in_all_icon_mode
             assert_eq!(p.cursor, cursor);
             assert!(p.plans.is_empty() && p.edit.is_none());
             key(&mut p, &c, K::Char(' '));
-            assert!(p.options.directories);
+            assert!(!p.view.iter().any(|r| matches!(r.kind, Kind::Directory(_))));
             draw(&mut p, &mut t, &c);
-            let modules = p
-                .hits
-                .iter()
-                .find(|(_, h)| matches!(h, Hit::ViewItem(Item::Module)))
-                .unwrap()
-                .0;
-            assert!(p.hover_at(modules.x + 2, modules.y));
+            let module = item_area(&p, Item::Module);
+            assert!(p.hover_at(module.x + 2, module.y));
             key(&mut p, &c, K::Enter);
-            assert!(!p.options.modules);
-            assert!(!p.view.iter().any(|r| matches!(r.kind, Kind::Repo(_))));
+            assert!(p.view.iter().any(|r| matches!(r.kind, Kind::Repo(_))));
             draw(&mut p, &mut t, &c);
             key(&mut p, &c, K::Esc);
             assert!(!p.editing());
@@ -412,14 +422,11 @@ fn regrouped_commit_keeps_the_selected_index_version_and_unselected_staged_file(
 }
 
 #[test]
-fn ungrouped_directory_preview_uses_the_repo_root_when_launched_in_a_subdirectory() {
-    use super::display::Item;
+fn directory_preview_uses_the_repo_root_when_launched_in_a_subdirectory() {
     let (_d, mut c) = fixture();
     c.workspace = c.repos[0].path.join("src/ｕｉ");
     let mut p = CommitPanel::default();
     p.refresh(&c).unwrap();
-    p.toggle_view_item(Item::Module, &c).unwrap();
-    p.toggle_view_item(Item::Directory, &c).unwrap();
     p.cursor = p
         .view
         .iter()
@@ -444,14 +451,14 @@ fn compacted_directories_keep_their_children_selection_and_hit_targets() {
     let mut p = CommitPanel::default();
     let mut t = Terminal::new(TestBackend::new(120, 36)).unwrap();
     p.refresh(&c).unwrap();
-    key(&mut p, &c, K::Char('t'));
     key(&mut p, &c, K::Char('v'));
     draw(&mut p, &mut t, &c);
-    let a = row_area(&p, "src/ｕｉ");
+    let directory = "app/src/ｕｉ";
+    let a = row_area(&p, directory);
     // Clicking indentation or the name only browses; the disclosure and checkbox are separate.
     click(&mut p, &c, a.x, a.y);
     draw(&mut p, &mut t, &c);
-    assert_eq!(p.active().unwrap().label, "src/ｕｉ");
+    assert_eq!(p.active().unwrap().label, directory);
     assert!(p.view.iter().any(|r| r.label == "model"));
     assert!(p.view.iter().any(|r| r.label == "view"));
     let overview = read(t.backend().buffer(), p.diff);
@@ -462,15 +469,15 @@ fn compacted_directories_keep_their_children_selection_and_hit_targets() {
     let (_, check) = p.row_controls(view, a);
     click(&mut p, &c, check.x, check.y);
     assert_eq!(p.selection(&c).len(), 1);
-    assert_eq!(p.active().unwrap().label, "src/ｕｉ");
+    assert_eq!(p.active().unwrap().label, directory);
     assert_eq!(p.check_counts(p.active().unwrap()), (1, 2));
     draw(&mut p, &mut t, &c);
-    let a = row_area(&p, "src/ｕｉ");
+    let a = row_area(&p, directory);
     let (arrow, _) = p.row_controls(p.active().unwrap(), a);
     click(&mut p, &c, arrow.x, arrow.y);
     assert!(!p.view.iter().any(|r| r.label == "model"));
     p.refresh(&c).unwrap();
-    assert_eq!(p.active().unwrap().label, "src/ｕｉ");
+    assert_eq!(p.active().unwrap().label, directory);
     assert_eq!(p.check_counts(p.active().unwrap()), (1, 2));
     assert_eq!(
         git(&c.repos[0].path, &["diff", "--cached", "--numstat"])
@@ -524,12 +531,13 @@ fn narrow_preview_wraps_the_actual_path_and_never_checks_a_browsed_file() {
 }
 
 #[test]
-fn flat_default_and_mouse_preview_resolve_identical_filenames_to_the_right_patch() {
+fn flat_layout_and_mouse_preview_resolve_identical_filenames_to_the_right_patch() {
     let (_d, c) = fixture();
     fs::write(c.repos[0].path.join("notes.txt"), "private draft").unwrap();
     let mut p = CommitPanel::default();
     let mut t = Terminal::new(TestBackend::new(120, 36)).unwrap();
     p.refresh(&c).unwrap();
+    key(&mut p, &c, K::Char('t'));
     draw(&mut p, &mut t, &c);
     assert!(p.diff.is_empty() && p.diff_key.is_empty());
     let list = read(t.backend().buffer(), p.tree);

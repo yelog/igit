@@ -1,6 +1,10 @@
 mod backend;
+mod discard;
+#[cfg(test)]
+mod discard_tests;
 mod display;
 mod keymap;
+mod rollback;
 mod rows;
 mod tree;
 mod view;
@@ -29,6 +33,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
+pub(crate) use rollback::{Rollback, RollbackEvent};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -48,6 +53,7 @@ struct Saved {
     model: String,
     prompt: String,
 }
+#[derive(Clone)]
 struct File {
     key: String,
     root: usize,
@@ -152,6 +158,7 @@ pub struct CommitPanel {
     diff_selection: TextSelection,
     message_selection: TextSelection,
     plans: Vec<Plan>,
+    rollback: Option<Box<Rollback>>,
     push: bool,
     move_to: usize,
     move_names: Vec<String>,
@@ -204,7 +211,20 @@ impl CommitPanel {
     }
 
     fn pane_focused(&self, pane: PaneId) -> bool {
-        self.panes.active && !self.editing() && self.focused_pane() == pane
+        self.panes.active
+            && (!self.editing() || self.message_editing())
+            && self.focused_pane() == pane
+    }
+
+    pub(crate) fn message_editing(&self) -> bool {
+        matches!(self.edit, Some(Edit::Message))
+    }
+
+    pub(crate) fn finish_message(&mut self, c: &Context) -> Result<()> {
+        if self.message_editing() {
+            self.accept(c)?;
+        }
+        Ok(())
     }
 
     fn save(&self, c: &Context) -> Result<()> {
@@ -322,8 +342,8 @@ impl CommitPanel {
             .cloned()
             .unwrap_or_default();
         self.caret = self.buf.len();
-        self.message_selection.reset();
-        self.edit_view = (Rect::default(), 0, 0);
+        self.message_selection.clear();
+        self.edit_view = (self.edit_view.0, 0, 0);
         self.edit_follow = true;
         self.edit = Some(Edit::Message);
         self.focus = Focus::Message
@@ -342,6 +362,11 @@ impl CommitPanel {
         self.edit = Some(Edit::Move)
     }
     fn accept(&mut self, c: &Context) -> Result<()> {
+        let previous_message = self.message_editing().then(|| {
+            let key = rid(c, self.repo);
+            let previous = self.saved.drafts.get(&key).cloned();
+            (key, previous)
+        });
         match self.edit.clone() {
             Some(Edit::Message) => {
                 self.saved
@@ -387,7 +412,17 @@ impl CommitPanel {
             }
             None => {}
         }
-        self.save(c)?;
+        if let Err(error) = self.save(c) {
+            if let Some((key, previous)) = previous_message {
+                if let Some(message) = previous {
+                    self.saved.drafts.insert(key, message);
+                } else {
+                    self.saved.drafts.remove(&key);
+                }
+            }
+            return Err(error);
+        }
+        self.message_selection.clear();
         self.edit = None;
         self.sync(c);
         Ok(())
@@ -747,7 +782,11 @@ impl Panel for CommitPanel {
         }
     }
     fn help(&self) -> &'static str {
-        "Space check · Enter/v preview · o view options · i message · c review · ? keys"
+        if self.message_editing() {
+            "F2/Ctrl-S Save · Esc Cancel · Enter Newline · F1 Help"
+        } else {
+            "Space check · Enter/v preview · d discard · i message · c review · ? keys"
+        }
     }
     fn confirm(&mut self, t: &str, c: &Context) -> Action {
         match t {
@@ -766,6 +805,23 @@ impl Panel for CommitPanel {
         }
         if let Some(action) = self.view_menu_event(e, c) {
             return action;
+        }
+        // Inline editing releases its draft before the same click/key navigates.
+        // Save/Cancel retain their explicit behavior instead of triggering blur.
+        if self.message_editing()
+            && (matches!(e, Event::Key(k)
+                if matches!(k.code, K::Tab | K::BackTab | K::F(6))
+                    && (k.modifiers.is_empty() || k.modifiers == Mod::SHIFT))
+                || matches!(e, Event::Mouse(m)
+                if matches!(m.kind, M::Down(MouseButton::Left | MouseButton::Right))
+                    && !inside(self.edit_view.0, m.column, m.row)
+                    && !self.hits.iter().any(|(r, h)|
+                        matches!(h, Hit::EditSave | Hit::EditCancel)
+                            && inside(*r, m.column, m.row))))
+        {
+            if let Err(error) = self.finish_message(c) {
+                return err(error);
+            }
         }
         if self.edit.is_some() {
             return self.edit_event(e, c);
@@ -877,6 +933,10 @@ impl Panel for CommitPanel {
                                 return Action::None;
                             } else {
                                 self.last_click = None;
+                                if matches!(h, Hit::Msg) {
+                                    self.edit_message(c);
+                                    return self.edit_event(e, c);
+                                }
                                 return self.launch(h, c);
                             }
                         }
@@ -937,6 +997,9 @@ impl Panel for CommitPanel {
                     }
                 }
                 K::Char(' ') if self.focus == Focus::Tree => self.toggle(self.cursor),
+                K::Char('d') if self.focus == Focus::Tree && k.modifiers == Mod::NONE => {
+                    return self.discard_review(c).unwrap_or_else(err);
+                }
                 K::Char('h') | K::Left if self.focus == Focus::Tree => {
                     if let Some(row) = self.active() {
                         if !row.foldable() || self.fold.contains(&row.id) {
@@ -1027,7 +1090,10 @@ impl Panel for CommitPanel {
 }
 impl CommitPanel {
     pub(crate) fn overlay_at(&self, x: u16, y: u16) -> bool {
-        self.edit.is_some() || self.view_menu.is_some_and(|m| inside(m.area, x, y))
+        self.edit
+            .as_ref()
+            .is_some_and(|e| !matches!(e, Edit::Message))
+            || self.view_menu.is_some_and(|m| inside(m.area, x, y))
     }
     pub(crate) fn draw_content(&mut self, f: &mut Frame, a: Rect, c: &Context) {
         self.draw_workbench(f, a, c);
@@ -1036,7 +1102,9 @@ impl CommitPanel {
         }
     }
     pub(crate) fn draw_overlays(&mut self, f: &mut Frame, a: Rect, c: &Context, cursor: bool) {
-        if self.edit.is_some() {
+        if self.message_editing() {
+            self.draw_input_cursor(f, cursor);
+        } else if self.edit.is_some() {
             self.draw_edit(f, a, c, cursor);
         }
         self.draw_view_menu(f, a);
@@ -1117,72 +1185,7 @@ impl CommitPanel {
                 text,
             )
         } else {
-            let pos = self.caret.min(self.buf.len());
-            let mut lines = vec![];
-            let mut at = 0usize;
-            let mut cr = 0u16;
-            let mut col = 0u16;
-            for (i, line) in self.buf.split('\n').enumerate() {
-                if pos >= at && pos <= at + line.len() {
-                    cr = i as u16;
-                    col = unicode_width::UnicodeWidthStr::width(&line[..pos - at]) as u16
-                }
-                lines.push(Line::from(line));
-                at += line.len() + 1
-            }
-            let (off, hor) = if matches!(ed, Edit::Message) {
-                let (_, old_y, old_x) = self.edit_view;
-                if self.edit_follow {
-                    (
-                        old_y
-                            .min(cr)
-                            .max(cr.saturating_sub(text.height.saturating_sub(1))),
-                        old_x
-                            .min(col)
-                            .max(col.saturating_sub(text.width.saturating_sub(1))),
-                    )
-                } else {
-                    (
-                        old_y.min(
-                            (lines.len().saturating_sub(usize::from(text.height)))
-                                .min(u16::MAX as usize) as u16,
-                        ),
-                        old_x.min(
-                            lines
-                                .iter()
-                                .map(Line::width)
-                                .max()
-                                .unwrap_or(0)
-                                .saturating_sub(usize::from(text.width.saturating_sub(1)))
-                                .min(u16::MAX as usize) as u16,
-                        ),
-                    )
-                }
-            } else {
-                (
-                    cr.saturating_sub(text.height.saturating_sub(1)),
-                    col.saturating_sub(text.width.saturating_sub(1)),
-                )
-            };
-            self.edit_view = (text, off, hor);
-            if matches!(ed, Edit::Message) {
-                self.message_selection.render(
-                    f,
-                    text,
-                    TextLayout::plain(&self.buf, text.width, TextWrap::Clip),
-                    usize::from(off),
-                    usize::from(hor),
-                );
-            } else {
-                f.render_widget(Paragraph::new(lines).scroll((off, hor)), text);
-            }
-            if cursor && cr >= off && cr - off < text.height && col >= hor && col - hor < text.width
-            {
-                f.set_cursor_position((
-                    text.x + col.saturating_sub(hor),
-                    text.y + cr.saturating_sub(off),
-                ));
-            }
+            self.draw_input(f, text, cursor);
         }
         let foot = slice(inn, inn.height - 1);
         let mut x = foot.x;
@@ -1193,6 +1196,77 @@ impl CommitPanel {
         };
         self.hit_button(f, foot, &mut x, &format!("Save {save_key}"), Hit::EditSave);
         self.hit_button(f, foot, &mut x, "Cancel Esc", Hit::EditCancel);
+    }
+    fn input_position(&self) -> (u16, u16) {
+        let pos = self.caret.min(self.buf.len());
+        let prefix = &self.buf[..pos];
+        let row = prefix.bytes().filter(|b| *b == b'\n').count();
+        let line = prefix.rsplit('\n').next().unwrap_or("");
+        let column = unicode_width::UnicodeWidthStr::width(line);
+        (
+            row.min(u16::MAX as usize) as u16,
+            column.min(u16::MAX as usize) as u16,
+        )
+    }
+
+    fn draw_input_cursor(&self, f: &mut Frame, cursor: bool) {
+        let (text, off, hor) = self.edit_view;
+        let (row, col) = self.input_position();
+        if cursor && row >= off && row - off < text.height && col >= hor && col - hor < text.width {
+            f.set_cursor_position((text.x + col - hor, text.y + row - off));
+        }
+    }
+
+    fn draw_input(&mut self, f: &mut Frame, text: Rect, cursor: bool) {
+        let lines: Vec<_> = self.buf.split('\n').map(Line::from).collect();
+        let (cr, col) = self.input_position();
+        let (off, hor) = if self.message_editing() {
+            let (_, old_y, old_x) = self.edit_view;
+            if self.edit_follow {
+                (
+                    old_y
+                        .min(cr)
+                        .max(cr.saturating_sub(text.height.saturating_sub(1))),
+                    old_x
+                        .min(col)
+                        .max(col.saturating_sub(text.width.saturating_sub(1))),
+                )
+            } else {
+                (
+                    old_y.min(
+                        (lines.len().saturating_sub(usize::from(text.height)))
+                            .min(u16::MAX as usize) as u16,
+                    ),
+                    old_x.min(
+                        lines
+                            .iter()
+                            .map(Line::width)
+                            .max()
+                            .unwrap_or(0)
+                            .saturating_sub(usize::from(text.width.saturating_sub(1)))
+                            .min(u16::MAX as usize) as u16,
+                    ),
+                )
+            }
+        } else {
+            (
+                cr.saturating_sub(text.height.saturating_sub(1)),
+                col.saturating_sub(text.width.saturating_sub(1)),
+            )
+        };
+        self.edit_view = (text, off, hor);
+        if self.message_editing() {
+            self.message_selection.render(
+                f,
+                text,
+                TextLayout::plain(&self.buf, text.width, TextWrap::Clip),
+                usize::from(off),
+                usize::from(hor),
+            );
+        } else {
+            f.render_widget(Paragraph::new(lines).scroll((off, hor)), text);
+        }
+        self.draw_input_cursor(f, cursor);
     }
     fn edit_event(&mut self, e: &Event, c: &Context) -> Action {
         if matches!(self.edit, Some(Edit::Message)) {
@@ -1243,7 +1317,10 @@ impl CommitPanel {
                 if let Some((_, h)) = self
                     .hits
                     .iter()
-                    .find(|(r, _)| inside(*r, m.column, m.row))
+                    .find(|(r, h)| {
+                        inside(*r, m.column, m.row)
+                            && !(self.message_editing() && matches!(h, Hit::Msg))
+                    })
                     .cloned()
                 {
                     return self.launch(h, c);

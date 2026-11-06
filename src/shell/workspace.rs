@@ -88,7 +88,9 @@ impl Shell {
         if pane != self.focus {
             if press {
                 if !self.can_leave_panel() {
-                    self.notice("Finish or cancel the current input first (Esc)".into());
+                    if self.msg.is_empty() {
+                        self.notice("Finish or cancel the current input first (Esc)".into());
+                    }
                     return;
                 }
                 self.go(Split(pane));
@@ -357,7 +359,14 @@ impl Shell {
         } else if self.tool.is_some() {
             (self.panel().help(), MUTED)
         } else if self.panel().editing() {
-            ("F1 Help   Esc Back", MUTED)
+            (
+                if self.focus == Commit && self.commit.message_editing() {
+                    self.commit.help()
+                } else {
+                    "F1 Help   Esc Back"
+                },
+                MUTED,
+            )
         } else if self.ctx.repos.is_empty() {
             (": Actions   ·   Open / rescan workspace", MUTED)
         } else if foot.width < 84 {
