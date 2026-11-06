@@ -20,6 +20,10 @@ const TEXT: Color = Color::Rgb(215, 226, 237);
 const MUTED: Color = Color::Rgb(105, 126, 146);
 const ACCENT: Color = Color::Rgb(99, 230, 216);
 const ACTION: Color = Color::Rgb(101, 167, 255);
+const SEARCH_MATCH: Style = Style::new()
+    .fg(Color::Rgb(255, 207, 126))
+    .bg(Color::Rgb(57, 44, 33))
+    .add_modifier(Modifier::BOLD);
 
 /// Each sequence is executable and represents exactly one action.
 pub(crate) type Binding = (&'static str, &'static str);
@@ -238,12 +242,15 @@ impl HelpState {
         }
     }
 
-    fn entries(&self) -> Vec<(String, &'static str, CommandAction)> {
-        let tokens: Vec<_> = self
-            .query
+    fn search_tokens(&self) -> Vec<String> {
+        self.query
             .split_whitespace()
             .map(str::to_lowercase)
-            .collect();
+            .collect()
+    }
+
+    fn entries(&self) -> Vec<(String, &'static str, CommandAction)> {
+        let tokens = self.search_tokens();
         let mut entries = vec![];
         let mut seen = std::collections::BTreeSet::new();
         let mut displayed = std::collections::BTreeSet::new();
@@ -491,6 +498,16 @@ impl HelpState {
         if width < 12 || height < 6 {
             return;
         }
+        // Avoid color changes that reset modifiers when Crossterm suppresses colors.
+        let monochrome = crossterm::style::Colored::ansi_color_disabled_memoized();
+        let [surface, title_bg, ink, muted, accent, action] =
+            [SURFACE, TITLE_BG, TEXT, MUTED, ACCENT, ACTION].map(|color| {
+                if monochrome {
+                    Color::Reset
+                } else {
+                    color
+                }
+            });
         f.render_widget(Clear, popup);
         let close = " Esc close ";
         let title = clipped(
@@ -500,19 +517,19 @@ impl HelpState {
         let block = Block::default()
             .title(title)
             .title_top(
-                Line::from(Span::styled(close, Style::new().fg(MUTED).bg(TITLE_BG)))
+                Line::from(Span::styled(close, Style::new().fg(muted).bg(title_bg)))
                     .alignment(Alignment::Right),
             )
             .title_style(
                 Style::new()
-                    .fg(ACCENT)
-                    .bg(TITLE_BG)
+                    .fg(accent)
+                    .bg(title_bg)
                     .add_modifier(Modifier::BOLD),
             )
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(ACCENT))
-            .style(Style::new().bg(SURFACE).fg(TEXT));
+            .border_style(Style::new().fg(accent))
+            .style(Style::new().bg(surface).fg(ink));
         let inner = block.inner(popup);
         f.render_widget(block, popup);
         self.close = Rect::new(
@@ -529,7 +546,7 @@ impl HelpState {
                 "Search {}",
                 clipped(&self.query[start..], input_width)
             ))
-            .style(Style::new().fg(ACCENT)),
+            .style(Style::new().fg(accent)),
             self.search,
         );
         f.set_cursor_position((
@@ -570,33 +587,42 @@ impl HelpState {
             18
         };
         let description_width = usize::from(self.viewport.width).saturating_sub(key_width + 2);
+        let tokens = self.search_tokens();
+        let key_style = Style::new().fg(action).add_modifier(Modifier::BOLD);
+        let description_style = Style::new().fg(ink);
+        let match_style = if monochrome {
+            Style::new()
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::UNDERLINED)
+        } else {
+            SEARCH_MATCH
+        };
         let lines: Vec<_> = entries
             .iter()
             .enumerate()
             .skip(self.scroll)
             .take(self.viewport.height as usize)
             .map(|(i, (keys, description, _))| {
-                let marker = if i == self.selected { ">" } else { " " };
+                let marker = if i == self.selected { "> " } else { "  " };
                 let key = clipped(keys, key_width);
-                Line::from(vec![
-                    Span::styled(
-                        format!(
-                            "{marker} {key}{}",
-                            " ".repeat(key_width.saturating_sub(key.width()))
-                        ),
-                        Style::new().fg(ACTION).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        clipped(description, description_width),
-                        Style::new().fg(TEXT),
-                    ),
-                ])
+                let padding = key_width.saturating_sub(key.width());
+                let mut spans = vec![Span::styled(marker, key_style)];
+                spans.extend(search_spans(keys, key, &tokens, key_style, match_style));
+                spans.push(Span::styled(" ".repeat(padding), key_style));
+                spans.extend(search_spans(
+                    description,
+                    clipped(description, description_width),
+                    &tokens,
+                    description_style,
+                    match_style,
+                ));
+                Line::from(spans)
             })
             .collect();
         let lines = if lines.is_empty() {
             vec![Line::styled(
                 "No matching shortcuts",
-                Style::new().fg(MUTED),
+                Style::new().fg(muted),
             )]
         } else {
             lines
@@ -611,7 +637,7 @@ impl HelpState {
             let ascii = icons == IconMode::Ascii;
             let mut lines = vec![Line::styled(
                 if ascii { "^" } else { "▲" },
-                Style::new().fg(MUTED),
+                Style::new().fg(muted),
             )];
             for y in 0..rail {
                 let active = (top..top + thumb).contains(&y);
@@ -623,12 +649,12 @@ impl HelpState {
                 };
                 lines.push(Line::styled(
                     symbol,
-                    Style::new().fg(if active { ACCENT } else { MUTED }),
+                    Style::new().fg(if active { accent } else { muted }),
                 ));
             }
             lines.push(Line::styled(
                 if ascii { "v" } else { "▼" },
-                Style::new().fg(MUTED),
+                Style::new().fg(muted),
             ));
             f.render_widget(Paragraph::new(lines), self.scrollbar);
         }
@@ -642,10 +668,70 @@ impl HelpState {
         .find(|hint| hint.width() <= usize::from(inner.width))
         .unwrap_or("");
         f.render_widget(
-            Paragraph::new(footer).style(Style::new().fg(MUTED)),
+            Paragraph::new(footer).style(Style::new().fg(muted)),
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
         );
     }
+}
+
+fn search_spans(
+    text: &str,
+    display: String,
+    tokens: &[String],
+    style: Style,
+    highlight: Style,
+) -> Vec<Span<'static>> {
+    if tokens.is_empty() || display.is_empty() {
+        return vec![Span::styled(display, style)];
+    }
+
+    let lower = text.to_lowercase();
+    let mut hits = vec![false; lower.len()];
+    for (start, _) in lower.char_indices() {
+        for token in tokens {
+            if lower[start..].starts_with(token) {
+                hits[start..start + token.len()].fill(true);
+            }
+        }
+    }
+
+    // Match against the full label so a token can extend past the visible prefix.
+    let truncated = display != text;
+    let visible = if truncated {
+        display
+            .strip_suffix('…')
+            .expect("clipped label ends with an ellipsis")
+    } else {
+        &display
+    };
+    let highlight = style.patch(highlight);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut offset = 0;
+    for grapheme in Span::raw(visible).styled_graphemes(style) {
+        // Lowercase can change the byte length; highlight whole display graphemes.
+        let end = offset
+            + grapheme
+                .symbol
+                .chars()
+                .flat_map(char::to_lowercase)
+                .map(char::len_utf8)
+                .sum::<usize>();
+        let style = if hits[offset..end].contains(&true) {
+            highlight
+        } else {
+            style
+        };
+        if let Some(span) = spans.last_mut().filter(|span| span.style == style) {
+            span.content.to_mut().push_str(grapheme.symbol);
+        } else {
+            spans.push(Span::styled(grapheme.symbol.to_owned(), style));
+        }
+        offset = end;
+    }
+    if truncated {
+        spans.push(Span::styled("…", style));
+    }
+    spans
 }
 
 #[cfg(test)]
