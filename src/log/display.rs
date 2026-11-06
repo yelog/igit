@@ -409,8 +409,14 @@ impl LogPanel {
         let w =
             (cells("Not Cherry-Picked Commits") + cells(self.icons.check(false)) + 5).min(a.width);
         let h = (Item::ROWS as u16 + 3).min(a.height);
+        // Align a wide menu to the right so some commit cells stay clickable.
+        let right = if self.panes.rect(PaneId::Graph).is_some_and(|r| w >= r.width) {
+            a.right()
+        } else {
+            anchor.right()
+        };
         let p = Rect::new(
-            anchor.right().saturating_sub(w).clamp(a.x, a.right() - w),
+            right.saturating_sub(w).clamp(a.x, a.right() - w),
             anchor.bottom().min(a.bottom() - h).max(a.y),
             w,
             h,

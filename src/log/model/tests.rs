@@ -23,10 +23,10 @@ fn run(path: &Path, args: &[&str], date: Option<i64>) -> String {
     );
     String::from_utf8(output.stdout).unwrap().trim_end().into()
 }
-fn g(path: &Path, args: &[&str]) -> String {
+pub(super) fn g(path: &Path, args: &[&str]) -> String {
     run(path, args, None)
 }
-fn repo(parent: &Path, name: &str, email: &str) -> PathBuf {
+pub(super) fn repo(parent: &Path, name: &str, email: &str) -> PathBuf {
     let p = parent.join(name);
     fs::create_dir(&p).unwrap();
     g(&p, &["init", "-q", "-b", "main"]);
@@ -34,11 +34,11 @@ fn repo(parent: &Path, name: &str, email: &str) -> PathBuf {
     g(&p, &["config", "user.email", email]);
     p
 }
-fn commit(p: &Path, subject: &str) -> String {
+pub(super) fn commit(p: &Path, subject: &str) -> String {
     g(p, &["commit", "--allow-empty", "-qm", subject]);
     g(p, &["rev-parse", "HEAD"])
 }
-fn file(p: &Path, name: &str, subject: &str) -> String {
+pub(super) fn file(p: &Path, name: &str, subject: &str) -> String {
     fs::write(p.join(name), subject).unwrap();
     g(p, &["--literal-pathspecs", "add", "--", name]);
     commit(p, subject)

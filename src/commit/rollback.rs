@@ -90,7 +90,10 @@ impl Rollback {
             if f.change.ignored() {
                 unavailable.insert(f.key.clone(), "Ignored files are read-only".into());
             } else if f.change.conflict {
-                unavailable.insert(f.key.clone(), "Resolve the conflict in Merge first".into());
+                unavailable.insert(
+                    f.key.clone(),
+                    "Resolve the file in the Conflicts tab first".into(),
+                );
             } else {
                 shown.entry(f.root).or_default().push(f);
             }
@@ -187,6 +190,7 @@ impl Rollback {
             options: &self.options,
             icons: self.icons,
             show_empty_groups: false,
+            merge_conflicts: false,
         }
     }
 

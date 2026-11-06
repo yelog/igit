@@ -3,6 +3,20 @@ use crate::ui::help::{HelpContent, HelpSection as Section};
 
 impl MergePanel {
     pub(crate) fn keymap(&self) -> HelpContent {
+        if self.view.overlay.is_some() {
+            return HelpContent::new(
+                Section::new(
+                    "Merge / Editor Options",
+                    &[
+                        ("j", "Move down"),
+                        ("k", "Move up"),
+                        ("Enter", "Choose option"),
+                        ("Esc", "Return to merge editor"),
+                    ],
+                ),
+                vec![],
+            );
+        }
         if self.edit.is_some() {
             return HelpContent::new(
                 Section::new(
@@ -31,12 +45,23 @@ impl MergePanel {
                 Section::new(
                     "Merge / Conflicted Files",
                     &[
-                        ("j", "Select next conflicted file or repo operation"),
-                        ("k", "Select previous conflicted file or repo operation"),
+                        ("j", "Select next row"),
+                        ("k", "Select previous row"),
                         ("g", "Select first item"),
                         ("G", "Select last item"),
-                        ("Enter", "Open conflict or review pending operation"),
-                        ("C", "Review and continue repo merge / rebase"),
+                        (
+                            "Enter",
+                            "Open file, fold or expand Unresolved, or review Continue",
+                        ),
+                        ("Y", "Preview the entire current side of the selected file"),
+                        ("T", "Preview the entire incoming side of the selected file"),
+                        (
+                            "S",
+                            "Prepare non-conflicting drafts in the selected repository",
+                        ),
+                        ("Space", "Fold or expand the Unresolved group"),
+                        ("o", "Toggle full file paths"),
+                        ("C", "Review Continue for the selected repository"),
                     ],
                 ),
                 vec![],
@@ -55,15 +80,20 @@ impl MergePanel {
                     ("k", "Select previous change block"),
                     ("[c", "Previous unresolved conflict"),
                     ("]c", "Next unresolved conflict"),
+                    ("Shift-F7", "Previous pending change or conflict"),
+                    ("F7", "Next pending change or conflict"),
                     ("h", "Focus left pane"),
                     ("l", "Focus right pane"),
                     ("Tab", "Focus next pane"),
                     ("Shift-Tab", "Focus previous pane"),
-                    ("Left", "Scroll all three panes left"),
-                    ("Right", "Scroll all three panes right"),
+                    ("Left", "Scroll focused pane left"),
+                    ("Right", "Scroll focused pane right"),
                     ("PgDn", "Page down; pause block tracking"),
                     ("PgUp", "Page up; pause block tracking"),
                     ("z", "Toggle full-width pane"),
+                    ("o", "Fold or unfold unchanged lines"),
+                    ("v", "Compare file versions"),
+                    ("O", "Open merge editor settings"),
                 ],
             ),
             vec![Section::new(
@@ -71,11 +101,20 @@ impl MergePanel {
                 &[
                     ("H", "Use left side for current block"),
                     ("L", "Use right side for current block"),
+                    ("Y", "Accept entire left version"),
+                    ("T", "Accept entire right version"),
+                    ("Enter", "Accept focused source block or edit Result"),
+                    ("x", "Ignore focused source block"),
+                    ("d", "Show focused source details"),
                     ("b", "Keep both sides of current conflict"),
                     ("a", "Apply all non-conflicting blocks"),
+                    (
+                        "m",
+                        "Resolve all non-conflicting and disjoint single-line edits",
+                    ),
                     ("i", "Edit current block result"),
                     ("u", "Undo last resolution or edit"),
-                    ("s", "Save file draft for this session"),
+                    ("s", "Save session draft and close editor"),
                     ("A", "Review and apply file; write and stage"),
                     ("F", "Save session draft; return to conflict list"),
                     ("Esc", "Save session draft; return to conflict list"),

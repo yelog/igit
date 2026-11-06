@@ -27,25 +27,28 @@ fn workspace_nodes(app: &Shell) -> Vec<(PaneId, Rect)> {
 }
 
 #[test]
-fn maximize_cycles_every_enabled_workspace_pane_and_restores_sizes() {
+fn maximize_preserves_commit_sizes_and_log_stays_tiled_and_resizable() {
     let (_dir, mut app) = fixture();
     let before = snapshot(&app.ctx.repos[0].path);
-    send(&mut app, "2 v");
+    send(&mut app, "v");
     screen(&mut app, 120, 36);
-    send(&mut app, "1 Ctrl-w 4 > Ctrl-w 2 +");
+    send(&mut app, "Ctrl-w 2 +");
     screen(&mut app, 120, 36);
-    let original = workspace_nodes(&app);
-    let original_regions = (app.regions.commit, app.regions.log);
+    let commit_sizes = workspace_nodes(&app);
+    send(&mut app, "2");
+    screen(&mut app, 120, 36);
+    send(&mut app, "Ctrl-w 4 >");
+    screen(&mut app, 120, 36);
+    let log_sizes = workspace_nodes(&app);
+    send(&mut app, "1");
+    screen(&mut app, 120, 36);
     send(&mut app, "Ctrl-w f");
     assert!(app.pane_maximized);
     for expected in [
-        PaneId::Graph,
-        PaneId::Files,
-        PaneId::Info,
         PaneId::Changes,
         PaneId::Preview,
         PaneId::Message,
-        PaneId::Refs,
+        PaneId::Changes,
     ] {
         let text = screen(&mut app, 120, 36);
         let visible: Vec<_> = workspace_nodes(&app)
@@ -58,9 +61,33 @@ fn maximize_cycles_every_enabled_workspace_pane_and_restores_sizes() {
             visible[0].1.width >= 118 && visible[0].1.height >= 31,
             "{visible:?}"
         );
-        assert!(text.lines().last().unwrap().contains("MAX"));
+        assert!(text.lines().last().unwrap().starts_with(" IGit "));
         send(&mut app, "Tab");
     }
+
+    send(&mut app, "2");
+    let text = screen(&mut app, 120, 36);
+    assert!(text.lines().last().unwrap().starts_with(" IGit "));
+    assert_eq!(workspace_nodes(&app), log_sizes);
+    let graph = app.log.panes.rect(PaneId::Graph).unwrap();
+    send(&mut app, "Ctrl-w >");
+    screen(&mut app, 120, 36);
+    assert_eq!(
+        app.log.panes.rect(PaneId::Graph).unwrap().width,
+        graph.width + 1
+    );
+    send(&mut app, "Ctrl-w < Ctrl-w f");
+    assert!(
+        app.pane_maximized,
+        "Log must leave the other tabs' mode alone"
+    );
+    send(&mut app, "1");
+    assert!(screen(&mut app, 120, 36)
+        .lines()
+        .last()
+        .unwrap()
+        .starts_with(" IGit "));
+
     // Neither local resize nor reset changes the saved split while maximized.
     send(&mut app, "Ctrl-w 9 > Ctrl-w + Ctrl-w =");
     screen(&mut app, 44, 12);
@@ -68,52 +95,42 @@ fn maximize_cycles_every_enabled_workspace_pane_and_restores_sizes() {
     send(&mut app, "Ctrl-w f");
     screen(&mut app, 120, 36);
     assert!(!app.pane_maximized);
-    assert_eq!(workspace_nodes(&app), original);
-    assert_eq!((app.regions.commit, app.regions.log), original_regions);
+    assert_eq!(workspace_nodes(&app), commit_sizes);
+    send(&mut app, "2");
+    screen(&mut app, 120, 36);
+    assert_eq!(workspace_nodes(&app), log_sizes);
     assert_eq!(snapshot(&app.ctx.repos[0].path), before);
 }
 
 #[test]
-fn maximize_works_in_narrow_screens_and_tool_windows() {
+fn maximize_works_on_narrow_screens_while_log_stays_tiled() {
     let (_dir, mut app) = fixture();
+    merge_conflict(&app.ctx.repos[0].path);
+    app.refresh();
     for (width, height) in [(120, 36), (80, 25), (44, 12)] {
         send(&mut app, "1");
         screen(&mut app, width, height);
         send(&mut app, "Ctrl-w f");
-        for command in ["2", "Tab", "1", "3", "Tab", "4"] {
+        for command in ["Tab", "2", "3", "Tab", "4"] {
             send(&mut app, command);
             let text = screen(&mut app, width, height);
             assert!(app.pane_maximized, "{command}: {text}");
-            assert!(text.lines().last().unwrap().contains("MAX"), "{text}");
-            match app.tool {
-                Some(Push) => assert_eq!(
-                    app.push
-                        .panes
-                        .nodes()
-                        .iter()
-                        .filter(|(_, r)| !r.is_empty())
-                        .count(),
-                    1
-                ),
-                Some(Merge) => assert_eq!(
-                    app.merge
-                        .panes
-                        .nodes()
-                        .iter()
-                        .filter(|(_, r)| !r.is_empty())
-                        .count(),
-                    1
-                ),
-                None => assert_eq!(
-                    workspace_nodes(&app)
-                        .iter()
-                        .filter(|(_, r)| !r.is_empty())
-                        .count(),
-                    1
-                ),
-            }
+            let panes = if app.tab == Log { 4 } else { 1 };
+            assert!(text.lines().last().unwrap().starts_with(" IGit "), "{text}");
+            let layout = match app.tab {
+                Commit => &app.commit.panes,
+                Log => &app.log.panes,
+                Push => &app.push.panes,
+                Conflicts => &app.merge.panes,
+            };
+            assert_eq!(
+                layout.nodes().iter().filter(|(_, r)| !r.is_empty()).count(),
+                panes
+            );
         }
-        send(&mut app, "Esc Ctrl-w f");
+        send(&mut app, "1");
+        screen(&mut app, width, height);
+        send(&mut app, "Ctrl-w f");
         assert!(!app.pane_maximized);
     }
 }
@@ -166,7 +183,7 @@ fn smart_maximize_falls_back_locally_and_preserves_input_and_reviews() {
         app.dispatch(&Event::Key(event));
     }
     assert!(app.pane_maximized);
-    send(&mut app, "2 i");
+    send(&mut app, "1 i");
     app.dispatch(&Event::Paste("draft 中文".into()));
     let input = screen(&mut app, 120, 36);
     send(&mut app, "Cmd+Ctrl+f");
@@ -196,10 +213,10 @@ fn smart_maximize_applies_verified_target_and_keeps_state_on_error() {
     ] {
         app.maximize_pending = true;
         app.kitty.set_pending_result(result);
-        let focus = app.surface();
+        let focus = app.tab;
         send(&mut app, "2 i Cmd+Ctrl+f");
         app.dispatch(&Event::Paste("must not become a draft".into()));
-        assert_eq!(app.surface(), focus);
+        assert_eq!(app.tab, focus);
         assert!(!app.panel().editing());
         assert!(screen(&mut app, 120, 36).contains("Synchronizing Kitty layout"));
         assert!(app.poll());

@@ -2,16 +2,6 @@ use super::*;
 use crate::ui::panes::{neighbor, window_keys, Axis, Direction, PaneId, PaneLayout, WINDOW_KEYS};
 use crossterm::event::MouseEvent;
 
-fn owner(id: PaneId) -> Surface {
-    use PaneId::*;
-    match id {
-        Changes | Message | Preview => Split(Commit),
-        Refs | Graph | Files | Info => Split(Log),
-        Outgoing | PushFiles | PushDetails => Dialog(Push),
-        Conflicts | Current | Result | Incoming => Dialog(Merge),
-    }
-}
-
 fn direction(key: char) -> Option<Direction> {
     Some(match key {
         'h' => Direction::Left,
@@ -33,51 +23,41 @@ fn size_change(key: char) -> Option<(Axis, i32)> {
 }
 
 impl Shell {
-    fn layout(&self, surface: Surface) -> &PaneLayout {
-        match surface {
-            Split(Commit) => &self.commit.panes,
-            Split(Log) => &self.log.panes,
-            Dialog(Push) => &self.push.panes,
-            Dialog(Merge) => &self.merge.panes,
+    fn layout(&self, tab: Tab) -> &PaneLayout {
+        match tab {
+            Commit => &self.commit.panes,
+            Log => &self.log.panes,
+            Push => &self.push.panes,
+            Conflicts => &self.merge.panes,
         }
     }
-    fn layout_mut(&mut self, surface: Surface) -> &mut PaneLayout {
-        match surface {
-            Split(Commit) => &mut self.commit.panes,
-            Split(Log) => &mut self.log.panes,
-            Dialog(Push) => &mut self.push.panes,
-            Dialog(Merge) => &mut self.merge.panes,
+    pub(super) fn layout_mut(&mut self, tab: Tab) -> &mut PaneLayout {
+        match tab {
+            Commit => &mut self.commit.panes,
+            Log => &mut self.log.panes,
+            Push => &mut self.push.panes,
+            Conflicts => &mut self.merge.panes,
         }
     }
     fn focus_id(&self) -> PaneId {
-        match self.surface() {
-            Split(Commit) => self.commit.focused_pane(),
-            Split(Log) => self.log.focused_pane(),
-            Dialog(Push) => self.push.focused_pane(),
-            Dialog(Merge) => self.merge.focused_pane(),
+        match self.tab {
+            Commit => self.commit.focused_pane(),
+            Log => self.log.focused_pane(),
+            Push => self.push.focused_pane(),
+            Conflicts => self.merge.focused_pane(),
         }
     }
     fn focus_pane(&mut self, id: PaneId) {
-        if owner(id) != self.surface() {
-            self.go(owner(id));
-        }
-        match owner(id) {
-            Split(Commit) => self.commit.focus_pane(id),
-            Split(Log) => self.log.focus_pane(id),
-            Dialog(Push) => self.push.focus_pane(id),
-            Dialog(Merge) => self.merge.focus_pane(id),
+        match self.tab {
+            Commit => self.commit.focus_pane(id),
+            Log => self.log.focus_pane(id),
+            Push => self.push.focus_pane(id),
+            Conflicts => self.merge.focus_pane(id),
         }
     }
 
-    fn reachable_panes(&self) -> Vec<(PaneId, Rect)> {
-        if let Some(tool) = self.tool {
-            self.layout(Dialog(tool)).nodes().to_vec()
-        } else {
-            [Split(Commit), Split(Log)]
-                .into_iter()
-                .flat_map(|s| self.layout(s).nodes().iter().copied())
-                .collect()
-        }
+    fn reachable_panes(&self) -> &[(PaneId, Rect)] {
+        self.layout(self.tab).nodes()
     }
     fn cycle_pane(&mut self, back: bool) -> bool {
         let nodes = self.reachable_panes();
@@ -85,37 +65,34 @@ impl Shell {
             return false;
         };
         let len = nodes.len();
-        let next = (index + if back { len - 1 } else { 1 }) % len;
+        let next = nodes[(index + if back { len - 1 } else { 1 }) % len].0;
         self.cancel_key_sequences();
-        self.focus_pane(nodes[next].0);
+        self.focus_pane(next);
         true
     }
 
     fn window_mask(&self) -> u16 {
         let nodes = self.reachable_panes();
         let id = self.focus_id();
-        let layout = self.layout(self.surface());
+        let layout = self.layout(self.tab);
         let Some(r) = layout.rect(id) else { return 0 };
-        let resizable = |axis| {
-            !self.pane_maximized
-                && (layout.can_resize(r, axis)
-                    || self.tool.is_none() && self.work_panes.can_resize(r, axis))
-        };
+        let maximized = self.pane_is_maximized();
+        let resizable = |axis| !maximized && layout.can_resize(r, axis);
         WINDOW_KEYS
             .iter()
             .enumerate()
             .fold(0, |mask, (i, (key, _))| {
                 let key = key.chars().last().unwrap();
                 let available = if let Some(d) = direction(key) {
-                    neighbor(&nodes, id, d).is_some()
+                    neighbor(nodes, id, d).is_some()
                 } else if let Some((axis, _)) = size_change(key) {
                     resizable(axis)
                 } else {
                     match key {
                         'w' => nodes.len() > 1,
-                        'c' => self.surface() == Split(Log) && self.log.can_close_tab(),
-                        '=' => !self.pane_maximized,
-                        'f' => true,
+                        'c' => self.tab == Log && self.log.can_close_tab(),
+                        '=' => !maximized,
+                        'f' => self.tab != Log,
                         _ => false,
                     }
                 };
@@ -141,7 +118,7 @@ impl Shell {
         }
         self.cancel_key_sequences();
         self.cancel_drags();
-        if let Some(next) = neighbor(&self.reachable_panes(), self.focus_id(), direction) {
+        if let Some(next) = neighbor(self.reachable_panes(), self.focus_id(), direction) {
             self.focus_pane(next);
         } else {
             self.kitty.focus(direction);
@@ -154,22 +131,14 @@ impl Shell {
         }
         self.cancel_key_sequences();
         self.cancel_drags();
-        if self.pane_maximized {
+        if self.pane_is_maximized() {
             self.kitty.resize(direction);
             return;
         }
-        let surface = self.surface();
-        let moved = self.layout(surface).rect(self.focus_id()).and_then(|rect| {
-            self.layout_mut(surface)
+        let tab = self.tab;
+        let moved = self.layout(tab).rect(self.focus_id()).and_then(|rect| {
+            self.layout_mut(tab)
                 .move_divider(rect, direction, kitty::RESIZE_STEP)
-                .or_else(|| {
-                    if self.tool.is_none() {
-                        self.work_panes
-                            .move_divider(rect, direction, kitty::RESIZE_STEP)
-                    } else {
-                        None
-                    }
-                })
         });
         if moved != Some(true) {
             self.kitty.resize(direction);
@@ -180,6 +149,16 @@ impl Shell {
         self.cancel_key_sequences();
         self.cancel_drags();
         self.pane_maximized = maximized;
+    }
+
+    pub(super) fn pane_is_maximized(&self) -> bool {
+        self.tab != Log && self.pane_maximized
+    }
+
+    pub(super) fn toggle_pane_maximized(&mut self) {
+        if self.tab != Log {
+            self.set_pane_maximized(!self.pane_maximized);
+        }
     }
 
     pub(super) fn smart_maximize(&mut self) {
@@ -196,45 +175,36 @@ impl Shell {
             self.maximize_pending = true;
             self.kitty.toggle_maximized();
         } else {
-            self.set_pane_maximized(!self.pane_maximized);
+            self.toggle_pane_maximized();
         }
     }
 
     pub(super) fn run_window_key(&mut self, key: char) {
         let count = i32::from(self.window_prefix.and_then(|p| p.count).unwrap_or(1));
         self.cancel_key_sequences();
-        let surface = self.surface();
+        let tab = self.tab;
         let id = self.focus_id();
         if let Some(dir) = direction(key) {
-            if let Some(next) = neighbor(&self.reachable_panes(), id, dir) {
+            if let Some(next) = neighbor(self.reachable_panes(), id, dir) {
                 self.focus_pane(next);
             }
         } else if let Some((axis, step)) = size_change(key) {
-            if self.pane_maximized {
+            if self.pane_is_maximized() {
                 return;
             }
-            if let Some(rect) = self.layout(surface).rect(id) {
-                if !self.layout_mut(surface).resize(rect, axis, count * step) && self.tool.is_none()
-                {
-                    self.work_panes.resize(rect, axis, count * step);
-                }
+            if let Some(rect) = self.layout(tab).rect(id) {
+                self.layout_mut(tab).resize(rect, axis, count * step);
             }
         } else {
             match key {
-                '=' if !self.pane_maximized => {
-                    if self.tool.is_some() {
-                        self.layout_mut(surface).reset();
-                    } else {
-                        self.work_panes.reset();
-                        self.commit.panes.reset();
-                        self.log.panes.reset();
-                    }
+                '=' if !self.pane_is_maximized() => {
+                    self.layout_mut(tab).reset();
                 }
                 'w' => {
                     self.cycle_pane(false);
                 }
-                'f' => self.set_pane_maximized(!self.pane_maximized),
-                'c' if surface == Split(Log) => {
+                'f' => self.toggle_pane_maximized(),
+                'c' if tab == Log => {
                     if let Err(error) = self.log.close_tab(&self.ctx) {
                         self.notice(format!("Log: {error:#}"));
                     }
@@ -293,38 +263,24 @@ impl Shell {
     }
 
     pub(super) fn cancel_drags(&mut self) {
-        self.work_panes.cancel_drag();
-        for s in SHORTCUTS {
-            self.layout_mut(s).cancel_drag();
-        }
+        self.layout_mut(self.tab).cancel_drag();
     }
 
     /// Capture the gesture where it starts, including a release in a different
     /// pane. A text drag that only crosses a divider can never start resizing.
     pub(super) fn resize_mouse(&mut self, m: &MouseEvent) -> bool {
-        if self.pane_maximized {
+        if self.pane_is_maximized() {
             return false;
         }
         if matches!(m.kind, MouseEventKind::Down(_)) {
             self.cancel_drags();
-        } else {
-            if self.work_panes.dragging() {
-                self.work_panes.mouse(m);
-                return true;
-            }
-            for s in SHORTCUTS {
-                if self.layout(s).dragging() {
-                    self.layout_mut(s).mouse(m);
-                    return true;
-                }
-            }
+        } else if self.layout(self.tab).dragging() {
+            self.layout_mut(self.tab).mouse(m);
+            return true;
         }
         if m.kind != MouseEventKind::Down(MouseButton::Left) || self.panel().editing() {
             return false;
         }
-        if let Some(tool) = self.tool {
-            return self.layout_mut(Dialog(tool)).mouse(m);
-        }
-        self.work_panes.mouse(m) || self.commit.panes.mouse(m) || self.log.panes.mouse(m)
+        self.layout_mut(self.tab).mouse(m)
     }
 }

@@ -83,8 +83,8 @@ macro_rules! commands {
 
 commands! {
     "global" {
-        "focus-log" => "1", ALL;
-        "focus-commit" => "2", ALL;
+        "focus-commit" => "1", ALL;
+        "focus-log" => "2", ALL;
         "open-push" => "3", ALL;
         "open-merge" => "4", ALL;
         "pull" => "p", ALL;
@@ -111,7 +111,7 @@ commands! {
         "smart-resize-pane-up" => (resize Up), ALL;
         "smart-resize-pane-right" => (resize Right), ALL;
         "smart-toggle-pane-maximized" => (maximize), ALL;
-        "toggle-pane-maximized" => "Ctrl-w f", ALL;
+        "toggle-pane-maximized" => "Ctrl-w f", ALL & !LOG;
         "cycle" => "Ctrl-w w", ALL;
         "increase-width" => "Ctrl-w >", ALL;
         "decrease-width" => "Ctrl-w <", ALL;
@@ -214,8 +214,15 @@ commands! {
         "last-item" => "G", MERGE_FILES;
         "open" => "Enter", MERGE_FILES;
         "continue" => "C", MERGE_FILES;
+        "accept-current" => "Y", MERGE;
+        "accept-incoming" => "T", MERGE;
+        "prepare-simple" => "S", MERGE_FILES;
+        "toggle-unresolved" => "Space", MERGE_FILES;
+        "toggle-paths" => "o", MERGE_FILES;
         "previous-conflict" => "[c", MERGE_DOC;
         "next-conflict" => "]c", MERGE_DOC;
+        "previous-change" => "Shift-F7", MERGE_DOC;
+        "next-change" => "F7", MERGE_DOC;
         "focus-left" => "h", MERGE_DOC;
         "focus-right" => "l", MERGE_DOC;
         "scroll-left" => "Left", MERGE_DOC;
@@ -227,6 +234,13 @@ commands! {
         "take-right" => "L", MERGE_DOC;
         "take-both" => "b", MERGE_DOC;
         "auto-resolve" => "a", MERGE_DOC;
+        "resolve-simple" => "m", MERGE_DOC;
+        "fold-context" => "o", MERGE_DOC;
+        "compare" => "v", MERGE_DOC;
+        "source-details" => "d", MERGE_DOC;
+        "editor-settings" => "O", MERGE_DOC;
+        "accept-side" => "Enter", MERGE_DOC;
+        "ignore-side" => "x", MERGE_DOC;
         "edit" => "i", MERGE_DOC;
         "undo" => "u", MERGE_DOC;
         "save-draft" => "s", MERGE_DOC;

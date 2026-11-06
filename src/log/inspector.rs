@@ -25,6 +25,8 @@ const RED: Color = Color::Rgb(224, 131, 135);
 enum Kind {
     Repository,
     Module,
+    Summary,
+    Parent(usize),
     Directory(String),
     File(usize),
 }
@@ -86,7 +88,11 @@ pub(super) struct Inspector {
 }
 
 impl Inspector {
-    pub(super) fn new(files: &[model::File]) -> Self {
+    pub(super) fn new(details: &model::Details) -> Self {
+        if !details.parents.is_empty() {
+            return Self::merge(details);
+        }
+        let files = &details.files;
         let mut tree = Directory::default();
         for (i, file) in files.iter().enumerate() {
             let mut dir = &mut tree;
@@ -123,6 +129,60 @@ impl Inspector {
             visible: (0..nodes.len()).collect(),
             nodes,
             cursor,
+            ..Self::default()
+        }
+    }
+
+    fn merge(details: &model::Details) -> Self {
+        let mut nodes = Vec::new();
+        let combined = 0..details.parents[0].files.start;
+        let groups = std::iter::once((None, combined)).chain(
+            details
+                .parents
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (Some(i), p.files.clone())),
+        );
+        for (parent, files) in groups {
+            let start = nodes.len();
+            if let Some(i) = parent {
+                nodes.push(Node {
+                    kind: Kind::Parent(i),
+                    depth: 0,
+                    count: files.len(),
+                    end: 0,
+                });
+            }
+            let depth = usize::from(parent.is_some());
+            let summary = nodes.len();
+            nodes.push(Node {
+                kind: Kind::Summary,
+                depth,
+                count: files.len(),
+                end: 0,
+            });
+            let mut tree = Directory::default();
+            for i in files {
+                let mut dir = &mut tree;
+                if let Some(slash) = details.files[i].raw.iter().rposition(|&b| b == b'/') {
+                    for part in details.files[i].raw[..slash].split(|&b| b == b'/') {
+                        dir = dir.dirs.entry(part).or_default();
+                        dir.count += 1;
+                    }
+                }
+                dir.leaves.push(i);
+            }
+            tree.append(&mut nodes, depth + 1);
+            nodes[summary].end = nodes.len();
+            nodes[start].end = nodes.len();
+        }
+        Self {
+            cursor: nodes
+                .iter()
+                .position(|n| matches!(n.kind, Kind::File(_)))
+                .unwrap_or(0),
+            visible: (0..nodes.len()).collect(),
+            nodes,
             ..Self::default()
         }
     }
@@ -363,7 +423,7 @@ impl LogPanel {
             f.render_widget(Paragraph::new(line).style(style), row);
             self.hit(row, Hit::File(n));
         }
-        if self.details.files.is_empty() && area.height >= 3 {
+        if self.details.files.is_empty() && self.details.parents.is_empty() && area.height >= 3 {
             f.render_widget(
                 Paragraph::new(self.preview.message().unwrap_or("   No changed files"))
                     .style(fg(DIM)),
@@ -420,6 +480,15 @@ impl LogPanel {
             .file_name()
             .map(|v| model::plain(v.as_encoded_bytes()));
         let repo_name = model::plain(repo.name.as_bytes());
+        if let Kind::Parent(i) = node.kind {
+            let p = &self.details.parents[i];
+            let label = format!("Changes to {} {}", &p.oid[..8.min(p.oid.len())], p.subject);
+            line.push_span(Span::styled(
+                fit(&label, width.saturating_sub(line.width()), false),
+                fg(INK),
+            ));
+            return line;
+        }
         let (icon, tint, label) = match &node.kind {
             Kind::Repository => (
                 self.icons.repo(repo.submodule),
@@ -432,7 +501,8 @@ impl LogPanel {
                 basename.as_deref().unwrap_or(&repo_name),
             ),
             Kind::Directory(label) => (self.icons.folder(open), DIM, label.as_str()),
-            Kind::File(_) => unreachable!(),
+            Kind::Summary => (self.icons.folder(open), DIM, ""),
+            Kind::File(_) | Kind::Parent(_) => unreachable!(),
         };
         let min_label = label.width().min(4);
         if width >= line.width() + icon.width() + 1 + min_label {
@@ -674,8 +744,10 @@ mod tests {
                 .map(|raw| model::File {
                     raw: raw.to_vec(),
                     status: "M".into(),
+                    parent: None,
                 })
                 .collect(),
+            parents: Vec::new(),
             body: "The extended description of this revision.\nSecond line with 🌱 and ＵＩ".into(),
             email: "lp@example.invalid".into(),
             branches: [
@@ -688,7 +760,7 @@ mod tests {
             .map(|(kind, name)| (kind, name.to_owned()))
             .into(),
         };
-        p.inspector = Inspector::new(&p.details.files);
+        p.inspector = Inspector::new(&p.details);
         (p, c)
     }
 

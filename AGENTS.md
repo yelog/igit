@@ -7,9 +7,10 @@ IGit is a standalone terminal workspace for multiple Git repositories. `igit` an
 | Task | Read first | Starting point |
 | --- | --- | --- |
 | Confirm scope, priorities, and acceptance criteria | [Product requirements](docs/prd.md) | Distinguish delivered behavior from pending acceptance; identify the repositories, files, and writes involved in a new requirement. |
-| Change layouts, mouse hit areas, or Vim shortcuts | [Interaction design](docs/design.md) · [Workspace screenshot](docs/reference/IGit-Split-Workspace.png) | Split layout, Push/Merge dialog geometry, and mouse routing live in [workspace.rs](src/shell/workspace.rs). See each panel's `draw` and `event` methods for internal behavior, and [shell.rs](src/shell.rs) for global shortcuts. |
+| Change layouts, mouse hit areas, or Vim shortcuts | [Interaction design](docs/design.md) | Tab layout, header controls, and mouse routing live in [workspace.rs](src/shell/workspace.rs). See each panel's `draw` and `event` methods for internal behavior, and [shell.rs](src/shell.rs) for global shortcuts and Conflicts visibility. |
 | Change Git commands, state, or operations across repositories | [Architecture](docs/architecture.md) | [core.rs](src/core.rs) owns repository discovery and shared Git calls; transaction details live in the individual panels. |
 | Launch the app, try workflows, or configure AI | [README](README.md) | Use the local practice workspace; external repositories and model configuration are not required. |
+| Prepare or publish a beta/stable release; change CI | [Release guide](docs/releasing.md) and [release skill](.agents/skills/release/SKILL.md) | `scripts/release/` owns metadata and archive checks; `.github/workflows/` tests and publishes the exact tagged commit. Editing release automation does not authorize publication. |
 
 **Current handoff point (2026-11-06):** Commit opens a directory tree with Directory on and Module off. Untracked files are expanded but unchecked. `t` toggles directory grouping; `v` opens the preview (file → Diff, container → scope summary). Start with the [tree model](src/commit/tree.rs), [row rendering and hit areas](src/commit/rows.rs), [view](src/commit/view.rs), and [events](src/commit.rs). Use PRD A7 to check repository scope, and A9 plus the [practice repository](examples/demo-commit.sh) to check duplicate filenames, narrow terminals, and staged content.
 
@@ -31,7 +32,7 @@ demo_workspace="$(sh examples/demo-workspace.sh)"
 cargo run --locked --bin igit -- "$demo_workspace"
 ```
 
-Interactive smoke check: press `2` for Commit. Browse files and select groups with both the mouse and `j/k`, confirming that browsing does not change checkboxes. Write a message for each of two checked repositories, press `r` to hide one, then `c` to open review. Check that review includes only visible, selected items, then cancel with `Esc`. When changing write operations, verify the practice repositories with `git status`, `git diff --cached`, `git log`, or remote refs.
+Interactive smoke check: start on Commit. Browse files and select groups with both the mouse and `j/k`, confirming that browsing does not change checkboxes. Write a message for each of two checked repositories, press `r` to hide one, then `c` to open review. Check that review includes only visible, selected items, then cancel with `Esc`. When changing write operations, verify the practice repositories with `git status`, `git diff --cached`, `git log`, or remote refs.
 
 Choose checks appropriate to the change: `cargo test --locked commit::` targets Commit; use `cargo test --locked` for changes across panels or shared Git logic. Common pre-commit checks are `cargo fmt --all --check` and `cargo clippy --locked --all-targets -- -D warnings`. For documentation-only changes, verify relative links, commands, and claims about the implementation.
 

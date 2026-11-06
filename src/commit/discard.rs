@@ -40,7 +40,7 @@ impl CommitPanel {
                     targets.push((root, Target::Directory(relative)));
                 }
             }
-            Kind::Group => {
+            Kind::Group | Kind::Conflicts => {
                 let mut paths = BTreeMap::<usize, BTreeSet<_>>::new();
                 for &i in &row.files {
                     let file = &self.files[i];

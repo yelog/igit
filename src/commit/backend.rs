@@ -208,7 +208,7 @@ fn safe(repo: &Path) -> Result<()> {
         }
     }
     if !g(repo, None, &["ls-files", "-u", "-z"])?.is_empty() {
-        bail!("Unresolved conflicts. Open Merge first")
+        bail!("Unresolved conflicts. Open the Conflicts tab first")
     }
     Ok(())
 }
@@ -713,7 +713,7 @@ pub fn diff(repo: &Path, f: &Change) -> Result<String> {
         return Ok("Ignored by Git · read-only\nExcluded from commits and AI patches.".into());
     }
     if f.conflict {
-        return Ok("Unmerged path — resolve in the Merge panel".into());
+        return Ok("Unmerged path · open the Conflicts tab to resolve it".into());
     }
     if f.xy == *b"??" {
         let path = repo.join(&f.path);

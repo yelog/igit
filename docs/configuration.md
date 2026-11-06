@@ -62,7 +62,7 @@ icons = "unicode" # "nerd-font", "unicode", or "ascii"
 hint_delay_ms = 300
 
 [keybindings.global]
-focus-commit = ["2", "F8"]
+focus-commit = ["1", "F8"]
 quit = ["q", "Ctrl-c"]
 
 [keybindings.panes]
@@ -99,12 +99,12 @@ binding; the action's mouse button remains available.
 | `terminal.mouse` | `true` | Enable mouse capture and IGit mouse interactions; CLI `--mouse on/off` overrides it |
 | `ui.icons` | `"nerd-font"` | Icon mode; CLI `--icons` overrides it |
 | `keybindings.hint_delay_ms` | `200` | Delay before showing sequence continuations, from `0` to `10000` milliseconds |
-| `keybindings.global` | See defaults | Focus Log/Commit, open Push/Merge, review Pull/Fetch, Roots, Actions, refresh, help, quit |
+| `keybindings.global` | See defaults | Switch workspace tabs, review Pull/Fetch, Roots, Actions, refresh, help, quit |
 | `keybindings.panes` | See defaults | Focus/cycle panes, resize/reset sizes, maximize/restore, optional Kitty synchronization, close a Log tab |
 | `keybindings.log` | See defaults | Movement, paging, copying, filtering, tabs, display options |
 | `keybindings.commit` | See defaults | Movement, checkboxes, groups, preview, messages, AI and commit review |
 | `keybindings.push` | See defaults | Movement, repository selection, targets, fetch, push review and retry |
-| `keybindings.merge` | See defaults | Conflict navigation, resolutions, undo, drafts, Apply and Continue review |
+| `keybindings.merge` | See defaults | Conflicts tab: navigation, resolutions, undo, drafts, Apply and Continue review |
 
 These settings do not store repository selections, message drafts, AI endpoint
 settings, pane sizes, or display-menu choices. Existing workspace state remains
@@ -132,6 +132,12 @@ Global `pull` and `fetch` default to `p` and `f`. Push's own `review` and `fetch
 default to `P` and `F`, and Merge's `back-to-files` defaults to `F`. If an
 override still uses `p` or `f` for one of those panel commands, change that
 override or rebind the conflicting global command.
+
+In the merge editor, `auto-resolve` (`a`) applies only non-conflicting changes
+(the toolbar's All action). `resolve-simple` (`m`) runs **Resolve Automatically**:
+all pending non-conflicting changes plus disjoint single-line edits. These
+existing command names remain stable for custom bindings; the automatic button
+shows the configured shortcut.
 
 Bindings apply in **normal mode**, in their command's original context. For
 example, Log copy commands operate in the commit list, Commit's `toggle`
@@ -287,20 +293,20 @@ and that `igit_resize.py` is installed. Requests retain the one-second timeout.
 
 ## Pane maximize and Kitty synchronization
 
-`toggle-pane-maximized` defaults to `Ctrl-w f`. It fills the workspace with the
-focused pane, retaining the header, footer, and relevant panel controls. Tab
-continues through enabled panes; `1` / `2` switches Log and Commit, and `3` / `4`
-opens the corresponding tool. The next press restores the saved split sizes.
+`toggle-pane-maximized` defaults to `Ctrl-w f` in Commit, Push, and Conflicts.
+It fills the workspace with the focused pane. Tab continues through enabled
+panes; `1` / `2` / `3` / `4` switches to Commit, Log, Push, or Conflicts when
+available. Log stays tiled. The next press in a supported tab restores the saved split sizes.
 Maximizing is session-only. Local divider resize/reset and mouse resizing are
 disabled while maximized; smart resize can still hand off to Kitty.
 
 The optional `smart-toggle-pane-maximized` command follows LazyDB's behavior:
 
 - In a Kitty tab with multiple layout groups, switch to `stack` and maximize
-  IGit's focused pane. From `stack`, restore the previous Kitty layout and the
-  IGit split layout.
-- With one Kitty group, or outside Kitty, toggle only the IGit pane. Overlays
-  belonging to the same Kitty group do not count as extra splits.
+  IGit's focused pane where supported. From `stack`, restore the previous Kitty
+  layout and the IGit split layout. Log keeps its panes tiled in both Kitty layouts.
+- With one Kitty group, or outside Kitty, toggle only the IGit pane where
+  supported. Overlays belonging to the same Kitty group do not count as extra splits.
 - The originating `KITTY_WINDOW_ID` identifies the tab, even if another tab
   currently has focus. IGit verifies Kitty's resulting layout before updating
   its own state. Failures show a status message and leave IGit's layout intact.

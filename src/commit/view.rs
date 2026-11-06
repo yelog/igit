@@ -1,4 +1,6 @@
-use super::{backend, rid, slice, word, CommitPanel, Focus, Hit, Kind, Row};
+use super::{
+    backend, rid, rows::CONFLICT_SELECTION, slice, word, CommitPanel, Focus, Hit, Kind, Row,
+};
 use crate::{
     core::Context,
     ui::icons::{Icon, IconMode},
@@ -229,15 +231,26 @@ impl CommitPanel {
             .take(tree.height as usize)
         {
             let r = slice(tree, (i - self.offset) as u16);
+            let model = self.changes_tree();
             let style = if i == self.cursor {
-                fg(INK).bg(SELECT)
+                fg(INK).bg(if model.has_merge_conflict(row) {
+                    CONFLICT_SELECTION
+                } else {
+                    SELECT
+                })
             } else {
                 fg(INK)
             };
             f.render_widget(
-                Paragraph::new(self.change_row(row, c, r.width)).style(style),
+                Paragraph::new(model.change_row(row, c, r.width)).style(style),
                 r,
             );
+            if row.kind == Kind::Conflicts {
+                let resolve = model.resolve_control(row, r);
+                if !resolve.is_empty() {
+                    self.hits.push((resolve, Hit::ResolveConflicts));
+                }
+            }
             self.hits.push((r, Hit::Row(i)));
         }
 

@@ -10,6 +10,7 @@ use std::{
 #[derive(PartialEq)]
 pub(super) enum Kind {
     Group,
+    Conflicts,
     Repo(usize),
     Directory(PathBuf),
     File(usize),
@@ -32,6 +33,7 @@ pub(super) struct Tree<'a> {
     pub options: &'a display::Options,
     pub icons: IconMode,
     pub show_empty_groups: bool,
+    pub merge_conflicts: bool,
 }
 
 impl Row {
@@ -121,6 +123,7 @@ impl CommitPanel {
             options: &self.options,
             icons: self.icons,
             show_empty_groups: true,
+            merge_conflicts: true,
         }
     }
 
@@ -222,6 +225,13 @@ impl Tree<'_> {
 
     pub(super) fn rows_with_folds(&self, c: &Context, folds: &BTreeSet<String>) -> Vec<Row> {
         let mut rows = vec![];
+        let conflicts: Vec<_> = self
+            .files
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| self.merge_conflicts && f.change.conflict && c.scope.contains(&f.root))
+            .map(|(i, _)| i)
+            .collect();
         for group in std::iter::once(DEF)
             .chain(self.groups.iter().map(String::as_str))
             .chain(std::iter::once(NEW))
@@ -229,11 +239,18 @@ impl Tree<'_> {
         {
             let mut repos: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
             for (i, file) in self.files.iter().enumerate() {
-                if file.group == group && c.scope.contains(&file.root) {
+                if file.group == group
+                    && !(self.merge_conflicts && file.change.conflict)
+                    && c.scope.contains(&file.root)
+                {
                     repos.entry(file.root).or_default().push(i);
                 }
             }
-            if (!self.show_empty_groups || group == NEW || group == IGNORED) && repos.is_empty() {
+            let unmerged = if group == DEF { &conflicts[..] } else { &[] };
+            if (!self.show_empty_groups || group == NEW || group == IGNORED)
+                && repos.is_empty()
+                && unmerged.is_empty()
+            {
                 continue;
             }
             let id = format!("g:{group}");
@@ -242,11 +259,25 @@ impl Tree<'_> {
                 id,
                 label: group.to_owned(),
                 depth: 0,
-                files: repos.values().flatten().copied().collect(),
+                files: repos.values().flatten().chain(unmerged).copied().collect(),
                 kind: Kind::Group,
             });
             if !open {
                 continue;
+            }
+            if !unmerged.is_empty() {
+                let id = "merge-conflicts".to_owned();
+                let open = !folds.contains(&id);
+                rows.push(Row {
+                    id,
+                    label: "Merge Conflicts".to_owned(),
+                    depth: 1,
+                    files: unmerged.to_vec(),
+                    kind: Kind::Conflicts,
+                });
+                if open {
+                    self.append_flat_files(c, unmerged.to_vec(), 2, &mut rows);
+                }
             }
             if !self.options.modules {
                 self.append_files(
@@ -281,27 +312,14 @@ impl Tree<'_> {
     fn append_files(
         &self,
         c: &Context,
-        mut members: Vec<usize>,
+        members: Vec<usize>,
         id: &str,
         depth: u16,
         folds: &BTreeSet<String>,
         rows: &mut Vec<Row>,
     ) {
         if !self.options.directories {
-            members.sort_by_cached_key(|&i| {
-                let file = &self.files[i];
-                let path = &file.change.path;
-                (
-                    path.file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_lowercase(),
-                    path.parent(),
-                    &c.repos[file.root].path,
-                    path.as_os_str(),
-                )
-            });
-            rows.extend(members.into_iter().map(|i| self.file_row(i, depth)));
+            self.append_flat_files(c, members, depth, rows);
             return;
         }
         let paths: Vec<_> = members
@@ -329,6 +347,29 @@ impl Tree<'_> {
             dir.leaves.push(*i);
         }
         root.append(self, folds, rows, id, Path::new(""), depth);
+    }
+
+    fn append_flat_files(
+        &self,
+        c: &Context,
+        mut members: Vec<usize>,
+        depth: u16,
+        rows: &mut Vec<Row>,
+    ) {
+        members.sort_by_cached_key(|&i| {
+            let file = &self.files[i];
+            let path = &file.change.path;
+            (
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_lowercase(),
+                path.parent(),
+                &c.repos[file.root].path,
+                path.as_os_str(),
+            )
+        });
+        rows.extend(members.into_iter().map(|i| self.file_row(i, depth)));
     }
 
     pub(super) fn check_counts(&self, row: &Row) -> (usize, usize) {
@@ -414,6 +455,58 @@ mod tests {
                     && p.files[r.files[0]].root == root
             })
             .unwrap()
+    }
+
+    #[test]
+    fn merge_conflicts_are_scoped_once_and_keep_changelist_membership() {
+        let (_d, mut c, mut panel) = fixture();
+        let app = panel.view[file_row(&panel, 0, "a/shared.rs")]
+            .file()
+            .unwrap();
+        let lib = panel.view[file_row(&panel, 1, "a/shared.rs")]
+            .file()
+            .unwrap();
+        panel.saved.groups.push("Later".into());
+        panel.files[app].group = "Later".into();
+        for i in [app, lib] {
+            panel.files[i].change.conflict = true;
+            panel.files[i].change.xy = *b"UU";
+        }
+        panel.sync(&c);
+        for (directories, modules) in [(true, false), (false, true), (false, false), (true, true)] {
+            panel.set_grouping(directories, modules, &c);
+            let rows = &panel.view;
+            assert_eq!(rows[0].label, DEF);
+            assert!(rows[0].files.contains(&app) && rows[0].files.contains(&lib));
+            assert_eq!(rows[1].label, "Merge Conflicts");
+            assert_eq!(rows[1].depth, 1);
+            assert_eq!(panel.check_counts(&rows[1]), (0, 0));
+            assert_eq!(rows[2].file(), Some(app));
+            assert_eq!(rows[3].file(), Some(lib));
+            assert_eq!(rows[2].depth, 2);
+            assert_eq!(rows.iter().filter(|r| r.file() == Some(app)).count(), 1);
+        }
+        panel.fold(1, Some(true), &c);
+        assert!(panel.view.iter().all(|row| row.file() != Some(app)));
+        panel.fold(1, Some(false), &c);
+        c.scope.remove(&1);
+        panel.sync(&c);
+        assert_eq!(panel.view[1].files, [app]);
+        assert!(panel.view.iter().all(|row| row.file() != Some(lib)));
+
+        panel.files[app].change.conflict = false;
+        panel.files[app].change.xy = *b"M ";
+        panel.sync(&c);
+        assert!(panel.view.iter().all(|row| row.kind != Kind::Conflicts));
+        assert_eq!(
+            panel
+                .view
+                .iter()
+                .find(|r| r.label == "Later")
+                .unwrap()
+                .files,
+            [app]
+        );
     }
 
     #[test]

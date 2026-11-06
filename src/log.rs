@@ -85,7 +85,6 @@ enum DropdownHit {
 }
 #[derive(Clone)]
 enum Hit {
-    Pane(Pane),
     Ref(usize),
     Commit(usize),
     GraphJump(usize),
@@ -129,6 +128,8 @@ struct DiffView {
     x: u16,
     waiting_for_files: bool,
     selection: TextSelection,
+    file: Option<usize>,
+    comparison: Option<crate::merge::RevisionDiff>,
 }
 pub struct LogPanel {
     pub(crate) icons: IconMode,
@@ -317,18 +318,87 @@ impl LogPanel {
         let i = self
             .file_index()
             .or_else(|| (self.focus == Pane::Graph && !self.details.files.is_empty()).then_some(0));
-        if let (Some(r), Some(f)) = (self.rev(), i.and_then(|i| self.details.files.get(i))) {
-            let lines = model::patch(&c.repos[r.root].path, r, &f.raw)?;
-            self.diff = Some(DiffView {
-                lines,
-                name: format!(
-                    "{} · {} · {}",
-                    c.repos[r.root].name,
-                    &r.oid[..8],
-                    model::plain(&f.raw)
-                ),
-                ..Default::default()
-            })
+        if let Some(i) = i {
+            self.open_diff_file(c, i)?;
+        }
+        Ok(())
+    }
+    fn open_diff_file(&mut self, c: &Context, index: usize) -> Result<()> {
+        let (Some(r), Some(file)) = (self.rev(), self.details.files.get(index)) else {
+            return Ok(());
+        };
+        let repo = &c.repos[r.root];
+        let mut diff = DiffView {
+            file: Some(index),
+            name: format!(
+                "{} · {} · {}",
+                repo.name,
+                &r.oid[..8],
+                model::plain(&file.raw)
+            ),
+            ..Default::default()
+        };
+        if r.parents.len() > 1 {
+            match model::merge_diff::sources(&repo.path, r, file) {
+                Ok(sources) => {
+                    let annotations = sources.each_ref().map(|s| s.description.clone());
+                    let texts = sources.map(|s| s.text);
+                    diff.comparison = Some(crate::merge::RevisionDiff::new(
+                        model::plain(&file.raw),
+                        [r.parents[0].clone(), r.oid.clone(), r.parents[1].clone()],
+                        texts,
+                        annotations,
+                    ));
+                }
+                Err(error) => {
+                    diff.lines.push(error.to_string());
+                    diff.lines.push(String::new());
+                }
+            }
+        }
+        if r.parents.len() <= 1 {
+            match model::merge_diff::pair(&repo.path, r, file) {
+                Ok(sources) => {
+                    let annotations = sources.each_ref().map(|s| s.description.clone());
+                    let texts = sources.map(|s| s.text);
+                    diff.comparison = Some(crate::merge::RevisionDiff::two_way(
+                        model::plain(&file.raw),
+                        [
+                            r.parents
+                                .first()
+                                .cloned()
+                                .unwrap_or_else(|| "Empty tree".into()),
+                            r.oid.clone(),
+                        ],
+                        texts,
+                        annotations,
+                    ));
+                }
+                Err(error) => {
+                    diff.lines.push(error.to_string());
+                    diff.lines.push(String::new());
+                }
+            }
+        }
+        if diff.comparison.is_none() {
+            diff.lines.extend(model::patch(&repo.path, r, file)?);
+            if let Some(parent) = file.parent.and_then(|p| r.parents.get(p)) {
+                diff.name
+                    .push_str(&format!(" · Changes to {}", &parent[..8]));
+            }
+        }
+        self.diff = Some(diff);
+        Ok(())
+    }
+
+    fn diff_file(&mut self, c: &Context, delta: isize) -> Result<()> {
+        if let Some(i) = self.diff.as_ref().and_then(|d| d.file) {
+            let next = i
+                .saturating_add_signed(delta)
+                .min(self.details.files.len().saturating_sub(1));
+            if next != i {
+                self.open_diff_file(c, next)?;
+            }
         }
         Ok(())
     }
@@ -425,7 +495,6 @@ impl LogPanel {
     }
     fn click(&mut self, hit: Hit, c: &Context) -> Result<()> {
         match hit {
-            Hit::Pane(p) => self.focus = p,
             Hit::Ref(n) => {
                 self.focus = Pane::Refs;
                 self.refs.set_cursor(n);
@@ -534,14 +603,6 @@ fn popup(a: Rect, width: u16, height: u16) -> Rect {
     Rect::new(a.x + (a.width - w) / 2, a.y + (a.height - h) / 2, w, h)
 }
 impl LogPanel {
-    pub(crate) fn overlay_at(&self, x: u16, y: u16) -> bool {
-        self.diff.is_some()
-            || self.path_dialog.is_some()
-            || self.editing()
-                && self.hits.iter().rev().any(|(r, h)| {
-                    matches!(h, Hit::Dropdown(_) | Hit::ViewMenu(_)) && inside(*r, x, y)
-                })
-    }
     pub(crate) fn draw_content(&mut self, f: &mut Frame, a: Rect, c: &Context) {
         self.bounds = a;
         self.hits.clear();
@@ -570,6 +631,16 @@ impl LogPanel {
         }
         self.draw_view_menu(f, a);
         if let Some(d) = &mut self.diff {
+            if let Some(merge) = &mut d.comparison {
+                merge.draw(
+                    f,
+                    a,
+                    self.icons,
+                    d.file.unwrap_or(0),
+                    self.details.files.len(),
+                );
+                return;
+            }
             let p = popup(a, a.width.saturating_sub(4), a.height.saturating_sub(2));
             f.render_widget(Clear, p);
             let b = boxof(
@@ -630,7 +701,10 @@ impl Panel for LogPanel {
     }
     fn selected_text(&self) -> Option<&str> {
         if let Some(diff) = &self.diff {
-            diff.selection.selected_text()
+            diff.comparison.as_ref().map_or_else(
+                || diff.selection.selected_text(),
+                crate::merge::RevisionDiff::selected_text,
+            )
         } else if self.editor.is_none() && self.view_menu.is_none() && self.focus == Pane::Info {
             self.info_selection.selected_text()
         } else {
@@ -645,6 +719,25 @@ impl Panel for LogPanel {
         self.draw_overlays(f, a, c);
     }
     fn event(&mut self, e: &Event, c: &Context) -> Action {
+        if let Some(merge) = self.diff.as_mut().and_then(|d| d.comparison.as_mut()) {
+            use crate::merge::RevisionEvent;
+            let event = merge.event(e);
+            self.cancel_key_sequence();
+            return match event {
+                RevisionEvent::None => Action::None,
+                RevisionEvent::Close => {
+                    self.diff = None;
+                    Action::None
+                }
+                RevisionEvent::File(delta) => self
+                    .diff_file(c, delta)
+                    .map_or_else(|error| Action::Notice(error.to_string()), |_| Action::None),
+                RevisionEvent::Copy(text) => Action::Copy {
+                    text,
+                    label: "revision",
+                },
+            };
+        }
         if matches!(
             e,
             Event::FocusLost | Event::Resize(_, _) | Event::Key(_) | Event::Paste(_)
@@ -783,6 +876,10 @@ impl Panel for LogPanel {
                 return Ok(());
             }
             let key = k.code;
+            if self.diff.is_some() && matches!(key, K::Char('[' | ']')) {
+                self.diff_file(c, if key == K::Char('[') { -1 } else { 1 })?;
+                return Ok(());
+            }
             if let Some(d) = &mut self.diff {
                 match key {
                     K::Esc | K::Char('q') | K::Enter => self.diff = None,
@@ -949,7 +1046,7 @@ mod tests {
         let root = r.iter().find(|v| v.subject == "root").unwrap();
         let f = model::details(p, root).unwrap();
         assert_eq!(f.files[0].raw, b"[literal]*.txt");
-        assert!(model::patch(p, root, &f.files[0].raw)
+        assert!(model::patch(p, root, &f.files[0])
             .unwrap()
             .iter()
             .any(|s| s == "+root"));
@@ -1047,13 +1144,17 @@ mod tests {
         let key = |k| Event::Key(KeyEvent::new(k, Mods::NONE));
         panel.event(&key(K::Enter), &c);
         finish_preview(&mut panel, &c);
-        assert!(panel
+        assert!(!panel
             .diff
             .as_ref()
             .unwrap()
-            .lines
-            .iter()
-            .any(|l| l == &format!("+{}", c.repos[root].name)));
+            .comparison
+            .as_ref()
+            .unwrap()
+            .is_three_way());
+        assert!(
+            matches!(panel.event(&key(K::Char('y')), &c), Action::Copy { text, .. } if text == c.repos[root].name)
+        );
         panel.event(&key(K::Esc), &c);
         c.scope.remove(&root);
         panel.refresh(&c).unwrap();

@@ -30,6 +30,7 @@ smart-resize-pane-right=['Cmd+Ctrl+Shift+l']";
 fn configuration_smart_resize_moves_width_height_and_repeats_without_changing_focus() {
     use crate::ui::panes::PaneId;
     let (_dir, mut app) = fixture();
+    app.go(Log);
     configure(&mut app, SMART_RESIZE);
     let before = snapshot(&app.ctx.repos[0].path);
     for (width, height) in [(120, 36), (180, 48)] {
@@ -37,7 +38,6 @@ fn configuration_smart_resize_moves_width_height_and_repeats_without_changing_fo
         let initial = screen(&mut app, width, height);
         let refs = app.log.panes.rect(PaneId::Refs).unwrap();
         let graph = app.log.panes.rect(PaneId::Graph).unwrap();
-        let log_area = app.regions.log;
         send(&mut app, "Ctrl-w Cmd+Ctrl+Shift+l");
         assert!(app.window_prefix.is_none());
         screen(&mut app, width, height);
@@ -53,10 +53,12 @@ fn configuration_smart_resize_moves_width_height_and_repeats_without_changing_fo
         app.dispatch(&Event::Key(repeat));
         screen(&mut app, width, height);
         assert_eq!(app.log.panes.rect(PaneId::Graph).unwrap(), graph);
+        send(&mut app, "Tab");
+        let info = app.log.panes.rect(PaneId::Info).unwrap();
         send(&mut app, "Cmd+Ctrl+Shift+j");
         screen(&mut app, width, height);
-        assert_eq!(app.regions.log.y, log_area.y + 3);
-        send(&mut app, "Cmd+Ctrl+Shift+k");
+        assert_eq!(app.log.panes.rect(PaneId::Info).unwrap().y, info.y + 3);
+        send(&mut app, "Cmd+Ctrl+Shift+k Shift-Tab");
         assert_eq!(screen(&mut app, width, height), initial);
         assert_eq!(app.log.focused_pane(), PaneId::Graph);
         assert!(app.kitty.resizes.is_empty());
@@ -69,6 +71,7 @@ fn configuration_smart_resize_moves_width_height_and_repeats_without_changing_fo
 fn configuration_smart_resize_hands_off_only_at_limits_or_missing_dividers() {
     use crate::ui::panes::{Direction, PaneId};
     let (_dir, mut app) = fixture();
+    app.go(Log);
     configure(&mut app, SMART_RESIZE);
     screen(&mut app, 120, 36);
     for _ in 0..100 {
@@ -84,25 +87,30 @@ fn configuration_smart_resize_hands_off_only_at_limits_or_missing_dividers() {
     screen(&mut app, 120, 36);
     assert_eq!(app.log.panes.rect(PaneId::Files).unwrap().width, 19);
     assert_eq!(app.kitty.resizes.len(), 1);
-    // A narrow, tabbed Log has no internal width divider.
-    for (width, height) in [(80, 24), (44, 12)] {
-        screen(&mut app, width, height);
-        send(&mut app, "Cmd+Ctrl+Shift+h");
-    }
+    // Log's dividers remain usable at 80 columns, but are fixed at 44.
+    screen(&mut app, 80, 24);
+    let graph = app.log.panes.rect(PaneId::Graph).unwrap();
+    send(&mut app, "Cmd+Ctrl+Shift+h");
+    screen(&mut app, 80, 24);
     assert_eq!(
-        app.kitty.resizes,
-        [Direction::Right, Direction::Left, Direction::Left]
+        app.log.panes.rect(PaneId::Graph).unwrap().width,
+        graph.width - 3
     );
+    assert_eq!(app.kitty.resizes, [Direction::Right]);
+    screen(&mut app, 44, 12);
+    send(&mut app, "Cmd+Ctrl+Shift+h");
+    assert_eq!(app.kitty.resizes, [Direction::Right, Direction::Left]);
     assert_eq!(app.help_content().context(), "Log / Commits");
 }
 
 #[test]
-fn configuration_smart_resize_keeps_tools_isolated_and_help_executes_the_action() {
+fn configuration_smart_resize_keeps_tabs_isolated_and_help_executes_the_action() {
     use crate::ui::panes::{Direction, PaneId};
     let (_dir, mut app) = fixture();
+    merge_conflict(&app.ctx.repos[0].path);
+    app.refresh();
     configure(&mut app, SMART_RESIZE);
     screen(&mut app, 120, 36);
-    let background = (app.regions.commit, app.regions.log);
     send(&mut app, "3");
     screen(&mut app, 120, 36);
     let outgoing = app.push.panes.rect(PaneId::Outgoing).unwrap();
@@ -118,13 +126,13 @@ fn configuration_smart_resize_keeps_tools_isolated_and_help_executes_the_action(
     assert_eq!(app.push.focused_pane(), PaneId::PushFiles);
     send(&mut app, "Cmd+Ctrl+Shift+j");
     assert_eq!(app.kitty.resizes, [Direction::Down]);
-    assert_eq!((app.regions.commit, app.regions.log), background);
+    assert!(app.log.panes.nodes().is_empty());
     send(&mut app, "Esc 4");
     screen(&mut app, 120, 36);
     send(&mut app, "Cmd+Ctrl+Shift+h");
-    assert_eq!(app.surface(), Dialog(Merge));
+    assert_eq!(app.tab, Conflicts);
     assert_eq!(app.kitty.resizes, [Direction::Down, Direction::Left]);
-    send(&mut app, "Esc 1 F1");
+    send(&mut app, "Esc 2 F1");
     app.dispatch(&Event::Paste("Move divider right".into()));
     assert!(screen(&mut app, 120, 36).contains("Ctrl-Super-L"));
     let graph = app.log.panes.rect(PaneId::Graph).unwrap();
@@ -143,18 +151,17 @@ fn configuration_smart_resize_preserves_drafts_and_reviewed_selection() {
     let (_dir, mut app) = fixture();
     configure(&mut app, SMART_RESIZE);
     let before = snapshot(&app.ctx.repos[0].path);
-    send(&mut app, "2");
     screen(&mut app, 120, 36);
     send(&mut app, "G Space i");
     app.dispatch(&Event::Paste("Resize draft 中文".into()));
     send(&mut app, "Ctrl-a");
-    let regions = (app.regions.commit, app.regions.log);
+    let body = app.regions.body;
     send(
         &mut app,
         "Cmd+Ctrl+Shift+h Cmd+Ctrl+Shift+j Cmd+Ctrl+Shift+k Cmd+Ctrl+Shift+l",
     );
     assert_eq!(app.panel().selected_text(), Some("Resize draft 中文"));
-    assert_eq!((app.regions.commit, app.regions.log), regions);
+    assert_eq!(app.regions.body, body);
     send(&mut app, "Esc F2 c");
     let review = match &app.pop {
         Some(Popup::Confirm { body, .. }) => body.clone(),
@@ -188,22 +195,23 @@ fn configuration_smart_resize_preserves_drafts_and_reviewed_selection() {
 fn configuration_smart_focus_uses_internal_neighbors_then_kitty_edges() {
     use crate::ui::panes::Direction;
     let (_dir, mut app) = fixture();
+    app.go(Log);
     configure(&mut app, SMART_FOCUS);
     let before = snapshot(&app.ctx.repos[0].path);
     screen(&mut app, 120, 36);
     for (keys, context) in [
         ("Cmd+Ctrl+h", "Log / Branch Tree"),
         ("Cmd+Ctrl+h", "Log / Branch Tree"),
-        ("Cmd+Ctrl+k", "Commit / Message"),
-        ("Cmd+Ctrl+k", "Commit / Changes"),
-        ("Cmd+Ctrl+k", "Commit / Changes"),
-        ("Cmd+Ctrl+j", "Commit / Message"),
-        ("Cmd+Ctrl+j", "Log / Commits"),
-        ("Cmd+Ctrl+j", "Log / Commits"),
-        ("Cmd+Ctrl+h", "Log / Branch Tree"),
+        ("Cmd+Ctrl+k", "Log / Branch Tree"),
+        ("Cmd+Ctrl+j", "Log / Branch Tree"),
         ("Cmd+Ctrl+l", "Log / Commits"),
         ("Cmd+Ctrl+l", "Log / File Tree"),
+        ("Cmd+Ctrl+j", "Log / Commit Details"),
+        ("Cmd+Ctrl+k", "Log / File Tree"),
         ("Cmd+Ctrl+l", "Log / File Tree"),
+        ("1", "Commit / Changes"),
+        ("Cmd+Ctrl+j", "Commit / Message"),
+        ("Cmd+Ctrl+k", "Commit / Changes"),
     ] {
         send(&mut app, keys);
         assert_eq!(app.help_content().context(), context, "{keys}");
@@ -226,7 +234,7 @@ fn configuration_smart_focus_preserves_editors_help_and_confirmations() {
     let (_dir, mut app) = fixture();
     configure(&mut app, SMART_FOCUS);
     let before = snapshot(&app.ctx.repos[0].path);
-    send(&mut app, "2 i");
+    send(&mut app, "i");
     app.dispatch(&Event::Paste("Keep draft 中文".into()));
     send(&mut app, "Ctrl-a");
     send(&mut app, "Cmd+Ctrl+h Cmd+Ctrl+j Cmd+Ctrl+k Cmd+Ctrl+l");
@@ -249,6 +257,7 @@ fn configuration_smart_focus_preserves_editors_help_and_confirmations() {
 fn configuration_smart_focus_ignores_repeats_cancels_prefixes_and_runs_from_help() {
     use crate::ui::panes::Direction;
     let (_dir, mut app) = fixture();
+    app.go(Log);
     configure(&mut app, SMART_FOCUS);
     screen(&mut app, 120, 36);
     send(&mut app, "Ctrl-w Cmd+Ctrl+h");
@@ -275,9 +284,11 @@ fn configuration_smart_focus_ignores_repeats_cancels_prefixes_and_runs_from_help
 }
 
 #[test]
-fn configuration_smart_focus_stays_in_tool_dialog_and_survives_workspace_rescan() {
+fn configuration_smart_focus_stays_in_the_tab_and_survives_workspace_rescan() {
     use crate::ui::panes::{Direction, PaneId};
     let (_dir, mut app) = fixture();
+    merge_conflict(&app.ctx.repos[0].path);
+    app.refresh();
     configure(&mut app, SMART_FOCUS);
     screen(&mut app, 120, 36);
     send(&mut app, "3");
@@ -285,12 +296,12 @@ fn configuration_smart_focus_stays_in_tool_dialog_and_survives_workspace_rescan(
     send(&mut app, "Cmd+Ctrl+l");
     assert_eq!(app.push.focused_pane(), PaneId::PushFiles);
     send(&mut app, "Cmd+Ctrl+k");
-    assert_eq!(app.surface(), Dialog(Push));
+    assert_eq!(app.tab, Push);
     assert_eq!(app.kitty.requests, [Direction::Up]);
     send(&mut app, "Esc 4");
     screen(&mut app, 120, 36);
     send(&mut app, "Cmd+Ctrl+h");
-    assert_eq!(app.surface(), Dialog(Merge));
+    assert_eq!(app.tab, Conflicts);
     assert_eq!(app.kitty.requests, [Direction::Up, Direction::Left]);
     send(&mut app, "Esc");
     app.pop = Some(Popup::Open {
@@ -312,9 +323,14 @@ fn configuration_remapped_review_and_help_keep_git_and_index_unchanged() {
         "[keybindings.global]\nfocus-commit=['F8']\n[keybindings.commit]\nreview=['Ctrl-r']",
     );
     send(&mut app, "2");
-    assert_eq!(app.surface(), Split(Log));
+    assert_eq!(app.tab, Log);
+    send(&mut app, "1");
+    assert_eq!(
+        app.tab, Log,
+        "the replaced Commit shortcut must stay inactive"
+    );
     send(&mut app, "F8");
-    assert_eq!(app.surface(), Split(Commit));
+    assert_eq!(app.tab, Commit);
     screen(&mut app, 120, 36);
     // mixed.txt is selected, while other.txt has unrelated staged content.
     send(&mut app, "G Space");
@@ -352,7 +368,7 @@ fn configuration_swaps_unbinds_and_preserves_text_input() {
         &mut app,
         "[keybindings.commit]\nedit-message=['c']\nreview=['i']\nai-draft=[]",
     );
-    send(&mut app, "2 A");
+    send(&mut app, "A");
     assert!(app.pop.is_none());
     assert!(!app.panel().editing());
     send(&mut app, "c");
@@ -369,6 +385,7 @@ fn configuration_swaps_unbinds_and_preserves_text_input() {
 #[test]
 fn configuration_sequences_share_prefixes_and_use_custom_hints() {
     let (_dir, mut app) = fixture();
+    app.go(Log);
     let capture = CopyCapture::start();
     configure(
         &mut app,
@@ -465,25 +482,30 @@ fn configuration_settings_survive_rescan_and_empty_workspace() {
 
 #[test]
 fn configuration_window_commands_keep_counts_and_original_context() {
+    use crate::ui::panes::PaneId;
     let (_dir, mut app) = fixture();
+    app.go(Log);
     configure(&mut app, "[keybindings.panes]\nfocus-up=['Alt-k']");
     screen(&mut app, 120, 36);
-    let before = app.regions.commit.height;
+    send(&mut app, "Tab Tab");
+    let height = |app: &Shell| app.log.panes.rect(PaneId::Info).unwrap().height;
+    let before = height(&app);
     send(&mut app, "Ctrl-w 3 +");
     screen(&mut app, 120, 36);
-    assert_eq!(app.regions.commit.height, before - 3);
+    assert_eq!(height(&app), before + 3);
     send(&mut app, "Ctrl-w =");
     screen(&mut app, 120, 36);
-    assert_eq!(app.regions.commit.height, before);
+    assert_eq!(height(&app), before);
     send(&mut app, "Ctrl-w k");
-    assert_eq!(app.surface(), Split(Log));
+    assert_eq!(app.log.focused_pane(), PaneId::Info);
     send(&mut app, "Alt-k");
-    assert_eq!(app.surface(), Split(Commit));
+    assert_eq!(app.log.focused_pane(), PaneId::Files);
 }
 
 #[test]
 fn configuration_keeps_unmodified_prefix_mouse_actions_and_copy_precedence() {
     let (_dir, mut app) = fixture();
+    app.go(Log);
     let capture = CopyCapture::start();
     configure(
         &mut app,
@@ -529,18 +551,19 @@ fn configuration_keeps_unmodified_prefix_mouse_actions_and_copy_precedence() {
 #[test]
 fn configuration_multistep_named_continuations_and_mouse_off() {
     let (_dir, mut app) = fixture();
+    app.go(Log);
     configure(&mut app, "[terminal]\nmouse=false\n[keybindings.global]\nroots=['F8 Enter']\nfocus-commit=['F9 x y']");
     screen(&mut app, 120, 36);
-    let header = app.regions.commit;
+    let header = app.regions.tab(Commit);
     app.dispatch(&Event::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: header.x,
         row: header.y,
         modifiers: KeyModifiers::NONE,
     }));
-    assert_eq!(app.surface(), Split(Log));
+    assert_eq!(app.tab, Log);
     send(&mut app, "F9 x y");
-    assert_eq!(app.surface(), Split(Commit));
+    assert_eq!(app.tab, Commit);
     send(&mut app, "F8");
     app.key_picker
         .poll(Instant::now() + Duration::from_millis(200));
@@ -559,6 +582,7 @@ fn configuration_multistep_named_continuations_and_mouse_off() {
 #[test]
 fn configuration_new_shortcuts_interrupt_default_prefixes_without_stealing_suffixes() {
     let (_dir, mut app) = fixture();
+    app.go(Log);
     let capture = CopyCapture::start();
     configure(
         &mut app,
@@ -568,13 +592,14 @@ fn configuration_new_shortcuts_interrupt_default_prefixes_without_stealing_suffi
     assert_eq!(capture.texts(), ["base"]); // m still completes ym while y is pending.
     assert!(!app.panel().editing());
     send(&mut app, "g F8");
-    assert_eq!(app.surface(), Split(Commit));
+    assert_eq!(app.tab, Commit);
     assert!(app.key_sequence().is_none());
 }
 
 #[test]
 fn configuration_remaps_workspace_update_and_log_filter_prefixes() {
     let (_dir, mut app) = fixture();
+    app.go(Log);
     configure(&mut app, "[keybindings.log]\npaths-filter=['Space x']");
     send(&mut app, "Space p");
     assert!(app.pop.is_none() && !app.log.editing());

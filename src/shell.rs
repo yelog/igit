@@ -1,14 +1,11 @@
 mod configuration;
 mod kitty;
 mod panes;
+mod startup;
 mod update;
 mod workspace;
 
-use self::{
-    Surface::{Dialog, Split},
-    ToolWindow::{Merge, Push},
-    WorkspacePane::{Commit, Log},
-};
+use self::Tab::{Commit, Conflicts, Log, Push};
 use crate::{
     commit::{CommitPanel, Rollback, RollbackEvent},
     config::{keys::CommandAction, AppConfig},
@@ -53,22 +50,48 @@ use std::{
 };
 use unicode_width::UnicodeWidthStr;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WorkspacePane {
-    Log,
+enum Tab {
     Commit,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ToolWindow {
+    Log,
     Push,
-    Merge,
+    Conflicts,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Surface {
-    Split(WorkspacePane),
-    Dialog(ToolWindow),
+impl Tab {
+    const DISPLAY_ORDER: [Self; 4] = [Commit, Log, Push, Conflicts];
+
+    fn name(self) -> &'static str {
+        match self {
+            Commit => "Commit",
+            Log => "Log",
+            Push => "Push",
+            Conflicts => "Conflicts",
+        }
+    }
+
+    fn binding(self) -> &'static str {
+        match self {
+            Commit => "focus-commit",
+            Log => "focus-log",
+            Push => "open-push",
+            Conflicts => "open-merge",
+        }
+    }
 }
-const SHORTCUTS: [Surface; 4] = [Split(Log), Split(Commit), Dialog(Push), Dialog(Merge)];
-const HEADER: &str = "IGit 0.1.0 — terminal Git workbench";
+#[derive(Clone, Copy)]
+enum MenuAction {
+    Switch(Tab),
+    Roots,
+    Update(update::Kind),
+    Refresh,
+    Open,
+    Console,
+    Quit,
+}
+const HEADER: &str = concat!(
+    "IGit ",
+    env!("CARGO_PKG_VERSION"),
+    " — terminal Git workbench"
+);
 const HELP: &str = "Usage: igit [OPTIONS] [DIRECTORY]  (alias: ig)
 
   --icons MODE               nerd-font (default), unicode or ascii
@@ -80,7 +103,7 @@ const HELP: &str = "Usage: igit [OPTIONS] [DIRECTORY]  (alias: ig)
   -h, --help                 show this help
   -V, --version              print version
 
-Focus: 1 Git Log / 2 Commit   Dialogs: 3 Push / 4 Merge   p Pull / f Fetch
+Tabs: 1 Commit / 2 Log / 3 Push / 4 Conflicts (when available)   p Pull / f Fetch
 r repositories   ? / F1 help   q quit
 Runs Git on your local working trees; mutations require a reviewed confirmation.";
 enum Popup {
@@ -101,7 +124,7 @@ enum Popup {
         title: String,
         body: String,
         token: String,
-        owner: Surface,
+        owner: Tab,
         scroll: u16,
         yes: bool,
     },
@@ -119,19 +142,18 @@ struct Shell {
     ctx: Context,
     icons: IconMode,
     log: LogPanel,
+    log_load: startup::LogLoad,
     commit: CommitPanel,
     push: PushPanel,
     merge: MergePanel,
-    focus: WorkspacePane,
-    tool: Option<ToolWindow>,
+    tab: Tab,
+    main_tab: Tab,
     remote_refs_changed: bool,
     pop: Option<Popup>,
     msg: String,
     journal: Vec<String>,
     quit: bool,
     regions: workspace::Regions,
-    work_panes: crate::ui::panes::PaneLayout,
-    tools: Vec<(Rect, u8)>,
     pop_hits: Vec<(Rect, usize)>,
     key_picker: KeySequencePicker,
     window_prefix: Option<WindowPrefix>,
@@ -148,6 +170,12 @@ impl Shell {
         )
     }
     fn with_config(ctx: Context, config: AppConfig) -> Self {
+        let mut s = Self::unloaded(ctx, config);
+        s.log_load = startup::LogLoad::Ready;
+        s.refresh();
+        s
+    }
+    fn unloaded(ctx: Context, config: AppConfig) -> Self {
         let icons = config.icons;
         let mut s = Self {
             config,
@@ -158,19 +186,18 @@ impl Shell {
             ctx,
             icons,
             log: Default::default(),
+            log_load: startup::LogLoad::Dormant,
             commit: Default::default(),
             push: Default::default(),
             merge: Default::default(),
-            focus: Log,
-            tool: None,
+            tab: Commit,
+            main_tab: Commit,
             remote_refs_changed: false,
             pop: None,
             msg: "".into(),
             journal: vec![],
             quit: false,
             regions: Default::default(),
-            work_panes: Default::default(),
-            tools: vec![],
             pop_hits: vec![],
             key_picker: KeySequencePicker::default(),
             window_prefix: None,
@@ -181,18 +208,17 @@ impl Shell {
         s.merge.icons = icons;
         s.merge.shortcut_labels = s.config.shortcut_labels("merge");
         s.push.shortcut_labels = s.config.shortcut_labels("push");
-        s.refresh();
         s
     }
-    fn surface(&self) -> Surface {
-        self.tool.map_or(Split(self.focus), Dialog)
+    fn tab_available(&self, tab: Tab) -> bool {
+        tab != Conflicts || self.merge.has_pending_work()
     }
     fn panel(&self) -> &dyn Panel {
-        match self.surface() {
-            Split(Log) => &self.log,
-            Split(Commit) => &self.commit,
-            Dialog(Push) => &self.push,
-            Dialog(Merge) => &self.merge,
+        match self.tab {
+            Log => &self.log,
+            Commit => &self.commit,
+            Push => &self.push,
+            Conflicts => &self.merge,
         }
     }
     fn key_sequence(&self) -> Option<KeySequence> {
@@ -202,9 +228,9 @@ impl Shell {
         if let Some(prefix) = self.window_prefix {
             return Some(KeySequence::Window(prefix));
         }
-        match self.surface() {
-            Split(Log) => self.log.key_sequence(),
-            Dialog(Merge) => self.merge.key_sequence(),
+        match self.tab {
+            Log => self.log.key_sequence(),
+            Conflicts => self.merge.key_sequence(),
             _ => None,
         }
     }
@@ -215,13 +241,16 @@ impl Shell {
         self.merge.cancel_key_sequence();
         self.key_picker = KeySequencePicker::default();
     }
-    fn panel_event(&mut self, surface: Surface, ev: &Event) {
+    fn panel_event(&mut self, ev: &Event) {
+        if self.tab == Log && !self.log_load.ready() {
+            return;
+        }
         let before = self.key_sequence();
-        let action = match surface {
-            Split(Log) => self.log.event(ev, &self.ctx),
-            Split(Commit) => self.commit.event(ev, &self.ctx),
-            Dialog(Push) => self.push.event(ev, &self.ctx),
-            Dialog(Merge) => self.merge.event(ev, &self.ctx),
+        let action = match self.tab {
+            Log => self.log.event(ev, &self.ctx),
+            Commit => self.commit.event(ev, &self.ctx),
+            Push => self.push.event(ev, &self.ctx),
+            Conflicts => self.merge.event(ev, &self.ctx),
         };
         self.action(action);
         let after = self.key_sequence();
@@ -242,23 +271,37 @@ impl Shell {
             self.notice(format!("Commit: {e:#}"));
         }
         self.refresh_log();
-        if let Some(tool) = self.tool {
-            self.refresh_tool(tool);
+        self.refresh_conflicts();
+        if self.tab == Push {
+            self.refresh_push();
         }
     }
     fn refresh_log(&mut self) {
         self.remote_refs_changed = false;
+        if !self.log_load.ready() {
+            // Dropping the receiver prevents an old scope/ref snapshot from being installed.
+            self.log_load = startup::LogLoad::Dormant;
+            if self.tab == Log {
+                self.load_log();
+            }
+            return;
+        }
         if let Err(e) = self.log.refresh(&self.ctx) {
             self.notice(format!("Log: {e:#}"));
         }
     }
-    fn refresh_tool(&mut self, tool: ToolWindow) {
-        let r = match tool {
-            Push => self.push.refresh(&self.ctx),
-            Merge => self.merge.refresh(&self.ctx),
-        };
-        if let Err(e) = r {
+    fn refresh_push(&mut self) {
+        if let Err(e) = self.push.refresh(&self.ctx) {
             self.notice(format!("{e:#}"))
+        }
+    }
+    fn refresh_conflicts(&mut self) {
+        let result = self.merge.refresh(&self.ctx);
+        if self.tab == Conflicts && !self.tab_available(Conflicts) {
+            self.go(self.main_tab);
+        }
+        if let Err(e) = result {
+            self.notice(format!("Conflicts: {e:#}"));
         }
     }
     fn notice(&mut self, s: String) {
@@ -268,23 +311,38 @@ impl Shell {
             self.journal.remove(0);
         }
     }
-    fn go(&mut self, surface: Surface) {
-        self.cancel_drags();
+    fn go(&mut self, tab: Tab) {
         self.cancel_key_sequences();
+        if self.tab == tab {
+            return;
+        }
         self.msg.clear();
-        match surface {
-            Split(pane) => {
-                self.focus = pane;
-                self.tool = None;
+        if !self.tab_available(tab) {
+            self.notice("No conflicts or operations to continue in Roots".into());
+            return;
+        }
+        if tab == Push && self.ctx.repos.is_empty() {
+            self.notice("No Git repositories in this workspace".into());
+            return;
+        }
+        if !self.can_leave_panel() {
+            if self.msg.is_empty() {
+                self.notice("Finish or cancel the current input first (Esc)".into());
             }
-            Dialog(_) if self.ctx.repos.is_empty() => {
-                self.notice("No Git repositories in this workspace".into());
+            return;
+        }
+        self.cancel_drags();
+        self.panel_event(&Event::FocusLost);
+        self.layout_mut(self.tab).begin();
+        self.tab = tab;
+        match tab {
+            Commit => self.main_tab = tab,
+            Log => {
+                self.main_tab = tab;
+                self.load_log();
             }
-            Dialog(tool) if self.tool != Some(tool) => {
-                self.tool = Some(tool);
-                self.refresh_tool(tool);
-            }
-            Dialog(_) => (),
+            Push => self.refresh_push(),
+            Conflicts => (),
         }
     }
     fn action(&mut self, a: Action) {
@@ -299,10 +357,10 @@ impl Shell {
                 self.refresh();
                 self.notice(s)
             }
-            Action::Go(n) => self.go(SHORTCUTS[n.min(3)]),
+            Action::Go(n) => self.go(Tab::DISPLAY_ORDER[n.min(3)]),
             Action::CloseDialog => {
-                if self.tool.is_some() && self.can_leave_panel() {
-                    self.go(Split(self.focus));
+                if matches!(self.tab, Push | Conflicts) {
+                    self.go(self.main_tab);
                 }
             }
             Action::ReviewRollback => {
@@ -316,7 +374,7 @@ impl Shell {
                     title,
                     body,
                     token,
-                    owner: self.surface(),
+                    owner: self.tab,
                     scroll: 0,
                     yes: false,
                 })
@@ -331,13 +389,13 @@ impl Shell {
                 }
                 self.refresh();
                 if push {
-                    self.go(Dialog(Push))
+                    self.go(Push)
                 }
                 self.notice(message)
             }
         }
     }
-    fn confirm(&mut self, owner: Surface, token: &str) {
+    fn confirm(&mut self, owner: Tab, token: &str) {
         if token == "__quit" {
             self.quit = true;
             return;
@@ -347,10 +405,10 @@ impl Shell {
             return;
         }
         let a = match owner {
-            Split(Log) => self.log.confirm(token, &self.ctx),
-            Split(Commit) => self.commit.confirm(token, &self.ctx),
-            Dialog(Push) => self.push.confirm(token, &self.ctx),
-            Dialog(Merge) => self.merge.confirm(token, &self.ctx),
+            Log => self.log.confirm(token, &self.ctx),
+            Commit => self.commit.confirm(token, &self.ctx),
+            Push => self.push.confirm(token, &self.ctx),
+            Conflicts => self.merge.confirm(token, &self.ctx),
         };
         self.action(a)
     }
@@ -366,7 +424,7 @@ impl Shell {
             title: "Quit IGit?".into(),
             body: "Close the workbench? Unsaved edits may be lost. Completed Git operations will be kept.".into(),
             token: "__quit".into(),
-            owner: self.surface(),
+            owner: self.tab,
             scroll: 0,
             yes: false,
         })
@@ -470,21 +528,23 @@ impl Shell {
             ),
             Some(Popup::Help { .. }) => unreachable!("help content describes the origin"),
             None => {
-                let mut content = match self.surface() {
-                    Split(Log) => self.log.keymap(),
-                    Split(Commit) => self.commit.keymap(),
-                    Dialog(Push) => self.push.keymap(),
-                    Dialog(Merge) => self.merge.keymap(),
+                let mut content = match self.tab {
+                    Log => self.log.keymap(),
+                    Commit => self.commit.keymap(),
+                    Push => self.push.keymap(),
+                    Conflicts => self.merge.keymap(),
                 };
-                if self.tool_at_root() {
+                if self.can_return_to_main_tab() {
                     content.sections.push(HelpSection::new(
-                        "Tool dialog",
-                        &[("Esc", "Close dialog and return")],
+                        "Workspace tabs",
+                        &[("Esc", "Return to the last Commit or Log tab")],
                     ));
                 }
                 if !self.panel().editing() {
                     self.pane_help(&mut content);
-                    content.sections.push(global_section());
+                    content
+                        .sections
+                        .push(global_section(self.tab_available(Conflicts)));
                 }
                 content
             }
@@ -503,20 +563,36 @@ impl Shell {
             origin,
         });
     }
+    fn menu_actions(&self) -> impl Iterator<Item = MenuAction> {
+        let show_conflicts = self.tab_available(Conflicts);
+        Tab::DISPLAY_ORDER
+            .into_iter()
+            .filter(move |&tab| tab != Conflicts || show_conflicts)
+            .map(MenuAction::Switch)
+            .chain([
+                MenuAction::Roots,
+                MenuAction::Update(update::Kind::Pull),
+                MenuAction::Update(update::Kind::Fetch),
+                MenuAction::Refresh,
+                MenuAction::Open,
+                MenuAction::Console,
+                MenuAction::Quit,
+            ])
+    }
     fn menu_action(&mut self, row: usize) {
-        match row {
-            0..=3 => self.go(SHORTCUTS[row]),
-            4 => self.global(0),
-            5 => self.review_update(update::Kind::Pull),
-            6 => self.review_update(update::Kind::Fetch),
-            7 => self.global(5),
-            8 => {
+        match self.menu_actions().nth(row) {
+            Some(MenuAction::Switch(tab)) => self.go(tab),
+            Some(MenuAction::Roots) => self.global(0),
+            Some(MenuAction::Update(kind)) => self.review_update(kind),
+            Some(MenuAction::Refresh) => self.global(5),
+            Some(MenuAction::Open) => {
                 self.pop = Some(Popup::Open {
                     path: self.ctx.workspace.display().to_string(),
                 })
             }
-            9 => self.global(4),
-            _ => self.global(3),
+            Some(MenuAction::Console) => self.global(4),
+            Some(MenuAction::Quit) => self.global(3),
+            None => (),
         }
     }
     fn pop_event(&mut self, ev: &Event) {
@@ -680,11 +756,13 @@ impl Shell {
                 Some(Popup::Scope { picked, row })
             }
             Popup::Menu { mut row } => {
+                let last = self.menu_actions().count() - 1;
+                row = row.min(last);
                 if up {
                     row = row.saturating_sub(1)
                 }
                 if down {
-                    row = (row + 1).min(10)
+                    row = (row + 1).min(last)
                 }
                 if let Some(i) = hit {
                     self.menu_action(i);
@@ -739,19 +817,26 @@ impl Shell {
         };
     }
     fn can_leave_panel(&mut self) -> bool {
-        match self.surface() {
-            Split(Log) => self.log.dismiss_filter_dropdown(),
-            Split(Commit) => {
+        match self.tab {
+            Log => self.log.dismiss_filter_dropdown(),
+            Commit => {
                 self.commit.dismiss_view_menu();
                 if let Err(error) = self.commit.finish_message(&self.ctx) {
                     self.notice(format!("Commit message: {error:#}"));
                     return false;
                 }
             }
-            Dialog(Push) => self.push.dismiss_group_menu(),
-            Dialog(Merge) => (),
+            Push => self.push.dismiss_group_menu(),
+            Conflicts => (),
         }
         !self.panel().editing()
+    }
+    fn can_return_to_main_tab(&self) -> bool {
+        match self.tab {
+            Push => self.push.at_root(),
+            Conflicts => self.merge.at_root(),
+            Commit | Log => false,
+        }
     }
     fn dispatch(&mut self, ev: &Event) {
         // Keep the reviewed focus/input context stable while synchronizing Kitty.
@@ -804,10 +889,10 @@ impl Shell {
                     if matches!(sequence, KeySequence::Window(_)) {
                         self.run_window_key(suffix);
                     } else {
-                        self.panel_event(
-                            self.surface(),
-                            &Event::Key(KeyEvent::new(KeyCode::Char(suffix), KeyModifiers::NONE)),
-                        );
+                        self.panel_event(&Event::Key(KeyEvent::new(
+                            KeyCode::Char(suffix),
+                            KeyModifiers::NONE,
+                        )));
                     }
                     return;
                 }
@@ -816,13 +901,13 @@ impl Shell {
                     if sequence == KeySequence::LogFilters
                         && matches!(ev, Event::Key(key) if self.key_picker.accepts_key(key, sequence))
                     {
-                        self.panel_event(self.surface(), ev);
+                        self.panel_event(ev);
                         return;
                     }
                 }
             }
         }
-        if self.tool.is_none()
+        if matches!(self.tab, Commit | Log | Conflicts)
             && matches!(
                 ev,
                 Event::Key(_)
@@ -843,7 +928,7 @@ impl Shell {
             return;
         }
         if let Event::Key(k) = ev {
-            if self.surface() == Split(Commit)
+            if self.tab == Commit
                 && self.commit.message_editing()
                 && matches!(k.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::F(6))
                 && (k.modifiers.is_empty() || k.modifiers == KeyModifiers::SHIFT)
@@ -861,12 +946,12 @@ impl Shell {
                     .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL)
             {
                 match k.code {
-                    KeyCode::Esc if self.tool_at_root() => {
-                        self.go(Split(self.focus));
+                    KeyCode::Esc if self.can_return_to_main_tab() => {
+                        self.go(self.main_tab);
                         return;
                     }
                     KeyCode::Char(ch @ '1'..='4') => {
-                        self.go(SHORTCUTS[(ch as u8 - b'1') as usize]);
+                        self.go(Tab::DISPLAY_ORDER[(ch as u8 - b'1') as usize]);
                         return;
                     }
                     KeyCode::Char(ch @ ('p' | 'f')) if k.modifiers.is_empty() => {
@@ -910,11 +995,12 @@ impl Shell {
             }
         }
         if !self.ctx.repos.is_empty() {
-            self.panel_event(self.surface(), ev);
+            self.panel_event(ev);
         }
     }
     fn poll(&mut self) -> bool {
-        let mut change = self.key_picker.poll(Instant::now());
+        let mut change = self.poll_log_load();
+        change |= self.key_picker.poll(Instant::now());
         let popup = match self.pop.as_mut() {
             Some(Popup::Help { origin, .. }) => origin.as_deref_mut(),
             popup => popup,
@@ -925,8 +1011,8 @@ impl Shell {
                     self.refresh();
                 } else {
                     self.refresh_log();
-                    if self.tool == Some(Push) {
-                        self.refresh_tool(Push);
+                    if self.tab == Push {
+                        self.refresh_push();
                     }
                 }
                 self.notice(summary);
@@ -936,9 +1022,8 @@ impl Shell {
         if let Some(result) = self.kitty.poll() {
             self.maximize_pending = false;
             match result {
-                Ok(kitty::Outcome::Maximized(target)) => {
-                    self.set_pane_maximized(target.unwrap_or(!self.pane_maximized));
-                }
+                Ok(kitty::Outcome::Maximized(Some(target))) => self.set_pane_maximized(target),
+                Ok(kitty::Outcome::Maximized(None)) => self.toggle_pane_maximized(),
                 Ok(kitty::Outcome::Done) => (),
                 Err(error) => self.notice(error),
             }
@@ -957,7 +1042,7 @@ impl Shell {
             self.notice(msg);
             change = true
         }
-        // A fetch/push can finish after its window closes. Reload moved refs
+        // A fetch/push can finish after leaving Push. Reload moved refs
         // without interrupting a Log editor, Diff, text selection or pending key.
         if self.remote_refs_changed
             && !self.log.editing()
@@ -972,7 +1057,7 @@ impl Shell {
         if !matches!(a, Action::None) {
             // A background AI request can open the message editor between two
             // input events, even while a window command or drag is pending.
-            if self.surface() == Split(Commit) && self.commit.editing() {
+            if self.tab == Commit && self.commit.editing() {
                 self.cancel_key_sequences();
                 self.cancel_drags();
             }
@@ -983,7 +1068,12 @@ impl Shell {
     }
     fn poll_timeout(&self) -> Duration {
         const IDLE: Duration = Duration::from_millis(150);
-        let timeout = self.log.preview_wakeup().unwrap_or(IDLE).min(IDLE);
+        let idle = if self.log_load.pending() {
+            Duration::from_millis(16)
+        } else {
+            IDLE
+        };
+        let timeout = self.log.preview_wakeup().unwrap_or(idle).min(idle);
         self.key_picker
             .wakeup(Instant::now())
             .map_or(timeout, |remaining| remaining.min(timeout))
@@ -1131,40 +1221,30 @@ impl Shell {
                 controls.push((" Close / Esc ", usize::MAX, true))
             }
             Popup::Menu { row } => {
-                let start = (row + 1).saturating_sub(usize::from(inner.height));
-                for (i, s) in [
-                    format!(
-                        "{}  Focus Git Log",
-                        self.config.label("global", "focus-log")
-                    ),
-                    format!(
-                        "{}  Focus Commit",
-                        self.config.label("global", "focus-commit")
-                    ),
-                    format!("{}  Open Push…", self.config.label("global", "open-push")),
-                    format!("{}  Open Merge…", self.config.label("global", "open-merge")),
-                    "Roots / Select repositories".into(),
-                    format!(
-                        "{}  Pull repositories…",
-                        self.config.label("global", "pull")
-                    ),
-                    format!(
-                        "{}  Fetch repositories…",
-                        self.config.label("global", "fetch")
-                    ),
-                    "Refresh workspace".into(),
-                    "Open / rescan workspace…".into(),
-                    "Console".into(),
-                    "Quit".into(),
-                ]
-                .iter()
-                .enumerate()
-                .skip(start)
-                .take(inner.height as usize)
-                {
+                let actions = self.menu_actions();
+                let selected = (*row).min(self.menu_actions().count() - 1);
+                let start = (selected + 1).saturating_sub(usize::from(inner.height));
+                for (i, action) in actions.enumerate().skip(start).take(inner.height.into()) {
+                    let label = |action| self.config.label("global", action);
+                    let s = match action {
+                        MenuAction::Switch(tab) => {
+                            format!("{}  Switch to {}", label(tab.binding()), tab.name())
+                        }
+                        MenuAction::Roots => "Roots / Select repositories".into(),
+                        MenuAction::Update(update::Kind::Pull) => {
+                            format!("{}  Pull repositories…", label("pull"))
+                        }
+                        MenuAction::Update(update::Kind::Fetch) => {
+                            format!("{}  Fetch repositories…", label("fetch"))
+                        }
+                        MenuAction::Refresh => "Refresh workspace".into(),
+                        MenuAction::Open => "Open / rescan workspace…".into(),
+                        MenuAction::Console => "Console".into(),
+                        MenuAction::Quit => "Quit".into(),
+                    };
                     let r = Rect::new(inner.x, inner.y + (i - start) as u16, inner.width, 1);
                     f.render_widget(
-                        Paragraph::new(s.as_str()).style(Style::default().bg(if i == *row {
+                        Paragraph::new(s).style(Style::default().bg(if i == selected {
                             SEL
                         } else {
                             BG
@@ -1304,8 +1384,8 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
     let p = path.unwrap_or(env::current_dir()?);
-    let ctx = Context::discover(&p)?;
     if list {
+        let ctx = Context::discover(&p)?;
         for r in &ctx.repos {
             println!(
                 "{}\t{}\t{}\t{}",
@@ -1320,7 +1400,6 @@ pub fn run() -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!("IGit needs an interactive terminal. Try igit --list-roots or igit --help.")
     }
-    let mut app = Shell::with_config(ctx, config);
     let mut out = io::stdout();
     let mut guard = Tty::default();
     enable_raw_mode()?;
@@ -1330,30 +1409,34 @@ pub fn run() -> Result<()> {
         EnableFocusChange,
         EnableBracketedPaste
     )?;
-    if app.config.mouse {
+    if config.mouse {
         execute!(out, EnableMouseCapture)?;
     }
-    if app.config.smart_panes_enabled() {
-        app.kitty = kitty::Kitty::from_env();
-        if app.kitty.available() {
+    let mut kitty = kitty::Kitty::default();
+    if config.smart_panes_enabled() {
+        kitty = kitty::Kitty::from_env();
+        if kitty.available() {
             guard.kitty_marker = true;
             kitty::set_user_var(&mut out, true)?;
         }
     }
-    // The Kitty protocol preserves Super/Cmd and other modified chords. It is
-    // negotiated for all configurations so custom non-pane commands work too.
-    if crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false) {
-        guard.enhanced_keys = true;
-        execute!(
-            out,
-            PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-            )
-        )?;
-    }
+    // Request progressive enhancement directly, as in the protocol quickstart.
+    // A capability query can block for two seconds on terminals that do not reply.
+    // Unsupported backends retain ordinary keys; successful pushes are popped by Tty.
+    guard.enhanced_keys = execute!(
+        out,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+        )
+    )
+    .is_ok();
     let mut term = Terminal::new(CrosstermBackend::new(out))?;
     term.clear()?;
+    let Some(mut app) = startup::open(&mut term, p, config)? else {
+        return Ok(());
+    };
+    app.kitty = kitty;
     let mut dirty = true;
     let mut buffered = None;
     while !app.quit {
@@ -1371,7 +1454,7 @@ pub fn run() -> Result<()> {
                     dirty = app.config.mouse && app.hover(m.column, m.row);
                 }
                 _ => {
-                    let motion = app.surface() == Split(Log)
+                    let motion = app.tab == Log
                         && app.pop.is_none()
                         && app.key_sequence().is_none()
                         && app.pending_keys.is_none()
@@ -1428,6 +1511,8 @@ mod discard_tests;
 mod help_tests;
 #[cfg(test)]
 mod maximize_tests;
+#[cfg(test)]
+mod startup_tests;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
@@ -1497,7 +1582,6 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        key(&mut app, KeyCode::Char('2'));
         // Enable Module so the repository row and its branch badge are visible.
         for k in [
             KeyCode::Char('o'),
@@ -1515,16 +1599,9 @@ mod tests {
         key(&mut app, KeyCode::F(5));
         let refreshed = screen(&mut app);
         assert!(refreshed.contains("on fresh-main"), "{refreshed}");
-        let changes = refreshed
-            .lines()
-            .take(app.regions.log.y.into())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert_eq!(changes.matches("fresh-main").count(), 2); // Tree badge and repository preview.
-        assert!(refreshed
-            .lines()
-            .skip(app.regions.log.y.into())
-            .any(|line| line.contains("fresh-main"))); // Log refs refresh in the same frame.
+        assert_eq!(refreshed.matches("fresh-main").count(), 2); // Tree badge and repository preview.
+        key(&mut app, KeyCode::Char('2'));
+        assert!(screen(&mut app).contains("fresh-main")); // Log refs refresh while Commit is active.
 
         git(&linked, &["switch", "-qc", "fresh-linked"]).unwrap();
         key(&mut app, KeyCode::Char('r'));
@@ -1606,37 +1683,41 @@ mod tests {
             })
         };
 
+        send(&mut app, key(KeyCode::Char('2')));
         send(&mut app, key(KeyCode::Char(' ')));
         send(&mut app, key(KeyCode::Char('b')));
-        let roots = app.tools.iter().find(|(_, n)| *n == 0).unwrap().0;
-        let commit = app.regions.commit;
-        send(&mut app, click(roots));
+        let commit = app.regions.tab(Commit);
+        send(&mut app, click(commit));
+        assert_eq!(app.tab, Commit);
+        assert!(!app.log.editing());
+        send(&mut app, key(KeyCode::Char('2')));
+        send(&mut app, key(KeyCode::Char('r')));
         assert!(matches!(app.pop, Some(Popup::Scope { .. })));
         assert!(!app.log.editing());
         send(&mut app, click(commit));
-        assert_eq!(app.surface(), Split(Log));
+        assert_eq!(app.tab, Log);
         assert!(matches!(app.pop, Some(Popup::Scope { .. })));
         send(&mut app, key(KeyCode::Esc));
 
         send(&mut app, key(KeyCode::Char('o')));
         assert!(app.log.editing());
-        send(&mut app, key(KeyCode::Char('2')));
-        assert_eq!(app.surface(), Split(Log));
-        send(&mut app, click(roots));
-        assert!(matches!(app.pop, Some(Popup::Scope { .. })));
+        send(&mut app, key(KeyCode::Char('1')));
+        assert_eq!(app.tab, Log);
+        send(&mut app, click(commit));
+        assert_eq!(app.tab, Commit);
         assert!(!app.log.editing());
-        send(&mut app, key(KeyCode::Esc));
+        send(&mut app, key(KeyCode::Char('2')));
 
         send(&mut app, key(KeyCode::Char('/')));
         send(&mut app, click(commit));
-        assert_eq!(app.surface(), Split(Log));
+        assert_eq!(app.tab, Log);
         assert!(app.log.editing());
         send(&mut app, key(KeyCode::Esc));
 
         send(&mut app, key(KeyCode::Char(' ')));
         send(&mut app, key(KeyCode::Char('d')));
         send(&mut app, click(commit));
-        assert_eq!(app.surface(), Split(Commit));
+        assert_eq!(app.tab, Commit);
         assert!(!app.log.editing());
     }
 }

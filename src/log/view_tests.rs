@@ -1,6 +1,7 @@
 //! Exercise the rendered cells and actual input dispatch together.
 mod branch_menu;
 mod column_order;
+mod merge_diff;
 mod panes;
 mod path_selection;
 mod reference_badges;
@@ -365,7 +366,7 @@ fn navigation_empty_and_zero_height_views_are_safe() {
         key(&mut p, K::Char(ch), Mods::CONTROL, &c);
         assert_eq!(p.cursor, 0);
     }
-    t.backend_mut().resize(80, 3);
+    t.backend_mut().resize(80, 2);
     render(&mut p, &mut t, &c);
     assert_eq!(navigation_rows(&p).len(), 1);
     key(&mut p, K::Char('d'), Mods::CONTROL, &c);
@@ -521,10 +522,10 @@ fn view_options_branch_or_tag_reclaims_the_left_edge_and_skips_hidden_focus() {
             refs.x
         );
         assert_eq!(target(&p, |h| matches!(h, Hit::ViewOptions)), eye);
-        assert!(!p.hits.iter().any(|(_, h)| matches!(
-            h,
-            Hit::Ref(_) | Hit::Filter(Field::Refs) | Hit::Pane(Pane::Refs)
-        )));
+        assert!(!p
+            .hits
+            .iter()
+            .any(|(_, h)| matches!(h, Hit::Ref(_) | Hit::Filter(Field::Refs))));
         key(&mut p, K::Esc, Mods::NONE, &c);
         key(&mut p, K::BackTab, Mods::SHIFT, &c);
         assert_eq!(p.focus, Pane::Info);
@@ -1371,29 +1372,34 @@ fn wide_rows_prioritise_subject_before_refs_and_narrow_layout_keeps_details_reac
     render(&mut p, &mut t, &c);
     assert!(target(&p, |h| matches!(h, Hit::Commit(0))).x > first.x);
     let mut narrow = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    finish_preview(&mut p, &c);
     render(&mut p, &mut narrow, &c);
-    let files = target(&p, |h| matches!(h, Hit::Pane(Pane::Files)));
+    let files = target(&p, |h| matches!(h, Hit::File(n) if p.file_is_leaf(*n)));
     click_at(&mut p, files, &c);
     render(&mut p, &mut narrow, &c);
     key(&mut p, K::Enter, Mods::NONE, &c);
     finish_preview(&mut p, &c);
-    assert!(p
+    assert!(!p
         .diff
         .as_ref()
         .unwrap()
-        .lines
-        .iter()
-        .any(|l| l == "+repair the selected account"));
+        .comparison
+        .as_ref()
+        .unwrap()
+        .is_three_way());
+    assert!(
+        matches!(key(&mut p, K::Char('y'), Mods::NONE, &c), Action::Copy { text, .. } if text == "repair the selected account")
+    );
     key(&mut p, K::Esc, Mods::NONE, &c);
     render(&mut p, &mut narrow, &c);
-    let info = target(&p, |h| matches!(h, Hit::Pane(Pane::Info)));
-    click_at(&mut p, info, &c);
-    render(&mut p, &mut narrow, &c);
-    assert!(
-        (0..24)
-            .any(|y| row_text(&narrow, Rect::new(0, y, 80, 1))
-                .contains("repair the selected account"))
-    );
+    let info = p.panes.rect(PaneId::Info).unwrap();
+    click_at(&mut p, Rect::new(info.x + 2, info.y + 1, 1, 1), &c);
+    assert_eq!(p.focus, Pane::Info);
+    p.info_selection.select_all();
+    assert!(p
+        .selected_text()
+        .unwrap()
+        .contains("repair the selected account"));
 }
 
 #[test]

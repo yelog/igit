@@ -36,7 +36,8 @@ fn fixture() -> (tempfile::TempDir, Shell) {
     }
     let mut ctx = Context::discover(repo.path()).unwrap();
     ctx.state_dir = repo.path().join("state");
-    let app = Shell::new(ctx, IconMode::Ascii);
+    let mut app = Shell::new(ctx, IconMode::Ascii);
+    app.go(Log);
     (repo, app)
 }
 
@@ -247,13 +248,13 @@ fn key_sequence_context_changes_dismiss_hints_and_text_input_keeps_its_letters()
         key(KeyCode::Tab),
         key(KeyCode::Char('?')),
         key(KeyCode::F(1)),
-        key(KeyCode::Char('2')),
+        key(KeyCode::Char('1')),
         key(KeyCode::Char('j')),
         Event::Paste("ya".into()),
         Event::Resize(80, 24),
         Event::FocusLost,
     ] {
-        app.go(Split(Log));
+        app.go(Log);
         app.dispatch(&key(KeyCode::Esc)); // Each case starts in the commit list.
         app.dispatch(&key(KeyCode::Char('y')));
         assert!(app.key_sequence().is_some(), "{interrupt:?}");
@@ -265,7 +266,7 @@ fn key_sequence_context_changes_dismiss_hints_and_text_input_keeps_its_letters()
         );
         app.pop = None;
     }
-    app.go(Split(Log));
+    app.go(Log);
     app.dispatch(&key(KeyCode::Char('/')));
     for ch in ['g', 'y', '[', ']'] {
         app.dispatch(&key(KeyCode::Char(ch)));
@@ -290,19 +291,19 @@ fn key_sequence_overlay_blocks_mouse_events_and_outside_clicks_keep_their_target
         app.dispatch(&Event::Mouse(MouseEvent {
             kind,
             column: 78,
-            row: app.regions.log.bottom() - 1,
+            row: app.regions.body.bottom() - 1,
             modifiers: KeyModifiers::NONE,
         }));
         assert!(app.key_sequence().is_some());
     }
-    let commit = app.regions.commit;
+    let commit = app.regions.tab(Commit);
     app.dispatch(&Event::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: commit.x,
         row: commit.y,
         modifiers: KeyModifiers::NONE,
     }));
-    assert_eq!(app.surface(), Split(Commit));
+    assert_eq!(app.tab, Commit);
     assert!(app.key_sequence().is_none());
 }
 
@@ -316,7 +317,7 @@ fn key_sequence_click_completes_goto_and_a_new_prefix_resets_the_choice() {
     app.dispatch(&Event::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: 3,
-        row: app.regions.log.bottom() - 2,
+        row: app.regions.body.bottom() - 2,
         modifiers: KeyModifiers::NONE,
     }));
     assert!(app.key_sequence().is_none());
@@ -373,7 +374,8 @@ fn key_sequence_merge_hints_cancel_without_leaving_the_document_or_changing_git(
         ]
     };
     let before = snapshot();
-    app.go(Dialog(Merge));
+    app.refresh_conflicts();
+    app.go(Conflicts);
     app.dispatch(&key(KeyCode::Char('[')));
     assert!(app.key_sequence().is_none());
     app.dispatch(&key(KeyCode::Enter));
@@ -387,10 +389,10 @@ fn key_sequence_merge_hints_cancel_without_leaving_the_document_or_changing_git(
         assert!(!screen(&mut app, 80, 24).contains(description));
         let text = show_hints(&mut app, 80, 24);
         assert!(text.contains(description), "{text}");
-        assert!(text.lines().last().unwrap().contains("NORMAL"));
+        assert!(text.lines().last().unwrap().contains("Save and Close"));
         app.dispatch(&key(KeyCode::Esc));
         assert!(app.key_sequence().is_none());
-        assert!(screen(&mut app, 80, 24).contains("Current"));
+        assert!(screen(&mut app, 80, 24).contains("Merge Revisions for"));
         app.dispatch(&key(KeyCode::Char(prefix)));
         show_hints(&mut app, 80, 24);
         app.dispatch(&key(KeyCode::Enter));

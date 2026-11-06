@@ -40,6 +40,28 @@ pub(super) fn fixture() -> (tempfile::TempDir, Shell) {
     (dir, Shell::new(ctx, IconMode::Ascii))
 }
 
+/// Turn the disposable repository from `fixture` into a conflicted merge.
+pub(super) fn merge_conflict(repo: &Path) {
+    let run = |args: &[&str]| git(repo, args).unwrap();
+    run(&["restore", "--source=HEAD", "--staged", "--worktree", "."]);
+    for (name, value) in [
+        ("user.name", "Conflict tester"),
+        ("user.email", "conflict@example.invalid"),
+        ("commit.gpgsign", "false"),
+        ("core.hooksPath", "/dev/null"),
+    ] {
+        run(&["config", name, value]);
+    }
+    run(&["switch", "-c", "incoming"]);
+    fs::write(repo.join("mixed.txt"), "incoming\n").unwrap();
+    run(&["commit", "-am", "incoming"]);
+    run(&["switch", "main"]);
+    fs::write(repo.join("mixed.txt"), "current\n").unwrap();
+    run(&["commit", "-am", "current"]);
+    assert!(git(repo, &["merge", "incoming"]).is_err());
+    assert!(!run(&["ls-files", "--unmerged"]).is_empty());
+}
+
 pub(super) fn screen(app: &mut Shell, width: u16, height: u16) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal.draw(|f| app.draw(f)).unwrap();

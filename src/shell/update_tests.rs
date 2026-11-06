@@ -118,11 +118,14 @@ fn workspace_fetch_reviews_scope_and_updates_refs_only_after_confirmation() {
     let mut ctx = workspace(dir.path());
     ctx.scope.retain(|index| ctx.repos[*index].name == "active");
     let mut app = Shell::new(ctx, IconMode::Ascii);
-    press(&mut app, '2');
     press(&mut app, 'f');
     let text = screen(&mut app, 44, 12);
-    assert!(text.contains("Fetch Repositories") && text.contains("active: origin"));
-    assert!(!text.contains("hidden: origin") && !text.contains("Rebase current branches"));
+    assert!(
+        text.contains("Fetch Repositories")
+            && text.contains("active: Ready")
+            && text.contains("origin")
+    );
+    assert!(!text.contains("hidden") && !text.contains("Rebase"));
     app.dispatch(&key(KeyCode::Enter)); // Cancel is initially focused.
     assert!(app.pop.is_none());
     assert_eq!(tracking(&active), old_tracking);
@@ -135,7 +138,8 @@ fn workspace_fetch_reviews_scope_and_updates_refs_only_after_confirmation() {
     assert_eq!(snapshot(&active), before);
     assert_eq!(tracking(&hidden), hidden_tracking);
     app.dispatch(&key(KeyCode::Esc));
-    assert_eq!(app.surface(), Split(Commit));
+    assert_eq!(app.tab, Commit);
+    press(&mut app, '2');
     assert!(screen(&mut app, 120, 30).contains("incoming"));
 }
 
@@ -148,16 +152,16 @@ fn workspace_pull_integrates_diverged_branches_with_the_reviewed_strategy() {
         let incoming_head = incoming(&writer, "remote.txt");
         let mut app = Shell::new(workspace(dir.path()), IconMode::Ascii);
         if rebase {
-            app.go(Dialog(Push));
+            app.go(Push);
         }
         press(&mut app, 'p');
         let text = screen(&mut app, 44, 12);
-        assert!(text.contains("Update Project") && text.contains("project: main <- origin:main"));
-        assert!(text.contains("(o)  m  Merge incoming changes"));
+        assert!(text.contains("Update Project") && text.contains("main <- origin:main"));
+        assert!(text.contains("(o) m Merge"));
         assert_eq!(head(&local), local_head);
         if rebase {
-            click(&mut app, &text, "Rebase current branches");
-            assert!(screen(&mut app, 44, 12).contains("(o)  r  Rebase current branches"));
+            click(&mut app, &text, "r Rebase");
+            assert!(screen(&mut app, 44, 12).contains("(o) r Rebase"));
             app.dispatch(&key(KeyCode::Tab));
             app.dispatch(&key(KeyCode::Enter));
         } else {
@@ -200,21 +204,28 @@ fn workspace_pull_keeps_conflicts_and_refuses_a_branch_switched_after_review() {
     let mut app = Shell::new(workspace(dir.path()), IconMode::Ascii);
     press(&mut app, 'p');
     let text = screen(&mut app, 120, 30);
-    assert!(text.contains("d-detached: Skip · Detached HEAD"));
+    assert!(text.lines().any(|line| line.contains("d-detached")
+        && line.contains("Skipped")
+        && line.contains("Detached HEAD")));
     g(&stale, &["switch", "-c", "same-head"]);
     g(&stale, &["branch", "--set-upstream-to=origin/main"]);
     press(&mut app, 'y');
     let text = finish(&mut app);
-    for label in [
-        "1 succeeded · 2 failed · 1 skipped",
-        "a-clean: OK",
-        "b-conflict: Failed",
-        "c-stale: Failed",
-        "review again",
-        "d-detached: Skipped",
+    assert!(text.contains("1 succeeded · 2 failed · 1 skipped"));
+    for (name, status) in [
+        ("a-clean", "OK"),
+        ("b-conflict", "Failed"),
+        ("c-stale", "Failed"),
+        ("d-detached", "Skipped"),
     ] {
-        assert!(text.contains(label), "missing {label:?} in {text}");
+        assert!(
+            text.lines()
+                .any(|line| line.contains(name) && line.contains(status)),
+            "missing {name}: {status} in {text}"
+        );
     }
+    click(&mut app, &text, "c-stale");
+    assert!(screen(&mut app, 120, 30).contains("review again"));
     assert_eq!(head(&clean), clean_next);
     assert_eq!(head(&conflict), conflict_head);
     assert_eq!(g(&conflict, &["rev-parse", "MERGE_HEAD"]), conflict_next);
@@ -222,6 +233,36 @@ fn workspace_pull_keeps_conflicts_and_refuses_a_branch_switched_after_review() {
     assert_eq!(snapshot(&stale), stale_before);
     assert_eq!(tracking(&stale), stale_tracking);
     app.dispatch(&key(KeyCode::Esc));
+    assert!(screen(&mut app, 120, 30)
+        .lines()
+        .next()
+        .unwrap()
+        .contains("Conflicts"));
     press(&mut app, '4');
     assert!(screen(&mut app, 120, 30).contains("base.txt"));
+
+    let conflict_path = conflict.canonicalize().unwrap();
+    let root = app
+        .ctx
+        .repos
+        .iter()
+        .position(|r| r.path == conflict_path)
+        .unwrap();
+    press(&mut app, 'r');
+    for _ in 0..root {
+        app.dispatch(&key(KeyCode::Down));
+    }
+    press(&mut app, ' ');
+    app.dispatch(&key(KeyCode::Enter));
+    assert!(!app.ctx.scope.contains(&root));
+    assert_eq!(app.tab, Commit);
+    screen(&mut app, 120, 30);
+    assert!(app.regions.tab(Conflicts).is_empty());
+
+    press(&mut app, 'r');
+    press(&mut app, 'a');
+    app.dispatch(&key(KeyCode::Enter));
+    screen(&mut app, 120, 30);
+    assert!(!app.regions.tab(Conflicts).is_empty());
+    assert!(!g(&conflict, &["ls-files", "--unmerged"]).is_empty());
 }

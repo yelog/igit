@@ -27,6 +27,7 @@ pub(crate) struct TextRow {
     start: usize,
     end: usize,
     decoration: bool,
+    tab_stop: Option<usize>,
 }
 
 #[derive(Default)]
@@ -72,6 +73,7 @@ impl TextLayout {
                 start: base,
                 end: self.text.len(),
                 decoration: false,
+                tab_stop: None,
             });
             return first..self.rows.len();
         }
@@ -132,6 +134,7 @@ impl TextLayout {
                 start: glyphs[start].1,
                 end: glyphs[last - 1].1 + glyphs[last - 1].0.symbol.len(),
                 decoration: false,
+                tab_stop: None,
             });
             start = end;
             if wrap == Wrap::Word {
@@ -150,8 +153,39 @@ impl TextLayout {
             start: self.text.len(),
             end: self.text.len(),
             decoration: true,
+            tab_stop: None,
         });
     }
+
+    /// Project aligned/folded source rows without adding padding or fold labels
+    /// to the clipboard. Ranges refer to the complete original source bytes.
+    pub fn projected(text: &str, rows: impl IntoIterator<Item = (Range<usize>, bool)>) -> Self {
+        let rows = rows
+            .into_iter()
+            .map(|(range, decoration)| TextRow {
+                line: Line::raw(text[range.clone()].to_owned()),
+                column: 0,
+                start: range.start,
+                end: range.end,
+                decoration,
+                tab_stop: Some(4),
+            })
+            .collect();
+        Self {
+            text: text.to_owned(),
+            rows,
+            lines: 0,
+        }
+    }
+}
+
+fn glyph_width(symbol: &str, column: usize, tab_stop: Option<usize>) -> usize {
+    if symbol == "\t" {
+        if let Some(stop) = tab_stop {
+            return stop - column % stop;
+        }
+    }
+    symbol.width()
 }
 
 #[derive(Default)]
@@ -300,18 +334,73 @@ impl TextSelection {
         let mut col = 0;
         let mut byte = row.start;
         for g in row.line.styled_graphemes(Style::default()) {
-            if col < self.left && col + g.symbol.width() > self.left {
-                col += g.symbol.width();
+            let width = glyph_width(g.symbol, col, row.tab_stop);
+            if col < self.left && col + width > self.left {
+                col += width;
                 byte += g.symbol.len();
                 continue;
             }
-            if col + g.symbol.width() > cell {
+            if col + width > cell {
                 return byte;
             }
-            col += g.symbol.width();
+            col += width;
             byte += g.symbol.len();
         }
         row.end
+    }
+
+    /// Bind source geometry and highlight over an already rendered editor.
+    /// Syntax colors, indentation guides, gaps and folds are owned by that editor.
+    pub fn overlay(&mut self, f: &mut Frame, area: Rect, layout: TextLayout, left: usize) {
+        if self.layout.text != layout.text {
+            self.clear();
+        }
+        self.layout = layout;
+        self.area = area;
+        self.top = 0;
+        self.left = left;
+        if area.is_empty() {
+            self.clear();
+            return;
+        }
+        let Some(selected) = self.range() else {
+            return;
+        };
+        let style = Style::new().fg(idea::INK).bg(idea::SELECT);
+        for (y, row) in self
+            .layout
+            .rows
+            .iter()
+            .take(area.height as usize)
+            .enumerate()
+        {
+            if row.decoration {
+                continue;
+            }
+            let mut col = 0;
+            let mut byte = row.start;
+            for g in row.line.styled_graphemes(Style::default()) {
+                let width = glyph_width(g.symbol, col, row.tab_stop);
+                if byte < selected.end && byte + g.symbol.len() > selected.start {
+                    for x in col.max(left)..(col + width).min(left + area.width as usize) {
+                        f.buffer_mut()[(area.x + (x - left) as u16, area.y + y as u16)]
+                            .set_style(style);
+                    }
+                }
+                col += width;
+                byte += g.symbol.len();
+                if col >= left + area.width as usize {
+                    break;
+                }
+            }
+            if col >= left
+                && col < left + area.width as usize
+                && self.layout.text[row.end..].starts_with(['\r', '\n'])
+                && selected.contains(&row.end)
+            {
+                f.buffer_mut()[(area.x + (col - left) as u16, area.y + y as u16)].set_style(style);
+            }
+        }
     }
 
     pub fn render(

@@ -60,6 +60,11 @@ struct File {
     change: Change,
     group: String,
 }
+impl File {
+    fn movable(&self) -> bool {
+        self.change.selectable() && self.change.xy != *b"??"
+    }
+}
 #[derive(Default, Clone, Copy, PartialEq)]
 enum Focus {
     #[default]
@@ -78,6 +83,7 @@ enum Edit {
 #[derive(Clone)]
 enum Hit {
     Row(usize),
+    ResolveConflicts,
     Show(Focus),
     Refresh,
     UndoCheck,
@@ -103,6 +109,7 @@ impl Hit {
     fn hint(&self) -> Option<&'static str> {
         Some(match self {
             Self::Refresh => "Refresh  F5",
+            Self::ResolveConflicts => "Open Conflicts  Enter on group",
             Self::UndoCheck => "Undo last checkbox change  u",
             Self::Move => "Move to changelist  m",
             Self::New => "New changelist  n",
@@ -351,7 +358,7 @@ impl CommitPanel {
     fn move_menu(&mut self) {
         if self
             .active()
-            .is_none_or(|r| r.files.iter().all(|&i| self.files[i].change.ignored()))
+            .is_none_or(|r| r.files.iter().all(|&i| !self.files[i].movable()))
         {
             return;
         }
@@ -393,7 +400,7 @@ impl CommitPanel {
                     .unwrap_or(DEF.into());
                 for i in self.active().map(|r| r.files.clone()).unwrap_or_default() {
                     let f = &mut self.files[i];
-                    if f.change.xy != *b"??" && !f.change.ignored() {
+                    if f.movable() {
                         f.group = g.clone();
                         self.saved.membership.insert(f.key.clone(), g.clone());
                     }
@@ -590,6 +597,7 @@ impl CommitPanel {
     fn launch(&mut self, h: Hit, c: &Context) -> Action {
         match h {
             Hit::Refresh => return Action::Refresh("Changes refreshed".into()),
+            Hit::ResolveConflicts => return Action::Go(3),
             Hit::UndoCheck => {
                 for (key, was) in self.last_check.drain(..) {
                     self.checks.insert(key, was);
@@ -800,6 +808,7 @@ impl Panel for CommitPanel {
             return Action::None;
         }
         if matches!(e, Event::FocusLost) {
+            self.dragged = None;
             self.diff_selection.clear();
             self.message_selection.clear();
         }
@@ -889,12 +898,8 @@ impl Panel for CommitPanel {
                             }
                         });
                         if let Some(g) = target {
-                            if g == NEW
-                                || g == IGNORED
-                                || file.change.xy == *b"??"
-                                || file.change.ignored()
-                            {
-                                return err("Only tracked files can move between changelists. Untracked and ignored files have their own groups");
+                            if g == NEW || g == IGNORED || !file.movable() {
+                                return err("Only tracked files without conflicts can move between changelists");
                             }
                             self.saved.membership.insert(file.key.clone(), g.clone());
                             self.files[i].group = g;
@@ -927,7 +932,9 @@ impl Panel for CommitPanel {
                                             return self.launch(Hit::Show(Focus::Diff), c);
                                         }
                                         self.last_click = Some((row.id.clone(), Instant::now()));
-                                        self.dragged = Some((file, false));
+                                        if self.files[file].movable() {
+                                            self.dragged = Some((file, false));
+                                        }
                                     }
                                 }
                                 return Action::None;
@@ -1041,6 +1048,8 @@ impl Panel for CommitPanel {
                         self.edit_message(c)
                     } else if self.focus == Focus::Diff {
                         return self.launch(Hit::Show(Focus::Tree), c);
+                    } else if self.active().is_some_and(|row| row.kind == Kind::Conflicts) {
+                        return self.launch(Hit::ResolveConflicts, c);
                     } else if self.active().is_some_and(|x| x.file().is_some()) {
                         return self.launch(Hit::Show(Focus::Diff), c);
                     } else {
@@ -1089,12 +1098,6 @@ impl Panel for CommitPanel {
     }
 }
 impl CommitPanel {
-    pub(crate) fn overlay_at(&self, x: u16, y: u16) -> bool {
-        self.edit
-            .as_ref()
-            .is_some_and(|e| !matches!(e, Edit::Message))
-            || self.view_menu.is_some_and(|m| inside(m.area, x, y))
-    }
     pub(crate) fn draw_content(&mut self, f: &mut Frame, a: Rect, c: &Context) {
         self.draw_workbench(f, a, c);
         if self.diff.is_empty() {

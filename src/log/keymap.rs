@@ -3,7 +3,42 @@ use crate::ui::help::{HelpContent, HelpSection as Section};
 
 impl LogPanel {
     pub(crate) fn keymap(&self) -> HelpContent {
-        let modal = if self.diff.is_some() {
+        let modal = if self.diff.as_ref().is_some_and(|d| d.comparison.is_some()) {
+            Some(Section::new(
+                if self
+                    .diff
+                    .as_ref()
+                    .and_then(|d| d.comparison.as_ref())
+                    .is_some_and(|d| d.is_three_way())
+                {
+                    "Log / Merge Commit Diff (read-only)"
+                } else {
+                    "Log / Commit Diff (read-only)"
+                },
+                &[
+                    ("Tab", "Focus next revision pane"),
+                    ("Shift-Tab", "Focus previous revision pane"),
+                    ("n", "Next change"),
+                    ("p", "Previous change"),
+                    ("]", "Next file comparison"),
+                    ("[", "Previous file comparison"),
+                    ("j", "Scroll all panes down"),
+                    ("k", "Scroll all panes up"),
+                    ("h", "Scroll focused revision left"),
+                    ("l", "Scroll focused revision right"),
+                    ("PgDn", "Page down"),
+                    ("PgUp", "Page up"),
+                    ("g", "Go to start"),
+                    ("G", "Go to end"),
+                    ("f", "Fold or unfold unchanged regions"),
+                    ("Enter", "Toggle focused unchanged region"),
+                    ("z", "Zoom focused revision / restore split panes"),
+                    ("Ctrl-a", "Select the complete focused revision"),
+                    ("y", "Copy selection or the complete focused revision"),
+                    ("Esc", "Clear selection; otherwise close diff"),
+                ],
+            ))
+        } else if self.diff.is_some() {
             Some(Section::new(
                 "Log / Diff",
                 &[
@@ -16,6 +51,8 @@ impl LogPanel {
                     ("PgUp", "Page up"),
                     ("g", "Go to diff start"),
                     ("G", "Go to diff end"),
+                    ("]", "Next file comparison"),
+                    ("[", "Previous file comparison"),
                     ("Esc", "Clear selection; otherwise close diff"),
                 ],
             ))

@@ -25,8 +25,7 @@ fn inline_message_mouse_and_tab_leave_the_field_with_a_saved_draft() {
     let (_dir, mut app) = fixture();
     let before = snapshot(&app.ctx.repos[0].path);
     for (w, h) in [(120, 36), (80, 24), (44, 12)] {
-        app.log.focus_pane(PaneId::Graph);
-        app.go(Split(Commit));
+        app.go(Commit);
         screen(&mut app, w, h);
         app.dispatch(&key(KeyCode::Char('i')));
         app.dispatch(&Event::Key(KeyEvent::new(
@@ -39,19 +38,13 @@ fn inline_message_mouse_and_tab_leave_the_field_with_a_saved_draft() {
         let composer = app.commit.panes.rect(PaneId::Message).unwrap();
         assert!(inside(composer, x, y));
         assert!(!text.contains("Edit commit message"));
-        assert!(text.contains("Git Log [1]") && text.contains("base"));
-        let log = app.log.panes.rect(PaneId::Graph).unwrap();
-        app.dispatch(&mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            log.x + 1,
-            log.y + 1,
-        ));
-        assert_eq!(app.surface(), Split(Log));
+        click_tab(&mut app, Log);
+        assert_eq!(app.tab, Log);
         assert!(!app.commit.editing());
         saved(&app, "inline draft");
 
         for code in [KeyCode::Tab, KeyCode::BackTab, KeyCode::F(6)] {
-            app.go(Split(Commit));
+            app.go(Commit);
             screen(&mut app, w, h);
             app.dispatch(&key(KeyCode::Char('i')));
             app.dispatch(&Event::Key(KeyEvent::new(
@@ -61,14 +54,8 @@ fn inline_message_mouse_and_tab_leave_the_field_with_a_saved_draft() {
             app.dispatch(&Event::Paste("saved by navigation".into()));
             app.dispatch(&key(code));
             assert!(!app.commit.editing());
-            assert_eq!(
-                app.surface(),
-                Split(if code == KeyCode::BackTab {
-                    Commit
-                } else {
-                    Log
-                })
-            );
+            assert_eq!(app.tab, Commit);
+            assert_eq!(app.commit.focused_pane(), PaneId::Changes);
             saved(&app, "saved by navigation");
         }
     }
@@ -79,7 +66,7 @@ fn inline_message_mouse_and_tab_leave_the_field_with_a_saved_draft() {
 fn inline_message_mouse_review_preserves_mixed_and_unselected_staging() {
     let (_dir, mut app) = fixture();
     let before = snapshot(&app.ctx.repos[0].path);
-    app.go(Split(Commit));
+    app.go(Commit);
     screen(&mut app, 120, 36);
     // Last row is other.txt: leave its independently staged contents unchecked.
     for code in [KeyCode::End, KeyCode::Char(' '), KeyCode::Home] {
@@ -107,20 +94,15 @@ fn inline_message_mouse_review_preserves_mixed_and_unselected_staging() {
 #[test]
 fn inline_message_failed_save_blocks_workspace_navigation_and_reports_the_error() {
     let (dir, mut app) = fixture();
-    app.go(Split(Commit));
+    app.go(Commit);
     screen(&mut app, 120, 36);
     app.dispatch(&key(KeyCode::Char('i')));
     app.dispatch(&Event::Paste("unsaved input".into()));
     screen(&mut app, 120, 36);
     app.ctx.state_dir = dir.path().join("blocked-state");
     fs::write(&app.ctx.state_dir, "not a directory").unwrap();
-    let log = app.log.panes.rect(PaneId::Graph).unwrap();
-    app.dispatch(&mouse(
-        MouseEventKind::Down(MouseButton::Left),
-        log.x + 1,
-        log.y + 1,
-    ));
-    assert!(app.commit.editing() && app.surface() == Split(Commit));
+    click_tab(&mut app, Log);
+    assert!(app.commit.editing() && app.tab == Commit);
     assert!(app.msg.starts_with("Commit message:"), "{}", app.msg);
     app.dispatch(&Event::Key(KeyEvent::new(
         KeyCode::Char('a'),

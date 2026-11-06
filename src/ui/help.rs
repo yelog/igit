@@ -79,24 +79,23 @@ impl HelpContent {
     }
 }
 
-pub(crate) fn global_section() -> HelpSection {
-    HelpSection::new(
-        "Global Actions",
-        &[
-            ("1", "Focus Git Log below"),
-            ("2", "Focus Commit above"),
-            ("3", "Open Push dialog"),
-            ("4", "Open Merge dialog"),
-            ("p", "Review Pull for all repositories in Roots"),
-            ("f", "Review Fetch for all repositories in Roots"),
-            ("r", "Open Roots repo scope"),
-            (":", "Open Actions"),
-            ("F5", "Refresh workspace and open dialog"),
-            ("F1", "Open help for current pane"),
-            ("?", "Open help for current pane"),
-            ("q", "Review and quit IGit"),
-        ],
-    )
+pub(crate) fn global_section(show_conflicts: bool) -> HelpSection {
+    const BINDINGS: &[Binding] = &[
+        ("1", "Switch to Commit tab"),
+        ("2", "Switch to Log tab"),
+        ("3", "Switch to Push tab"),
+        ("p", "Review Pull for all repositories in Roots"),
+        ("f", "Review Fetch for all repositories in Roots"),
+        ("r", "Open Roots repo scope"),
+        (":", "Open Actions"),
+        ("F5", "Refresh workspace"),
+        ("F1", "Open help for current pane"),
+        ("?", "Open help for current pane"),
+        ("q", "Review and quit IGit"),
+        ("4", "Switch to Conflicts tab"),
+    ];
+    let count = BINDINGS.len() - usize::from(!show_conflicts);
+    HelpSection::new("Global Actions", &BINDINGS[..count])
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -762,7 +761,7 @@ mod tests {
                     ("Z", "Expand all folders"),
                 ],
             ),
-            vec![global_section()],
+            vec![global_section(false)],
         ))
     }
     fn key(code: K) -> Event {
@@ -827,7 +826,7 @@ mod tests {
         for (width, height) in [(44, 12), (80, 24), (120, 36)] {
             let mut help = HelpState::new(HelpContent::new(
                 HelpSection::new("Commit / Text Selection", BINDINGS),
-                vec![global_section()],
+                vec![global_section(false)],
             ));
             let text = draw(&mut help, width, height);
             for (keys, description) in BINDINGS {

@@ -1,23 +1,18 @@
 //! Review and run a workspace update without routing through the Push dialog.
+mod view;
+#[cfg(test)]
+mod view_tests;
+
 use crate::{
     core::{command, git, redact_remote_error, revpath, Context},
     ui::{
         help::{HelpContent, HelpSection},
-        icons::IconMode,
-        idea::button_style,
-        pane,
-        selection::{TextLayout, Wrap},
-        ACCENT, MUTED,
+        inside,
     },
 };
 use anyhow::{bail, ensure, Context as _, Result};
 use crossterm::event::{Event, KeyCode as K, KeyModifiers as M, MouseEventKind};
-use ratatui::{
-    layout::Rect,
-    style::{Modifier, Style},
-    widgets::{Clear, Paragraph},
-    Frame,
-};
+use ratatui::layout::Rect;
 use std::{
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, TryRecvError},
@@ -129,15 +124,12 @@ impl Plan {
         })
     }
 
-    fn label(&self) -> String {
+    fn destination(&self) -> String {
         match self {
             Self::Pull {
-                branch,
-                upstream,
-                remote,
-                ..
+                upstream, remote, ..
             } => format!(
-                "{branch} <- {}:{}",
+                "{}:{}",
                 remote.name,
                 upstream.strip_prefix("refs/heads/").unwrap_or(upstream)
             ),
@@ -197,41 +189,56 @@ impl Plan {
 }
 
 struct Target {
-    name: String,
     path: PathBuf,
     plan: Result<Plan, String>,
 }
 
+enum Outcome {
+    Ready,
+    Succeeded,
+    Failed(String),
+    Skipped(String),
+}
+
+struct RepositoryRow {
+    root: usize,
+    name: String,
+    submodule: bool,
+    branch: String,
+    destination: String,
+    outcome: Outcome,
+}
+
 struct Report {
     summary: String,
-    body: String,
+    outcomes: Vec<Outcome>,
 }
 
 fn execute(kind: Kind, strategy: Strategy, targets: Vec<Target>) -> Report {
     let (mut succeeded, mut failed, mut skipped) = (0, 0, 0);
-    let mut rows = Vec::with_capacity(targets.len());
-    for Target { name, path, plan } in targets {
+    let mut outcomes = Vec::with_capacity(targets.len());
+    for Target { path, plan } in targets {
         let result = match plan {
             Ok(plan) => match plan.execute(&path, kind, strategy) {
                 Ok(()) => {
                     succeeded += 1;
-                    "OK".into()
+                    Outcome::Succeeded
                 }
                 Err(error) => {
                     failed += 1;
-                    format!("Failed\n  {error}")
+                    Outcome::Failed(error.to_string())
                 }
             },
             Err(reason) => {
                 skipped += 1;
-                format!("Skipped · {reason}")
+                Outcome::Skipped(reason)
             }
         };
-        rows.push(format!("{name}: {result}"));
+        outcomes.push(result);
     }
     let counts = format!("{succeeded} succeeded · {failed} failed · {skipped} skipped");
     Report {
-        body: format!("{counts}\n\n{}", rows.join("\n")),
+        outcomes,
         summary: format!("{}: {counts}", kind.label()),
     }
 }
@@ -246,53 +253,66 @@ const CANCEL: usize = 0;
 const CONFIRM: usize = 1;
 const MERGE: usize = 2;
 const REBASE: usize = 3;
+const ROW: usize = 4;
 
 pub(super) struct Dialog {
     kind: Kind,
     strategy: Strategy,
     stage: Stage,
     ready: usize,
-    body: String,
-    scroll: usize,
-    max_scroll: usize,
+    rows: Vec<RepositoryRow>,
+    pos: usize,
+    offset: usize,
+    list_area: Rect,
+    detail_area: Rect,
+    detail_scroll: usize,
+    detail_max_scroll: usize,
     confirm_focused: bool,
 }
 
 impl Dialog {
     pub(super) fn new(kind: Kind, ctx: &Context) -> Self {
+        let mut rows = Vec::with_capacity(ctx.scope.len());
         let targets: Vec<_> = ctx
             .scope
             .iter()
             .map(|&index| {
                 let repo = &ctx.repos[index];
-                Target {
+                let plan = Plan::read(&repo.path, kind).map_err(|error| error.to_string());
+                let branch = match &plan {
+                    Ok(Plan::Pull { branch, .. }) => branch.clone(),
+                    _ => repo.branch.clone(),
+                };
+                rows.push(RepositoryRow {
+                    root: index,
                     name: repo.name.clone(),
+                    submodule: repo.submodule,
+                    branch,
+                    destination: plan.as_ref().map(Plan::destination).unwrap_or_default(),
+                    outcome: match &plan {
+                        Ok(_) => Outcome::Ready,
+                        Err(reason) => Outcome::Skipped(reason.clone()),
+                    },
+                });
+                Target {
                     path: repo.path.clone(),
-                    plan: Plan::read(&repo.path, kind).map_err(|error| error.to_string()),
+                    plan,
                 }
             })
             .collect();
         let ready = targets.iter().filter(|target| target.plan.is_ok()).count();
-        let rows = targets
-            .iter()
-            .map(|target| {
-                let details = match &target.plan {
-                    Ok(plan) => plan.label(),
-                    Err(reason) => format!("Skip · {reason}"),
-                };
-                format!("{}: {details}", target.name)
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let body = format!("{} in Roots · {ready} ready\n{rows}", targets.len());
         Self {
             kind,
             strategy: Strategy::Merge,
             stage: Stage::Review(targets),
             ready,
-            body,
-            scroll: 0,
-            max_scroll: 0,
+            rows,
+            pos: 0,
+            offset: 0,
+            list_area: Rect::default(),
+            detail_area: Rect::default(),
+            detail_scroll: 0,
+            detail_max_scroll: 0,
             confirm_focused: false,
         }
     }
@@ -306,13 +326,23 @@ impl Dialog {
             Err(TryRecvError::Empty) => return None,
             Err(TryRecvError::Disconnected) => Report {
                 summary: format!("{} worker stopped before reporting results", self.kind.label()),
-                body: "Update worker stopped before reporting results. Inspect the repositories before retrying.".into(),
+                outcomes: self.rows.iter().map(|row| match &row.outcome {
+                    Outcome::Skipped(reason) => Outcome::Skipped(reason.clone()),
+                    _ => Outcome::Failed("Update worker stopped before reporting results. Inspect the repository before retrying.".into()),
+                }).collect(),
             },
         };
         self.stage = Stage::Results;
-        self.body = report.body;
-        self.scroll = 0;
-        self.max_scroll = 0;
+        for (row, outcome) in self.rows.iter_mut().zip(report.outcomes) {
+            row.outcome = outcome;
+        }
+        self.select(
+            self.rows
+                .iter()
+                .position(|row| matches!(row.outcome, Outcome::Failed(_)))
+                .unwrap_or(0),
+        );
+        self.detail_scroll = 0;
         Some((self.kind, report.summary))
     }
 
@@ -320,26 +350,59 @@ impl Dialog {
         self.kind == Kind::Pull && matches!(self.stage, Stage::Review(_))
     }
 
+    fn select(&mut self, pos: usize) {
+        let pos = pos.min(self.rows.len().saturating_sub(1));
+        if self.pos != pos {
+            self.pos = pos;
+            self.detail_scroll = 0;
+            self.detail_max_scroll = 0;
+        }
+    }
+
     pub(super) fn event(&mut self, event: &Event, hit: Option<usize>) -> bool {
         let key = match event {
-            Event::Key(k)
-                if k.modifiers.is_empty() || k.modifiers == M::SHIFT && k.code == K::BackTab =>
-            {
-                Some(k.code)
-            }
+            Event::Key(k) if k.modifiers.is_empty() || k.modifiers == M::SHIFT => Some(k.code),
             _ => None,
         };
+        if let Some(index) = hit.and_then(|id| id.checked_sub(ROW)) {
+            self.select(index);
+        }
         match event {
-            Event::Mouse(m) if m.kind == MouseEventKind::ScrollUp => {
-                self.scroll = self.scroll.saturating_sub(3)
-            }
-            Event::Mouse(m) if m.kind == MouseEventKind::ScrollDown => {
-                self.scroll = (self.scroll + 3).min(self.max_scroll)
+            Event::Mouse(m)
+                if matches!(
+                    m.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                ) =>
+            {
+                let up = m.kind == MouseEventKind::ScrollUp;
+                if inside(self.detail_area, m.column, m.row) {
+                    self.detail_scroll = if up {
+                        self.detail_scroll.saturating_sub(3)
+                    } else {
+                        (self.detail_scroll + 3).min(self.detail_max_scroll)
+                    };
+                } else if up {
+                    self.select(self.pos.saturating_sub(3));
+                } else {
+                    self.select(self.pos.saturating_add(3));
+                }
             }
             _ => match key {
-                Some(K::Up | K::Char('k')) => self.scroll = self.scroll.saturating_sub(1),
-                Some(K::Down | K::Char('j')) => {
-                    self.scroll = (self.scroll + 1).min(self.max_scroll)
+                Some(K::Up | K::Char('k')) => self.select(self.pos.saturating_sub(1)),
+                Some(K::Down | K::Char('j')) => self.select(self.pos.saturating_add(1)),
+                Some(K::PageUp) => self.select(
+                    self.pos
+                        .saturating_sub(usize::from(self.list_area.height.max(1))),
+                ),
+                Some(K::PageDown) => self.select(
+                    self.pos
+                        .saturating_add(usize::from(self.list_area.height.max(1))),
+                ),
+                Some(K::Home) => self.select(0),
+                Some(K::End | K::Char('G')) => self.select(self.rows.len().saturating_sub(1)),
+                Some(K::Char('K')) => self.detail_scroll = self.detail_scroll.saturating_sub(1),
+                Some(K::Char('J')) => {
+                    self.detail_scroll = (self.detail_scroll + 1).min(self.detail_max_scroll)
                 }
                 _ => (),
             },
@@ -387,20 +450,36 @@ impl Dialog {
             Stage::Review(_) => (
                 "Update / Review",
                 &[
-                    ("j", "Scroll repositories down"),
-                    ("k", "Scroll repositories up"),
+                    ("j", "Next repository"),
+                    ("k", "Previous repository"),
+                    ("J", "Scroll details down"),
+                    ("K", "Scroll details up"),
+                    ("PageDown", "Next repository page"),
+                    ("PageUp", "Previous repository page"),
                     ("Tab", "Switch focused button"),
                     ("Enter", "Activate selected button"),
                     ("y", "Confirm workspace update"),
                     ("Esc", "Cancel workspace update"),
                 ],
             ),
-            Stage::Running(_) => ("Update / Running", &[]),
+            Stage::Running(_) => (
+                "Update / Running",
+                &[
+                    ("j", "Next repository"),
+                    ("k", "Previous repository"),
+                    ("J", "Scroll details down"),
+                    ("K", "Scroll details up"),
+                ],
+            ),
             Stage::Results => (
                 "Update / Results",
                 &[
-                    ("j", "Scroll results down"),
-                    ("k", "Scroll results up"),
+                    ("j", "Next repository"),
+                    ("k", "Previous repository"),
+                    ("J", "Scroll details down"),
+                    ("K", "Scroll details up"),
+                    ("PageDown", "Next repository page"),
+                    ("PageUp", "Previous repository page"),
                     ("Enter", "Close results"),
                     ("Esc", "Close results"),
                 ],
@@ -418,112 +497,5 @@ impl Dialog {
             vec![]
         };
         HelpContent::new(HelpSection::new(title, bindings), sections)
-    }
-
-    pub(super) fn draw(
-        &mut self,
-        f: &mut Frame,
-        area: Rect,
-        icons: IconMode,
-        hits: &mut Vec<(Rect, usize)>,
-    ) {
-        let width = (area.width - 4).min(84);
-        let layout = TextLayout::plain(&self.body, width - 4, Wrap::Word);
-        let choices = if self.pull_review() { 3 } else { 0 };
-        let height =
-            (layout.rows.len() + choices + 3).clamp(7, usize::from(area.height - 2)) as u16;
-        let rect = Rect::new(
-            area.x + (area.width - width) / 2,
-            area.y + (area.height - height) / 2,
-            width,
-            height,
-        );
-        let title = match self.stage {
-            Stage::Review(_) if self.kind == Kind::Pull => "Update Project".into(),
-            Stage::Review(_) => "Fetch Repositories".into(),
-            Stage::Running(_) => format!("{} · Running", self.kind.label()),
-            Stage::Results => format!("{} Results", self.kind.label()),
-        };
-        f.buffer_mut()
-            .set_style(area, Style::new().add_modifier(Modifier::DIM));
-        f.render_widget(Clear, rect);
-        let block = pane(title, true);
-        let inner = block.inner(rect);
-        f.render_widget(block, rect);
-        if choices > 0 {
-            for (offset, strategy, label, id) in [
-                (0, Strategy::Merge, "m  Merge incoming changes", MERGE),
-                (1, Strategy::Rebase, "r  Rebase current branches", REBASE),
-            ] {
-                let selected = self.strategy == strategy;
-                let radio = match (icons, selected) {
-                    (IconMode::Ascii, true) => "(o)",
-                    (IconMode::Ascii, false) => "( )",
-                    (_, true) => "◉",
-                    (_, false) => "○",
-                };
-                let row = Rect::new(inner.x + 1, inner.y + offset, inner.width - 2, 1);
-                let style = if selected {
-                    Style::new().fg(ACCENT)
-                } else {
-                    Style::default()
-                };
-                f.render_widget(
-                    Paragraph::new(format!("{radio}  {label}")).style(style),
-                    row,
-                );
-                hits.push((row, id));
-            }
-        }
-        let body = Rect::new(
-            inner.x + 1,
-            inner.y + choices as u16,
-            inner.width - 2,
-            inner.height - choices as u16 - 1,
-        );
-        self.max_scroll = layout.rows.len().saturating_sub(usize::from(body.height));
-        self.scroll = self.scroll.min(self.max_scroll);
-        let lines = layout
-            .rows
-            .into_iter()
-            .skip(self.scroll)
-            .take(usize::from(body.height))
-            .map(|row| row.line)
-            .collect::<Vec<_>>();
-        f.render_widget(Paragraph::new(lines), body);
-
-        let mut x = inner.right() - 1;
-        let mut button = |label: &str, id, focused, enabled| {
-            let width = label.len() as u16;
-            x -= width;
-            let row = Rect::new(x, inner.bottom() - 1, width, 1);
-            let style = if enabled {
-                button_style(focused)
-            } else {
-                Style::new().fg(MUTED)
-            };
-            f.render_widget(Paragraph::new(label).style(style), row);
-            if enabled {
-                hits.push((row, id));
-            }
-            x -= 1;
-        };
-        match self.stage {
-            Stage::Review(_) => {
-                button(
-                    &format!(" y {} {} ", self.kind.label(), self.ready),
-                    CONFIRM,
-                    self.confirm_focused,
-                    self.ready > 0,
-                );
-                button(" n Cancel ", CANCEL, !self.confirm_focused, true);
-            }
-            Stage::Running(_) => f.render_widget(
-                Paragraph::new(format!(" Running Git for {} repositories…", self.ready))
-                    .style(Style::new().fg(ACCENT)),
-                Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
-            ),
-            Stage::Results => button(" Close / Esc ", CANCEL, true, true),
-        }
     }
 }

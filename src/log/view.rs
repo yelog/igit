@@ -290,13 +290,7 @@ impl LogPanel {
         let mut a = one(a.x, a.y, a.width);
         for (name, h) in buttons {
             let r = take(&mut a, cells(name).saturating_add(2));
-            self.button(
-                f,
-                r,
-                &format!(" {name} "),
-                matches!(h,Hit::Pane(p) if *p==self.focus),
-                h.clone(),
-            );
+            self.button(f, r, &format!(" {name} "), false, h.clone());
         }
     }
     pub(super) fn draw_layout(&mut self, f: &mut Frame, a: Rect, c: &Context) {
@@ -304,71 +298,50 @@ impl LogPanel {
         if !self.pane_visible(self.focus) {
             self.focus = Pane::Graph;
         }
-        let areas = if self.panes.maximized || a.width < 82 {
-            let mut navigation = Rect::new(a.x, a.y, a.width, 1);
-            self.view_button(f, &mut navigation);
-            for (pane, label) in [
-                (Pane::Refs, " Refs "),
-                (Pane::Graph, " Graph "),
-                (Pane::Files, " Files "),
-                (Pane::Info, " Details "),
-            ] {
-                if self.pane_visible(pane) {
-                    let tab = take(&mut navigation, cells(label));
-                    self.button(f, tab, label, self.focus == pane, Hit::Pane(pane));
-                }
-            }
-            let content = Rect::new(
-                a.x,
-                navigation.bottom(),
-                a.width,
-                a.height.saturating_sub(1),
-            );
-            // Keep every enabled tab reachable; only the current tab occupies screen cells.
-            Pane::ORDER.map(|p| {
-                if p == self.focus {
-                    content
-                } else {
-                    Rect::default()
-                }
-            })
+        let percent = |n: u16, p: u32| (u32::from(n) * p / 100) as u16;
+        // At narrow widths, give the sidebars less space while keeping the graph
+        // wide enough for its filter labels.
+        let refs_width = percent(a.width, 17);
+        let refs_min = refs_width.clamp(8, 12);
+        let graph_min = 25;
+        let inspector_min = percent(a.width, 26).clamp(11, 16);
+        let [main, inspector] = if self.show_info {
+            self.panes.divide(
+                SplitId::LogInspector,
+                a,
+                Axis::Width,
+                percent(a.width, 74),
+                [
+                    graph_min + refs_min * u16::from(self.show_refs),
+                    inspector_min,
+                ],
+            )
         } else {
-            let percent = |n: u16, p: u32| (u32::from(n) * p / 100) as u16;
-            let [main, inspector] = if self.show_info {
-                self.panes.divide(
-                    SplitId::LogInspector,
-                    a,
-                    Axis::Width,
-                    percent(a.width, 74),
-                    [24 + 12 * u16::from(self.show_refs), 16],
-                )
-            } else {
-                [a, Rect::default()]
-            };
-            let [refs, graph] = if self.show_refs {
-                self.panes.divide(
-                    SplitId::LogRefs,
-                    main,
-                    Axis::Width,
-                    percent(a.width, 17),
-                    [12, 24],
-                )
-            } else {
-                [Rect::default(), main]
-            };
-            let [files, info] = if self.show_info {
-                self.panes.divide(
-                    SplitId::LogDetails,
-                    inspector,
-                    Axis::Height,
-                    percent(a.height, 65),
-                    [2, 1],
-                )
-            } else {
-                [Rect::default(); 2]
-            };
-            [refs, graph, files, info]
+            [a, Rect::default()]
         };
+        let [refs, graph] = if self.show_refs {
+            self.panes.divide(
+                SplitId::LogRefs,
+                main,
+                Axis::Width,
+                refs_width,
+                [refs_min, graph_min],
+            )
+        } else {
+            [Rect::default(), main]
+        };
+        let [files, info] = if self.show_info {
+            self.panes.divide(
+                SplitId::LogDetails,
+                inspector,
+                Axis::Height,
+                percent(a.height, 65),
+                [2, 1],
+            )
+        } else {
+            [Rect::default(); 2]
+        };
+        let areas = [refs, graph, files, info];
         let active = self.panes.active && !self.editing();
         for (p, outer) in Pane::ORDER.into_iter().zip(areas) {
             if !self.pane_visible(p) {
@@ -386,7 +359,6 @@ impl LogPanel {
                 Pane::Info => self.draw_info(f, r, c),
             }
         }
-        let [_, _, files, info] = areas;
         if files.height.min(info.height) <= 4
             && !info.is_empty()
             && self.panes.can_resize(files, Axis::Height)
@@ -408,14 +380,7 @@ impl LogPanel {
     fn graph_toolbar(&mut self, f: &mut Frame, area: Rect, c: &Context) -> u16 {
         let two = area.width < 56 && area.height >= 5;
         let mut a = one(area.x, area.y, area.width);
-        if self.bounds.width >= 82 && !self.panes.maximized {
-            self.view_button(f, &mut a);
-        }
-        let field_w = if two {
-            a.width.saturating_sub(12)
-        } else {
-            (a.width / 4).clamp(13, 32)
-        };
+        self.view_button(f, &mut a);
         let input = self
             .editor
             .as_ref()
@@ -423,7 +388,12 @@ impl LogPanel {
         let editing = input.is_some();
         let show_options = two || area.width >= 77 || editing;
         let suffix_width = if show_options { 6 } else { 0 };
-        let field = take(&mut a, field_w + suffix_width);
+        let field_w = if two {
+            a.width
+        } else {
+            (a.width / 4).clamp(13, 32) + suffix_width
+        };
+        let field = take(&mut a, field_w);
         let text = if let Some((_, s)) = input {
             s
         } else if self.filter.query.is_empty() {

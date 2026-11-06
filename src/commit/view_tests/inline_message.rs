@@ -28,7 +28,6 @@ fn inline_message_click_keeps_editor_in_composer_and_positions_first_caret() {
         assert!(read(t.backend().buffer(), p.tree).contains("Changes"));
         assert!(p.hits.iter().any(|(_, h)| matches!(h, Hit::Submit(false))));
         assert!(p.hits.iter().any(|(_, h)| matches!(h, Hit::EditCancel)));
-        assert!(!p.overlay_at(draft.x, draft.y));
         assert_eq!(p.checks, checks);
     }
 }

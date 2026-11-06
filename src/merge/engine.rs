@@ -1,6 +1,7 @@
 use anyhow::{anyhow, ensure, Context as _, Result};
 use similar::{DiffTag, TextDiff};
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     fs,
     io::Write,
@@ -16,6 +17,23 @@ pub(super) struct Conflict {
     pub root: usize,
     pub path: String,
     pub stages: Stages,
+}
+
+impl Conflict {
+    pub(super) fn stage_error(&self) -> Option<&'static str> {
+        let [Some((base, _)), Some((current, _)), Some((incoming, _))] = &self.stages.0 else {
+            return Some("Added/deleted/renamed conflict: resolve this path explicitly outside the text editor; nothing was modified");
+        };
+        if base != "100644" && base != "100755" {
+            return Some(
+                "Binary/symlink/submodule conflict; inspect each side and resolve externally",
+            );
+        }
+        if base != current || base != incoming {
+            return Some("File mode changed; resolve mode and contents externally");
+        }
+        None
+    }
 }
 
 fn run(repo: &Path, args: &[&str]) -> Result<Output> {
@@ -69,6 +87,41 @@ pub(super) enum Kind {
     Safe,
     Conflict,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FileSide {
+    Current,
+    Incoming,
+}
+
+impl FileSide {
+    pub const ALL: [Self; 2] = [Self::Current, Self::Incoming];
+
+    pub fn pane(self) -> usize {
+        match self {
+            Self::Current => 0,
+            Self::Incoming => 2,
+        }
+    }
+
+    pub fn slot(self) -> usize {
+        self.pane() / 2 + 1
+    }
+
+    pub fn text(self, chunk: &Chunk) -> &str {
+        match self {
+            Self::Current => &chunk.left,
+            Self::Incoming => &chunk.right,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct Resolution {
+    pending: [bool; 2],
+    accepted: bool,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct Chunk {
     pub base: String,
@@ -76,7 +129,7 @@ pub(super) struct Chunk {
     pub right: String,
     pub result: String,
     pub kind: Kind,
-    pub done: bool,
+    pub resolution: Resolution,
 }
 fn lines(s: &str) -> Vec<&str> {
     s.split_inclusive('\n').collect()
@@ -131,7 +184,7 @@ fn context(s: String) -> Chunk {
         right: s.clone(),
         result: s,
         kind: Kind::Context,
-        done: true,
+        resolution: Resolution::default(),
     }
 }
 pub(super) fn diff3(base: &str, a: &str, b: &str) -> Vec<Chunk> {
@@ -165,13 +218,17 @@ pub(super) fn diff3(base: &str, a: &str, b: &str) -> Vec<Chunk> {
         } else {
             Kind::Conflict
         };
+        let pending = [left != base, right != base];
         chunks.push(Chunk {
             result: base.clone(),
             base,
             left,
             right,
             kind,
-            done: false,
+            resolution: Resolution {
+                pending,
+                accepted: false,
+            },
         });
         at = end
     }
@@ -181,16 +238,134 @@ pub(super) fn diff3(base: &str, a: &str, b: &str) -> Vec<Chunk> {
     chunks
 }
 impl Chunk {
-    pub fn safe(&mut self) {
-        if self.kind == Kind::Safe && !self.done {
-            self.result = if self.left == self.base {
-                self.right.clone()
+    pub fn pending(&self, side: FileSide) -> bool {
+        self.resolution.pending[side.slot() - 1]
+    }
+
+    pub fn done(&self) -> bool {
+        !self.resolution.pending.iter().any(|&pending| pending)
+    }
+
+    pub fn resolve(&mut self, result: String) {
+        self.result = result;
+        self.resolution = Resolution::default();
+    }
+
+    pub fn use_side(&mut self, side: FileSide) {
+        self.resolve(side.text(self).to_owned());
+    }
+
+    /// A conflict keeps the other side open. Accepting it later appends its
+    /// lines; accepting after an ignore replaces the base instead.
+    pub fn decide(&mut self, side: FileSide, accept: bool) {
+        if !self.pending(side) {
+            return;
+        }
+        if self.kind == Kind::Safe {
+            if accept {
+                self.use_side(side);
             } else {
-                self.left.clone()
-            };
-            self.done = true
+                self.resolution = Resolution::default();
+            }
+            return;
+        }
+        if accept {
+            let next = side.text(self).to_owned();
+            if self.resolution.accepted {
+                append_lines(&mut self.result, &next);
+            } else {
+                self.result = next;
+            }
+            self.resolution.accepted = true;
+        }
+        self.resolution.pending[side.slot() - 1] = false;
+    }
+
+    pub fn safe(&mut self, source: Option<FileSide>) -> bool {
+        if self.kind != Kind::Safe {
+            return false;
+        }
+        let side = source.or_else(|| FileSide::ALL.into_iter().find(|&s| self.pending(s)));
+        if let Some(side) = side.filter(|&side| self.pending(side)) {
+            self.use_side(side);
+            true
+        } else {
+            false
         }
     }
+
+    pub fn both(&mut self) {
+        let mut result = self.left.clone();
+        append_lines(&mut result, &self.right);
+        self.resolve(result);
+    }
+
+    /// A preview shared by availability, batch resolution, and session drafts.
+    /// Safe blocks borrow their source; only the small character merge allocates.
+    /// Existing accept/ignore decisions and manual results are never replaced.
+    pub fn automatic_result(&self) -> Option<Cow<'_, str>> {
+        if self.kind == Kind::Safe {
+            FileSide::ALL
+                .into_iter()
+                .find(|&side| self.pending(side))
+                .map(|side| Cow::Borrowed(side.text(self)))
+        } else {
+            self.simple_result().map(Cow::Owned)
+        }
+    }
+
+    /// Only combine disjoint character edits on the same single line.
+    /// Changes touching the same position, including insertion boundaries,
+    /// remain for manual review.
+    pub fn simple_result(&self) -> Option<String> {
+        if self.kind != Kind::Conflict
+            || !FileSide::ALL.into_iter().all(|side| self.pending(side))
+            || [&self.base, &self.left, &self.right]
+                .iter()
+                .any(|s| s.len() > 4096 || s.split_inclusive('\n').count() != 1)
+        {
+            return None;
+        }
+        let base: Vec<_> = self.base.chars().collect();
+        let left: Vec<_> = self.left.chars().collect();
+        let right: Vec<_> = self.right.chars().collect();
+        let edit = |new: &[char]| {
+            let start = base.iter().zip(new).take_while(|(a, b)| a == b).count();
+            let tail = base[start..]
+                .iter()
+                .rev()
+                .zip(new[start..].iter().rev())
+                .take_while(|(a, b)| a == b)
+                .count();
+            (start..base.len() - tail, start..new.len() - tail)
+        };
+        let (l, ln) = edit(&left);
+        let (r, rn) = edit(&right);
+        let ((a, first), (b, last)) = if l.start < r.start {
+            ((l, &left[ln]), (r, &right[rn]))
+        } else {
+            ((r, &right[rn]), (l, &left[ln]))
+        };
+        if a.end > b.start || (a.end == b.start && (a.is_empty() || b.is_empty())) {
+            return None;
+        }
+        Some(
+            base[..a.start]
+                .iter()
+                .chain(first)
+                .chain(&base[a.end..b.start])
+                .chain(last)
+                .chain(&base[b.end..])
+                .collect(),
+        )
+    }
+}
+
+fn append_lines(result: &mut String, next: &str) {
+    if !result.is_empty() && !result.ends_with('\n') && !next.is_empty() {
+        result.push('\n');
+    }
+    result.push_str(next);
 }
 
 fn git_path(repo: &Path, name: &str) -> Result<PathBuf> {
@@ -229,6 +404,35 @@ pub(super) fn operation(repo: &Path) -> Result<Option<Operation>> {
         other: rev(repo, other),
     }))
 }
+
+/// A branch name is only a display hint when it points to this exact commit.
+pub(super) fn unique_branch(repo: &Path, oid: &str) -> Option<String> {
+    if oid.is_empty() {
+        return None;
+    }
+    let output = crate::core::git(
+        repo,
+        &[
+            "for-each-ref",
+            &format!("--points-at={oid}"),
+            "--format=%(refname)%00%(symref)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )
+    .ok()?;
+    let mut names = output.lines().filter_map(|line| {
+        let (name, symref) = line.split_once('\0')?;
+        if !symref.is_empty() {
+            return None;
+        }
+        name.strip_prefix("refs/heads/")
+            .or_else(|| name.strip_prefix("refs/remotes/"))
+    });
+    let only = names.next()?;
+    names.next().is_none().then(|| only.to_owned())
+}
+
 pub(super) fn continue_plan(repo: &Path) -> Result<(Operation, String, String)> {
     let op = operation(repo)?.context("No merge/rebase/sequencer to continue")?;
     ensure!(
@@ -399,17 +603,10 @@ pub(super) struct Document {
 }
 impl Document {
     pub fn open(repo: &Path, file: Conflict) -> Result<Self> {
+        if let Some(error) = file.stage_error() {
+            anyhow::bail!("{error}");
+        }
         let st = &file.stages.0;
-        ensure!(st.iter().all(Option::is_some),"Added/deleted/renamed conflict: resolve this path explicitly outside the text editor; nothing was modified");
-        let mode = &st[0].as_ref().unwrap().0;
-        ensure!(
-            mode == "100644" || mode == "100755",
-            "Binary/symlink/submodule conflict; inspect each side and resolve externally"
-        );
-        ensure!(
-            st.iter().all(|v| &v.as_ref().unwrap().0 == mode),
-            "File mode changed; resolve mode and contents externally"
-        );
         let attrs = attributes(repo, &file.path)?;
         let conversion_state = conversion_state(repo, &file.path)?;
         for a in attrs.split(|&x| x == 0).collect::<Vec<_>>().chunks_exact(3) {
@@ -458,33 +655,57 @@ impl Document {
             );
             versions.push(s);
         }
-        ensure!(generated(repo,&w,&file.path,&versions[0],&versions[1],&versions[2])?,"Working file differs from Git's original conflict output; existing edits were preserved. Finish editing externally and git add this path");
+        let base = &versions[0];
+        // The editor already starts at the base. Reopening those exact bytes
+        // keeps the working file intact and leaves all choices pending.
+        ensure!(
+            w.as_slice() == base.as_bytes()
+                || generated(repo, &w, &file.path, base, &versions[1], &versions[2])?,
+            "Working file differs from Git's original conflict output; existing edits were preserved. Finish editing externally and git add this path"
+        );
         let op = operation(repo)?;
         let head = rev(repo, "HEAD");
         let reb = op.as_ref().is_some_and(|x| x.name == "rebase");
         let branch = run(repo, &["symbolic-ref", "-q", "--short", "HEAD"])?.stdout;
         let bname = String::from_utf8_lossy(&branch).trim().to_owned();
-        let left_label = format!(
-            "{} {}",
-            if reb {
-                "Rebased HEAD"
-            } else if bname.is_empty() {
-                "HEAD"
-            } else {
-                &bname
-            },
-            head.get(..7).unwrap_or(&head)
-        );
+        let left_label = if reb {
+            format!("Rebased HEAD {}", head.get(..7).unwrap_or(&head))
+        } else if bname.is_empty() {
+            format!("HEAD {}", head.get(..7).unwrap_or(&head))
+        } else {
+            bname
+        };
         let right_label = if let Some(o) = &op {
-            format!(
-                "{} {}",
-                if reb { "Replay" } else { "Incoming" },
-                o.other.get(..7).unwrap_or(&o.other)
-            )
+            let short = o.other.get(..7).unwrap_or(&o.other);
+            if reb {
+                format!("Replay {short}")
+            } else {
+                let branch = if o.name == "merge" && !o.other.is_empty() {
+                    if rev(repo, "@{upstream}") == o.other {
+                        run(
+                            repo,
+                            &[
+                                "rev-parse",
+                                "--abbrev-ref",
+                                "--symbolic-full-name",
+                                "@{upstream}",
+                            ],
+                        )
+                        .ok()
+                        .filter(|o| o.status.success())
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+                    } else {
+                        unique_branch(repo, &o.other)
+                    }
+                } else {
+                    None
+                };
+                branch.unwrap_or_else(|| format!("Incoming {short}"))
+            }
         } else {
             format!("Stage 3 {}", &st[2].as_ref().unwrap().1[..7])
         };
-        let chunks = diff3(&versions[0], &versions[1], &versions[2]);
+        let chunks = diff3(base, &versions[1], &versions[2]);
         Ok(Self {
             file,
             chunks,
@@ -499,7 +720,42 @@ impl Document {
         })
     }
     pub fn pending(&self) -> usize {
-        self.chunks.iter().filter(|x| !x.done).count()
+        self.chunks.iter().filter(|x| !x.done()).count()
+    }
+
+    pub fn source_name(&self, side: FileSide) -> &str {
+        match side {
+            FileSide::Current => &self.left_label,
+            FileSide::Incoming => &self.right_label,
+        }
+    }
+
+    pub fn source_details(&self, side: FileSide) -> Vec<String> {
+        let (_, blob) = self.file.stages.0[side.slot()].as_ref().unwrap();
+        let rev = match side {
+            FileSide::Current => Some(self.head.as_str()),
+            FileSide::Incoming => self.op.as_ref().map(|o| o.other.as_str()),
+        };
+        let mut lines = vec![
+            self.file.path.clone(),
+            format!("Stage {} blob {blob}", side.slot()),
+        ];
+        if let Some(rev) = rev.filter(|id| !id.is_empty()) {
+            if let Ok(bytes) = checked(
+                &self.repo,
+                &[
+                    "show",
+                    "-s",
+                    "--no-notes",
+                    "--format=%H%n%an <%ae>%n%aI%n%s",
+                    rev,
+                ],
+            ) {
+                lines.push(String::new());
+                lines.extend(String::from_utf8_lossy(&bytes).lines().map(str::to_owned));
+            }
+        }
+        lines
     }
     pub fn apply(&self) -> Result<()> {
         ensure!(
@@ -564,11 +820,21 @@ impl Document {
 
 #[cfg(test)]
 mod tests {
+    mod automatic;
+
     use super::*;
     fn g(p: &Path, args: &[&str]) -> String {
         String::from_utf8(checked(p, args).unwrap()).unwrap()
     }
     fn fixture() -> tempfile::TempDir {
+        fixture_with(
+            "a\nb\nc\nshared\ne\nf\ng\n",
+            "left safe\nb\nc\nlocal\ne\nf\ng\n",
+            "a\nb\nc\nincoming\ne\nf\nright safe\n",
+        )
+    }
+
+    fn fixture_with(base: &str, left: &str, right: &str) -> tempfile::TempDir {
         let td = tempfile::tempdir().unwrap();
         let p = td.path();
         g(p, &["init", "-q", "-b", "main"]);
@@ -577,14 +843,14 @@ mod tests {
         g(p, &["config", "commit.gpgsign", "false"]);
         g(p, &["config", "core.hooksPath", "/dev/null"]);
         let name = "config with spaces.txt";
-        fs::write(p.join(name), "a\nb\nc\nshared\ne\nf\ng\n").unwrap();
+        fs::write(p.join(name), base).unwrap();
         g(p, &["add", "--", name]);
         g(p, &["commit", "-qm", "base"]);
         g(p, &["checkout", "-qb", "incoming"]);
-        fs::write(p.join(name), "a\nb\nc\nincoming\ne\nf\nright safe\n").unwrap();
+        fs::write(p.join(name), right).unwrap();
         g(p, &["commit", "-qam", "incoming"]);
         g(p, &["checkout", "-q", "main"]);
-        fs::write(p.join(name), "left safe\nb\nc\nlocal\ne\nf\ng\n").unwrap();
+        fs::write(p.join(name), left).unwrap();
         g(p, &["commit", "-qam", "local"]);
         let o = run(p, &["merge", "--no-edit", "incoming"]).unwrap();
         assert_eq!(o.status.code(), Some(1));
@@ -602,14 +868,13 @@ mod tests {
         );
         assert_eq!(d.chunks.iter().filter(|x| x.kind == Kind::Safe).count(), 2);
         for x in &mut d.chunks {
-            x.safe()
+            x.safe(None);
         }
         assert_eq!(d.pending(), 1);
         assert!(d.apply().is_err());
         for x in &mut d.chunks {
-            if !x.done {
-                x.result = x.right.clone();
-                x.done = true
+            if !x.done() {
+                x.use_side(FileSide::Incoming);
             }
         }
         d.apply().unwrap();
@@ -636,8 +901,7 @@ mod tests {
         let c = conflicts(0, p).unwrap().pop().unwrap();
         let mut d = Document::open(p, c.clone()).unwrap();
         for x in &mut d.chunks {
-            x.result = x.left.clone();
-            x.done = true
+            x.use_side(FileSide::Current);
         }
         fs::write(p.join(&c.path), "my external edits\n").unwrap();
         assert!(d.apply().is_err());
@@ -648,19 +912,99 @@ mod tests {
         );
         assert!(!conflicts(0, p).unwrap().is_empty())
     }
+
+    #[test]
+    fn enter_opens_a_conflict_with_the_base_saved_in_the_working_tree() {
+        use crate::{
+            core::Context,
+            merge::MergePanel,
+            ui::{Action, Panel},
+        };
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        let td = fixture();
+        let repo = td.path();
+        let path = repo.join("config with spaces.txt");
+        let base = checked(repo, &["show", ":1:config with spaces.txt"]).unwrap();
+        assert_ne!(fs::read(&path).unwrap(), base);
+        fs::write(&path, &base).unwrap();
+        let head = g(repo, &["rev-parse", "HEAD"]);
+        let index = g(repo, &["ls-files", "--stage"]);
+
+        let ctx = Context::discover(repo).unwrap();
+        let mut panel = MergePanel::default();
+        panel.refresh(&ctx).unwrap();
+        let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        if let Action::Notice(error) = panel.event(&key(KeyCode::Enter), &ctx) {
+            panic!("Enter refused to open the saved base: {error}");
+        }
+        let doc = panel.doc.as_ref().expect("Enter opens the merge editor");
+        let result: String = doc
+            .chunks
+            .iter()
+            .map(|chunk| chunk.result.as_str())
+            .collect();
+        assert_eq!(result.as_bytes(), base);
+        assert!(doc
+            .chunks
+            .iter()
+            .any(|c| c.kind == Kind::Conflict && !c.done()));
+        assert!(matches!(
+            panel.event(&key(KeyCode::Char('A')), &ctx),
+            Action::Notice(_)
+        ));
+        assert_eq!(fs::read(path).unwrap(), base);
+        assert_eq!(g(repo, &["ls-files", "--stage"]), index);
+        assert_eq!(g(repo, &["rev-parse", "HEAD"]), head);
+    }
+
     #[test]
     fn safe_edits_preserve_eof_and_independent_adjacent_changes() {
         let mut cs = diff3("a\nb\nc", "A\nb\nc", "a\nB\nc");
         for c in &mut cs {
-            c.safe()
+            c.safe(None);
         }
-        assert!(cs.iter().all(|c| c.done));
+        assert!(cs.iter().all(Chunk::done));
         assert_eq!(
             cs.iter().map(|c| c.result.as_str()).collect::<String>(),
             "A\nB\nc"
         );
         let cs = diff3("a\n", "left\na\n", "right\na\n");
         assert_eq!(cs.iter().filter(|x| x.kind == Kind::Conflict).count(), 1);
+    }
+
+    #[test]
+    fn one_side_can_be_ignored_appended_or_resolved_with_disjoint_edits() {
+        let chunks = diff3("base", "左", "右");
+        let mut chunk = chunks[0].clone();
+        chunk.decide(FileSide::Incoming, true);
+        assert_eq!(chunk.result, "右");
+        assert!(chunk.pending(FileSide::Current));
+        chunk.decide(FileSide::Current, true);
+        assert!(chunk.done());
+        assert_eq!(chunk.result, "右\n左");
+
+        let mut chunk = chunks[0].clone();
+        chunk.decide(FileSide::Current, false);
+        assert_eq!(chunk.result, "base");
+        assert!(!chunk.done());
+        chunk.decide(FileSide::Incoming, true);
+        assert!(chunk.done());
+        assert_eq!(chunk.result, "右");
+
+        let same = diff3("base\n", "match\n", "match\n");
+        let mut chunk = same[0].clone();
+        chunk.decide(FileSide::Current, true);
+        assert!(chunk.done());
+        assert_eq!(chunk.result, "match\n");
+
+        let disjoint = diff3("开始 = 0 / 结束\n", "左 = 0 / 结束\n", "开始 = 0 / 右\n");
+        assert_eq!(
+            disjoint[0].simple_result().as_deref(),
+            Some("左 = 0 / 右\n")
+        );
+        let overlapping = diff3("abc\n", "aXc\n", "aYc\n");
+        assert_eq!(overlapping[0].simple_result(), None);
     }
 
     #[test]
@@ -687,10 +1031,7 @@ mod tests {
         use crate::{
             core::Context,
             merge::{Hit, MergePanel},
-            ui::{
-                icons::{Icon, IconMode},
-                Action, Panel,
-            },
+            ui::{icons::IconMode, Action, Panel},
         };
         use crossterm::event::{
             Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -731,41 +1072,42 @@ mod tests {
                 .find(|(_, h)| matches!(h, Hit::Open))
                 .unwrap()
                 .0;
-            assert_eq!(
-                text(&term, open).trim(),
-                format!("Open file [{}]", icons.glyph(Icon::Enter))
-            );
+            assert_eq!(text(&term, open).trim(), "Resolve Manually");
             click(&mut p, open.right() - 1, open.y);
             p.event(&key('a'), &ctx);
             assert_eq!(p.doc.as_ref().unwrap().pending(), 1);
             for width in [44, 120] {
                 let mut term = Terminal::new(TestBackend::new(width, 18)).unwrap();
-                for (side, icon) in [(0, Icon::Right), (2, Icon::Left)] {
-                    p.side = side;
+                for side in FileSide::ALL {
+                    p.side = side.pane();
                     term.draw(|f| p.draw(f, f.area(), &ctx)).unwrap();
                     let gutter = p
                         .hits
                         .iter()
-                        .find(|(_, h)| matches!(h, Hit::Choice(i,s) if *i == p.idx && *s == side))
+                        .find(|(_, h)| matches!(h, Hit::Decide(i,s,true) if *i == p.idx && *s == side))
                         .unwrap()
                         .0;
-                    assert_eq!(text(&term, gutter), icons.glyph(icon));
-                    let beside = if side == 0 {
+                    let take = match (icons, side) {
+                        (IconMode::Ascii, FileSide::Current) => ">>",
+                        (IconMode::Ascii, FileSide::Incoming) => "<<",
+                        (_, FileSide::Current) => "»",
+                        (_, FileSide::Incoming) => "«",
+                    };
+                    assert_eq!(text(&term, gutter), take);
+                    let beside = if side == FileSide::Current {
                         gutter.x - 1
                     } else {
                         gutter.right()
                     };
                     click(&mut p, beside, gutter.y);
-                    assert!(!p.doc.as_ref().unwrap().chunks[p.idx].done);
+                    assert_eq!(p.doc.as_ref().unwrap().chunks[p.idx].result, "shared\n");
                     for x in gutter.x..gutter.right() {
                         click(&mut p, x, gutter.y);
                         let chunk = &p.doc.as_ref().unwrap().chunks[p.idx];
-                        assert!(chunk.done);
-                        let expected = if side == 0 { &chunk.left } else { &chunk.right };
-                        assert_eq!(&chunk.result, expected);
-                        assert!(
-                            matches!(p.event(&key('A'), &ctx), Action::Confirm { ref token, .. } if token == "merge:apply")
-                        );
+                        assert!(!chunk.done());
+                        assert!(!chunk.pending(side));
+                        assert_eq!(chunk.result, side.text(chunk));
+                        assert!(matches!(p.event(&key('A'), &ctx), Action::Notice(_)));
                         p.event(&key('u'), &ctx);
                     }
                 }
@@ -776,13 +1118,126 @@ mod tests {
     }
 
     #[test]
+    fn folded_editor_aligns_insertions_and_reopens_partial_decisions() {
+        use crate::{
+            core::Context,
+            merge::{Hit, MergePanel},
+            ui::{Action, Panel},
+        };
+        use crossterm::event::{
+            Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        };
+        use ratatui::{backend::TestBackend, layout::Rect, Terminal};
+
+        let mut base = (1..=100)
+            .map(|n| format!("context {n:03}\n"))
+            .collect::<Vec<_>>();
+        base[19] = "function reviewOrders() {\n".into();
+        let mut left = base.clone();
+        let mut right = base.clone();
+        left[1] = "identical edit\n".into();
+        right[1] = left[1].clone();
+        left[23] = "left transport\n".into();
+        right[23] = "right transport\n".into();
+        left[49] = "left safe\nextra line\n".into();
+        right[74] = "right safe\n".into();
+        let td = fixture_with(&base.concat(), &left.concat(), &right.concat());
+        let ctx = Context::discover(td.path()).unwrap();
+        let path = td.path().join("config with spaces.txt");
+        let original = fs::read(&path).unwrap();
+        let index = g(td.path(), &["ls-files", "--stage"]);
+        let mut panel = MergePanel::default();
+        panel.refresh(&ctx).unwrap();
+        let mut term = Terminal::new(TestBackend::new(152, 54)).unwrap();
+        let draw = |p: &mut MergePanel, term: &mut Terminal<TestBackend>| {
+            term.draw(|f| p.draw(f, f.area(), &ctx)).unwrap();
+        };
+        let click = |p: &mut MergePanel, r: Rect| {
+            p.event(
+                &Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: r.x,
+                    row: r.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &ctx,
+            )
+        };
+        let press = |p: &mut MergePanel, code| {
+            p.event(&Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), &ctx)
+        };
+        let control = |p: &MergePanel, hit: fn(&Hit) -> bool| {
+            p.hits.iter().find(|(_, target)| hit(target)).unwrap().0
+        };
+        press(&mut panel, KeyCode::Enter);
+        draw(&mut panel, &mut term);
+        let row = |y, cols: std::ops::Range<u16>| {
+            cols.map(|x| term.backend().buffer()[(x, y)].symbol())
+                .collect::<String>()
+        };
+        assert!(row(1, 0..152).contains("3 changes, 1 conflict"));
+        assert!((4..53).any(|y| row(y, 0..48).contains(" reviewOrders() ∿")));
+        let aligned = (4..53)
+            .find(|&y| row(y, 0..152).matches("context 051").count() == 3)
+            .unwrap();
+        assert!(row(aligned, 0..48).contains("52"));
+        assert!(row(aligned, 48..104).contains("51"));
+        assert!(row(aligned, 104..152).contains("51"));
+
+        let folded = panel.rows_total;
+        let fold = control(&panel, |h| matches!(h, Hit::Fold(_)));
+        click(&mut panel, fold);
+        draw(&mut panel, &mut term);
+        assert!(panel.rows_total > folded);
+        click(&mut panel, fold);
+        draw(&mut panel, &mut term);
+        assert_eq!(panel.rows_total, folded);
+
+        let auto_left = control(&panel, |h| matches!(h, Hit::Auto(Some(FileSide::Current))));
+        click(&mut panel, auto_left);
+        draw(&mut panel, &mut term);
+        assert_eq!(panel.doc.as_ref().unwrap().pending(), 2);
+        let accept = control(&panel, |h| {
+            matches!(h, Hit::Decide(_, FileSide::Current, true))
+        });
+        click(&mut panel, accept);
+        assert_eq!(
+            panel.doc.as_ref().unwrap().chunks[panel.idx].result,
+            "left transport\n"
+        );
+        assert_eq!(panel.doc.as_ref().unwrap().pending(), 2);
+        let save = control(&panel, |h| matches!(h, Hit::Save));
+        assert!(matches!(click(&mut panel, save), Action::Notice(_)));
+        assert!(panel.at_root());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(g(td.path(), &["ls-files", "--stage"]), index);
+
+        press(&mut panel, KeyCode::Enter);
+        draw(&mut panel, &mut term);
+        let ignore = control(&panel, |h| {
+            matches!(h, Hit::Decide(_, FileSide::Incoming, false))
+        });
+        click(&mut panel, ignore);
+        let doc = panel.doc.as_ref().unwrap();
+        assert_eq!(doc.chunks[panel.idx].result, "left transport\n");
+        assert_eq!(doc.pending(), 1);
+        press(&mut panel, KeyCode::Char('a'));
+        assert!(matches!(
+            press(&mut panel, KeyCode::Char('A')),
+            Action::Confirm { .. }
+        ));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(g(td.path(), &["ls-files", "--stage"]), index);
+    }
+
+    #[test]
     fn pane_navigation_merge_drag_and_zoom_preserve_the_current_conflict() {
         use crate::{
             core::Context,
             merge::MergePanel,
             ui::{
                 panes::{Axis, PaneId},
-                Panel, ACCENT, LINE,
+                Panel,
             },
         };
         use crossterm::event::{
@@ -823,8 +1278,8 @@ mod tests {
         let frame = draw(&mut p, 120);
         let result = p.panes.rect(PaneId::Result).unwrap();
         let incoming = p.panes.rect(PaneId::Incoming).unwrap();
-        assert_eq!(frame[(result.x, result.y)].fg, ACCENT);
-        assert_eq!(frame[(incoming.x, incoming.y)].fg, LINE);
+        assert_eq!(frame[(result.x, result.y + 2)].symbol(), "│");
+        assert_eq!(frame[(incoming.x, incoming.y + 2)].symbol(), "│");
         let y = result.bottom() - 2;
         // Empty space should select a side without choosing a chunk or taking its text.
         mouse(
@@ -923,7 +1378,7 @@ mod tests {
                 &MergePanel::SIDES.map(|other| (
                     other,
                     if id == other {
-                        Rect::new(0, 2, 120, 20)
+                        Rect::new(0, 2, 120, 21)
                     } else {
                         Rect::default()
                     }
@@ -939,7 +1394,7 @@ mod tests {
             }
             for matches in [
                 (|hit: &Hit| matches!(hit, Hit::List)) as fn(&Hit) -> bool,
-                |hit| matches!(hit, Hit::Edit),
+                |hit| matches!(hit, Hit::UseFile(FileSide::Current)),
                 |hit| matches!(hit, Hit::Save),
             ] {
                 assert!(p.hits.iter().any(|(_, hit)| matches(hit)));
@@ -1013,7 +1468,8 @@ mod tests {
         };
         let mut panel = MergePanel::default();
         panel.refresh(&ctx).unwrap();
-        assert_eq!(panel.items.len(), 2);
+        assert_eq!(panel.list.files_in(0).count(), 1);
+        assert_eq!(panel.list.files_in(1).count(), 1);
         let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
         panel.event(&key(KeyCode::Char('j')), &ctx);
         panel.event(&key(KeyCode::Enter), &ctx);
@@ -1024,7 +1480,7 @@ mod tests {
         let (hit, _) = panel
             .hits
             .iter()
-            .find(|(_, h)| matches!(h,Hit::Choice(i,2) if *i==panel.idx))
+            .find(|(_, h)| matches!(h,Hit::Decide(i,FileSide::Incoming,true) if *i==panel.idx))
             .unwrap();
         let mouse = Event::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -1033,7 +1489,12 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         panel.event(&mouse, &ctx);
+        assert_eq!(panel.doc.as_ref().unwrap().pending(), 1);
+        panel.event(&key(KeyCode::Char('h')), &ctx);
+        panel.event(&key(KeyCode::Char('h')), &ctx);
+        panel.event(&key(KeyCode::Char('x')), &ctx);
         assert_eq!(panel.doc.as_ref().unwrap().pending(), 0);
+        panel.event(&key(KeyCode::Char('u')), &ctx);
         panel.event(&key(KeyCode::Char('u')), &ctx);
         assert_eq!(panel.doc.as_ref().unwrap().pending(), 1);
         panel.event(&key(KeyCode::Char('i')), &ctx);

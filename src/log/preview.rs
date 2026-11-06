@@ -112,7 +112,7 @@ impl LogPanel {
                 let (send, reply) = mpsc::channel();
                 thread::spawn(move || {
                     let loaded = model::details(&path, &rev).map(|details| {
-                        let tree = Inspector::new(&details.files);
+                        let tree = Inspector::new(&details);
                         (details, tree)
                     });
                     let _ = send.send(loaded);

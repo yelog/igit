@@ -42,7 +42,7 @@ fn text_selection_mouse_release_copies_without_shortcut_and_keeps_message_caret(
     let (_dir, mut app) = fixture();
     let capture = clipboard::CopyCapture::start();
     let before = snapshot(&app.ctx.repos[0].path);
-    app.go(Split(Commit));
+    app.go(Commit);
     screen(&mut app, 120, 36);
     app.dispatch(&key(KeyCode::Char('i')));
     let first = "auto ＵＩ copy";
@@ -104,7 +104,7 @@ fn text_selection_click_after_copy_survives_notice_clear_and_resize() {
     let capture = clipboard::CopyCapture::start();
     let before = snapshot(&app.ctx.repos[0].path);
     for (width, height) in [(120, 35), (80, 25), (44, 13)] {
-        app.go(Split(Commit));
+        app.go(Commit);
         screen(&mut app, width, height);
         app.dispatch(&key(KeyCode::Char('i')));
         app.dispatch(&Event::Paste("first line\nsecond line\nthird line".into()));
@@ -159,6 +159,7 @@ fn text_selection_click_after_copy_survives_notice_clear_and_resize() {
 #[test]
 fn text_selection_ctrl_c_copies_before_quit_and_help_preserves_the_editor_selection() {
     let (_dir, mut app) = fixture();
+    app.go(Log);
     let capture = clipboard::CopyCapture::start();
     let repo = app.ctx.repos[0].path.clone();
     let before = snapshot(&repo);
@@ -190,7 +191,7 @@ fn text_selection_ctrl_c_copies_before_quit_and_help_preserves_the_editor_select
     assert!(matches!(app.pop, Some(Popup::Confirm { .. })));
     app.dispatch(&key(KeyCode::Esc));
 
-    app.go(Split(Commit));
+    app.go(Commit);
     screen(&mut app, 80, 24);
     app.dispatch(&key(KeyCode::Char('i')));
     let text = "Edit message ＵＩ e\u{301} 👩‍💻\nKeep original newlines\n";
@@ -227,6 +228,7 @@ fn text_selection_ctrl_c_copies_before_quit_and_help_preserves_the_editor_select
 #[test]
 fn help_tracks_keyboard_focus_across_log_commit_and_push_without_changing_git() {
     let (_dir, mut app) = fixture();
+    app.go(Log);
     let repo = app.ctx.repos[0].path.clone();
     let before = snapshot(&repo);
     screen(&mut app, 120, 36);
@@ -234,16 +236,12 @@ fn help_tracks_keyboard_focus_across_log_commit_and_push_without_changing_git() 
         "Log / Commits",
         "Log / File Tree",
         "Log / Commit Details",
-        "Commit / Changes",
-        "Commit / Message",
         "Log / Branch Tree",
     ] {
         check_context(&mut app, title);
         app.dispatch(&key(KeyCode::Tab));
     }
-    app.go(Split(Commit));
-    check_context(&mut app, "Commit / Message");
-    app.dispatch(&key(KeyCode::BackTab));
+    app.go(Commit);
     check_context(&mut app, "Commit / Changes");
     app.dispatch(&key(KeyCode::Char('v')));
     screen(&mut app, 120, 36);
@@ -251,7 +249,7 @@ fn help_tracks_keyboard_focus_across_log_commit_and_push_without_changing_git() 
     check_context(&mut app, "Commit / Preview");
     app.dispatch(&key(KeyCode::Tab));
     check_context(&mut app, "Commit / Message");
-    app.go(Dialog(Push));
+    app.go(Push);
     check_context(&mut app, "Push / Repos and Commits");
     app.dispatch(&key(KeyCode::Tab));
     check_context(&mut app, "Push / Changed Files");
@@ -259,14 +257,13 @@ fn help_tracks_keyboard_focus_across_log_commit_and_push_without_changing_git() 
     screen(&mut app, 120, 36);
     app.dispatch(&key(KeyCode::Tab));
     check_context(&mut app, "Push / Diff and Details");
-    app.go(Dialog(Merge));
-    check_context(&mut app, "Merge / Conflicted Files");
     assert_eq!(snapshot(&repo), before);
 }
 
 #[test]
-fn help_header_click_preserves_mouse_focus_and_text_input() {
+fn help_shortcut_preserves_mouse_focus_and_text_input() {
     let (_dir, mut app) = fixture();
+    app.go(Log);
     screen(&mut app, 120, 36);
     let click = |x, y| {
         Event::Mouse(MouseEvent {
@@ -276,16 +273,15 @@ fn help_header_click_preserves_mouse_focus_and_text_input() {
             modifiers: KeyModifiers::NONE,
         })
     };
-    app.dispatch(&click(117, app.regions.log.y + 3));
-    let help_button = app.tools.iter().find(|(_, n)| *n == 1).unwrap().0;
-    app.dispatch(&click(help_button.x, help_button.y));
+    app.dispatch(&click(117, app.regions.body.y + 3));
+    app.dispatch(&key(KeyCode::F(1)));
     assert_eq!(context(&app), "Log / File Tree");
     app.dispatch(&key(KeyCode::Esc));
 
     app.dispatch(&key(KeyCode::Char('/')));
     app.dispatch(&Event::Paste("Query ?12".into()));
     let before = screen(&mut app, 120, 36);
-    app.dispatch(&click(help_button.x, help_button.y));
+    app.dispatch(&key(KeyCode::F(1)));
     assert_eq!(context(&app), "Log / Text Search");
     assert!(app.log.editing());
     app.dispatch(&Event::Paste("different help query".into()));
@@ -299,7 +295,7 @@ fn help_header_click_preserves_mouse_focus_and_text_input() {
 fn help_f1_in_commit_editor_keeps_draft_focus_and_blocks_underlying_shortcuts() {
     let (_dir, mut app) = fixture();
     let before_git = snapshot(&app.ctx.repos[0].path);
-    app.go(Split(Commit));
+    app.go(Commit);
     app.dispatch(&key(KeyCode::Char('i')));
     app.dispatch(&Event::Paste("My draft ?12".into()));
     let before = screen(&mut app, 80, 24);
@@ -324,7 +320,7 @@ fn help_f1_in_commit_editor_keeps_draft_focus_and_blocks_underlying_shortcuts() 
     }
     app.dispatch(&Event::Paste("help only".into()));
     app.dispatch(&key(KeyCode::Enter));
-    assert_eq!(app.surface(), Split(Commit));
+    assert_eq!(app.tab, Commit);
     assert!(!app.quit);
     assert!(matches!(app.pop, Some(Popup::Help { .. })));
     app.dispatch(&key(KeyCode::Esc));
@@ -349,7 +345,7 @@ fn help_restores_roots_review_and_workspace_input_exactly_after_closing() {
                 title: "Keep review".into(),
                 body: "Pending review body".into(),
                 token: "__quit".into(),
-                owner: Split(Commit),
+                owner: Commit,
                 scroll: 7,
                 yes: true,
             },
@@ -384,7 +380,7 @@ fn help_restores_roots_review_and_workspace_input_exactly_after_closing() {
             }) => {
                 assert_eq!(*scroll, 7);
                 assert!(*yes);
-                assert_eq!(*owner, Split(Commit));
+                assert_eq!(*owner, Commit);
             }
             Some(Popup::Open { path }) => assert_eq!(path, "/temporary/my draft"),
             _ => panic!("origin was not restored"),
@@ -395,6 +391,7 @@ fn help_restores_roots_review_and_workspace_input_exactly_after_closing() {
 #[test]
 fn help_f1_from_diff_and_all_supported_window_sizes_remains_read_only() {
     let (_dir, mut app) = fixture();
+    app.go(Log);
     let before = snapshot(&app.ctx.repos[0].path);
     app.dispatch(&key(KeyCode::Enter));
     assert!(app.log.editing());
@@ -447,7 +444,7 @@ fn help_follows_all_merge_columns_and_preserves_the_result_editor() {
     let mut ctx = Context::discover(repo).unwrap();
     ctx.state_dir = repo.join("state");
     let mut app = Shell::new(ctx, IconMode::Ascii);
-    app.go(Dialog(Merge));
+    app.go(Conflicts);
     app.dispatch(&key(KeyCode::Enter));
     for expected in [
         "Merge / Result",
@@ -484,7 +481,7 @@ fn help_focuses_search_immediately_over_the_commit_editor_and_restores_it() {
         }
         assert_eq!(terminal.backend(), &expected);
     };
-    app.go(Split(Commit));
+    app.go(Commit);
     app.dispatch(&key(KeyCode::Char('i')));
     terminal.draw(|f| app.draw(f)).unwrap();
     assert_cursor(&terminal, true);
@@ -527,6 +524,7 @@ fn help_enter_executes_navigation_filters_and_global_panel_switches() {
     )
     .unwrap();
     app.refresh();
+    app.go(Log);
     let before = snapshot(&repo);
     let selected_oid = |app: &mut Shell| {
         app.log.event(&key(KeyCode::Char('y')), &app.ctx);
@@ -549,15 +547,18 @@ fn help_enter_executes_navigation_filters_and_global_panel_switches() {
     run_help(&mut app, "Open Date filter");
     assert_eq!(app.log.keymap().context(), "Log / Date Filter");
     app.dispatch(&key(KeyCode::Esc));
-    run_help(&mut app, "Focus Commit above");
-    assert_eq!(app.surface(), Split(Commit));
+    run_help(&mut app, "Switch to Commit tab");
+    assert_eq!(app.tab, Commit);
     assert!(app.pop.is_none());
+    run_help(&mut app, "Switch to Log tab");
+    assert_eq!(app.tab, Log);
     assert_eq!(snapshot(&repo), before);
 }
 
 #[test]
 fn help_enter_runs_the_selected_candidate_after_down_and_keeps_typing_in_search() {
     let (_dir, mut app) = fixture();
+    app.go(Log);
     app.dispatch(&key(KeyCode::F(1)));
     app.dispatch(&Event::Paste("Select commit".into()));
     let text = screen(&mut app, 80, 24);
@@ -568,7 +569,7 @@ fn help_enter_runs_the_selected_candidate_after_down_and_keeps_typing_in_search(
     app.dispatch(&key(KeyCode::Enter));
     assert!(app.pop.is_none());
     assert!(!app.log.editing());
-    app.go(Split(Commit));
+    app.go(Commit);
     run_help(&mut app, "Edit current repo message");
     assert!(app.commit.editing());
     app.dispatch(&Event::Paste("Original draft".into()));
@@ -583,7 +584,7 @@ fn help_enter_runs_the_selected_candidate_after_down_and_keeps_typing_in_search(
 fn help_enter_opens_commit_review_and_cancel_preserves_head_index_and_worktree() {
     let (_dir, mut app) = fixture();
     let before = snapshot(&app.ctx.repos[0].path);
-    app.go(Split(Commit));
+    app.go(Commit);
     app.dispatch(&key(KeyCode::Char('i')));
     app.dispatch(&Event::Paste("review from keymap".into()));
     app.dispatch(&key(KeyCode::F(2)));
@@ -622,7 +623,7 @@ fn help_executes_against_the_restored_roots_and_confirmation_dialogs() {
 #[test]
 fn help_revalidates_the_origin_before_replaying_a_shortcut() {
     let (_dir, mut app) = fixture();
-    app.go(Split(Commit));
+    app.go(Commit);
     app.dispatch(&key(KeyCode::F(1)));
     // A background result can open an editor while Help still owns the input.
     app.commit.event(&key(KeyCode::Char('i')), &app.ctx);
@@ -638,7 +639,7 @@ fn help_revalidates_the_origin_before_replaying_a_shortcut() {
 fn help_executes_commit_view_options_against_the_active_menu() {
     let (_dir, mut app) = fixture();
     let before = snapshot(&app.ctx.repos[0].path);
-    app.go(Split(Commit));
+    app.go(Commit);
     run_help(&mut app, "Open View Options");
     assert_eq!(app.commit.keymap().context(), "Commit / View Options");
     check_context(&mut app, "Commit / View Options");
@@ -651,9 +652,9 @@ fn help_executes_commit_view_options_against_the_active_menu() {
 }
 
 #[test]
-fn help_executes_push_grouping_and_window_close_preserves_it() {
+fn help_executes_push_grouping_and_switching_tabs_preserves_it() {
     let (_dir, mut app) = fixture();
-    app.go(Dialog(Push));
+    app.go(Push);
     run_help(&mut app, "Open Group By");
     check_context(&mut app, "Push / File Grouping");
     run_help(&mut app, "Toggle grouping option");
@@ -664,18 +665,18 @@ fn help_executes_push_grouping_and_window_close_preserves_it() {
             && text.contains("[ ] Module")
     );
     app.dispatch(&key(KeyCode::Char('p')));
-    app.dispatch(&key(KeyCode::Char('1')));
-    assert!(app.pop.is_none() && app.surface() == Dialog(Push) && app.push.editing());
-    let close = app.regions.close;
+    app.dispatch(&key(KeyCode::Char('2')));
+    assert!(app.pop.is_none() && app.tab == Push && app.push.editing());
+    let log = app.regions.tab(Log);
     app.dispatch(&Event::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        column: close.x,
-        row: close.y,
+        column: log.x,
+        row: log.y,
         modifiers: KeyModifiers::NONE,
     }));
-    assert_eq!(app.surface(), Split(Log));
+    assert_eq!(app.tab, Log);
     assert!(!app.push.editing());
-    app.go(Dialog(Push));
+    app.go(Push);
     app.dispatch(&key(KeyCode::Char('o')));
     assert!(screen(&mut app, 80, 24).contains("[ ] Directory"));
 }

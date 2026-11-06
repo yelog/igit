@@ -114,7 +114,7 @@ impl CommitPanel {
                     ("j", "Preview next change; keep checkboxes"),
                     ("k", "Select previous change"),
                     ("Space", "Toggle file, repo or changelist checkbox"),
-                    ("Enter", "Open file diff or toggle container"),
+                    ("Enter", "Open Diff, Resolve conflicts, or toggle container"),
                     ("h", "Collapse container or move to parent"),
                     ("l", "Expand container or move to child"),
                     ("g", "Select first change"),

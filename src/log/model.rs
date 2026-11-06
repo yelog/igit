@@ -1,5 +1,6 @@
 mod branch_filter;
 mod graph;
+pub(super) mod merge_diff;
 mod path_filter;
 pub(super) use branch_filter::BranchFilter;
 pub(super) use path_filter::PathFilter;
@@ -515,10 +516,17 @@ pub(super) fn load(c: &Context, f: &Filter, limit: usize) -> History {
 pub(super) struct File {
     pub status: String,
     pub raw: Vec<u8>,
+    pub parent: Option<usize>,
+}
+pub(super) struct Parent {
+    pub oid: String,
+    pub subject: String,
+    pub files: std::ops::Range<usize>,
 }
 #[derive(Default)]
 pub(super) struct Details {
     pub files: Vec<File>,
+    pub parents: Vec<Parent>,
     pub body: String,
     pub email: String,
     pub branches: Vec<(RefKind, String)>,
@@ -580,46 +588,7 @@ fn containing_branches(path: &Path, oid: &str) -> Result<Vec<(RefKind, String)>>
 }
 
 pub(super) fn details(path: &Path, r: &Rev) -> Result<Details> {
-    let raw = if let Some(p) = r.parents.first() {
-        git_bytes(
-            path,
-            &[
-                "diff",
-                "--no-ext-diff",
-                "--no-renames",
-                "--name-status",
-                "-z",
-                p,
-                &r.oid,
-                "--",
-            ],
-        )?
-    } else {
-        git_bytes(
-            path,
-            &[
-                "diff-tree",
-                "--root",
-                "-r",
-                "--no-renames",
-                "--name-status",
-                "-z",
-                "--no-commit-id",
-                &r.oid,
-                "--",
-            ],
-        )?
-    };
-    let mut it = raw.split(|b| *b == 0);
-    let mut files = vec![];
-    while let Some(status) = it.next().filter(|v| !v.is_empty()) {
-        if let Some(f) = it.next() {
-            files.push(File {
-                status: plain(status),
-                raw: f.into(),
-            })
-        }
-    }
+    let (files, parents) = merge_diff::changed_files(path, r)?;
     let msg = git_bytes(
         path,
         &[
@@ -639,6 +608,7 @@ pub(super) fn details(path: &Path, r: &Rev) -> Result<Details> {
         .ok_or_else(|| anyhow!("incomplete git show record"))?;
     Ok(Details {
         files,
+        parents,
         email: plain(email),
         branches: containing_branches(path, &r.oid)?,
         body: body
@@ -662,11 +632,13 @@ pub(super) fn path_from_bytes(bytes: &[u8]) -> Result<&Path> {
     }
 }
 
-pub(super) fn patch(path: &Path, r: &Rev, file: &[u8]) -> Result<Vec<String>> {
-    let file = path_from_bytes(file)?;
+pub(super) fn patch(path: &Path, r: &Rev, file: &File) -> Result<Vec<String>> {
+    let parent = file.parent.unwrap_or(0);
+    let combined = file.parent.is_none() && r.parents.len() > 1;
+    let file = path_from_bytes(&file.raw)?;
     let mut cmd = crate::core::command(path);
     cmd.arg("--literal-pathspecs");
-    if let Some(p) = r.parents.first() {
+    if let Some(p) = r.parents.get(parent).filter(|_| !combined) {
         cmd.args([
             "diff",
             "--no-ext-diff",
@@ -688,6 +660,9 @@ pub(super) fn patch(path: &Path, r: &Rev, file: &[u8]) -> Result<Vec<String>> {
             "--no-show-signature",
             &r.oid,
         ]);
+    }
+    if combined {
+        cmd.arg("-c");
     }
     const LIMIT: usize = 512 * 1024;
     let mut child = cmd

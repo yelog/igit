@@ -24,10 +24,7 @@ impl Columns {
         let icons = panel.icons;
         let prefix = icons.disclosure(false).width()
             + 1
-            + icons
-                .check(false)
-                .width()
-                .max(icons.glyph(Icon::Locked).width())
+            + icons.check(false).width()
             + 1
             + icons.repo(false).width().max(icons.repo(true).width())
             + 1;
@@ -372,20 +369,13 @@ impl PushPanel {
                 }
                 let check_start = fold.width() + 1;
                 pad_to(&mut line, check_start);
-                if e.n == 0 {
-                    line.push_span(Span::styled(icons.glyph(Icon::Locked), muted));
-                } else {
-                    let mark = checkbox(icons, self.checked.contains(&id));
+                let mark = checkbox(icons, self.checked.contains(&id));
+                if e.n > 0 {
                     self.hits
                         .push((cell(row, check_start, mark.width()), Hit::Check(id)));
-                    line.push_span(mark);
                 }
-                let repo_start = check_start
-                    + icons
-                        .check(false)
-                        .width()
-                        .max(icons.glyph(Icon::Locked).width())
-                    + 1;
+                line.push_span(mark);
+                let repo_start = check_start + icons.check(false).width() + 1;
                 pad_to(&mut line, repo_start);
                 line.push_span(Span::styled(
                     icons.repo(repo.submodule),

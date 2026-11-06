@@ -299,13 +299,20 @@ impl Shell {
     }
 
     pub(super) fn configured_footer(&self) -> String {
+        let conflicts = if self.tab_available(Conflicts) {
+            format!(
+                "  {} Conflicts",
+                self.config.label("global", Conflicts.binding())
+            )
+        } else {
+            String::new()
+        };
         format!(
-            "{} Pull  {} Fetch  {} Panes  {} Push  {} Merge  {} Actions  F1 Help",
+            "{} Pull  {} Fetch  {} Panes  {} Push{conflicts}  {} Actions  F1 Help",
             self.config.label("global", "pull"),
             self.config.label("global", "fetch"),
             self.config.label("panes", "focus-next"),
-            self.config.label("global", "open-push"),
-            self.config.label("global", "open-merge"),
+            self.config.label("global", Push.binding()),
             self.config.label("global", "actions")
         )
     }

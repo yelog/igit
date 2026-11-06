@@ -1,318 +1,141 @@
 use super::*;
-use crate::ui::panes::{Axis, SplitId};
+use crate::ui::idea::CONFLICT;
 use crossterm::event::MouseEvent;
-use ratatui::layout::{Constraint, Layout, Margin};
-use ratatui::style::Stylize;
+use ratatui::{
+    layout::{Constraint, Layout},
+    style::Stylize,
+};
 
 #[derive(Default)]
 pub(super) struct Regions {
-    pub(super) commit: Rect,
-    pub(super) log: Rect,
-    tool_body: Rect,
-    pub(super) close: Rect,
-    tool_help: Rect,
+    pub(super) body: Rect,
+    pub(super) log_tabs: Rect,
+    tabs: [Rect; Tab::DISPLAY_ORDER.len()],
 }
 
 impl Regions {
-    fn at(&self, x: u16, y: u16) -> Option<WorkspacePane> {
-        [(self.commit, Commit), (self.log, Log)]
-            .into_iter()
-            .find_map(|(r, pane)| inside(r, x, y).then_some(pane))
+    pub(super) fn tab(&self, tab: Tab) -> Rect {
+        self.tabs[tab as usize]
     }
 }
 
+fn header_button(f: &mut Frame, row: &mut Rect, label: &str, style: Style) -> Rect {
+    let width = (label.width() as u16).min(row.width);
+    row.width -= width;
+    let r = Rect::new(row.right(), row.y, width, 1);
+    f.render_widget(Paragraph::new(label).style(style), r);
+    r
+}
+
 impl Shell {
-    fn overlay_at(&self, x: u16, y: u16) -> bool {
-        match self.focus {
-            Log => self.log.overlay_at(x, y),
-            Commit => self.commit.overlay_at(x, y),
-        }
-    }
-
-    pub(super) fn tool_at_root(&self) -> bool {
-        match self.tool {
-            Some(Push) => self.push.at_root(),
-            Some(Merge) => self.merge.at_root(),
-            None => false,
-        }
-    }
-
     pub(super) fn workspace_mouse(&mut self, m: &MouseEvent) {
         let (x, y) = (m.column, m.row);
         let press = m.kind == MouseEventKind::Down(MouseButton::Left);
-        let wheel = matches!(
-            m.kind,
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-        );
-        let release_or_drag = matches!(m.kind, MouseEventKind::Up(_) | MouseEventKind::Drag(_));
-        let ev = Event::Mouse(*m);
         if press && self.key_sequence().is_some() {
             self.cancel_key_sequences();
         }
         if self.resize_mouse(m) {
             return;
         }
-        if let Some(tool) = self.tool {
-            if press && inside(self.regions.close, x, y) {
-                if self.can_leave_panel() {
-                    self.go(Split(self.focus));
-                } else {
-                    self.notice("Save or cancel the current edit first (Esc)".into());
-                }
-            } else if press && inside(self.regions.tool_help, x, y) {
-                self.open_help();
-            } else if inside(self.regions.tool_body, x, y) || release_or_drag {
-                self.panel_event(Dialog(tool), &ev);
-            }
-            return;
-        }
         if press {
-            if let Some(&(_, n)) = self.tools.iter().find(|(r, _)| inside(*r, x, y)) {
-                if n == 1 {
-                    self.open_help();
-                } else if self.can_leave_panel() {
-                    self.global(n);
-                }
+            if let Some(tab) = Tab::DISPLAY_ORDER
+                .into_iter()
+                .find(|&tab| inside(self.regions.tab(tab), x, y))
+            {
+                self.go(tab);
                 return;
             }
         }
-        // Editors and menus may extend beyond their half. A drag/release still
-        // belongs to the pane that received the press, even across the divider.
-        if self.overlay_at(x, y) || release_or_drag {
-            self.panel_event(Split(self.focus), &ev);
-            return;
+        // Keep routing drags and releases to the tab that received the press
+        // even after the pointer leaves the pane or crosses the header.
+        if inside(self.regions.body, x, y)
+            || inside(self.regions.log_tabs, x, y)
+            || matches!(m.kind, MouseEventKind::Up(_) | MouseEventKind::Drag(_))
+        {
+            self.panel_event(&Event::Mouse(*m));
         }
-        let Some(pane) = self.regions.at(x, y) else {
-            return;
-        };
-        if pane != self.focus {
-            if press {
-                if !self.can_leave_panel() {
-                    if self.msg.is_empty() {
-                        self.notice("Finish or cancel the current input first (Esc)".into());
-                    }
-                    return;
-                }
-                self.go(Split(pane));
-            } else if wheel && !self.panel().editing() {
-                self.cancel_key_sequences();
-            } else {
-                return;
-            }
-        }
-        self.panel_event(Split(pane), &ev);
     }
 
     pub(super) fn hover(&mut self, x: u16, y: u16) -> bool {
         if self.pop.is_some() || self.key_picker.contains(x, y) {
             return false;
         }
-        match self.surface() {
-            Dialog(Push) => self.push.hover_group_at(x, y),
-            Dialog(Merge) => false,
-            Split(Log) if self.log.editing() => self.log.hover_menu_at(x, y),
-            // Commit's toolbar can be hovered without taking keyboard focus.
-            Split(_) => self.commit.hover_at(x, y),
+        match self.tab {
+            Commit => self.commit.hover_at(x, y),
+            Log if self.log.editing() => self.log.hover_menu_at(x, y),
+            Push => self.push.hover_group_at(x, y),
+            _ => false,
         }
     }
 
-    fn draw_header(&mut self, f: &mut Frame, mut row: Rect) {
-        let roots = format!(
-            " {} Roots {}/{} ",
-            self.icons.glyph(Icon::Repo),
-            self.ctx.scope.len(),
-            self.ctx.repos.len()
-        );
-        let menu = if row.width >= 64 {
-            format!(" {} Actions ", self.icons.glyph(Icon::More))
-        } else {
-            format!(" {} ", self.icons.glyph(Icon::More))
-        };
-        let help = format!(" {} ", self.icons.glyph(Icon::Help));
-        let console = format!(" {} Console ", self.icons.glyph(Icon::Console));
-        for (label, n) in [(&help, 1), (&menu, 2), (&roots, 0), (&console, 4)] {
-            if n == 4 && row.width < 70 {
-                break;
-            }
-            let w = (label.width() as u16).min(row.width);
-            row.width -= w;
-            let r = Rect::new(row.right(), row.y, w, 1);
-            f.render_widget(
-                Paragraph::new(label.as_str()).style(Style::new().fg(MUTED)),
-                r,
-            );
-            self.tools.push((r, n));
-        }
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(" IGit  ", Style::new().fg(FG).bold()),
-                Span::styled(
-                    self.ctx
-                        .workspace
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy(),
-                    Style::new().fg(MUTED),
-                ),
-            ])),
-            row,
-        );
-    }
-
-    fn pane_header(&self, f: &mut Frame, row: Rect, pane: WorkspacePane) -> Rect {
-        let active = self.surface() == Split(pane) && self.pop.is_none();
-        let (icon, name, action) = match pane {
-            Commit => (Icon::Commit, "Commit", "focus-commit"),
-            Log => (Icon::Log, "Git Log", "focus-log"),
-        };
-        let label = format!(
-            "{} {} {name} [{}] ",
-            if active { ">" } else { " " },
-            self.icons.glyph(icon),
-            self.config.label("global", action)
-        );
-        let [title, rest] = Layout::horizontal([
-            Constraint::Length(label.width() as u16),
-            Constraint::Fill(1),
-        ])
-        .areas(row);
+    fn draw_header(&mut self, f: &mut Frame, mut row: Rect) -> Rect {
+        let show_icons = row.width >= 72 && self.icons != IconMode::Ascii;
         f.render_widget(Block::default().style(Style::new().bg(TAG)), row);
-        f.render_widget(
-            Paragraph::new(label).style(Style::new().bold().fg(if active {
-                ACCENT
-            } else {
-                MUTED
-            })),
-            title,
-        );
-        rest
-    }
-
-    fn draw_split(&mut self, f: &mut Frame, work: Rect) {
-        let [commit, log] = if self.pane_maximized {
-            match self.focus {
-                Commit => [work, Rect::default()],
-                Log => [Rect::default(), work],
+        for tab in Tab::DISPLAY_ORDER.into_iter().rev() {
+            if !self.tab_available(tab) {
+                continue;
             }
-        } else {
-            self.work_panes.divide(
-                SplitId::Workspace,
-                work,
-                Axis::Height,
-                work.height.div_ceil(2),
-                [6, 5],
-            )
-        };
-        self.regions.commit = commit;
-        self.regions.log = log;
-        let pane = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]);
-        // Give the workspace divider its own cells; it must never steal a
-        // press on the commit buttons or on the Log tab strip.
-        let mut above = commit;
-        if !self.pane_maximized && work.height > 10 {
-            above.height = above.height.saturating_sub(1);
-            let boundary = Rect::new(commit.x, above.bottom(), commit.width, 1);
-            self.work_panes.handle(SplitId::Workspace, boundary);
-            f.render_widget(
-                Block::default()
-                    .borders(ratatui::widgets::Borders::TOP)
-                    .border_style(Style::new().fg(LINE)),
-                boundary,
-            );
+            let active = self.tab == tab;
+            let mut style = if active {
+                button_style(true)
+            } else {
+                Style::new().fg(MUTED)
+            };
+            if tab == Conflicts {
+                style = style.fg(CONFLICT).bold();
+            }
+            let label = if show_icons {
+                let icon = match tab {
+                    Commit => Icon::Commit,
+                    Log => Icon::Log,
+                    Push => Icon::Push,
+                    Conflicts => Icon::Conflict,
+                };
+                format!(" {} {} ", self.icons.glyph(icon), tab.name())
+            } else {
+                format!(" {} ", tab.name())
+            };
+            self.regions.tabs[tab as usize] = header_button(f, &mut row, &label, style);
         }
-        let [commit_header, changes] = pane.areas(above);
-        let [log_header, history] = pane.areas(log);
-        self.pane_header(f, commit_header, Commit);
-        let tabs = self.pane_header(f, log_header, Log);
-        self.commit.panes.active = self.surface() == Split(Commit) && self.pop.is_none();
-        self.log.panes.active = self.surface() == Split(Log) && self.pop.is_none();
-        self.commit.draw_content(f, changes, &self.ctx);
-        self.log.draw_content(f, history, &self.ctx);
-        if !tabs.is_empty() {
-            self.log.draw_tabs(f, tabs, &self.ctx);
-        }
-        match self.focus {
-            Commit => self.commit.draw_overlays(
-                f,
-                work,
-                &self.ctx,
-                self.pop.is_none() && self.tool.is_none(),
-            ),
-            Log => self.log.draw_overlays(f, work, &self.ctx),
-        }
-    }
-
-    fn draw_tool(&mut self, f: &mut Frame, work: Rect, tool: ToolWindow) {
-        let window = if self.pane_maximized {
-            work
-        } else {
-            work.inner(Margin::new(
-                (work.width / 24).clamp(1, 6),
-                (work.height / 16).min(3),
-            ))
-        };
-        let (name, icon) = match tool {
-            Push => (self.push.window_title(&self.ctx), Icon::Push),
-            Merge => ("Merge".into(), Icon::Merge),
-        };
-        // Only the receiving pane (or its editor) owns the accent border.
-        let close = format!(" Esc {} ", self.icons.glyph(Icon::Close));
-        let help = format!(" {} ", self.icons.glyph(Icon::Help));
-        let title = crate::ui::idea::clipped(
-            &format!("{} {name}", self.icons.glyph(icon)),
-            usize::from(window.width).saturating_sub(close.width() + help.width() + 4),
-        );
-        let frame = pane(title, false);
-        let inner = frame.inner(window);
-        f.render_widget(Clear, window);
-        f.render_widget(frame, window);
-        self.regions.tool_body = inner;
-        let mut right = inner.right();
-        for (label, r) in [
-            (close, &mut self.regions.close),
-            (help, &mut self.regions.tool_help),
-        ] {
-            let w = label.width() as u16;
-            right -= w;
-            *r = Rect::new(right, window.y, w, 1);
-            f.render_widget(
-                Paragraph::new(label).style(Style::new().fg(ACCENT).bg(TAG)),
-                *r,
-            );
-        }
-        self.push.panes.active = tool == Push && self.pop.is_none();
-        self.merge.panes.active = tool == Merge && self.pop.is_none();
-        match tool {
-            Push => self.push.draw(f, inner, &self.ctx),
-            Merge => self.merge.draw(f, inner, &self.ctx),
-        }
+        row
     }
 
     pub(super) fn draw(&mut self, f: &mut Frame) {
         let a = f.area();
         self.regions = Regions::default();
-        self.work_panes.begin();
-        self.commit.panes.maximized = self.pane_maximized;
-        self.log.panes.maximized = self.pane_maximized;
-        self.push.panes.maximized = self.pane_maximized;
-        self.merge.panes.maximized = self.pane_maximized;
-        self.tools.clear();
         self.pop_hits.clear();
         self.key_picker.clear_geometry();
         f.render_widget(Block::default().style(Style::new().bg(BG).fg(FG)), a);
         if a.width < 44 || a.height < 12 {
             self.cancel_drags();
-            self.commit.panes.begin();
-            self.log.panes.begin();
-            self.push.panes.begin();
-            self.merge.panes.begin();
+            self.layout_mut(self.tab).begin();
             f.render_widget(
                 Paragraph::new(format!(
-                    "IGit · Terminal too small\nMinimum 44 × 12; recommended 120 × 36.\n{} Quit, y Confirm.", self.config.label("global", "quit")
+                    "IGit · Terminal too small\nMinimum 44 × 12; recommended 120 × 36.\n{} Quit, y Confirm.",
+                    self.config.label("global", "quit")
                 ))
                 .wrap(Wrap { trim: false }),
                 a,
             );
+            return;
+        }
+        if self.tab == Conflicts && self.merge.has_document() {
+            self.regions.body = a;
+            self.merge.panes.active = self.pop.is_none();
+            self.merge.panes.maximized = self.pane_is_maximized();
+            let notice = if self.maximize_pending {
+                "Synchronizing Kitty layout…"
+            } else {
+                &self.msg
+            };
+            self.merge.draw_editor(f, a, &self.ctx, notice);
+            let hints = Rect::new(
+                a.x,
+                a.y,
+                a.width,
+                a.height - 1 - u16::from(!notice.is_empty()),
+            );
+            self.draw_workspace_overlays(f, hints);
             return;
         }
         let [header, work, foot] = Layout::vertical([
@@ -321,7 +144,8 @@ impl Shell {
             Constraint::Length(1),
         ])
         .areas(a);
-        self.draw_header(f, header);
+        let context = self.draw_header(f, header);
+        let maximized = self.pane_is_maximized();
         if self.ctx.repos.is_empty() {
             let empty = format!("No Git working trees found.\n\nUse {} Actions → Open / rescan workspace, or start igit /path/to/workspace.", self.config.label("global", "actions"));
             f.render_widget(
@@ -330,79 +154,100 @@ impl Shell {
                     .block(pane("Workspace", true)),
                 work,
             );
-        } else if !(self.pane_maximized && self.tool.is_some()) {
-            self.draw_split(f, work);
-        }
-        if let Some(tool) = self.tool {
-            f.buffer_mut()
-                .set_style(header.union(work), Style::new().fg(MUTED).bg(BG).dim());
-            self.draw_tool(f, work, tool);
-        }
-        let mode = if self.pop.is_some() {
-            "DIALOG"
-        } else if self.panel().editing() {
-            "INPUT"
-        } else if self.pane_maximized {
-            "MAX"
         } else {
-            "NORMAL"
-        };
-        let configured_hint = self.configured_footer();
+            self.regions.body = work;
+            let active = self.pop.is_none();
+            let layout = self.layout_mut(self.tab);
+            layout.active = active;
+            layout.maximized = maximized;
+            match self.tab {
+                Commit => {
+                    self.commit.draw_content(f, work, &self.ctx);
+                    self.commit.draw_overlays(f, work, &self.ctx, active);
+                }
+                Log => {
+                    if self.log_load.ready() {
+                        self.log.draw(f, work, &self.ctx);
+                        self.log.draw_tabs(f, context, &self.ctx);
+                        self.regions.log_tabs = context;
+                    } else {
+                        f.render_widget(
+                            Paragraph::new("Loading history...").block(pane("Log", true)),
+                            work,
+                        );
+                    }
+                }
+                Push => {
+                    f.render_widget(
+                        Paragraph::new(format!(" {}", self.push.window_title(&self.ctx)))
+                            .style(Style::new().fg(FG).bold()),
+                        context,
+                    );
+                    self.push.draw(f, work, &self.ctx);
+                }
+                Conflicts => self.merge.draw(f, work, &self.ctx),
+            }
+        }
+
         let (hint, color) = if self.maximize_pending {
-            ("Synchronizing Kitty layout…", ACCENT)
+            ("Synchronizing Kitty layout…".into(), ACCENT)
         } else if !self.msg.is_empty() {
-            (self.msg.as_str(), ACCENT)
-        } else if self.config.changed() && self.pop.is_some() {
-            ("F1 Help   Esc Back", MUTED)
-        } else if self.config.changed() && self.pop.is_none() && !self.panel().editing() {
-            (configured_hint.as_str(), MUTED)
-        } else if self.tool.is_some() {
-            (self.panel().help(), MUTED)
+            (self.msg.clone(), ACCENT)
+        } else if self.pop.is_some() {
+            ("F1 Help   Esc Back".into(), MUTED)
         } else if self.panel().editing() {
             (
-                if self.focus == Commit && self.commit.message_editing() {
-                    self.commit.help()
+                if matches!(self.tab, Push | Conflicts)
+                    || self.tab == Commit && self.commit.message_editing()
+                {
+                    self.panel().help()
                 } else {
                     "F1 Help   Esc Back"
-                },
+                }
+                .into(),
                 MUTED,
             )
         } else if self.ctx.repos.is_empty() {
-            (": Actions   ·   Open / rescan workspace", MUTED)
-        } else if foot.width < 84 {
-            ("p Pull f Fetch 3 Push 4 Merge F1", MUTED)
+            (
+                format!(
+                    "{} Actions   ·   Open / rescan workspace",
+                    self.config.label("global", "actions")
+                ),
+                MUTED,
+            )
+        } else if self.config.changed() {
+            (self.configured_footer(), MUTED)
+        } else if matches!(self.tab, Push | Conflicts) {
+            (self.panel().help().into(), MUTED)
         } else {
             (
-                "Tab Panes  Ctrl-W Pane keys  p Pull  f Fetch  3 Push  4 Merge  : Actions  F1 Help",
+                if foot.width < 84 {
+                    "Tab Panes  p Pull  f Fetch  F1 Help"
+                } else {
+                    "Tab Panes  Ctrl-W Pane keys  p Pull  f Fetch  : Actions  F1 Help"
+                }
+                .into(),
                 MUTED,
             )
         };
         f.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(format!(" {mode} "), button_style(true)),
+                Span::styled(" IGit ", button_style(true)),
                 Span::styled(format!("  {hint}"), Style::new().fg(color)),
             ]))
             .style(Style::new().bg(TAG)),
             foot,
         );
+        self.draw_workspace_overlays(f, work);
+    }
+
+    fn draw_workspace_overlays(&mut self, f: &mut Frame, work: Rect) {
         if let Some(pending) = &self.pending_keys {
-            let bounds = if self.tool.is_some() {
-                self.regions.tool_body
-            } else {
-                work
-            };
             self.key_picker
-                .draw_items(f, bounds, &pending.prefix_label(), &pending.hints());
+                .draw_items(f, work, &pending.prefix_label(), &pending.hints());
         } else if let Some(sequence) = self.key_sequence() {
-            let bounds = if self.tool.is_some() {
-                self.regions.tool_body
-            } else if matches!(sequence, KeySequence::Window(_)) {
-                work
-            } else {
-                self.regions.log
-            };
-            self.key_picker.draw(f, bounds, sequence);
+            self.key_picker.draw(f, work, sequence);
         }
-        self.draw_popup(f, a);
+        self.draw_popup(f, f.area());
     }
 }

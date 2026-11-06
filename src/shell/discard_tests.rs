@@ -32,7 +32,7 @@ fn click_label(app: &mut Shell, label: &str) {
 }
 
 fn focus_commit_file(app: &mut Shell, name: &str) {
-    send(app, "2 g");
+    send(app, "1 g");
     let rendered = screen(app, 120, 36);
     let tree = app
         .commit
@@ -56,7 +56,7 @@ fn focus_commit_file(app: &mut Shell, name: &str) {
 fn discard_changes_group_opens_rollback_dialog() {
     let (_dir, mut app) = fixture();
     let before = snapshot(&app.ctx.repos[0].path);
-    send(&mut app, "2 g d");
+    send(&mut app, "g d");
     let rendered = screen(&mut app, 80, 24);
     assert!(rendered.contains("Rollback Changes"), "{rendered}");
     assert!(rendered.contains("2 modified"), "{rendered}");
@@ -126,13 +126,7 @@ fn discard_file_prechecks_only_that_file_in_the_full_tree_and_can_include_a_sibl
     focus_commit_file(&mut app, "mixed.txt");
     send(&mut app, "d");
     let rendered = screen(&mut app, 80, 24);
-    let row = |label: &str| {
-        rendered
-            .lines()
-            .filter(|line| line.contains(label))
-            .last()
-            .unwrap()
-    };
+    let row = |label: &str| rendered.lines().rfind(|line| line.contains(label)).unwrap();
     assert!(row("mixed.txt").contains("[x]"), "{rendered}");
     assert!(row("other.txt").contains("[ ]"), "{rendered}");
     assert!(
@@ -202,7 +196,7 @@ fn discard_group_mouse_checkboxes_and_help_keep_the_unchecked_index_and_worktree
     let (_dir, mut app) = fixture();
     let repo = app.ctx.repos[0].path.clone();
     let before = snapshot(&repo);
-    send(&mut app, "2 g d z");
+    send(&mut app, "g d z");
     let collapsed = screen(&mut app, 80, 24);
     assert!(
         collapsed.contains("2 modified") && !collapsed.contains("other.txt"),

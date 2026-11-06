@@ -102,27 +102,28 @@ fn text_selection_details_and_scrolled_diff_copy_without_navigation_or_git_write
             "an ordinary click still follows the parent"
         );
 
-        // Return to the newest commit and open its actual Git patch.
+        // Return to the newest commit and select its actual After revision.
         p.select_row(0);
         finish_preview(&mut p, &c);
         p.focus = Pane::Graph;
         p.open_diff(&c).unwrap();
-        let diff = p.diff.as_mut().unwrap();
-        diff.y = diff
-            .lines
-            .iter()
-            .position(|s| s.starts_with('+') && !s.starts_with("+++"))
-            .unwrap();
-        diff.x = 1;
-        let expected = diff.lines[diff.y][1..].to_owned();
+        assert!(!p
+            .diff
+            .as_ref()
+            .unwrap()
+            .comparison
+            .as_ref()
+            .unwrap()
+            .is_three_way());
         render(&mut p, &mut t, &c);
-        let pop = popup(
-            p.bounds,
-            p.bounds.width.saturating_sub(4),
-            p.bounds.height.saturating_sub(2),
-        );
-        let x = pop.x + 1;
-        let y = pop.y + 1;
+        let expected = "Copy ＵＩ";
+        let (x, y) = (0..h)
+            .find_map(|y| {
+                (0..w)
+                    .find(|&x| row_text(&t, Rect::new(x, y, w - x, 1)).starts_with(expected))
+                    .map(|x| (x, y))
+            })
+            .expect("After revision is visible");
         assert_eq!(
             copied(drag(&mut p, &c, x, y, x + expected.width() as u16)),
             expected

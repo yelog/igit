@@ -63,7 +63,7 @@ glyphs! {
     Log         => cod::COD_HISTORY, "◷", "L";
     Commit      => cod::COD_GIT_COMMIT, "●", "*";
     Push        => cod::COD_REPO_PUSH, "⇡", "^";
-    Merge       => cod::COD_GIT_MERGE, "⋈", "M";
+    AutoResolve => cod::COD_WAND, "⚡", "*";
     Branch      => oct::OCT_GIT_BRANCH, "├", "B";
     Remote      => cod::COD_REMOTE, "⇄", "R";
     Tag         => oct::OCT_TAG, "◇", "#";
@@ -88,7 +88,6 @@ glyphs! {
     Close       => cod::COD_CLOSE, "×", "x";
     Settings    => cod::COD_SETTINGS_GEAR, "⚙", "cfg";
     Ai          => cod::COD_SPARKLE, "✧", "AI";
-    More        => cod::COD_ELLIPSIS, "⋯", "...";
     Help        => cod::COD_QUESTION, "?", "?";
     Enter       => md::MD_KEYBOARD_RETURN, "↵", "Enter";
     Up          => cod::COD_ARROW_UP, "↑", "^";
@@ -100,10 +99,8 @@ glyphs! {
     Warning     => cod::COD_WARNING, "!", "!";
     Conflict    => cod::COD_WARNING, "!", "!";
     Cursor      => "▏", "▏", "|";
-    Dot         => "·", "·", ".";
     Divider     => "│", "│", "|";
     Diff        => cod::COD_DIFF, "⇆", "+-";
-    Console     => cod::COD_TERMINAL, ">_", ">_";
 
     GenericFile => cod::COD_FILE, "▤", "F";
     TypeScript  => seti::SETI_TYPESCRIPT, "TS", "TS";

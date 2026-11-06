@@ -30,7 +30,6 @@ pub(crate) enum PaneId {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum SplitId {
-    Workspace,
     CommitPreview,
     CommitMessage,
     LogRefs,
@@ -430,7 +429,7 @@ mod tests {
                 let draw = |layout: &mut PaneLayout| {
                     layout.begin();
                     layout.divide(
-                        SplitId::Workspace,
+                        SplitId::LogInspector,
                         Rect::new(0, 0, 120, 120),
                         axis,
                         40,
