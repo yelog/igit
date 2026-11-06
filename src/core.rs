@@ -1,3 +1,5 @@
+pub(crate) mod loading;
+
 use anyhow::{anyhow, bail, Context as _, Result};
 use std::{
     collections::{BTreeSet, HashMap},

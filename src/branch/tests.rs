@@ -3,9 +3,28 @@ use crate::core::git;
 use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::{backend::TestBackend, Terminal};
 use std::{fs, path::Path};
+use unicode_width::UnicodeWidthStr;
+
+mod navigation;
+mod presentation;
+
+fn expand_remotes(panel: &mut BranchPanel, c: &Context, root: usize) {
+    panel.tree.cursor = panel
+        .tree
+        .rows
+        .iter()
+        .position(|r| r.id == format!("{root}:refs/remotes/"))
+        .unwrap();
+    key(panel, c, K::Char('l'));
+}
 
 fn run(path: &Path, args: &[&str]) -> String {
     git(path, args).unwrap()
+}
+
+fn reload(panel: &mut BranchPanel, c: &Context) {
+    panel.refresh(c).unwrap();
+    panel.finish_loading(c);
 }
 
 fn fixture() -> (tempfile::TempDir, Context, BranchPanel) {
@@ -32,7 +51,7 @@ fn fixture() -> (tempfile::TempDir, Context, BranchPanel) {
         icons: IconMode::Ascii,
         ..BranchPanel::default()
     };
-    panel.refresh(&c).unwrap();
+    reload(&mut panel, &c);
     (temp, c, panel)
 }
 
@@ -65,9 +84,14 @@ fn screen(panel: &mut BranchPanel, c: &Context, width: u16, height: u16) -> Stri
     let buffer = terminal.backend().buffer();
     (0..height)
         .map(|y| {
-            (0..width)
-                .map(|x| buffer[(x, y)].symbol())
-                .collect::<String>()
+            let mut line = String::new();
+            let mut x = 0;
+            while x < width {
+                let symbol = buffer[(x, y)].symbol();
+                line.push_str(symbol);
+                x += symbol.width().max(1) as u16;
+            }
+            line
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -124,7 +148,7 @@ fn tree_pins_slash_current_groups_remotes_and_shows_real_upstreams() {
             "refs/remotes/origin/release/next",
         ],
     );
-    p.refresh(&c).unwrap();
+    reload(&mut p, &c);
     let leaves: Vec<_> = p
         .tree
         .rows
@@ -142,6 +166,7 @@ fn tree_pins_slash_current_groups_remotes_and_shows_real_upstreams() {
     assert!(leaves[0].current);
     assert_eq!(leaves[0].upstream, "refs/remotes/origin/release/next");
     assert!(!leaves.iter().any(|b| b.name == "origin/HEAD"));
+    expand_remotes(&mut p, &c, 0);
     assert!(p
         .tree
         .rows
@@ -152,6 +177,7 @@ fn tree_pins_slash_current_groups_remotes_and_shows_real_upstreams() {
         .rows
         .iter()
         .any(|r| r.label == "release" && r.depth == 3));
+    select(&mut p, 0, "refs/heads/feature/z/current");
     let rendered = screen(&mut p, &c, 120, 36);
     assert!(
         rendered.contains("current (current) -> origin/release/next"),
@@ -163,10 +189,10 @@ fn tree_pins_slash_current_groups_remotes_and_shows_real_upstreams() {
         repo,
         &["update-ref", "-d", "refs/remotes/origin/release/next"],
     );
-    p.refresh(&c).unwrap();
+    reload(&mut p, &c);
     assert!(screen(&mut p, &c, 120, 36).contains("origin/release/next [gone]"));
     c.scope.remove(&1);
-    p.refresh(&c).unwrap();
+    reload(&mut p, &c);
     assert!(p.tree.rows.iter().all(|r| r.root == 0));
 }
 
@@ -175,7 +201,7 @@ fn empty_unborn_and_detached_repositories_are_browsable() {
     let (_temp, c, mut p) = fixture();
     let repo = &c.repos[0].path;
     run(repo, &["switch", "--detach"]);
-    p.refresh(&c).unwrap();
+    reload(&mut p, &c);
     assert!(screen(&mut p, &c, 80, 25).contains("detached@"));
     assert!(!Snapshot::read(&c.repos[0])
         .unwrap()
@@ -192,7 +218,7 @@ fn empty_unborn_and_detached_repositories_are_browsable() {
     let mut c = Context::discover(empty.path()).unwrap();
     c.state_dir = empty.path().join("state");
     p = BranchPanel::default();
-    p.refresh(&c).unwrap();
+    reload(&mut p, &c);
     let branch = source(&c, "refs/heads/feature/first");
     assert!(branch.current && branch.oid.is_empty());
     assert!(screen(&mut p, &c, 44, 12).contains("[no commits]"));
@@ -235,11 +261,11 @@ fn browsing_folding_mouse_and_cancelled_unicode_input_do_not_write() {
     key(&mut p, &c, K::Char('h'));
     let folder = p.tree.rows[p.tree.cursor].id.clone();
     key(&mut p, &c, K::Char('h'));
-    p.refresh(&c).unwrap();
+    reload(&mut p, &c);
     assert_eq!(p.tree.rows[p.tree.cursor].id, folder);
     assert!(matches!(
         p.tree.rows[p.tree.cursor].kind,
-        Kind::Folder { open: false }
+        Kind::Folder { open: false, .. }
     ));
     key(&mut p, &c, K::Char('l'));
     assert_eq!(state(&c.repos[0].path), before);
@@ -404,7 +430,8 @@ fn remote_checkout_creates_tracking_branch_and_reuses_it_without_remote_writes()
     let repo = &c.repos[0].path;
     tracking(&c, "main", "feature/remote");
     let remote = run(repo, &["rev-parse", "refs/remotes/origin/feature/remote"]);
-    p.refresh(&c).unwrap();
+    reload(&mut p, &c);
+    expand_remotes(&mut p, &c, 0);
     select(&mut p, 0, "refs/remotes/origin/feature/remote");
     key(&mut p, &c, K::Enter);
     assert_eq!(p.input.as_ref().unwrap().name, "feature/remote");
@@ -416,7 +443,7 @@ fn remote_checkout_creates_tracking_branch_and_reuses_it_without_remote_writes()
         "refs/remotes/origin/feature/remote"
     );
     run(repo, &["switch", "main"]);
-    p.refresh(&c).unwrap();
+    reload(&mut p, &c);
     select(&mut p, 0, "refs/remotes/origin/feature/remote");
     assert!(matches!(key(&mut p, &c, K::Enter), Action::Confirm { .. }));
     assert!(p.input.is_none());

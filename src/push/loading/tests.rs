@@ -1,67 +1,5 @@
 use super::*;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
-
-fn finish<T: Send + 'static>(load: &mut Load<T>) -> Result<T> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Some(value) = load.take_result() {
-            return value;
-        }
-        assert!(Instant::now() < deadline, "background read did not finish");
-        std::thread::sleep(Duration::from_millis(1));
-    }
-}
-
-#[test]
-fn newer_requests_cancel_old_results_and_coalesce_without_extra_workers() {
-    let mut load = Load::default();
-    let (release, wait) = mpsc::channel();
-    load.request();
-    load.start(move |version| {
-        wait.recv().unwrap();
-        assert!(version.cancelled());
-        "old"
-    })
-    .unwrap();
-    for _ in 0..10 {
-        load.request();
-        load.start(|_| panic!("a second reader started before the first finished"))
-            .unwrap();
-    }
-    assert!(load.loading());
-    assert!(load.take_result().is_none());
-    release.send(()).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while load.running.is_some() {
-        assert!(load.take_result().is_none(), "stale result escaped");
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
-    load.start(|_| "latest").unwrap();
-    assert_eq!(finish(&mut load).unwrap(), "latest");
-    assert!(!load.pending());
-}
-
-#[test]
-fn cancelled_disconnection_is_ignored_and_current_failure_can_retry() {
-    let mut load: Load<()> = Load::default();
-    let (sender, receiver) = mpsc::channel();
-    load.running = Some((0, receiver));
-    load.cancel();
-    drop(sender);
-    assert!(load.take_result().is_none());
-    assert!(!load.pending());
-
-    let (sender, receiver) = mpsc::channel();
-    load.running = Some((load.generation.load(Ordering::Relaxed), receiver));
-    drop(sender);
-    assert!(load.take_result().unwrap().is_err());
-    load.request();
-    load.start(|_| ()).unwrap();
-    finish(&mut load).unwrap();
-    assert!(!load.pending());
-}
 
 fn fixture() -> (tempfile::TempDir, Context, PushPanel) {
     let dir = tempfile::tempdir().unwrap();
@@ -77,10 +15,7 @@ fn fixture() -> (tempfile::TempDir, Context, PushPanel) {
 }
 
 fn hold_entries(panel: &mut PushPanel) -> mpsc::Sender<Vec<Entry>> {
-    let (send, receive) = mpsc::channel();
-    panel.load.requested = false;
-    panel.load.running = Some((panel.load.generation.load(Ordering::Relaxed), receive));
-    send
+    panel.load.hold()
 }
 
 #[test]
@@ -216,11 +151,8 @@ fn unchanged_refresh_retains_file_diff_scroll_and_checks() {
 #[test]
 fn stale_file_and_patch_reads_cannot_replace_the_latest_selection() {
     let (_dir, c, mut panel) = fixture();
-    let (send, receive) = mpsc::channel();
-    panel.preview_load.running = Some((
-        panel.preview_load.generation.load(Ordering::Relaxed),
-        receive,
-    ));
+    panel.preview_load.request();
+    let send = panel.preview_load.hold();
     panel.pos = panel.rows().iter().position(|r| *r == (1, None)).unwrap();
     panel.inspect(&c);
     send.send(preview::Loaded::Files {
@@ -241,12 +173,7 @@ fn stale_file_and_patch_reads_cannot_replace_the_latest_selection() {
         .position(|&n| matches!(panel.preview.tree.nodes[n].kind, Kind::File(_)))
         .unwrap();
     panel.activate_file(row, false, &c);
-    let (send, receive) = mpsc::channel();
-    panel.preview_load.requested = false;
-    panel.preview_load.running = Some((
-        panel.preview_load.generation.load(Ordering::Relaxed),
-        receive,
-    ));
+    let send = panel.preview_load.hold();
     panel.preview.tree.cursor = 0; // Repository summary, while the patch is still reading.
     panel.inspect_file(&c);
     send.send(preview::Loaded::Patch {

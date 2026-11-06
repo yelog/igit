@@ -1,5 +1,6 @@
-//! Read-only repository-grouped stash browsing.
+//! Repository-grouped stash browsing and reviewed operations.
 mod model;
+mod operations;
 mod preview;
 mod view;
 
@@ -18,6 +19,7 @@ use crossterm::event::{
     Event, KeyCode as K, KeyEventKind, KeyModifiers as Mods, MouseButton, MouseEventKind as M,
 };
 use model::{Entry, Repository};
+use operations::{Operation, Review};
 use ratatui::{layout::Rect, Frame};
 use std::{collections::BTreeSet, time::Duration};
 
@@ -38,6 +40,7 @@ pub struct StashPanel {
     hits: Vec<(Rect, usize)>,
     preview: preview::Preview,
     files: SnapshotPreview,
+    review: Option<Review>,
     pub(crate) icons: IconMode,
     pub(crate) panes: PaneLayout,
 }
@@ -55,6 +58,7 @@ impl Default for StashPanel {
             hits: vec![],
             preview: Default::default(),
             files: Default::default(),
+            review: None,
             icons: Default::default(),
             panes: Default::default(),
         }
@@ -157,6 +161,22 @@ impl StashPanel {
         }
     }
 
+    fn review_operation(&mut self, c: &Context, operation: Operation) -> Result<Action> {
+        self.review = None;
+        let (root, source) = self
+            .selection()
+            .ok_or_else(|| anyhow::anyhow!("Select a stash entry first"))?;
+        let entries = &self.repository(root).unwrap().entries;
+        let review = Review::prepare(c, root, source, entries, operation)?;
+        let action = Action::Confirm {
+            title: operation.title().into(),
+            body: review.body.clone(),
+            token: "stash-operation".into(),
+        };
+        self.review = Some(review);
+        Ok(action)
+    }
+
     fn handle(&mut self, e: &Event, c: &Context) -> Result<Action> {
         if matches!(e, Event::Key(k) if k.kind == KeyEventKind::Release) {
             return Ok(Action::None);
@@ -208,6 +228,12 @@ impl StashPanel {
             .intersects(Mods::CONTROL | Mods::ALT | Mods::SUPER)
         {
             return Ok(Action::None);
+        }
+        match k.code {
+            K::Char('a') => return self.review_operation(c, Operation::Apply),
+            K::Char('P') => return self.review_operation(c, Operation::Pop),
+            K::Char('d') => return self.review_operation(c, Operation::Drop),
+            _ => (),
         }
         if matches!(k.code, K::Tab | K::BackTab | K::F(6)) {
             self.focus = if self.focus == PaneId::Stashes {
@@ -281,10 +307,18 @@ impl StashPanel {
                 ("Esc", "Focus stash list"),
             ],
         );
+        let actions = HelpSection::new(
+            "Stash / Selected Entry",
+            &[
+                ("a", "Review Apply; keep the stash"),
+                ("P", "Review Pop; remove after successful apply"),
+                ("d", "Review Drop; remove without applying"),
+            ],
+        );
         if self.focus == PaneId::Stashes {
-            HelpContent::new(list, vec![files])
+            HelpContent::new(list, vec![actions, files])
         } else {
-            HelpContent::new(files, vec![list])
+            HelpContent::new(files, vec![actions, list])
         }
     }
 }
@@ -292,11 +326,7 @@ impl StashPanel {
 impl Panel for StashPanel {
     fn refresh(&mut self, c: &Context) -> Result<()> {
         let keep = self.identity();
-        let repository = self
-            .rows
-            .get(self.cursor)
-            .filter(|r| r.entry.is_none())
-            .map(|r| r.root);
+        let previous = self.rows.get(self.cursor).copied();
         self.repos = model::load(c);
         self.rebuild();
         self.cursor = keep
@@ -309,11 +339,14 @@ impl Panel for StashPanel {
                 })
             })
             .or_else(|| {
-                repository.and_then(|root| {
-                    self.rows
-                        .iter()
-                        .position(|r| r.root == root && r.entry.is_none())
-                })
+                let previous = previous?;
+                let repo = self.repository(previous.root)?;
+                let entry = previous.entry.and_then(|index| {
+                    (!repo.entries.is_empty()).then(|| index.min(repo.entries.len() - 1))
+                });
+                self.rows
+                    .iter()
+                    .position(|r| r.root == previous.root && r.entry == entry)
             })
             .or_else(|| self.rows.iter().position(|r| r.entry.is_some()))
             .unwrap_or(0);
@@ -328,6 +361,20 @@ impl Panel for StashPanel {
         self.handle(e, c)
             .unwrap_or_else(|e| Action::Notice(format!("Stash: {e:#}")))
     }
+    fn confirm(&mut self, token: &str, c: &Context) -> Action {
+        if token != "stash-operation" {
+            return Action::None;
+        }
+        let Some(review) = self.review.take() else {
+            return Action::None;
+        };
+        let result = review
+            .execute(c)
+            .unwrap_or_else(|error| format!("Stash: {error:#}"));
+        // Native apply can leave conflicts or partial changes even on failure.
+        // Shell refreshes Stash, Commit, and Conflicts for every attempted write.
+        Action::Refresh(result)
+    }
     fn editing(&self) -> bool {
         self.files.editing()
     }
@@ -335,7 +382,7 @@ impl Panel for StashPanel {
         self.files.selected_text()
     }
     fn help(&self) -> &'static str {
-        "j/k Browse   Tab Panes   Enter Diff   F5 Refresh   F1 Help"
+        "a Apply   P Pop   d Drop   Tab Panes   Enter Diff   F1 Help"
     }
 }
 

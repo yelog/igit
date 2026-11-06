@@ -301,12 +301,12 @@ impl Shell {
     pub(super) fn configured_footer(&self) -> String {
         if self.tab == Stash {
             return format!(
-                "{}/{} Browse  {} Panes  {} Diff  {} Refresh  F1 Help",
-                self.config.label("stash", "move-down"),
-                self.config.label("stash", "move-up"),
+                "{} Apply  {} Pop  {} Drop  {} Panes  {} Diff  F1 Help",
+                self.config.label("stash", "apply"),
+                self.config.label("stash", "pop"),
+                self.config.label("stash", "drop"),
                 self.config.label("panes", "focus-next"),
                 self.config.label("stash", "open"),
-                self.config.label("global", "refresh")
             );
         }
         if self.tab == Branch {

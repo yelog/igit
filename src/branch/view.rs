@@ -1,12 +1,12 @@
 use super::*;
 use crate::ui::{
     icons::Icon,
-    idea::{button_style, clipped, repo_tint, CONFLICT, GREEN, TAG},
+    idea::{button_style, clipped, clipped_path, CONFLICT, TAG},
     panes::{pane_frame, PaneId},
 };
 use ratatui::{
     layout::{Constraint, Layout},
-    style::{Style, Stylize},
+    style::Style,
     text::{Line, Span},
     widgets::{Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
 };
@@ -36,10 +36,15 @@ impl BranchPanel {
         });
         let total: usize = buttons.iter().map(|(s, _)| s.width() + 1).sum();
         let bar_height = if total > inner.width as usize { 2 } else { 1 };
-        let [bar, list, details] = Layout::vertical([
+        let narrow = inner.width < 64;
+        let stacked_details = narrow && inner.height >= 12;
+        let show_status = !self.tree.rows.is_empty() && self.read_status().is_some();
+        let [bar, status_line, heading, list, details] = Layout::vertical([
             Constraint::Length(bar_height),
+            Constraint::Length(u16::from(show_status)),
+            Constraint::Length(u16::from(inner.height >= 10)),
             Constraint::Fill(1),
-            Constraint::Length(2),
+            Constraint::Length(if stacked_details { 3 } else { 2 }),
         ])
         .areas(inner);
         let (mut x, mut y) = (bar.x, bar.y);
@@ -53,114 +58,55 @@ impl BranchPanel {
                 break;
             }
             let rect = Rect::new(x, y, width, 1);
-            f.render_widget(Paragraph::new(label).style(button_style(false)), rect);
-            self.hits.push((rect, Hit::Operation(op)));
+            let enabled = self.action_enabled(op);
+            let style = if enabled {
+                button_style(false)
+            } else {
+                Style::new().fg(MUTED)
+            };
+            f.render_widget(Paragraph::new(label).style(style), rect);
+            if enabled {
+                self.hits.push((rect, Hit::Operation(op)));
+            }
             x += width + 1;
         }
         self.viewport = list;
         let visible = usize::from(list.height);
-        self.top = self.top.min(self.tree.rows.len().saturating_sub(visible));
-        if self.tree.cursor < self.top {
-            self.top = self.tree.cursor;
-        }
-        if self.tree.cursor >= self.top + visible {
-            self.top = (self.tree.cursor + 1).saturating_sub(visible);
-        }
+        self.keep_cursor_visible();
         let overflow = self.tree.rows.len() > visible;
-        for (i, row) in self
-            .tree
-            .rows
-            .iter()
-            .enumerate()
-            .skip(self.top)
-            .take(visible)
-        {
-            let rect = Rect::new(
-                list.x,
-                list.y + (i - self.top) as u16,
-                list.width.saturating_sub(u16::from(overflow)),
-                1,
-            );
-            let selected = i == self.tree.cursor;
-            let bg = if selected { SEL } else { BG };
-            let indent = (row.depth * 2).min(usize::from(rect.width.saturating_sub(18)));
-            let mut spans = vec![Span::raw(" ".repeat(indent))];
-            match &row.kind {
-                Kind::Folder { open } => {
-                    spans.push(Span::styled(
-                        format!("{} ", self.icons.disclosure(*open)),
-                        Style::new().fg(MUTED),
-                    ));
-                    spans.push(Span::styled(
-                        row.label.clone(),
-                        Style::new()
-                            .fg(if row.depth == 0 {
-                                repo_tint(row.root)
-                            } else {
-                                FG
-                            })
-                            .bold(),
-                    ));
-                    if row.depth == 0 {
-                        if let Some(repo) = self.repos.iter().find(|r| r.root == row.root) {
-                            if let Ok(state) = &repo.state {
-                                spans.push(Span::styled(
-                                    format!("  [{}]", state.head_label()),
-                                    Style::new().fg(MUTED),
-                                ));
-                            }
-                        }
-                    }
-                }
-                Kind::Branch(branch) => {
-                    let icon = if branch.current {
-                        Icon::Current
-                    } else if branch.remote {
-                        Icon::Remote
-                    } else {
-                        Icon::Branch
-                    };
-                    spans.push(Span::styled(
-                        format!("  {} ", self.icons.glyph(icon)),
-                        Style::new().fg(if branch.current { GREEN } else { MUTED }),
-                    ));
-                    spans.push(Span::styled(
-                        row.label.clone(),
-                        if branch.current {
-                            Style::new().fg(GREEN).bold()
-                        } else {
-                            Style::new().fg(FG)
-                        },
-                    ));
-                    if branch.current {
-                        spans.push(Span::styled(" (current)", Style::new().fg(GREEN)));
-                    }
-                    if !branch.upstream.is_empty() {
-                        spans.push(Span::styled(
-                            format!(
-                                " -> {}{}",
-                                model::short_ref(&branch.upstream),
-                                if branch.gone { " [gone]" } else { "" }
-                            ),
-                            Style::new().fg(MUTED),
-                        ));
-                    }
-                    if branch.oid.is_empty() {
-                        spans.push(Span::styled(" [no commits]", Style::new().fg(MUTED)));
-                    }
-                    if !branch.current && !branch.worktree.is_empty() {
-                        spans.push(Span::styled(" [worktree]", Style::new().fg(CONFLICT)));
-                    }
-                }
-                Kind::Message => {
-                    spans.push(Span::styled(row.label.clone(), Style::new().fg(MUTED)))
-                }
-            }
+        let row_width = list.width.saturating_sub(u16::from(overflow));
+        let upstream = self.upstream_column(row_width);
+        f.render_widget(
+            Paragraph::new(" Branch").style(Style::new().fg(MUTED)),
+            heading,
+        );
+        if let Some(x) = upstream {
             f.render_widget(
-                Paragraph::new(Line::from(spans)).style(Style::new().bg(bg)),
-                rect,
+                Paragraph::new("Upstream").style(Style::new().fg(MUTED)),
+                Rect::new(
+                    heading.x + x,
+                    heading.y,
+                    heading.width.saturating_sub(x),
+                    heading.height,
+                ),
             );
+        }
+        for i in self.top..self.tree.rows.len().min(self.top + visible) {
+            let rect = Rect::new(list.x, list.y + (i - self.top) as u16, row_width, 1);
+            self.draw_row(f, rect, i, upstream);
             self.hits.push((rect, Hit::Row(i)));
+        }
+        if self.tree.rows.is_empty() {
+            f.render_widget(
+                Paragraph::new(self.read_status().unwrap_or("No repositories in Roots"))
+                    .style(Style::new().fg(MUTED)),
+                list,
+            );
+        } else if let Some(status) = self.read_status() {
+            f.render_widget(
+                Paragraph::new(status).style(Style::new().fg(MUTED)),
+                status_line,
+            );
         }
         if overflow && !list.is_empty() {
             let mut state = ScrollbarState::new(self.tree.rows.len().saturating_sub(visible) + 1)
@@ -176,31 +122,72 @@ impl BranchPanel {
         }
         if let Some(row) = self.tree.rows.get(self.tree.cursor) {
             let repo = self.repos.iter().find(|r| r.root == row.root);
-            let label = match &row.kind {
-                Kind::Branch(b) => format!(
-                    "{}{}",
-                    b.name,
+            let (label, upstream_label) = match &row.kind {
+                Kind::Branch(b) => (
+                    format!("{}{}", b.name, if b.current { " (current)" } else { "" }),
                     if b.upstream.is_empty() {
-                        String::new()
+                        if b.remote {
+                            "Remote branch".into()
+                        } else {
+                            "No upstream".into()
+                        }
                     } else {
                         format!(
-                            " -> {}{}",
+                            "{}{}",
                             model::short_ref(&b.upstream),
                             if b.gone { " [gone]" } else { "" }
                         )
-                    }
+                    },
                 ),
-                _ => row.label.clone(),
+                Kind::Folder { count, .. } => (row.label.clone(), format!("{count} branches")),
+                Kind::Message => (row.label.clone(), String::new()),
             };
+            let width = usize::from(details.width.saturating_sub(2));
+            let path = clipped_path(
+                repo.map(|r| r.path.display().to_string())
+                    .unwrap_or_default(),
+                width,
+            );
+            let branch = match &row.kind {
+                Kind::Branch(b) => Some(b),
+                _ => None,
+            };
+            let tracked = branch.is_some_and(|b| !b.upstream.is_empty());
+            let mut lines = if narrow && branch.is_some() {
+                let context = if tracked {
+                    format!("Upstream: {upstream_label}")
+                } else {
+                    upstream_label.clone()
+                };
+                vec![
+                    Line::from(Span::styled(
+                        format!(" {}", clipped(&label, width)),
+                        Style::new().fg(FG),
+                    )),
+                    Line::from(format!(
+                        " {}",
+                        if tracked || stacked_details {
+                            clipped(&context, width)
+                        } else {
+                            path.clone()
+                        }
+                    )),
+                ]
+            } else {
+                let separator = if tracked { " -> " } else { "  " };
+                vec![Line::from(vec![
+                    Span::styled(format!(" {}", clipped(&label, width)), Style::new().fg(FG)),
+                    Span::raw(format!("{separator}{upstream_label}")),
+                ])]
+            };
+            if stacked_details && branch.is_none() {
+                lines.push(Line::default());
+            }
+            if !narrow || stacked_details || branch.is_none() {
+                lines.push(Line::from(format!(" {path}")));
+            }
             f.render_widget(
-                Paragraph::new(vec![
-                    Line::from(label),
-                    Line::from(
-                        repo.map(|r| r.path.display().to_string())
-                            .unwrap_or_default(),
-                    ),
-                ])
-                .style(Style::new().fg(MUTED).bg(TAG)),
+                Paragraph::new(lines).style(Style::new().fg(MUTED).bg(TAG)),
                 details,
             );
         }

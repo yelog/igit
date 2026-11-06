@@ -110,7 +110,7 @@ fn maximize_works_on_narrow_screens_while_log_stays_tiled() {
         send(&mut app, "1");
         screen(&mut app, width, height);
         send(&mut app, "Ctrl-w f");
-        for command in ["Tab", "2", "3", "Tab", "4"] {
+        for command in ["Tab", "2", "3", "Tab", "4", "6"] {
             send(&mut app, command);
             let text = screen(&mut app, width, height);
             assert!(app.pane_maximized, "{command}: {text}");

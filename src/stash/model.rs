@@ -1,7 +1,7 @@
 use crate::core::{git_bytes, Context};
 use anyhow::{ensure, Context as _, Result};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Entry {
     pub oid: String,
     pub selector: String,
@@ -27,7 +27,7 @@ pub(super) fn label(text: &str) -> String {
         .collect()
 }
 
-fn entries(path: &std::path::Path) -> Result<Vec<Entry>> {
+pub(super) fn entries(path: &std::path::Path) -> Result<Vec<Entry>> {
     let raw = git_bytes(
         path,
         &[

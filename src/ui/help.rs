@@ -85,8 +85,8 @@ pub(crate) fn global_section(show_conflicts: bool, show_roots: bool) -> HelpSect
         ("1", "Switch to Commit tab"),
         ("2", "Switch to Log tab"),
         ("3", "Switch to Push tab"),
-        ("5", "Switch to Branch tab"),
-        ("6", "Switch to Stash tab"),
+        ("4", "Switch to Branch tab"),
+        ("5", "Switch to Stash tab"),
         ("p", "Review Pull for all repositories in Roots"),
         ("f", "Review Fetch for all repositories in Roots"),
         (":", "Open Actions"),
@@ -94,7 +94,7 @@ pub(crate) fn global_section(show_conflicts: bool, show_roots: bool) -> HelpSect
         ("F1", "Open help for current pane"),
         ("?", "Open help for current pane"),
         ("q", "Review and quit IGit"),
-        ("4", "Switch to Conflicts tab"),
+        ("6", "Switch to Conflicts tab"),
     ];
     let count = BINDINGS.len() - usize::from(!show_conflicts);
     HelpSection::new("Global Actions", &BINDINGS[usize::from(!show_roots)..count])
@@ -278,8 +278,7 @@ impl HelpState {
                 if !displayed.insert(keys.clone()) {
                     continue;
                 }
-                let text = format!("{} {} {}", section.title, keys, binding.1).to_lowercase();
-                if tokens.iter().all(|token| text.contains(token)) {
+                if matches_search(&[section.title, &keys, binding.1], &tokens) {
                     entries.push((keys, binding.1, CommandAction::Keys(binding.0)));
                 }
             }
@@ -288,8 +287,7 @@ impl HelpState {
             self.native_commands
                 .iter()
                 .filter(|(keys, description, _)| {
-                    let text = format!("Panes {keys} {description}").to_lowercase();
-                    tokens.iter().all(|token| text.contains(token))
+                    matches_search(&["Panes", keys, description], &tokens)
                 })
                 .cloned(),
         );
@@ -685,6 +683,36 @@ impl HelpState {
     }
 }
 
+fn matches_search(fields: &[&str], tokens: &[String]) -> bool {
+    let fields: Vec<_> = fields.iter().map(|text| text.to_lowercase()).collect();
+    tokens
+        .iter()
+        .all(|token| fields.iter().any(|text| search_hits(text, token).is_some()))
+}
+
+/// Both inputs are lowercase; returned ranges index bytes in `text`.
+fn search_hits(text: &str, token: &str) -> Option<Vec<std::ops::Range<usize>>> {
+    // Preserve all contiguous occurrences before falling back to a subsequence.
+    let mut hits: Vec<_> = text
+        .char_indices()
+        .filter_map(|(start, _)| {
+            text[start..]
+                .starts_with(token)
+                .then_some(start..start + token.len())
+        })
+        .collect();
+    if !hits.is_empty() {
+        return Some(hits);
+    }
+
+    let mut chars = text.char_indices();
+    for wanted in token.chars() {
+        let (start, ch) = chars.find(|(_, ch)| *ch == wanted)?;
+        hits.push(start..start + ch.len_utf8());
+    }
+    Some(hits)
+}
+
 fn search_spans(
     text: &str,
     display: String,
@@ -698,10 +726,10 @@ fn search_spans(
 
     let lower = text.to_lowercase();
     let mut hits = vec![false; lower.len()];
-    for (start, _) in lower.char_indices() {
-        for token in tokens {
-            if lower[start..].starts_with(token) {
-                hits[start..start + token.len()].fill(true);
+    for token in tokens {
+        if let Some(ranges) = search_hits(&lower, token) {
+            for range in ranges {
+                hits[range].fill(true);
             }
         }
     }
@@ -887,6 +915,142 @@ mod tests {
             help.entries().is_empty(),
             "filtering must preserve the current region's key precedence"
         );
+    }
+
+    #[test]
+    fn help_search_fuzzy_matches_fields_and_runs_the_original_command() {
+        let mut help = HelpState::new(HelpContent::new(
+            HelpSection::new("File Tree", &[("s", "Save current file")]),
+            vec![],
+        ));
+        help.labels.insert("s", vec!["Ctrl-Shift-s".into()]);
+        help.native_commands.push((
+            "Alt-h".into(),
+            "Focus left pane",
+            CommandAction::Keys("Ctrl-w h"),
+        ));
+
+        for (query, action) in [
+            ("CSs SCF", "s"),
+            ("fltr scf", "s"),
+            ("pns alh flp", "Ctrl-w h"),
+        ] {
+            help.event(&ctrl('u'));
+            help.event(&Event::Paste(query.into()));
+            assert_eq!(help.entries().len(), 1, "{query}");
+            assert_eq!(
+                help.event(&key(K::Enter)),
+                HelpEvent::Run(HelpCommand {
+                    action: CommandAction::Keys(action),
+                }),
+                "{query}"
+            );
+        }
+
+        // A token must match in order within one field, never across hidden context.
+        for query in ["fsc", "scff", "treecs", "scf missing"] {
+            help.event(&ctrl('u'));
+            help.event(&Event::Paste(query.into()));
+            assert!(help.entries().is_empty(), "{query}");
+        }
+    }
+
+    #[test]
+    fn help_search_renders_fuzzy_hits_in_keys_and_descriptions() {
+        for (width, height) in [(44, 12), (80, 24), (120, 36)] {
+            let mut help = HelpState::new(HelpContent::new(
+                HelpSection::new("Actions", &[("s", "Save current file")]),
+                vec![],
+            ));
+            help.labels.insert("s", vec!["Ctrl-Shift-s".into()]);
+            help.event(&Event::Paste("CSs SCF".into()));
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|f| help.draw(f, f.area(), IconMode::Unicode))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let y = help.viewport.y;
+            let row: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+            for (label, hits) in [
+                ("Ctrl-Shift-s", [0, 5, 11]),
+                ("Save current file", [0, 5, 13]),
+            ] {
+                let start = row[..row.find(label).expect("matching label is visible")].width();
+                for offset in 0..label.len() {
+                    let cell = &buffer[((start + offset) as u16, y)];
+                    let highlighted = if crossterm::style::Colored::ansi_color_disabled_memoized() {
+                        cell.modifier.contains(Modifier::UNDERLINED)
+                    } else {
+                        Some(cell.bg) == SEARCH_MATCH.bg
+                    };
+                    assert_eq!(
+                        highlighted,
+                        hits.contains(&offset),
+                        "{width}x{height}: {label} at {offset}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn help_search_highlights_fuzzy_characters_and_preserves_exact_matches() {
+        let base = Style::new().fg(TEXT);
+        for (text, query, expected) in [
+            ("Save current file", "scf", vec!["S", "c", "f"]),
+            (
+                "Save current file",
+                "scf current",
+                vec!["S", "current", "f"],
+            ),
+            ("Select next stash", "stash", vec!["stash"]),
+            ("Stash stash", "stash", vec!["Stash", "stash"]),
+            ("aaaa", "aaa", vec!["aaaa"]),
+            ("Save current file", "scff", vec![]),
+            ("Save current file", "", vec![]),
+            ("İx界e\u{301}Z", "i界z", vec!["İ", "界", "Z"]),
+            ("Xe\u{301}界y", "e界", vec!["e\u{301}界"]),
+        ] {
+            let tokens: Vec<_> = query.split_whitespace().map(str::to_lowercase).collect();
+            let spans = search_spans(text, text.into(), &tokens, base, SEARCH_MATCH);
+            assert_eq!(
+                spans.iter().map(|s| s.content.as_ref()).collect::<String>(),
+                text
+            );
+            assert_eq!(
+                spans
+                    .iter()
+                    .filter(|s| s.style == base.patch(SEARCH_MATCH))
+                    .map(|s| s.content.as_ref())
+                    .collect::<Vec<_>>(),
+                expected,
+                "{query:?} in {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn help_search_fuzzy_highlights_survive_clipping_and_monochrome() {
+        let base = Style::new().fg(ACTION).add_modifier(Modifier::BOLD);
+        let monochrome = Style::new().add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+        for highlight in [SEARCH_MATCH, monochrome] {
+            let spans = search_spans(
+                "İx界e\u{301}Z",
+                clipped("İx界e\u{301}Z", 5),
+                &["i界z".into()],
+                base,
+                highlight,
+            );
+            assert_eq!(
+                spans,
+                vec![
+                    Span::styled("İ", base.patch(highlight)),
+                    Span::styled("x", base),
+                    Span::styled("界", base.patch(highlight)),
+                    Span::styled("…", base),
+                ]
+            );
+        }
     }
 
     #[test]

@@ -141,7 +141,7 @@ fn configuration_smart_resize_keeps_tabs_isolated_and_help_executes_the_action()
     send(&mut app, "Cmd+Ctrl+Shift+j");
     assert_eq!(app.kitty.resizes, [Direction::Down]);
     assert!(app.log.panes.nodes().is_empty());
-    send(&mut app, "Esc 4");
+    send(&mut app, "Esc 6");
     screen(&mut app, 120, 36);
     send(&mut app, "Cmd+Ctrl+Shift+h");
     assert_eq!(app.tab, Conflicts);
@@ -312,7 +312,7 @@ fn configuration_smart_focus_stays_in_the_tab_and_survives_workspace_rescan() {
     send(&mut app, "Cmd+Ctrl+k");
     assert_eq!(app.tab, Push);
     assert_eq!(app.kitty.requests, [Direction::Up]);
-    send(&mut app, "Esc 4");
+    send(&mut app, "Esc 6");
     screen(&mut app, 120, 36);
     send(&mut app, "Cmd+Ctrl+h");
     assert_eq!(app.tab, Conflicts);

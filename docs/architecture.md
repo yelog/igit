@@ -12,7 +12,8 @@ IGit is a Rust terminal application. Both entry points, [igit](../src/bin/igit.r
 | Why does a file or button use this icon? | [ui/icons.rs](../src/ui/icons.rs) maps semantics, filenames, and extensions to glyphs. Shell passes startup `IconMode` to all panels; layout and hit testing use actual terminal cell widths. Icon preferences are not written to repositories, drafts, or Git configuration. [graph/render.rs](../src/log/model/graph/render.rs) draws graph rails/nodes from topology. |
 | Why does a commit appear here? | [log/model.rs](../src/log/model.rs) reads real refs, commits, reachability, and patches; [graph.rs](../src/log/model/graph.rs) allocates rails. [log.rs](../src/log.rs) coordinates selection/events. [view.rs](../src/log/view.rs), [refs.rs](../src/log/refs.rs), and [inspector.rs](../src/log/inspector.rs) render the timeline, branch tree, and right pane. [filters.rs](../src/log/filters.rs) manages filters and session tabs. |
 | What does this commit include? | [commit.rs](../src/commit.rs): groups, checkboxes, the shared message, and batch commits. [commit/ai.rs](../src/commit/ai.rs): reviewed AI requests and candidate adoption. [commit/tree.rs](../src/commit/tree.rs): flat/compact-directory projections and native file identity. [commit/rows.rs](../src/commit/rows.rs): row rendering and shared arrow/checkbox coordinates. [commit/view.rs](../src/commit/view.rs): changes list, messages, and default-open preview. [commit/refresh.rs](../src/commit/refresh.rs) owns background status and current-patch refresh. [commit/backend.rs](../src/commit/backend.rs): status, snapshots, plans, and execution. |
-| Where will this push go, and will the target have the submodule commit? | [push.rs](../src/push.rs): outgoing commits, targets, plans, background jobs, and per-repository results. [push/loading.rs](../src/push/loading.rs) coalesces background reads and bounds repository concurrency; [push/preview.rs](../src/push/preview.rs) reads immutable file lists and patches. [push/files.rs](../src/push/files.rs) parses changes and derives grouped rows from one tree; [push/display.rs](../src/push/display.rs) handles the session Group By menu; [push/view.rs](../src/push/view.rs) renders columns/hit areas. [push/submodules.rs](../src/push/submodules.rs) verifies remote availability of gitlinks in outgoing history. |
+| Where will this push go, and will the target have the submodule commit? | [push.rs](../src/push.rs): outgoing commits, targets, plans, background jobs, and per-repository results. [push/loading.rs](../src/push/loading.rs) schedules outgoing commit and preview reads; [push/preview.rs](../src/push/preview.rs) reads immutable file lists and patches. [push/files.rs](../src/push/files.rs) parses changes and derives grouped rows from one tree; [push/display.rs](../src/push/display.rs) handles the session Group By menu; [push/view.rs](../src/push/view.rs) renders columns/hit areas. [push/submodules.rs](../src/push/submodules.rs) verifies remote availability of gitlinks in outgoing history. |
+| How do branch lists load and branch writes get reviewed? | [branch/loading.rs](../src/branch/loading.rs) reads refs and prepares tree rows in the background. [branch/operations.rs](../src/branch/operations.rs) revalidates one repository before a reviewed write. [core/loading.rs](../src/core/loading.rs) provides the bounded reader shared with Push. |
 | What will a workspace Pull or Fetch update? | [shell/update.rs](../src/shell/update.rs) owns the Roots review, selected strategy, Git worker, and structured per-repository results. [shell/update/view.rs](../src/shell/update/view.rs) renders the shared review/running/results list, responsive columns, Details, and action hit areas. |
 | How is the application itself installed and updated? | [installation.rs](../src/installation.rs) dispatches `update` before Shell starts. [install.py](../scripts/install/install.py) and [install.ps1](../pages/install.ps1) own native installation validation, download, staging, and activation. [pages.py](../scripts/release/pages.py) builds public channel manifests from verified published releases. |
 | When can smart merge choose automatically? | [merge.rs](../src/merge.rs): conflict actions, editing, and drafts. [merge/view.rs](../src/merge/view.rs): full-screen editor, controls, and aligned viewport. [merge/engine.rs](../src/merge/engine.rs): index stages, three-way comparison, file writing/staging, and Git continuation. |
@@ -111,10 +112,18 @@ scoped conflict list. Shell derives Conflicts visibility from that list, which
 includes unmerged index entries and operations ready for Continue. If Conflicts
 disappears while active, Shell returns to the last Commit, Log, Branch or Stash tab. Push refreshes
 on entry and during a workspace refresh while active, without waiting for Git on
-the terminal thread. Opening/rescanning from the
+the terminal thread. Branch also queues reads on entry and refresh. Branch and
+Push use a shared loader with one active batch per reader and at most four
+repository reads in each batch. A new request supersedes the old generation;
+an old batch stops taking repositories and cannot publish results. Branch
+prepares tree rows and measures the upstream column in its worker. The terminal
+installs current results using the latest cursor and fold choices. It retains
+cached rows within the same Roots; a changed scope clears the old rows.
+Opening/rescanning from the
 Actions menu still synchronously rebuilds context and panels. Subsequent Log
 history refresh and explicit patch opening, Commit snapshot/execution, and Merge
-reads/writes remain synchronous. Log commit details, Push reads/Push/Fetch, and AI requests
+reads/writes remain synchronous. Log commit details, Branch and Push reads,
+Push/Fetch, and AI requests
 use standard threads and `mpsc` results polled by Shell. There is no general
 asynchronous scheduler; large-repository refreshes and slow hooks may block input.
 
@@ -148,16 +157,36 @@ controls, without loading history or exposing Log filters. The first parent
 and stash worktree form tracked comparisons; optional third-parent files
 have an empty Before side. Each file retains its source revision across
 next/previous navigation and patch fallback. Existing byte paths, size limits,
-and read-only revision controls are reused. StashPanel owns no mutations or
-persistence; stash creation belongs to Commit below.
+and read-only revision controls are reused. Stash creation belongs to Commit
+below. [operations.rs](../src/stash/operations.rs) owns single-use Apply/Pop/Drop
+reviews. Each review retains the repository path, entry selector/object,
+complete entry list, and (for apply/pop) HEAD, branch, index records, and the
+`stash.index` option. Native apply uses the immutable object ID and suppresses
+submodule recursion. [scope.rs](../src/stash/operations/scope.rs) checks saved
+tracked/index/untracked paths before review and execution: a saved untracked
+file must not be restored inside a newly added submodule, nested repository,
+or directory symlink. This check is needed even with Git recursion disabled. Pop performs a separate list check before native drop;
+conflicts or changed lists keep the entry, and successful application followed
+by failed removal is reported without replaying apply. Drop also validates the
+reviewed list immediately before invoking Git on the selected selector. Native
+Git supplies index/ref locking and local overwrite protection. Every attempted
+operation returns Shell's Refresh action, updating Stash, Commit, and Conflicts.
+List refresh falls back to the nearest entry/header in the same repository.
+There is no new persistent state.
 
 **Branch.** [branch.rs](../src/branch.rs) owns tree focus, name input, and the
 pending shell review. [model.rs](../src/branch/model.rs) reads local and remote
 refs, commit IDs, symbolic HEAD, upstreams, and worktree ownership without
 loading history. [tree.rs](../src/branch/tree.rs) builds scoped repository and
-slash-folder rows with current-first traversal and stable fold/focus IDs.
-[view.rs](../src/branch/view.rs) shares row/action hit targets with keyboard
-handlers. State is session-only; no new persistence or dependency is introduced.
+slash-folder rows with current-first traversal, branch counts, and stable
+fold/focus IDs. Explicit fold overrides keep remote groups closed initially
+while retaining user choices through refresh and Roots changes.
+[navigation.rs](../src/branch/navigation.rs) maintains the viewport after each
+motion and exposes `gg` to the shell's existing sequence picker.
+[rows.rs](../src/branch/rows.rs) measures branch/upstream columns in terminal
+cells and uses shared Log reference colors. [view.rs](../src/branch/view.rs)
+owns responsive controls/details and row/action hit targets. State is
+session-only; no new persistence or dependency is introduced.
 
 [operations.rs](../src/branch/operations.rs) prepares a single-repository review
 and rechecks Roots, worktree path, refs, HEAD, upstreams, worktree ownership and
@@ -191,7 +220,7 @@ The [historical viewer](../src/merge/view/revision.rs) uses `diff3(result, paren
 
 [List navigation](../src/log/navigation.rs) stores vertical origin and the most recently drawn usable row count. It corrects edges after every selection change so batched input and per-key redraw have identical scrolling. Rendering corrects again for new window height. `gg` and `y` sequences are recognized only in the commit list; focus changes/overlays clear prefixes. `Action::Copy` routes through Shell and the [clipboard adapter](../src/ui/clipboard.rs), using command stdin rather than interpolating text into commands or notifications. ID/name/email come from the current row. Only `ym` runs read-only `git show` for that exact repository/OID to retrieve the full message, independent of potentially pending details.
 
-[Key sequence hints](../src/ui/key_sequence.rs) derive candidates from pending Log `g/y` and Merge `[/]` states. Panels still recognize sequences. Shell candidate state stores cursor, last-rendered hit areas, and a 200ms display deadline. The deadline participates in the event poll's minimum wait; reaching it triggers one redraw without blocking later keys. Completion/cancel clears timing, and a new prefix restarts it. The bottom overlay uses shared colors and cell-width-based columns. Once visible, arrows, Enter, and mouse events inside it run before ordinary panel/global events. Esc/Ctrl-C can cancel during the delay too. Choosing a candidate returns the continuation key to the original panel route rather than creating another Git entry point. Global panel changes, refresh, and dialogs clear both kinds of prefixes. Single-key actions without prefixes and text editing bypass the candidate overlay.
+[Key sequence hints](../src/ui/key_sequence.rs) derive candidates from pending Branch `g`, Log `g/y`, and Merge `[/]` states. Panels still recognize sequences. Shell candidate state stores cursor, last-rendered hit areas, and a 200ms display deadline. The deadline participates in the event poll's minimum wait; reaching it triggers one redraw without blocking later keys. Completion/cancel clears timing, and a new prefix restarts it. The bottom overlay uses shared colors and cell-width-based columns. Once visible, arrows, Enter, and mouse events inside it run before ordinary panel/global events. Esc/Ctrl-C can cancel during the delay too. Choosing a candidate returns the continuation key to the original panel route rather than creating another Git entry point. Global panel changes, refresh, and dialogs clear both kinds of prefixes. Single-key actions without prefixes and text editing bypass the candidate overlay.
 
 **Commit: checked content, not the entire real index.** Changes come from `git status --porcelain=v1 -z`. The tree starts with Directory grouping enabled and Module disabled. Native paths drive browsing identity, checkboxes, and regrouping; parent-directory hints are display-only. The tree projects scoped unmerged paths into Merge Conflicts while keeping their saved changelist membership. Resolve uses the existing Shell tab action; it does not apply a resolution. Directory/expansion changes never touch the index. Preview starts enabled; closed previews do not read patches. Open previews use the current row to choose a file Diff or in-memory container summary. Review builds a temporary index from HEAD, or the empty tree for an initial commit. Selected files with staged content use that version; otherwise, selected working-tree content is read. A file staged and then edited again therefore commits only its staged version. `write-tree` obtains the planned tree, while HEAD, branch, and selected index records are retained. Review may create Git objects but does not move HEAD or overwrite the real index.
 

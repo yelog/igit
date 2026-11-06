@@ -198,3 +198,112 @@ fn stash_failed_repository_is_local_and_other_repositories_still_load() {
     finish(&mut panel, &c);
     assert!(screen(&mut panel, &c, 120, 36).contains("Error:"));
 }
+
+#[test]
+fn stash_operation_keys_review_selected_entry_in_both_panes_but_not_diff() {
+    let (_temp, c, mut panel) = fixture();
+    let (root, oid) = panel.identity().unwrap();
+    let repo = &c.repos[root].path;
+    let before = run(repo, &["stash", "list"]);
+    for pane in [PaneId::Stashes, PaneId::Files] {
+        panel.focus_pane(pane);
+        for (shortcut, title) in [
+            ('a', "Apply stash"),
+            ('P', "Pop stash"),
+            ('d', "Drop stash"),
+        ] {
+            let Action::Confirm {
+                title: actual,
+                body,
+                token,
+            } = key(&mut panel, &c, K::Char(shortcut))
+            else {
+                panic!("review");
+            };
+            assert_eq!(actual, title);
+            assert_eq!(token, "stash-operation");
+            assert!(body.contains(&oid));
+            assert_eq!(run(repo, &["stash", "list"]), before);
+            assert!(run(repo, &["status", "--porcelain=v1"]).is_empty());
+        }
+    }
+    panel.review = None;
+    finish(&mut panel, &c);
+    key(&mut panel, &c, K::Enter);
+    assert!(panel.editing());
+    for shortcut in ['a', 'P', 'd'] {
+        assert!(!matches!(
+            key(&mut panel, &c, K::Char(shortcut)),
+            Action::Confirm { .. }
+        ));
+        assert!(panel.review.is_none());
+    }
+    assert_eq!(run(repo, &["stash", "list"]), before);
+    assert!(run(repo, &["status", "--porcelain=v1"]).is_empty());
+}
+
+#[test]
+fn stash_group_empty_and_stale_rows_cannot_start_operations() {
+    let (_temp, mut c, mut panel) = fixture();
+    panel.select(0);
+    for shortcut in ['a', 'P', 'd'] {
+        assert!(matches!(
+            key(&mut panel, &c, K::Char(shortcut)),
+            Action::Notice(_)
+        ));
+        assert!(panel.review.is_none());
+    }
+    panel.select(1);
+    let (root, source) = panel.selection().unwrap();
+    let repo = &c.repos[root].path;
+    let oid = source.oid.clone();
+    run(repo, &["stash", "drop", "stash@{0}"]);
+    assert!(matches!(
+        key(&mut panel, &c, K::Char('d')),
+        Action::Notice(_)
+    ));
+    assert!(panel.review.is_none());
+    assert_ne!(model::entries(repo).unwrap()[0].oid, oid);
+    c.scope.clear();
+    panel.refresh(&c).unwrap();
+    assert!(matches!(
+        key(&mut panel, &c, K::Char('a')),
+        Action::Notice(_)
+    ));
+}
+
+#[test]
+fn stash_drop_refresh_keeps_a_nearby_entry_in_the_same_repository_and_consumes_review() {
+    let (_temp, c, mut panel) = fixture();
+    let root = c.repos.iter().position(|repo| repo.name == "web").unwrap();
+    let entries = panel.repository(root).unwrap().entries.clone();
+    panel.select(
+        panel
+            .rows
+            .iter()
+            .position(|row| row.root == root && row.entry == Some(1))
+            .unwrap(),
+    );
+    assert!(matches!(
+        key(&mut panel, &c, K::Char('d')),
+        Action::Confirm { .. }
+    ));
+    assert!(matches!(
+        panel.confirm("stash-operation", &c),
+        Action::Refresh(_)
+    ));
+    assert!(matches!(panel.confirm("stash-operation", &c), Action::None));
+    panel.refresh(&c).unwrap();
+    assert_eq!(panel.identity(), Some((root, entries[0].oid.clone())));
+    key(&mut panel, &c, K::Char('d'));
+    panel.confirm("stash-operation", &c);
+    panel.refresh(&c).unwrap();
+    let row = panel.rows[panel.cursor];
+    assert_eq!((row.root, row.entry), (root, None));
+    assert!(panel.selection().is_none());
+    assert!(c
+        .repos
+        .iter()
+        .enumerate()
+        .any(|(index, repo)| index != root && !run(&repo.path, &["stash", "list"]).is_empty()));
+}

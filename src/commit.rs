@@ -689,7 +689,7 @@ impl CommitPanel {
     fn launch(&mut self, h: Hit, c: &Context) -> Action {
         match h {
             Hit::Refresh => return Action::Refresh("Changes refreshed".into()),
-            Hit::ResolveConflicts => return Action::Go(3),
+            Hit::ResolveConflicts => return Action::OpenConflicts,
             Hit::UndoCheck => {
                 for (key, was) in self.last_check.drain(..) {
                     self.checks.insert(key, was);

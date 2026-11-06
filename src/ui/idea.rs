@@ -15,6 +15,8 @@ pub(crate) const TAG: Color = Color::Rgb(48, 49, 56);
 pub(crate) const CHECK: Color = Color::Rgb(98, 157, 255);
 pub(crate) const CONFLICT: Color = Color::Rgb(244, 183, 105);
 pub(crate) const GREEN: Color = Color::Rgb(116, 191, 122);
+pub(crate) const LOCAL_REF: Color = Color::Rgb(97, 168, 112);
+pub(crate) const REMOTE_REF: Color = Color::Rgb(176, 137, 222);
 pub(crate) const RED: Color = Color::Rgb(239, 139, 138);
 
 pub(crate) fn button_style(primary: bool) -> Style {

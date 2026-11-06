@@ -2,14 +2,205 @@ use super::{test_support::*, *};
 use crate::core::git;
 use crossterm::event::MouseEvent;
 
+fn ready(app: &mut Shell) {
+    app.branch.finish_loading(&app.ctx);
+}
+
+#[test]
+fn branch_entry_paints_before_git_and_leaves_navigation_available() {
+    let (_temp, mut app) = fixture();
+    app.dispatch(&key(KeyCode::Char('4')));
+    assert_eq!(app.tab, Branch);
+    for (width, height) in [(120, 36), (80, 25), (44, 12)] {
+        let first_frame = screen(&mut app, width, height);
+        assert!(first_frame.contains("Loading branches"), "{first_frame}");
+        assert!(!first_frame.contains("Local Branches"), "{first_frame}");
+    }
+    let release = app.branch.hold_loading(&app.ctx);
+    app.poll();
+    assert!(app.poll_timeout() <= Duration::from_millis(16));
+    app.dispatch(&key(KeyCode::F(1)));
+    assert!(matches!(app.pop, Some(Popup::Help { .. })));
+    app.dispatch(&key(KeyCode::Esc));
+    app.dispatch(&key(KeyCode::Char('1')));
+    assert_eq!(app.tab, Commit);
+    app.dispatch(&key(KeyCode::Char('4')));
+    assert!(screen(&mut app, 80, 25).contains("Loading branches"));
+    release();
+    assert!(app.poll(), "the completed read should request a redraw");
+    assert!(
+        !app.branch.reads_pending(),
+        "tab switching must not restart the read"
+    );
+    assert!(screen(&mut app, 80, 25).contains("Local Branches"));
+}
+
+#[test]
+fn branch_refresh_keeps_cached_browsing_and_the_latest_fold_but_gates_actions() {
+    let (_temp, mut app) = fixture();
+    let repo = app.ctx.repos[0].path.clone();
+    git(&repo, &["update-ref", "refs/remotes/origin/seen", "HEAD"]).unwrap();
+    app.go(Branch);
+    ready(&mut app);
+    app.go(Commit);
+    git(&repo, &["branch", "new-since-last-visit"]).unwrap();
+    let before = snapshot(&repo);
+    app.go(Branch);
+    let release = app.branch.hold_loading(&app.ctx);
+    let cached = screen(&mut app, 120, 36);
+    assert!(cached.contains("Refreshing branches") && cached.contains("main (current)"));
+    assert!(!cached.contains("new-since-last-visit"));
+    app.dispatch(&key(KeyCode::Char('a')));
+    assert!(!app.branch.editing() && app.pop.is_none());
+    assert!(app.msg.contains("Refreshing branches"));
+    app.dispatch(&key(KeyCode::Char('j'))); // main -> Remote Branches
+    app.dispatch(&key(KeyCode::Char('l')));
+    assert!(screen(&mut app, 120, 36).contains("Remote Branches  1 branches"));
+    release();
+    assert!(app.poll());
+    let fresh = screen(&mut app, 120, 36);
+    assert!(fresh.contains("new-since-last-visit"));
+    assert!(fresh.contains("origin") && fresh.contains("Remote Branches  1 branches"));
+    assert!(!fresh.contains("Refreshing branches"));
+    assert_eq!(snapshot(&repo), before);
+}
+
+#[test]
+fn branch_loading_rejects_old_roots_even_if_scope_changes_on_another_tab() {
+    let (temp, fixture) = fixture();
+    let repo = &fixture.ctx.repos[0].path;
+    let worktree = temp.path().join("tools");
+    git(
+        repo,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "worktree",
+            "add",
+            "-b",
+            "visible-only",
+            worktree.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    let mut ctx = Context::discover(temp.path()).unwrap();
+    ctx.state_dir = temp.path().join("branch-test-state");
+    assert_eq!(ctx.scope.len(), 2);
+    assert_eq!(ctx.repos[0].path, *repo);
+    let mut app = Shell::unloaded(
+        ctx,
+        AppConfig {
+            icons: IconMode::Ascii,
+            ..AppConfig::default()
+        },
+    );
+    app.go(Branch);
+    let release = app.branch.hold_loading(&app.ctx);
+    app.go(Commit);
+    app.dispatch(&key(KeyCode::Char('r')));
+    app.dispatch(&key(KeyCode::Char(' ')));
+    app.dispatch(&key(KeyCode::Enter));
+    assert_eq!(app.ctx.scope, BTreeSet::from([1]));
+    app.go(Branch);
+    release();
+    app.poll();
+    let pending = screen(&mut app, 120, 36);
+    assert!(pending.contains("Loading branches") && !pending.contains("repo  [main]"));
+    ready(&mut app);
+    let fresh = screen(&mut app, 120, 36);
+    assert!(fresh.contains("tools  [visible-only]") && !fresh.contains("repo  [main]"));
+}
+
+#[test]
+fn branch_gg_hint_cancels_on_context_changes_and_completes_without_git_writes() {
+    let (_temp, mut app) = fixture();
+    app.go(Branch);
+    ready(&mut app);
+    let before = snapshot(&app.ctx.repos[0].path);
+    app.dispatch(&key(KeyCode::Char('G')));
+    let last = screen(&mut app, 80, 25);
+    app.dispatch(&key(KeyCode::Char('g')));
+    assert_eq!(app.key_sequence(), Some(KeySequence::BranchGoto));
+    assert_eq!(screen(&mut app, 80, 25), last);
+    app.key_picker
+        .poll(Instant::now() + Duration::from_millis(200));
+    assert!(screen(&mut app, 80, 25).contains("Go to first branch row"));
+    app.dispatch(&key(KeyCode::Enter));
+    assert!(app.key_sequence().is_none());
+    assert_ne!(screen(&mut app, 80, 25), last);
+    for interrupt in [
+        key(KeyCode::Esc),
+        key(KeyCode::F(1)),
+        key(KeyCode::F(5)),
+        key(KeyCode::Char('1')),
+        Event::Resize(80, 25),
+    ] {
+        app.go(Branch);
+        ready(&mut app);
+        app.dispatch(&key(KeyCode::Char('g')));
+        app.dispatch(&interrupt);
+        assert!(app.key_sequence().is_none(), "{interrupt:?}");
+        app.dispatch(&key(KeyCode::Esc));
+    }
+    app.go(Branch);
+    ready(&mut app);
+    for ch in ['f', 'b', 'd', 'u'] {
+        app.dispatch(&Event::Key(KeyEvent::new(
+            KeyCode::Char(ch),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(app.pop.is_none() && !app.branch.editing());
+    }
+    assert_eq!(snapshot(&app.ctx.repos[0].path), before);
+}
+
+#[test]
+fn branch_navigation_remapping_updates_help_and_executes_sequences() {
+    let (_temp, fixture) = fixture();
+    let config = AppConfig::from_toml(
+        "[keybindings.branch]\nfirst-item=['F9']\nhalf-page-down=['J']\nscreen-middle=['F8']",
+    )
+    .unwrap();
+    let mut app = Shell::with_config(fixture.ctx.clone(), config);
+    app.go(Branch);
+    ready(&mut app);
+    app.dispatch(&key(KeyCode::Char('G')));
+    let last = screen(&mut app, 80, 25);
+    app.dispatch(&key(KeyCode::Char('g')));
+    app.dispatch(&key(KeyCode::Char('g')));
+    assert_eq!(screen(&mut app, 80, 25), last);
+    app.dispatch(&key(KeyCode::F(9)));
+    assert_ne!(screen(&mut app, 80, 25), last);
+    assert!(app.key_sequence().is_none());
+    app.dispatch(&key(KeyCode::F(1)));
+    for (query, binding) in [
+        ("Select first row", "F9"),
+        ("Move down half a page", "J"),
+        ("Select middle visible row", "F8"),
+    ] {
+        app.dispatch(&Event::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+        )));
+        app.dispatch(&Event::Paste(query.into()));
+        let help = screen(&mut app, 120, 36);
+        assert!(help.contains(binding) && help.contains(query), "{help}");
+    }
+    app.dispatch(&key(KeyCode::Esc));
+    app.dispatch(&key(KeyCode::Char('J')));
+    app.dispatch(&key(KeyCode::F(8)));
+    assert!(app.pop.is_none() && !app.branch.editing());
+}
+
 #[test]
 fn branch_tab_keyboard_mouse_help_and_name_input_keep_existing_global_keys() {
     let (_temp, mut app) = fixture();
     let repo = app.ctx.repos[0].path.clone();
     let before = snapshot(&repo);
     for (w, h) in [(120, 36), (80, 25), (44, 12)] {
-        app.dispatch(&key(KeyCode::Char('5')));
+        app.dispatch(&key(KeyCode::Char('4')));
         assert_eq!(app.tab, Branch);
+        ready(&mut app);
         let text = screen(&mut app, w, h);
         assert!(text.lines().next().unwrap().contains("Branch"));
         assert!(app.regions.tab(Branch).width > 0);
@@ -34,6 +225,7 @@ fn branch_tab_keyboard_mouse_help_and_name_input_keep_existing_global_keys() {
         }));
         assert_eq!(app.tab, Branch);
     }
+    ready(&mut app);
     app.dispatch(&key(KeyCode::Char('r')));
     assert!(app.branch.editing());
     assert!(app.pop.is_none(), "r must rename, not open Roots");
@@ -61,6 +253,7 @@ fn branch_review_cancel_and_confirm_refresh_current_branch_without_staging_chang
     let repo = app.ctx.repos[0].path.clone();
     let before = snapshot(&repo);
     app.go(Branch);
+    ready(&mut app);
     app.dispatch(&key(KeyCode::Char('a')));
     app.dispatch(&Event::Paste("feature/new".into()));
     app.dispatch(&key(KeyCode::Enter));
@@ -83,6 +276,7 @@ fn branch_review_cancel_and_confirm_refresh_current_branch_without_staging_chang
     app.dispatch(&key(KeyCode::Enter));
     app.dispatch(&key(KeyCode::Char('y')));
     assert_eq!(app.ctx.repos[0].branch, "feature/renamed");
+    ready(&mut app);
     assert!(screen(&mut app, 80, 25).contains("renamed (current)"));
     assert_eq!(
         snapshot(&repo),
@@ -99,10 +293,11 @@ fn branch_commands_can_be_remapped_without_leaking_into_name_input_or_roots() {
     let (_temp, fixture) = fixture();
     let config = AppConfig::from_toml("[keybindings.global]\nfocus-branch=['F8']\n[keybindings.branch]\nrename=['R']\ncreate=['n']").unwrap();
     let mut app = Shell::with_config(fixture.ctx.clone(), config);
-    app.dispatch(&key(KeyCode::Char('5')));
+    app.dispatch(&key(KeyCode::Char('4')));
     assert_eq!(app.tab, Commit);
     app.dispatch(&key(KeyCode::F(8)));
     assert_eq!(app.tab, Branch);
+    ready(&mut app);
     app.dispatch(&key(KeyCode::Char('r')));
     assert!(!app.branch.editing() && app.pop.is_none());
     app.dispatch(&key(KeyCode::Char('R')));
@@ -117,6 +312,7 @@ fn branch_commands_can_be_remapped_without_leaking_into_name_input_or_roots() {
     let config = AppConfig::from_toml("[keybindings.global]\nroots=['F9']").unwrap();
     let mut app = Shell::with_config(fixture.ctx.clone(), config);
     app.go(Branch);
+    ready(&mut app);
     assert!(screen(&mut app, 120, 36).contains("r Rename"));
     app.dispatch(&key(KeyCode::Char('r')));
     assert!(app.branch.editing());
@@ -129,6 +325,7 @@ fn branch_merge_conflicts_refresh_the_conflicts_tab_and_return_to_branch() {
     merge_conflict(&repo);
     git(&repo, &["merge", "--abort"]).unwrap();
     app.go(Branch);
+    ready(&mut app);
     assert!(!app.tab_available(Conflicts));
     app.dispatch(&key(KeyCode::Char('j'))); // main (current) -> incoming
     app.dispatch(&key(KeyCode::Char('m')));
@@ -149,7 +346,7 @@ fn branch_merge_conflicts_refresh_the_conflicts_tab_and_return_to_branch() {
     assert!(app.tab_available(Conflicts));
     assert!(app.msg.contains("CONFLICT"), "{}", app.msg);
     assert!(!git(&repo, &["ls-files", "--unmerged"]).unwrap().is_empty());
-    app.dispatch(&key(KeyCode::Char('4')));
+    app.dispatch(&key(KeyCode::Char('6')));
     assert_eq!(app.tab, Conflicts);
     app.dispatch(&key(KeyCode::Esc));
     assert_eq!(app.tab, Branch);
@@ -160,11 +357,16 @@ fn branch_refresh_reads_external_refs_without_refreshing_unopened_history() {
     let (_temp, fixture) = fixture();
     let mut app = Shell::unloaded(fixture.ctx.clone(), AppConfig::default());
     app.go(Branch);
+    ready(&mut app);
     assert!(matches!(app.log_load, startup::LogLoad::Dormant));
     let repo = &app.ctx.repos[0].path;
     git(repo, &["remote", "add", "origin", "../unused-local-remote"]).unwrap();
     git(repo, &["update-ref", "refs/remotes/origin/fetched", "HEAD"]).unwrap();
     app.dispatch(&Event::FocusGained);
+    ready(&mut app);
+    assert!(screen(&mut app, 120, 36).contains("Remote Branches  1"));
+    app.dispatch(&key(KeyCode::Char('j'))); // current branch -> closed remote group
+    app.dispatch(&key(KeyCode::Char('l')));
     assert!(screen(&mut app, 120, 36).contains("fetched"));
     assert!(matches!(app.log_load, startup::LogLoad::Dormant));
 }

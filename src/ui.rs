@@ -23,7 +23,7 @@ pub enum Action {
         label: &'static str,
     },
     Refresh(String),
-    Go(usize),
+    OpenConflicts,
     CloseDialog,
     ReviewRollback,
     Confirm {

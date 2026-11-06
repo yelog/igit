@@ -25,6 +25,7 @@ pub(crate) struct WindowPrefix {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum KeySequence {
     LogGoto,
+    BranchGoto,
     LogYank,
     LogFilters,
     MergePrevious,
@@ -35,7 +36,7 @@ pub(crate) enum KeySequence {
 impl KeySequence {
     fn prefix(self) -> &'static str {
         match self {
-            Self::LogGoto => "g",
+            Self::LogGoto | Self::BranchGoto => "g",
             Self::LogYank => "y",
             Self::LogFilters => "Space",
             Self::MergePrevious => "[",
@@ -47,6 +48,7 @@ impl KeySequence {
     fn shortcuts(self) -> Vec<(char, &'static str)> {
         let entries: &[(char, &str)] = match self {
             Self::LogGoto => &[('g', "Go to first commit")],
+            Self::BranchGoto => &[('g', "Go to first branch row")],
             Self::LogYank => &[
                 ('y', "Copy full commit ID"),
                 ('m', "Copy full commit message"),

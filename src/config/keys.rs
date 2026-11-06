@@ -90,9 +90,9 @@ commands! {
         "focus-commit" => "1", ALL;
         "focus-log" => "2", ALL;
         "open-push" => "3", ALL;
-        "open-merge" => "4", ALL;
-        "focus-branch" => "5", ALL;
-        "focus-stash" => "6", ALL;
+        "focus-branch" => "4", ALL;
+        "focus-stash" => "5", ALL;
+        "open-merge" => "6", ALL;
         "pull" => "p", ALL;
         "fetch" => "f", ALL;
         "roots" => "r", ALL & !BRANCH;
@@ -102,6 +102,9 @@ commands! {
         "quit" => "q", ALL;
     }
     "stash" {
+        "apply" => "a", STASH;
+        "pop" => "P", STASH;
+        "drop" => "d", STASH;
         "move-down" => "j", STASH;
         "move-up" => "k", STASH;
         "collapse" => "h", STASH;
@@ -146,10 +149,15 @@ commands! {
         "collapse" => "h", BRANCH;
         "expand" => "l", BRANCH;
         "toggle" => "Space", BRANCH;
-        "first-item" => "g", BRANCH;
+        "first-item" => "gg", BRANCH;
         "last-item" => "G", BRANCH;
         "page-down" => "PgDn", BRANCH;
         "page-up" => "PgUp", BRANCH;
+        "half-page-down" => "Ctrl-d", BRANCH;
+        "half-page-up" => "Ctrl-u", BRANCH;
+        "screen-top" => "H", BRANCH;
+        "screen-middle" => "M", BRANCH;
+        "screen-bottom" => "L", BRANCH;
         "create" => "a", BRANCH;
         "delete" => "d", BRANCH;
         "checkout" => "Enter", BRANCH;

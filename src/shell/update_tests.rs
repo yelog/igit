@@ -238,7 +238,8 @@ fn workspace_pull_keeps_conflicts_and_refuses_a_branch_switched_after_review() {
         .next()
         .unwrap()
         .contains("Conflicts"));
-    press(&mut app, '4');
+    press(&mut app, '6');
+    assert_eq!(app.tab, Conflicts);
     assert!(screen(&mut app, 120, 30).contains("base.txt"));
 
     let conflict_path = conflict.canonicalize().unwrap();

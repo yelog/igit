@@ -1,7 +1,10 @@
 //! Repository-scoped branch browsing and reviewed local Git operations.
 mod keymap;
+mod loading;
 mod model;
+mod navigation;
 mod operations;
+mod rows;
 mod tree;
 mod view;
 
@@ -39,8 +42,11 @@ enum Hit {
 pub struct BranchPanel {
     repos: Vec<Repository>,
     tree: Tree,
+    loading: loading::Loading,
+    upstream_width: Option<usize>,
     top: usize,
     viewport: Rect,
+    goto_pending: bool,
     hits: Vec<(Rect, Hit)>,
     input: Option<NameInput>,
     review: Option<Review>,
@@ -78,6 +84,9 @@ impl BranchPanel {
     }
 
     fn operate(&mut self, operation: Operation, c: &Context) -> Result<Action> {
+        if let Some(status) = self.read_status() {
+            anyhow::bail!("{status}");
+        }
         self.review = None;
         let (root, mut source) = self.selection().context("Select a branch first")?;
         let mut operation = operation;
@@ -148,6 +157,7 @@ impl BranchPanel {
             return Ok(Action::None);
         }
         if self.input.is_some() {
+            self.cancel_key_sequence();
             match event {
                 Event::Key(k) => match k.code {
                     K::Esc => self.input = None,
@@ -190,6 +200,13 @@ impl BranchPanel {
             }
             return Ok(Action::None);
         }
+        if let Event::Key(key) = event {
+            if self.navigation_key(key) {
+                return Ok(Action::None);
+            }
+        } else if !matches!(event, Event::Mouse(m) if m.kind == M::Moved) {
+            self.cancel_key_sequence();
+        }
         match event {
             Event::Key(k)
                 if !k
@@ -197,12 +214,6 @@ impl BranchPanel {
                     .intersects(Mods::CONTROL | Mods::ALT | Mods::SUPER) =>
             {
                 match k.code {
-                    K::Char('j') | K::Down => self.tree.move_by(1),
-                    K::Char('k') | K::Up => self.tree.move_by(-1),
-                    K::Char('g') | K::Home => self.tree.move_by(isize::MIN),
-                    K::Char('G') | K::End => self.tree.move_by(isize::MAX),
-                    K::PageDown => self.tree.move_by(self.viewport.height.max(1) as isize),
-                    K::PageUp => self.tree.move_by(-(self.viewport.height.max(1) as isize)),
                     K::Char('h') | K::Left => self.tree.horizontal(true, &self.repos),
                     K::Char('l') | K::Right => self.tree.horizontal(false, &self.repos),
                     K::Char(' ') => self.tree.toggle(&self.repos),
@@ -237,27 +248,14 @@ impl BranchPanel {
             },
             _ => (),
         }
+        self.keep_cursor_visible();
         Ok(Action::None)
     }
 }
 
 impl Panel for BranchPanel {
     fn refresh(&mut self, c: &Context) -> Result<()> {
-        self.repos = c
-            .scope
-            .iter()
-            .filter_map(|&root| {
-                let repo = c.repos.get(root)?;
-                Some(Repository {
-                    root,
-                    name: repo.name.clone(),
-                    path: repo.path.clone(),
-                    state: Snapshot::read(repo).map_err(|e| format!("{e:#}")),
-                })
-            })
-            .collect();
-        self.tree.rebuild(&self.repos);
-        self.hits.clear();
+        self.request_load(c);
         Ok(())
     }
 

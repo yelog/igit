@@ -1,5 +1,6 @@
 //! Cell geometry and colours for the IDEA Git tool window.
 use super::*;
+use crate::ui::idea::{LOCAL_REF as GREEN, REMOTE_REF as PURPLE};
 use display::Column;
 use unicode_width::UnicodeWidthStr;
 
@@ -8,8 +9,6 @@ pub(super) const GOLD: Color = Color::Rgb(238, 190, 85);
 const REACHABLE: Color = Color::Rgb(32, 37, 58);
 const INPUT: Color = Color::Rgb(35, 36, 43);
 const TAB: Color = Color::Rgb(40, 56, 88);
-const GREEN: Color = Color::Rgb(97, 168, 112);
-const PURPLE: Color = Color::Rgb(176, 137, 222);
 
 pub(super) fn fg(c: Color) -> Style {
     Style::default().fg(c)

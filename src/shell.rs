@@ -56,22 +56,21 @@ enum Tab {
     Commit,
     Log,
     Push,
-    Conflicts,
     Branch,
     Stash,
+    Conflicts,
 }
 impl Tab {
-    const DISPLAY_ORDER: [Self; 6] = [Commit, Log, Branch, Stash, Push, Conflicts];
-    const SHORTCUT_ORDER: [Self; 6] = [Commit, Log, Push, Conflicts, Branch, Stash];
+    const DISPLAY_ORDER: [Self; 6] = [Commit, Log, Push, Branch, Stash, Conflicts];
 
     fn name(self) -> &'static str {
         match self {
             Commit => "Commit",
             Log => "Log",
             Push => "Push",
-            Conflicts => "Conflicts",
             Branch => "Branch",
             Stash => "Stash",
+            Conflicts => "Conflicts",
         }
     }
 
@@ -80,9 +79,9 @@ impl Tab {
             Commit => "focus-commit",
             Log => "focus-log",
             Push => "open-push",
-            Conflicts => "open-merge",
             Branch => "focus-branch",
             Stash => "focus-stash",
+            Conflicts => "open-merge",
         }
     }
 }
@@ -113,7 +112,7 @@ const HELP: &str = "Usage: igit [OPTIONS] [DIRECTORY]  (alias: ig)
   -h, --help                 show this help
   -V, --version              print version
 
-Tabs: 1 Commit / 2 Log / 5 Branch / 6 Stash / 3 Push / 4 Conflicts (when available)   p Pull / f Fetch
+Tabs: 1 Commit / 2 Log / 3 Push / 4 Branch / 5 Stash / 6 Conflicts (when available)   p Pull / f Fetch
 r repositories (Branch: rename; use Actions for Roots)   ? / F1 help   q quit
 Runs Git on your local working trees; mutations require a reviewed confirmation.";
 enum Popup {
@@ -250,6 +249,7 @@ impl Shell {
         }
         match self.tab {
             Log => self.log.key_sequence(),
+            Branch => self.branch.key_sequence(),
             Conflicts => self.merge.key_sequence(),
             _ => None,
         }
@@ -258,6 +258,7 @@ impl Shell {
         self.pending_keys = None;
         self.window_prefix = None;
         self.log.cancel_key_sequence();
+        self.branch.cancel_key_sequence();
         self.merge.cancel_key_sequence();
         self.key_picker = KeySequencePicker::default();
     }
@@ -286,6 +287,7 @@ impl Shell {
     }
     fn refresh(&mut self) {
         self.cancel_key_sequences();
+        self.branch_refs_changed();
         for &root in &self.ctx.scope {
             self.ctx.repos[root].refresh_branch();
         }
@@ -296,9 +298,6 @@ impl Shell {
         self.refresh_conflicts();
         if self.tab == Push {
             self.refresh_push();
-        }
-        if self.tab == Branch {
-            self.refresh_branch();
         }
         if self.tab == Stash {
             self.refresh_stash();
@@ -312,6 +311,13 @@ impl Shell {
     fn refresh_branch(&mut self) {
         if let Err(error) = self.branch.refresh(&self.ctx) {
             self.notice(format!("Branch: {error:#}"));
+        }
+    }
+    fn branch_refs_changed(&mut self) {
+        if self.tab == Branch {
+            self.refresh_branch();
+        } else {
+            self.branch.invalidate_reads(&self.ctx);
         }
     }
     fn refresh_log(&mut self) {
@@ -390,7 +396,7 @@ impl Shell {
             Conflicts => (),
             Branch => {
                 self.main_tab = tab;
-                self.refresh_branch();
+                self.branch.enter(&self.ctx);
             }
             Stash => {
                 self.main_tab = tab;
@@ -410,7 +416,7 @@ impl Shell {
                 self.refresh();
                 self.notice(s)
             }
-            Action::Go(n) => self.go(Tab::SHORTCUT_ORDER[n.min(Tab::SHORTCUT_ORDER.len() - 1)]),
+            Action::OpenConflicts => self.go(Conflicts),
             Action::CloseDialog => {
                 if matches!(self.tab, Push | Conflicts) {
                     self.go(self.main_tab);
@@ -919,8 +925,13 @@ impl Shell {
         }
         if matches!(ev, Event::FocusGained) {
             self.commit.resume_refresh();
-            if self.tab == Branch && self.pop.is_none() && !self.branch.editing() {
-                self.refresh_branch();
+            if self.tab == Branch {
+                if self.pop.is_none() && !self.branch.editing() {
+                    self.refresh_branch();
+                }
+            } else if self.branch.reads_pending() {
+                // Re-entry after an external edit must not reuse a read from before focus returned.
+                self.branch.invalidate_reads(&self.ctx);
             }
             if self.tab == Stash && self.pop.is_none() && !self.stash.editing() {
                 self.refresh_stash();
@@ -1018,7 +1029,7 @@ impl Shell {
                         return;
                     }
                     KeyCode::Char(ch @ '1'..='6') => {
-                        self.go(Tab::SHORTCUT_ORDER[(ch as u8 - b'1') as usize]);
+                        self.go(Tab::DISPLAY_ORDER[(ch as u8 - b'1') as usize]);
                         return;
                     }
                     KeyCode::Char(ch @ ('p' | 'f')) if k.modifiers.is_empty() => {
@@ -1087,10 +1098,8 @@ impl Shell {
                 if kind == update::Kind::Pull {
                     self.refresh();
                 } else {
+                    self.branch_refs_changed();
                     self.refresh_log();
-                    if self.tab == Branch {
-                        self.refresh_branch();
-                    }
                     if self.tab == Push {
                         self.refresh_push();
                     }
@@ -1119,6 +1128,7 @@ impl Shell {
         let seq = self.push.progress_seq;
         if let Some(msg) = self.push.poll(&self.ctx) {
             self.remote_refs_changed = true;
+            self.branch_refs_changed();
             self.notice(msg);
             change = true
         }
@@ -1137,9 +1147,6 @@ impl Shell {
             && self.log.key_sequence().is_none()
         {
             self.refresh_log();
-            if self.tab == Branch {
-                self.refresh_branch();
-            }
             change = true;
         }
         change |= seq != self.push.progress_seq;
@@ -1154,11 +1161,24 @@ impl Shell {
             self.action(a);
             change = true
         }
+        if self.branch.reads_pending() {
+            match self.branch.poll_loading(&self.ctx) {
+                Ok(redraw) => change |= redraw && self.tab == Branch,
+                Err(error) if self.tab == Branch => {
+                    self.notice(format!("Branch: {error:#}"));
+                    change = true;
+                }
+                Err(_) => (),
+            }
+        }
         change
     }
     fn poll_timeout(&self) -> Duration {
         const IDLE: Duration = Duration::from_millis(150);
-        let idle = if self.log_load.pending() || self.push.reads_pending() {
+        let idle = if self.log_load.pending()
+            || self.push.reads_pending()
+            || self.tab == Branch && self.branch.reads_pending()
+        {
             Duration::from_millis(16)
         } else {
             IDLE

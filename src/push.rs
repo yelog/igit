@@ -8,7 +8,11 @@ mod view;
 #[cfg(test)]
 mod view_tests;
 use crate::{
-    core::{command, git, git_bytes, redact_remote_error, Context, Repo},
+    core::{
+        command, git, git_bytes,
+        loading::{Load, Scope},
+        redact_remote_error, Context, Repo,
+    },
     ui::{
         icons::{Icon, IconMode},
         idea::{checkbox, GREEN, RED},
@@ -103,10 +107,10 @@ pub struct PushPanel {
     pub(crate) icons: IconMode,
     pub(crate) panes: PaneLayout,
     entries: Vec<Entry>,
-    load: loading::Load<Vec<Entry>>,
-    load_scope: Option<loading::Scope>,
+    load: Load<Vec<Entry>>,
+    load_scope: Option<Scope>,
     load_error: Option<String>,
-    preview_load: loading::Load<preview::Loaded>,
+    preview_load: Load<preview::Loaded>,
     preview_request: Option<preview::Request>,
     checked: BTreeSet<usize>,
     expanded: BTreeSet<usize>,
@@ -652,7 +656,7 @@ impl Panel for PushPanel {
             .load_scope
             .as_ref()
             .is_some_and(|scope| !scope.matches(c));
-        self.load_scope = Some(loading::Scope::new(c));
+        self.load_scope = Some(Scope::new(c));
         self.load_error = None;
         self.load.request();
         self.review.clear();

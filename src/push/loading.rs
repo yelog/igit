@@ -1,167 +1,6 @@
-//! Read-only work stays off the terminal thread, with one latest request per reader.
+//! Background reads for outgoing commits and their previews.
 use super::*;
-use std::{
-    sync::{
-        atomic::{AtomicU64, AtomicUsize, Ordering},
-        mpsc::TryRecvError,
-        Arc,
-    },
-    thread,
-};
-
-pub(super) struct Load<T> {
-    generation: Arc<AtomicU64>,
-    requested: bool,
-    running: Option<(u64, Receiver<T>)>,
-}
-
-impl<T> Default for Load<T> {
-    fn default() -> Self {
-        Self {
-            generation: Arc::default(),
-            requested: false,
-            running: None,
-        }
-    }
-}
-
-pub(super) struct Version {
-    generation: Arc<AtomicU64>,
-    value: u64,
-}
-
-impl Version {
-    fn cancelled(&self) -> bool {
-        self.generation.load(Ordering::Relaxed) != self.value
-    }
-}
-
-impl<T> Drop for Load<T> {
-    fn drop(&mut self) {
-        self.generation.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-impl<T: Send + 'static> Load<T> {
-    pub(super) fn request(&mut self) {
-        self.cancel();
-        self.requested = true;
-    }
-
-    pub(super) fn cancel(&mut self) {
-        self.generation.fetch_add(1, Ordering::Relaxed);
-        self.requested = false;
-    }
-
-    pub(super) fn pending(&self) -> bool {
-        self.requested || self.running.is_some()
-    }
-
-    pub(super) fn loading(&self) -> bool {
-        self.requested
-            || self
-                .running
-                .as_ref()
-                .is_some_and(|(v, _)| *v == self.generation.load(Ordering::Relaxed))
-    }
-
-    fn needs_start(&self) -> bool {
-        self.requested && self.running.is_none()
-    }
-
-    pub(super) fn start(&mut self, read: impl FnOnce(Version) -> T + Send + 'static) -> Result<()> {
-        if !self.needs_start() {
-            return Ok(());
-        }
-        self.requested = false;
-        let value = self.generation.load(Ordering::Relaxed);
-        let version = Version {
-            generation: self.generation.clone(),
-            value,
-        };
-        let (send, receive) = mpsc::channel();
-        thread::Builder::new()
-            .name("igit-push-read".into())
-            .spawn(move || {
-                let _ = send.send(read(version));
-            })?;
-        self.running = Some((value, receive));
-        Ok(())
-    }
-
-    pub(super) fn take_result(&mut self) -> Option<Result<T>> {
-        let (generation, receiver) = self.running.as_ref()?;
-        let result = match receiver.try_recv() {
-            Ok(value) => Ok(value),
-            Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) => {
-                Err(anyhow::anyhow!("Push reader stopped; refresh to retry"))
-            }
-        };
-        let current = *generation == self.generation.load(Ordering::Relaxed);
-        self.running = None;
-        current.then_some(result)
-    }
-}
-
-#[derive(PartialEq, Eq)]
-pub(super) struct Scope {
-    workspace: PathBuf,
-    roots: Vec<(usize, PathBuf)>,
-}
-
-impl Scope {
-    pub(super) fn new(c: &Context) -> Self {
-        Self {
-            workspace: c.workspace.clone(),
-            roots: c
-                .scope
-                .iter()
-                .map(|&i| (i, c.repos[i].path.clone()))
-                .collect(),
-        }
-    }
-
-    pub(super) fn matches(&self, c: &Context) -> bool {
-        self.workspace == c.workspace
-            && self.roots.len() == c.scope.len()
-            && self
-                .roots
-                .iter()
-                .zip(&c.scope)
-                .all(|((i, path), root)| i == root && path == &c.repos[*root].path)
-    }
-}
-
-fn entries(jobs: Vec<(usize, Repo, Option<Target>)>, version: Version) -> Vec<Entry> {
-    // Bound disk/process pressure even for workspaces with hundreds of roots.
-    const READERS: usize = 4;
-    let next = AtomicUsize::new(0);
-    thread::scope(|scope| {
-        let workers: Vec<_> = (0..READERS.min(jobs.len()))
-            .map(|_| {
-                scope.spawn(|| {
-                    let mut entries = Vec::new();
-                    while !version.cancelled() {
-                        let Some((i, repo, target)) =
-                            jobs.get(next.fetch_add(1, Ordering::Relaxed))
-                        else {
-                            break;
-                        };
-                        entries.push(entry(*i, repo, target.as_ref()));
-                    }
-                    entries
-                })
-            })
-            .collect();
-        let mut entries: Vec<_> = workers
-            .into_iter()
-            .flat_map(|w| w.join().unwrap())
-            .collect();
-        entries.sort_by_key(|e| e.idx);
-        entries
-    })
-}
+use crate::core::loading::read_repositories;
 
 impl PushPanel {
     pub(crate) fn reads_pending(&self) -> bool {
@@ -272,12 +111,16 @@ impl PushPanel {
                 changed = true;
             }
             if self.load.needs_start() {
-                let jobs = c
+                let jobs: Vec<_> = c
                     .scope
                     .iter()
                     .map(|&i| (i, c.repos[i].clone(), self.targets.get(&i).cloned()))
                     .collect();
-                if let Err(error) = self.load.start(move |version| entries(jobs, version)) {
+                if let Err(error) = self.load.start("igit-push-read", move |version| {
+                    read_repositories(&jobs, &version, |(i, repo, target)| {
+                        entry(*i, repo, target.as_ref())
+                    })
+                }) {
                     self.load_error = Some(format!("Unable to load outgoing commits: {error}"));
                     return Err(error);
                 }
@@ -311,7 +154,10 @@ impl PushPanel {
         }
         if self.preview_load.needs_start() {
             if let Some(request) = self.preview_request.clone() {
-                if let Err(error) = self.preview_load.start(move |_| preview::read(request)) {
+                if let Err(error) = self
+                    .preview_load
+                    .start("igit-push-read", move |_| preview::read(request))
+                {
                     self.preview_request = None;
                     self.preview.body = format!("Unable to load preview: {error}");
                     return Err(error);
@@ -330,7 +176,7 @@ impl PushPanel {
                 std::time::Instant::now() < deadline,
                 "Push reads did not finish"
             );
-            thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
 }

@@ -3,6 +3,100 @@ use crate::{core::git, ui::panes::PaneId};
 use crossterm::event::MouseEvent;
 
 #[test]
+fn stash_operations_confirm_cancel_remap_and_refresh_the_current_entry() {
+    let (_temp, mut app) = fixture();
+    save(&app);
+    let repo = app.ctx.repos[0].path.clone();
+    app.go(Stash);
+    finish(&mut app);
+    let before = snapshot(&repo);
+    let entries = git(&repo, &["stash", "list"]).unwrap();
+    for (shortcut, title) in [
+        ('a', "Apply stash"),
+        ('P', "Pop stash"),
+        ('d', "Drop stash"),
+    ] {
+        app.dispatch(&key(KeyCode::Char(shortcut)));
+        assert!(
+            matches!(&app.pop, Some(Popup::Confirm { title: actual, yes: false, owner: Stash, .. }) if actual == title)
+        );
+        for (width, height) in [(120, 36), (80, 24), (44, 12)] {
+            let text = screen(&mut app, width, height);
+            assert!(
+                text.contains(title) && text.contains("Cancel") && text.contains("Confirm"),
+                "{text}"
+            );
+        }
+        app.dispatch(&key(KeyCode::Enter)); // Cancel owns initial focus.
+        assert!(app.pop.is_none());
+        assert_eq!(snapshot(&repo), before);
+        assert_eq!(git(&repo, &["stash", "list"]).unwrap(), entries);
+    }
+    app.config =
+        AppConfig::from_toml("[keybindings.stash]\napply=['F8']\npop=['F9']\ndrop=['F10']\n")
+            .unwrap();
+    assert!(app
+        .configured_footer()
+        .contains("F8 Apply  F9 Pop  F10 Drop"));
+    for shortcut in ['a', 'P', 'd'] {
+        app.dispatch(&key(KeyCode::Char(shortcut)));
+        assert!(app.pop.is_none());
+    }
+    for (shortcut, title) in [(8, "Apply stash"), (9, "Pop stash"), (10, "Drop stash")] {
+        app.dispatch(&key(KeyCode::F(shortcut)));
+        assert!(matches!(&app.pop, Some(Popup::Confirm { title: actual, .. }) if actual == title));
+        app.dispatch(&key(KeyCode::Esc));
+    }
+    app.dispatch(&key(KeyCode::F(10)));
+    app.dispatch(&key(KeyCode::Char('y')));
+    assert!(app.msg.contains("Dropped stash"), "{}", app.msg);
+    assert!(git(&repo, &["stash", "list"]).unwrap().is_empty());
+    assert!(screen(&mut app, 80, 24).contains("No stashes"));
+    assert_eq!(snapshot(&repo), before);
+}
+
+#[test]
+fn stash_pop_conflicts_refresh_commit_and_conflicts_and_keep_the_saved_entry() {
+    let (_temp, mut app) = fixture();
+    save(&app);
+    let repo = app.ctx.repos[0].path.clone();
+    std::fs::write(repo.join("mixed.txt"), "divergent committed change\n").unwrap();
+    git(&repo, &["add", "mixed.txt"]).unwrap();
+    git(
+        &repo,
+        &[
+            "-c",
+            "user.name=Stash tester",
+            "-c",
+            "user.email=stash@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-qm",
+            "diverge",
+        ],
+    )
+    .unwrap();
+    let entries = git(&repo, &["stash", "list"]).unwrap();
+    app.go(Stash);
+    app.dispatch(&key(KeyCode::Char('P')));
+    app.dispatch(&key(KeyCode::Char('y')));
+    assert!(
+        app.msg.contains("Stash kept") && app.msg.contains("Conflicts tab"),
+        "{}",
+        app.msg
+    );
+    assert_eq!(git(&repo, &["stash", "list"]).unwrap(), entries);
+    assert!(app.tab_available(Conflicts));
+    app.go(Commit);
+    assert!(screen(&mut app, 120, 36).contains("Merge Conflicts"));
+    app.go(Conflicts);
+    assert!(screen(&mut app, 120, 36).contains("mixed.txt"));
+}
+
+#[test]
 fn commit_stash_binding_review_cancel_and_saved_entry_work_through_shell() {
     let (_temp, mut app) = fixture();
     let repo = app.ctx.repos[0].path.clone();
@@ -30,7 +124,7 @@ fn commit_stash_binding_review_cancel_and_saved_entry_work_through_shell() {
     app.dispatch(&key(KeyCode::Char('y')));
     assert!(app.msg.contains("SAVED"), "{}", app.msg);
     assert!(git(&repo, &["status", "--porcelain"]).unwrap().is_empty());
-    app.dispatch(&key(KeyCode::Char('6')));
+    app.dispatch(&key(KeyCode::Char('5')));
     finish(&mut app);
     let text = screen(&mut app, 120, 36);
     assert!(text.contains("save from Commit 中文"), "{text}");
@@ -71,12 +165,12 @@ fn stash_tab_header_keyboard_mouse_panes_and_help_work_at_supported_sizes() {
     save(&app);
     let before = snapshot(&app.ctx.repos[0].path);
     for (w, h) in [(120, 36), (80, 25), (44, 12)] {
-        app.dispatch(&key(KeyCode::Char('6')));
+        app.dispatch(&key(KeyCode::Char('5')));
         assert_eq!(app.tab, Stash);
         finish(&mut app);
         let text = screen(&mut app, w, h);
         assert!(
-            text.lines().next().unwrap().contains("Branch  Stash  Push"),
+            text.lines().next().unwrap().contains("Push  Branch  Stash"),
             "{text}"
         );
         assert!(
@@ -123,7 +217,7 @@ fn stash_global_and_panel_bindings_can_be_remapped() {
     )
     .unwrap();
     let mut app = Shell::with_config(fixture.ctx.clone(), config);
-    app.dispatch(&key(KeyCode::Char('6')));
+    app.dispatch(&key(KeyCode::Char('5')));
     assert_eq!(app.tab, Commit);
     app.dispatch(&key(KeyCode::F(9)));
     assert_eq!(app.tab, Stash);

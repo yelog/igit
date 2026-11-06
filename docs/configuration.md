@@ -184,7 +184,7 @@ default to `P` and `F`, and Merge's `back-to-files` defaults to `F`. If an
 override still uses `p` or `f` for one of those panel commands, change that
 override or rebind the conflicting global command.
 
-`global.focus-branch` defaults to `5`. `[keybindings.branch]` controls `create`
+`global.focus-branch` defaults to `4`. `[keybindings.branch]` controls `create`
 (`a`), `delete` (`d`), `checkout` (`Enter`), `merge` (`m`), `rename` (`r`), and
 tree navigation. The global `roots` binding is inactive in Branch because `r`
 renames; use Actions → Roots there. Branch name entry and confirmation retain
@@ -199,6 +199,12 @@ create = ["n"]
 rename = ["R"]
 ```
 
+Branch navigation commands include `first-item` (`g g`, Home), `last-item`
+(`G`, End), `screen-top` / `screen-middle` / `screen-bottom` (`H/M/L`),
+`page-down` / `page-up` (PgDn / PgUp and Ctrl-F / Ctrl-B), and
+`half-page-down` / `half-page-up` (Ctrl-D / Ctrl-U). Remapping `first-item`
+replaces the complete `g g` sequence.
+
 `commit.stash` defaults to `s`: it opens the shared stash-message editor for
 all changes in Roots, including untracked files. `commit.toggle-status` now
 defaults to `T`; the same option remains in View Options. Remap either under
@@ -207,12 +213,21 @@ Enter/Ctrl-S/F2 reviews and Esc cancels; typed characters bypass normal-mode
 bindings. If an existing custom `toggle-status` binding uses `s`, move or
 unbind it when enabling the default stash shortcut.
 
-`global.focus-stash` defaults to `6`. `[keybindings.stash]` provides
+`global.focus-stash` defaults to `5`. `[keybindings.stash]` provides
 `move-down`, `move-up`, `collapse`, `expand`, `toggle`, `open`, `first-item`,
 `last-item`, `page-down`, and `page-up` for the repository and file trees.
 `collapse-all` (`z`) and `expand-all` (`Z`) apply only to Files. For example,
 `open = ["v"]` changes the normal-mode file comparison key. The open Diff
 retains the same fixed revision controls as Log, including `Esc` to close.
+
+`[keybindings.stash]` also provides `apply = ["a"]`, `pop = ["P"]`, and
+`drop = ["d"]`. Each opens confirmation for the selected stash from either
+normal-mode pane. The open Diff keeps its read-only controls. Uppercase `P`
+is Pop; lowercase `p` remains global Pull. To remap, for example, set
+`pop = ["F9"]`. Confirmations use fixed `y` to proceed and `Esc` to cancel;
+Enter initially selects Cancel. Apply/pop follow the repository's `stash.index`
+configuration, displayed in the review, with no staging restoration by default.
+See [Git stash semantics](https://git-scm.com/docs/git-stash).
 
 In the merge editor, `auto-resolve` (`a`) applies only non-conflicting changes
 (the toolbar's All action). `resolve-simple` (`m`) runs **Resolve Automatically**:
@@ -376,8 +391,9 @@ and that `igit_resize.py` is installed. Requests retain the one-second timeout.
 
 `toggle-pane-maximized` defaults to `Ctrl-w f` in Commit, Stash, Push, and Conflicts.
 It fills the workspace with the focused pane. Tab continues through enabled
-panes; `1` / `2` / `5` / `6` / `3` / `4` switches to Commit, Log, Branch, Stash, Push, or Conflicts when
-available. Log stays tiled. The next press in a supported tab restores the saved split sizes.
+panes. Use `1` through `5` for Commit, Log, Push, Branch, and Stash, respectively,
+or `6` for Conflicts when available. Log stays tiled. The next press in a
+supported tab restores the saved split sizes.
 Maximizing is session-only. Local divider resize/reset and mouse resizing are
 disabled while maximized; smart resize can still hand off to Kitty.
 

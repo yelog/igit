@@ -42,7 +42,7 @@ fn conflicts_tab_stays_available_until_the_git_operation_is_complete() {
     let head = git(&["rev-parse", "HEAD"]);
 
     app.dispatch(&key(KeyCode::F(5)));
-    assert!(header(&mut app).contains("Commit Log Branch Stash Push Conflicts"));
+    assert!(header(&mut app).contains("Commit Log Push Branch Stash Conflicts"));
     assert_eq!(app.tab, Commit, "refresh must not steal focus");
     let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(44, 12)).unwrap();
     terminal.draw(|f| app.draw(f)).unwrap();
@@ -287,8 +287,8 @@ fn workspace_tabs_open_on_commit_and_switch_in_header_order_at_each_size() {
         let header = log.lines().next().unwrap();
         assert!(header.starts_with(" Log  + "), "{header}");
         assert!(
-            header.ends_with(" Commit  Log  Branch  Stash  Push ")
-                || header.ends_with(" Commit Log Branch Stash Push"),
+            header.ends_with(" Commit  Log  Push  Branch  Stash ")
+                || header.ends_with(" Commit Log Push Branch Stash"),
             "{header}"
         );
         assert_eq!(app.regions.body, Rect::new(0, 1, w, h - 2));
@@ -302,7 +302,7 @@ fn workspace_tabs_open_on_commit_and_switch_in_header_order_at_each_size() {
         assert_eq!(app.tab, Log);
         assert!(log.contains("base"), "{log}");
         assert!(!app.regions.log_tabs.is_empty());
-        app.dispatch(&key(KeyCode::Char('4')));
+        app.dispatch(&key(KeyCode::Char('6')));
         assert_eq!(app.tab, Log);
 
         let add = header.find('+').unwrap() as u16;
