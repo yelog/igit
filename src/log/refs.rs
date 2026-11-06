@@ -1,8 +1,8 @@
 //! One branch tree for the selected repositories. Folder IDs end in '/' so that
 //! a branch in one root and a folder of the same name in another can coexist.
 use super::{
-    cells, fg, fold_slot, model::History, toolbar_field, window, Field, Hit, Icon, IconMode,
-    LogPanel, Pane, BLUE, DIM, EDGE, GOLD, INK, PANEL, SELECT,
+    cells, fg, fold_slot, model::History, toolbar_field, window, Field, Filter, Hit, Icon,
+    IconMode, LogPanel, Pane, BLUE, DIM, EDGE, GOLD, INK, PANEL, SELECT,
 };
 use crate::core::Context;
 use anyhow::Result;
@@ -124,7 +124,14 @@ impl RefTree {
         self.set_cursor(first);
     }
 
-    fn rebuild(&mut self, hist: &History, c: &Context, query: &str, icons: IconMode) {
+    fn rebuild(
+        &mut self,
+        hist: &History,
+        filter: &Filter,
+        c: &Context,
+        query: &str,
+        icons: IconMode,
+    ) {
         let query = query.trim().to_lowercase();
         if query != self.query {
             self.search_closed.clear();
@@ -142,9 +149,16 @@ impl RefTree {
                 ]),
             });
         }
+        // Scope refs by the applied paths, even when no commits match those paths.
+        let roots: BTreeSet<_> = c
+            .scope
+            .iter()
+            .copied()
+            .filter(|&root| filter.includes_root(root) && filter.paths.for_root(root).is_some())
+            .collect();
         let mut by_name = BTreeMap::<&str, Owners>::new();
         for branch in &hist.branches {
-            if !c.scope.contains(&branch.root) || c.repos.get(branch.root).is_none() {
+            if !roots.contains(&branch.root) || c.repos.get(branch.root).is_none() {
                 continue;
             }
             let Some((prefix, _)) = GROUPS.iter().find(|(p, _)| branch.name.starts_with(p)) else {
@@ -319,7 +333,8 @@ impl LogPanel {
             Some((Field::Refs, text)) => text,
             _ => &self.ref_query,
         };
-        self.refs.rebuild(&self.hist, c, query, self.icons);
+        self.refs
+            .rebuild(&self.hist, &self.filter, c, query, self.icons);
     }
 
     pub(super) fn ref_horizontal(&mut self, left: bool, c: &Context) -> bool {
@@ -464,7 +479,7 @@ mod tests {
     use super::*;
     use crate::{
         core::{git, Repo},
-        log::model::Branch,
+        log::model::{Branch, PathFilter},
         ui::Panel,
     };
     use crossterm::event::{
@@ -522,7 +537,7 @@ mod tests {
             .remote_heads
             .insert((1, "refs/remotes/origin/primary".into()));
         let mut tree = RefTree::default();
-        tree.rebuild(&history, &c, "", IconMode::Unicode);
+        tree.rebuild(&history, &Filter::default(), &c, "", IconMode::Unicode);
         let ids: Vec<_> = tree.rows.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -549,6 +564,84 @@ mod tests {
             label("refs/remotes/origin/primary").trim(),
             "★ primary (web)"
         );
+    }
+
+    #[test]
+    fn paths_ref_tree_intersects_scopes_before_aggregating_owners() {
+        let mut c = context();
+        let mut panel = LogPanel {
+            icons: IconMode::Unicode,
+            ..Default::default()
+        };
+        for (root, repo) in c.repos.iter().enumerate() {
+            for name in [
+                "refs/heads/shared".to_owned(),
+                format!("refs/heads/only-{}", repo.name),
+                "refs/remotes/origin/shared".to_owned(),
+                format!("refs/remotes/origin/only-{}", repo.name),
+                "refs/tags/shared".to_owned(),
+                format!("refs/tags/only-{}", repo.name),
+            ] {
+                panel.hist.branches.push(Branch { root, name });
+            }
+            panel
+                .hist
+                .tracking
+                .insert((root, "refs/heads/shared".into()), (root + 1, root + 2));
+        }
+        // Pins and counts from an excluded repository must not leak into shared rows.
+        panel.hist.current.insert(0, "refs/heads/shared".into());
+        panel.hist.current.insert(1, "refs/heads/only-web".into());
+        panel
+            .hist
+            .remote_heads
+            .insert((0, "refs/remotes/origin/shared".into()));
+        panel.filter.roots = Some([0, 1].into());
+        panel.filter.paths = PathFilter::parse("web/docs\nkit/docs", &c).unwrap();
+        panel.rebuild_refs(&c);
+        let ids: BTreeSet<_> = panel
+            .refs
+            .rows
+            .iter()
+            .filter(|r| matches!(r.action, RowAction::Select))
+            .map(|r| r.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "HEAD",
+                "refs/heads/shared",
+                "refs/heads/only-web",
+                "refs/remotes/origin/shared",
+                "refs/remotes/origin/only-web",
+                "refs/tags/shared",
+                "refs/tags/only-web",
+            ]
+            .into()
+        );
+        let label = |id| {
+            panel.refs.rows[row(&panel.refs, id).unwrap()]
+                .line
+                .to_string()
+        };
+        assert_eq!(
+            label("refs/heads/shared").trim(),
+            format!("{} shared (web) ↙3 ↗2", panel.icons.glyph(Icon::Branch))
+        );
+        assert_eq!(label("refs/heads/only-web").trim(), "● only-web (web)");
+        assert_eq!(
+            label("refs/remotes/origin/shared").trim(),
+            format!("{} shared (web)", panel.icons.glyph(Icon::Remote))
+        );
+
+        panel.ref_query = "only-".into();
+        panel.rebuild_refs(&c);
+        assert!(row(&panel.refs, "refs/heads/only-web").is_some());
+        assert!(row(&panel.refs, "refs/heads/only-api").is_none());
+        assert!(row(&panel.refs, "refs/tags/only-kit").is_none());
+        c.scope.remove(&1);
+        panel.rebuild_refs(&c);
+        assert!(panel.refs.rows.is_empty());
     }
 
     #[test]

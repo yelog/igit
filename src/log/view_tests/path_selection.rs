@@ -68,6 +68,120 @@ fn open(p: &mut LogPanel, c: &Context, tree: bool) {
     key(p, K::Enter, Mods::NONE, c);
 }
 
+fn ref_workspace() -> (tempfile::TempDir, Context, LogPanel) {
+    let (d, c, mut p) = workspace();
+    for repo in &c.repos {
+        git(&repo.path, &["branch", &format!("{}-local", repo.name)]);
+        git(
+            &repo.path,
+            &[
+                "update-ref",
+                &format!("refs/remotes/origin/{}-remote", repo.name),
+                "HEAD",
+            ],
+        );
+        git(&repo.path, &["tag", &format!("{}-tag", repo.name)]);
+    }
+    p.refresh(&c).unwrap();
+    (d, c, p)
+}
+
+fn assert_ref_roots(
+    p: &mut LogPanel,
+    t: &mut Terminal<TestBackend>,
+    c: &Context,
+    expected: &[&str],
+) {
+    render(p, t, c);
+    let rows: Vec<_> = p
+        .hits
+        .iter()
+        .filter(|(_, h)| matches!(h, Hit::Ref(_)))
+        .map(|(area, _)| row_text(t, *area))
+        .collect();
+    for repo in &c.repos {
+        for suffix in ["local", "remote", "tag"] {
+            let name = format!("{}-{suffix}", repo.name);
+            assert_eq!(
+                rows.iter().any(|text| text.contains(&name)),
+                expected.contains(&repo.name.as_str()),
+                "unexpected visibility for {name}: {rows:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn paths_ref_tree_tracks_root_toggles_tabs_and_clear() {
+    let (_d, mut c, mut p) = ref_workspace();
+    let scope = c.scope.clone();
+    let mut t = Terminal::new(TestBackend::new(180, 40)).unwrap();
+    assert_ref_roots(&mut p, &mut t, &c, &["api", "web"]);
+    filter_key(&mut p, 'p', &c);
+    render(&mut p, &mut t, &c);
+    let web = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Choice(3))));
+    click_at(&mut p, web, &c);
+    assert!(p.editing());
+    assert_ref_roots(&mut p, &mut t, &c, &["api"]);
+    for roots in [&["api", "web"][..], &[][..], &["api", "web"][..]] {
+        key(&mut p, K::Char('a'), Mods::CONTROL, &c);
+        assert_ref_roots(&mut p, &mut t, &c, roots);
+    }
+    p.event(&Event::Paste("web".into()), &c);
+    key(&mut p, K::Enter, Mods::NONE, &c);
+    assert_ref_roots(&mut p, &mut t, &c, &["web"]);
+    assert_eq!(c.scope, scope);
+
+    key(&mut p, K::Char('t'), Mods::CONTROL, &c);
+    assert_ref_roots(&mut p, &mut t, &c, &["api", "web"]);
+    key(&mut p, K::Char('['), Mods::NONE, &c);
+    assert_ref_roots(&mut p, &mut t, &c, &["web"]);
+    c.scope.remove(&1);
+    p.refresh(&c).unwrap();
+    assert_ref_roots(&mut p, &mut t, &c, &[]);
+    c.scope = scope;
+    p.refresh(&c).unwrap();
+    assert_ref_roots(&mut p, &mut t, &c, &["web"]);
+
+    let clear = target(&p, |h| matches!(h, Hit::Clear(Field::Path)));
+    click_at(&mut p, clear, &c);
+    assert_ref_roots(&mut p, &mut t, &c, &["api", "web"]);
+}
+
+#[test]
+fn paths_ref_tree_applies_path_drafts_on_confirmation() {
+    let (_d, c, mut p) = ref_workspace();
+    let mut t = Terminal::new(TestBackend::new(180, 40)).unwrap();
+    open(&mut p, &c, true);
+    tree_click(&mut p, &mut t, &c, "api (", TreeHit::Fold);
+    tree_click(&mut p, &mut t, &c, "D lib", TreeHit::Check);
+    key(&mut p, K::Esc, Mods::NONE, &c);
+    assert_ref_roots(&mut p, &mut t, &c, &["api", "web"]);
+    open(&mut p, &c, true);
+    tree_click(&mut p, &mut t, &c, "api (", TreeHit::Fold);
+    tree_click(&mut p, &mut t, &c, "D lib", TreeHit::Check);
+    key(&mut p, K::Enter, Mods::NONE, &c);
+    assert_ref_roots(&mut p, &mut t, &c, &["api"]);
+
+    for (paths, roots) in [
+        ("web/docs", &["web"][..]),
+        ("api/lib\nweb/docs", &["api", "web"][..]),
+        ("lib", &["api", "web"][..]),
+        ("api/missing-file", &["api"][..]),
+    ] {
+        open(&mut p, &c, false);
+        key(&mut p, K::Char('u'), Mods::CONTROL, &c);
+        p.event(&Event::Paste(paths.into()), &c);
+        key(&mut p, K::Char('s'), Mods::CONTROL, &c);
+        assert_ref_roots(&mut p, &mut t, &c, roots);
+    }
+    // Refs depend on the selected repositories, even when no commit matches the path.
+    assert!(p.visible.is_empty());
+    let clear = target(&p, |h| matches!(h, Hit::Clear(Field::Path)));
+    click_at(&mut p, clear, &c);
+    assert_ref_roots(&mut p, &mut t, &c, &["api", "web"]);
+}
+
 #[test]
 fn paths_multiline_matches_file_or_directory_literally_and_keeps_invalid_drafts() {
     let (_d, c, mut p) = workspace();

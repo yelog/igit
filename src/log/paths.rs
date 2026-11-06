@@ -83,7 +83,7 @@ impl LogPanel {
                 }
                 self.filter.set_roots(roots, c);
                 self.choice = Some(index);
-                return self.refilter_roots();
+                return self.refilter_roots(c);
             }
         }
         Ok(())
@@ -107,11 +107,12 @@ impl LogPanel {
         }
         self.filter.set_roots(roots, c);
         self.choice = Some(self.choice.unwrap_or(COMMANDS.len()).max(COMMANDS.len()));
-        self.refilter_roots()
+        self.refilter_roots(c)
     }
 
-    fn refilter_roots(&mut self) -> Result<()> {
+    fn refilter_roots(&mut self, c: &Context) -> Result<()> {
         let keep = self.rev().map(|r| (r.root, r.oid.clone()));
+        self.rebuild_refs(c);
         self.rebuild_visible(keep)
     }
 
@@ -135,7 +136,7 @@ impl LogPanel {
             self.filter.set_roots([id].into(), c);
             if self.filter.paths.is_empty() {
                 self.discard_editor();
-                return self.refilter_roots();
+                return self.refilter_roots(c);
             }
             self.finish_paths(c, PathFilter::default())
         } else {
@@ -147,7 +148,7 @@ impl LogPanel {
         self.filter.roots = None;
         if self.filter.paths.is_empty() {
             self.discard_editor();
-            return self.refilter_roots();
+            return self.refilter_roots(c);
         }
         self.finish_paths(c, PathFilter::default())
     }
