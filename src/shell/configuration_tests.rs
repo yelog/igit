@@ -571,3 +571,31 @@ fn configuration_new_shortcuts_interrupt_default_prefixes_without_stealing_suffi
     assert_eq!(app.surface(), Split(Commit));
     assert!(app.key_sequence().is_none());
 }
+
+#[test]
+fn configuration_remaps_workspace_update_and_log_filter_prefixes() {
+    let (_dir, mut app) = fixture();
+    configure(&mut app, "[keybindings.log]\npaths-filter=['Space x']");
+    send(&mut app, "Space p");
+    assert!(app.pop.is_none() && !app.log.editing());
+    send(&mut app, "p");
+    assert!(matches!(app.pop, Some(Popup::Update(_))));
+    send(&mut app, "Esc");
+    configure(
+        &mut app,
+        "[keybindings.global]\npull=['F8']\nfetch=[]\n[keybindings.log]\npaths-filter=['Space x']",
+    );
+    send(&mut app, "p f Space p");
+    assert!(app.pop.is_none() && !app.log.editing());
+    send(&mut app, "Space x");
+    assert_eq!(app.help_content().context(), "Log / Paths Filter");
+    send(&mut app, "Esc Space u");
+    assert_eq!(app.help_content().context(), "Log / User Filter");
+    send(&mut app, "Esc F8");
+    assert!(matches!(app.pop, Some(Popup::Update(_))));
+    send(&mut app, "Esc F1");
+    app.dispatch(&Event::Paste("Review Pull".into()));
+    assert!(screen(&mut app, 120, 36).contains("F8"));
+    send(&mut app, "Enter");
+    assert!(matches!(app.pop, Some(Popup::Update(_))));
+}

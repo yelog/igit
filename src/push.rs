@@ -6,7 +6,7 @@ mod view;
 #[cfg(test)]
 mod view_tests;
 use crate::{
-    core::{command, git, git_bytes, Context, Repo},
+    core::{command, git, git_bytes, redact_remote_error, Context, Repo},
     ui::{
         icons::{Icon, IconMode},
         idea::{checkbox, GREEN, RED},
@@ -229,15 +229,6 @@ fn url(p: &Path, r: &str) -> Result<String> {
     }
     Ok(s)
 }
-fn redact(msg: &str, url: &str) -> String {
-    let mut s = msg.replace(url, "<remote>");
-    for word in msg.split_whitespace() {
-        if word.contains("://") && word.contains('@') {
-            s = s.replace(word, "<remote>")
-        }
-    }
-    s
-}
 fn job(repo: &Repo, x: &Entry) -> Result<Job> {
     if x.t.remote.starts_with('-')
         || x.t.remote == "."
@@ -290,7 +281,7 @@ fn push_one(j: &Job, tags: bool, nohooks: bool) -> Result<()> {
     let dst = format!("refs/heads/{}", j.t.dst);
     // Query the *push* endpoint, which may differ from the fetch endpoint.
     let actual = git(p, &["ls-remote", "--refs", "--", &j.url, &dst])
-        .map_err(|e| anyhow::anyhow!(redact(&e.to_string(), &j.url)))?;
+        .map_err(|e| anyhow::anyhow!(redact_remote_error(&e.to_string(), &j.url)))?;
     if actual.split_whitespace().next() != j.tracking.as_deref() {
         bail!("remote tip differs from preview; Fetch, review target and retry (check push URL if different)")
     }
@@ -330,7 +321,7 @@ fn push_one(j: &Job, tags: bool, nohooks: bool) -> Result<()> {
         args.push("--no-verify")
     }
     args.extend([lease.as_str(), "--", &j.t.remote, &spec]);
-    git(p, &args).map_err(|e| anyhow::anyhow!(redact(&e.to_string(), &j.url)))?;
+    git(p, &args).map_err(|e| anyhow::anyhow!(redact_remote_error(&e.to_string(), &j.url)))?;
     Ok(())
 }
 fn label(p: &Path) -> String {
@@ -719,7 +710,7 @@ impl PushPanel {
                         .map(|_| ())
                         .map_err(|e| {
                             let u = url(&p, &r).unwrap_or_else(|_| "<remote>".into());
-                            redact(&e.to_string(), &u)
+                            redact_remote_error(&e.to_string(), &u)
                         });
                     let _ = tx.send(Report::Row(i, res));
                 }
@@ -776,7 +767,7 @@ impl Panel for PushPanel {
         if self.group_menu.is_some() {
             "Group By · j/k select · Space/Enter toggle · Esc close"
         } else {
-            "j/k move · h/l fold · o group by · Enter diff · d details · [/] fold all · Space check root · t target · p push · Tab/F6 pane"
+            "j/k move · h/l fold · o group by · Enter diff · d details · [/] fold all · Space check root · t target · P push · F fetch · Tab/F6 pane"
         }
     }
     fn editing(&self) -> bool {
@@ -1017,9 +1008,9 @@ impl Panel for PushPanel {
                         }
                     }
                 }
-                KeyCode::Char('p') => return self.review(c, false),
+                KeyCode::Char('P') => return self.review(c, false),
                 KeyCode::Char('R') => return self.review(c, true),
-                KeyCode::Char('f') => return self.start(c, true),
+                KeyCode::Char('F') => return self.start(c, true),
                 KeyCode::Char('v') => self.follow_tags = !self.follow_tags,
                 KeyCode::Char('x') => self.skip_hooks = !self.skip_hooks,
                 KeyCode::Char('d') => self.toggle_details(c),

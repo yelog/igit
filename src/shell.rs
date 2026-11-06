@@ -1,6 +1,7 @@
 mod configuration;
 mod kitty;
 mod panes;
+mod update;
 mod workspace;
 
 use self::{
@@ -79,9 +80,11 @@ const HELP: &str = "Usage: igit [OPTIONS] [DIRECTORY]  (alias: ig)
   -h, --help                 show this help
   -V, --version              print version
 
-Focus: 1 Git Log / 2 Commit   Dialogs: 3 Push / 4 Merge   r repositories   ? / F1 help   q quit
+Focus: 1 Git Log / 2 Commit   Dialogs: 3 Push / 4 Merge   p Pull / f Fetch
+r repositories   ? / F1 help   q quit
 Runs Git on your local working trees; mutations require a reviewed confirmation.";
 enum Popup {
+    Update(update::Dialog),
     Scope {
         picked: BTreeSet<usize>,
         row: usize,
@@ -362,6 +365,17 @@ impl Shell {
             yes: false,
         })
     }
+    fn review_update(&mut self, kind: update::Kind) {
+        self.cancel_key_sequences();
+        self.cancel_drags();
+        if self.push.busy() {
+            self.notice("Wait for the remote operation to finish".into());
+        } else if self.ctx.scope.is_empty() {
+            self.notice("No Git repositories in Roots".into());
+        } else {
+            self.pop = Some(Popup::Update(update::Dialog::new(kind, &self.ctx)));
+        }
+    }
     fn global(&mut self, n: u8) {
         self.cancel_key_sequences();
         match n {
@@ -385,6 +399,7 @@ impl Shell {
     }
     fn help_content(&self) -> HelpContent {
         match self.pop.as_ref() {
+            Some(Popup::Update(dialog)) => dialog.keymap(),
             Some(Popup::Scope { .. }) => HelpContent::new(
                 HelpSection::new(
                     "Roots / Repository scope",
@@ -485,13 +500,15 @@ impl Shell {
         match row {
             0..=3 => self.go(SHORTCUTS[row]),
             4 => self.global(0),
-            5 => self.global(5),
-            6 => {
+            5 => self.review_update(update::Kind::Pull),
+            6 => self.review_update(update::Kind::Fetch),
+            7 => self.global(5),
+            8 => {
                 self.pop = Some(Popup::Open {
                     path: self.ctx.workspace.display().to_string(),
                 })
             }
-            7 => self.global(4),
+            9 => self.global(4),
             _ => self.global(3),
         }
     }
@@ -542,6 +559,12 @@ impl Shell {
         } else {
             None
         };
+        if let Some(Popup::Update(dialog)) = self.pop.as_mut() {
+            if dialog.event(ev, hit) {
+                self.pop = None;
+            }
+            return;
+        }
         let down = key == Some(KeyCode::Char('j'))
             || key == Some(KeyCode::Down)
             || matches!(ev,Event::Mouse(m) if m.kind==MouseEventKind::ScrollDown);
@@ -554,6 +577,7 @@ impl Shell {
         }
         let popup = self.pop.take().unwrap();
         self.pop = match popup {
+            Popup::Update(_) => unreachable!("update events are handled above"),
             Popup::Confirm {
                 title,
                 body,
@@ -634,7 +658,7 @@ impl Shell {
                     row = row.saturating_sub(1)
                 }
                 if down {
-                    row = (row + 1).min(8)
+                    row = (row + 1).min(10)
                 }
                 if let Some(i) = hit {
                     self.menu_action(i);
@@ -755,7 +779,15 @@ impl Shell {
                     }
                     return;
                 }
-                SequenceEvent::Pass => (),
+                SequenceEvent::Pass => {
+                    // A pending Log suffix takes priority over the standalone Pull key.
+                    if sequence == KeySequence::LogFilters
+                        && matches!(ev, Event::Key(key) if self.key_picker.accepts_key(key, sequence))
+                    {
+                        self.panel_event(self.surface(), ev);
+                        return;
+                    }
+                }
             }
         }
         if self.tool.is_none()
@@ -797,6 +829,14 @@ impl Shell {
                         self.go(SHORTCUTS[(ch as u8 - b'1') as usize]);
                         return;
                     }
+                    KeyCode::Char(ch @ ('p' | 'f')) if k.modifiers.is_empty() => {
+                        self.review_update(if ch == 'p' {
+                            update::Kind::Pull
+                        } else {
+                            update::Kind::Fetch
+                        });
+                        return;
+                    }
                     KeyCode::Char('r') => {
                         self.global(0);
                         return;
@@ -835,6 +875,24 @@ impl Shell {
     }
     fn poll(&mut self) -> bool {
         let mut change = self.key_picker.poll(Instant::now());
+        let popup = match self.pop.as_mut() {
+            Some(Popup::Help { origin, .. }) => origin.as_deref_mut(),
+            popup => popup,
+        };
+        if let Some(Popup::Update(dialog)) = popup {
+            if let Some((kind, summary)) = dialog.poll() {
+                if kind == update::Kind::Pull {
+                    self.refresh();
+                } else {
+                    self.refresh_log();
+                    if self.tool == Some(Push) {
+                        self.refresh_tool(Push);
+                    }
+                }
+                self.notice(summary);
+                change = true;
+            }
+        }
         if let Some(result) = self.kitty.poll() {
             self.maximize_pending = false;
             match result {
@@ -891,6 +949,10 @@ impl Shell {
             .map_or(timeout, |remaining| remaining.min(timeout))
     }
     fn draw_popup(&mut self, f: &mut Frame, a: Rect) {
+        if let Some(Popup::Update(dialog)) = self.pop.as_mut() {
+            dialog.draw(f, a, self.icons, &mut self.pop_hits);
+            return;
+        }
         if let Some(Popup::Help { state, .. }) = self.pop.as_mut() {
             state.draw(f, a, self.icons);
             return;
@@ -915,6 +977,7 @@ impl Shell {
         .min(a.width - 4);
         let p = Rect::new(a.x + (a.width - w) / 2, a.y + (a.height - h) / 2, w, h);
         let title = match pop {
+            Popup::Update(_) => unreachable!("update is rendered above"),
             Popup::Scope { .. } => "Workspace roots",
             Popup::Help { .. } => "IGit · Keyboard shortcuts",
             Popup::Confirm { title, .. } => title,
@@ -939,6 +1002,7 @@ impl Shell {
         );
         let mut controls = vec![];
         match pop {
+            Popup::Update(_) => unreachable!("update is rendered above"),
             Popup::Confirm {
                 body: text,
                 yes,
@@ -1021,6 +1085,7 @@ impl Shell {
                 controls.push((" Close / Esc ", usize::MAX, true))
             }
             Popup::Menu { row } => {
+                let start = (row + 1).saturating_sub(usize::from(inner.height));
                 for (i, s) in [
                     format!(
                         "{}  Focus Git Log",
@@ -1033,6 +1098,14 @@ impl Shell {
                     format!("{}  Open Push…", self.config.label("global", "open-push")),
                     format!("{}  Open Merge…", self.config.label("global", "open-merge")),
                     "Roots / Select repositories".into(),
+                    format!(
+                        "{}  Pull repositories…",
+                        self.config.label("global", "pull")
+                    ),
+                    format!(
+                        "{}  Fetch repositories…",
+                        self.config.label("global", "fetch")
+                    ),
                     "Refresh workspace".into(),
                     "Open / rescan workspace…".into(),
                     "Console".into(),
@@ -1040,9 +1113,10 @@ impl Shell {
                 ]
                 .iter()
                 .enumerate()
+                .skip(start)
                 .take(inner.height as usize)
                 {
-                    let r = Rect::new(inner.x, inner.y + i as u16, inner.width, 1);
+                    let r = Rect::new(inner.x, inner.y + (i - start) as u16, inner.width, 1);
                     f.render_widget(
                         Paragraph::new(s.as_str()).style(Style::default().bg(if i == *row {
                             SEL
@@ -1309,6 +1383,8 @@ mod maximize_tests;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
+mod update_tests;
+#[cfg(test)]
 mod workspace_tests;
 
 #[cfg(test)]
@@ -1473,6 +1549,7 @@ mod tests {
             })
         };
 
+        send(&mut app, key(KeyCode::Char(' ')));
         send(&mut app, key(KeyCode::Char('b')));
         let roots = app.tools.iter().find(|(_, n)| *n == 0).unwrap().0;
         let commit = app.regions.commit;
@@ -1499,6 +1576,7 @@ mod tests {
         assert!(app.log.editing());
         send(&mut app, key(KeyCode::Esc));
 
+        send(&mut app, key(KeyCode::Char(' ')));
         send(&mut app, key(KeyCode::Char('d')));
         send(&mut app, click(commit));
         assert_eq!(app.surface(), Split(Commit));

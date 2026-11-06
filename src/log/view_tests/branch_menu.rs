@@ -103,7 +103,7 @@ fn paste(p: &mut LogPanel, s: &str, c: &Context) {
 fn hover_cascades_star_is_independent_of_filter_and_survives_reopening() {
     let (_d, c, mut p) = fixture();
     let mut t = Terminal::new(TestBackend::new(160, 30)).unwrap();
-    key(&mut p, K::Char('b'), Mods::NONE, &c);
+    filter_key(&mut p, 'b', &c);
     render(&mut p, &mut t, &c);
     let labels: Vec<_> = p
         .hits
@@ -161,7 +161,7 @@ fn hover_cascades_star_is_independent_of_filter_and_survives_reopening() {
     assert!(matches!(p.editor, Some((Field::Author, _))));
     let mut reopened = LogPanel::default();
     reopened.refresh(&c).unwrap();
-    key(&mut reopened, K::Char('b'), Mods::NONE, &c);
+    filter_key(&mut reopened, 'b', &c);
     render(&mut reopened, &mut t, &c);
     let fav = item(&reopened, &t, "Favorites", main_row);
     assert!(item(&reopened, &t, "origin/antv-version", main_row).y > fav.y);
@@ -188,7 +188,7 @@ fn select_combines_exact_refs_regex_and_exclusions_per_repository() {
         ("-refs/heads/topic", vec!["two base"]),
         ("refs/tags/topic", vec!["one base", "topic only"]),
     ] {
-        key(&mut p, K::Char('b'), Mods::NONE, &c);
+        filter_key(&mut p, 'b', &c);
         key(&mut p, K::Enter, Mods::NONE, &c);
         key(&mut p, K::Char('u'), Mods::CONTROL, &c);
         paste(&mut p, text, &c);
@@ -199,7 +199,7 @@ fn select_combines_exact_refs_regex_and_exclusions_per_repository() {
         assert!(!p.editing(), "{text}");
         assert_eq!(subjects(&p), expected.into_iter().collect(), "{text}");
     }
-    key(&mut p, K::Char('b'), Mods::NONE, &c);
+    filter_key(&mut p, 'b', &c);
     key(&mut p, K::Enter, Mods::NONE, &c);
     key(&mut p, K::Char('u'), Mods::CONTROL, &c);
     paste(&mut p, "topic", &c);
@@ -220,7 +220,7 @@ fn select_combines_exact_refs_regex_and_exclusions_per_repository() {
 fn narrow_keyboard_and_mouse_back_reach_last_remote_and_respect_paths() {
     let (_d, c, mut p) = fixture();
     let mut t = Terminal::new(TestBackend::new(40, 12)).unwrap();
-    key(&mut p, K::Char('b'), Mods::NONE, &c);
+    filter_key(&mut p, 'b', &c);
     key(&mut p, K::End, Mods::NONE, &c); // team/mirror
     key(&mut p, K::Up, Mods::NONE, &c); // origin
     key(&mut p, K::Right, Mods::NONE, &c);
@@ -242,7 +242,7 @@ fn narrow_keyboard_and_mouse_back_reach_last_remote_and_respect_paths() {
     );
     assert_eq!(subjects(&p), ["one base", "topic only"].into());
     p.filter.roots = Some([1].into());
-    key(&mut p, K::Char('b'), Mods::NONE, &c);
+    filter_key(&mut p, 'b', &c);
     key(&mut p, K::End, Mods::NONE, &c);
     render(&mut p, &mut t, &c);
     let remote = item(&p, &t, "origin/...", main_row);
@@ -268,7 +268,7 @@ fn left_side_cascade_keeps_the_hovered_row_under_the_pointer_in_all_icon_modes()
     let anchor = Rect::new(82, 1, 8, 1);
     for icons in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
         p.icons = icons;
-        key(&mut p, K::Char('b'), Mods::NONE, &c);
+        filter_key(&mut p, 'b', &c);
         let paint = |p: &mut LogPanel, t: &mut Terminal<TestBackend>| {
             p.hits.clear();
             t.draw(|f| {

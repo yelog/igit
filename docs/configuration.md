@@ -99,7 +99,7 @@ binding; the action's mouse button remains available.
 | `terminal.mouse` | `true` | Enable mouse capture and IGit mouse interactions; CLI `--mouse on/off` overrides it |
 | `ui.icons` | `"nerd-font"` | Icon mode; CLI `--icons` overrides it |
 | `keybindings.hint_delay_ms` | `200` | Delay before showing sequence continuations, from `0` to `10000` milliseconds |
-| `keybindings.global` | See defaults | Focus Log/Commit, open Push/Merge, Roots, Actions, refresh, help, quit |
+| `keybindings.global` | See defaults | Focus Log/Commit, open Push/Merge, review Pull/Fetch, Roots, Actions, refresh, help, quit |
 | `keybindings.panes` | See defaults | Focus/cycle panes, resize/reset sizes, maximize/restore, optional Kitty synchronization, close a Log tab |
 | `keybindings.log` | See defaults | Movement, paging, copying, filtering, tabs, display options |
 | `keybindings.commit` | See defaults | Movement, checkboxes, groups, preview, messages, AI and commit review |
@@ -122,11 +122,16 @@ up to four chords separated by spaces:
   `Delete`, `Backspace`, and `F2` through `F24`.
 - Modifiers are `Ctrl` / `Control`, `Alt` / `Option`, `Shift`, and
   `Super` / `Cmd` / `Command`, joined with `-` or `+`: `Ctrl-r`, `Alt+Enter`.
-- Write `g g`, `y m`, `[ c`, and `Ctrl-w h` as separate sequence steps;
+- Write `g g`, `y m`, `[ c`, `Space b`, and `Ctrl-w h` as separate sequence steps;
   compact help labels such as `gg` are not configuration syntax.
 - `Shift-j` and `J` normalize to the same key. Shift-Tab and BackTab encodings
   also match. The terminal must deliver the selected chord; OS/terminal-reserved
   shortcuts are not forwarded by IGit.
+
+Global `pull` and `fetch` default to `p` and `f`. Push's own `review` and `fetch`
+default to `P` and `F`, and Merge's `back-to-files` defaults to `F`. If an
+override still uses `p` or `f` for one of those panel commands, change that
+override or rebind the conflicting global command.
 
 Bindings apply in **normal mode**, in their command's original context. For
 example, Log copy commands operate in the commit list, Commit's `toggle`

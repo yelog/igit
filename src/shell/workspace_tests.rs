@@ -293,7 +293,7 @@ fn split_workspace_commit_and_push_refreshes_both_panes_and_keeps_reviews_separa
     app.dispatch(&key(KeyCode::Char('y')));
     assert_eq!(app.surface(), Dialog(Push));
     assert!(screen(&mut app, 140, 36).contains("Push Commits"));
-    app.dispatch(&key(KeyCode::Char('p')));
+    app.dispatch(&key(KeyCode::Char('P')));
     assert!(matches!(
         &app.pop,
         Some(Popup::Confirm {

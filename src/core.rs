@@ -82,6 +82,19 @@ pub fn git(path: &Path, args: &[&str]) -> Result<String> {
         .trim_end_matches(['\n', '\r'])
         .into())
 }
+pub(crate) fn redact_remote_error(message: &str, url: &str) -> String {
+    let mut text = if url.is_empty() {
+        message.to_owned()
+    } else {
+        message.replace(url, "<remote>")
+    };
+    for word in message.split_whitespace() {
+        if word.contains("://") && word.contains('@') {
+            text = text.replace(word, "<remote>");
+        }
+    }
+    text
+}
 #[cfg(unix)]
 fn os_path(v: Vec<u8>) -> PathBuf {
     use std::os::unix::ffi::OsStringExt;
@@ -91,7 +104,7 @@ fn os_path(v: Vec<u8>) -> PathBuf {
 fn os_path(v: Vec<u8>) -> PathBuf {
     String::from_utf8_lossy(&v).into_owned().into()
 }
-fn revpath(p: &Path, what: &str) -> Option<PathBuf> {
+pub(crate) fn revpath(p: &Path, what: &str) -> Option<PathBuf> {
     let mut b = git_bytes(p, &["rev-parse", what]).ok()?;
     if b.last() == Some(&b'\n') {
         b.pop();

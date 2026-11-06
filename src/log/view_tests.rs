@@ -13,6 +13,10 @@ use ratatui::{backend::TestBackend, Terminal};
 fn key(panel: &mut LogPanel, code: K, mods: Mods, c: &Context) -> Action {
     panel.event(&Event::Key(KeyEvent::new(code, mods)), c)
 }
+fn filter_key(panel: &mut LogPanel, suffix: char, c: &Context) -> Action {
+    key(panel, K::Char(' '), Mods::NONE, c);
+    key(panel, K::Char(suffix), Mods::NONE, c)
+}
 fn click_at(panel: &mut LogPanel, r: Rect, c: &Context) {
     let ev = MouseEvent {
         kind: M::Down(MouseButton::Left),
@@ -324,10 +328,7 @@ fn navigation_yank_prefix_is_cancelled_by_clicks_editors_and_other_keys() {
     key(&mut p, K::Char('y'), Mods::NONE, &c);
     let second = navigation_rows(&p)[1].1;
     click_at(&mut p, second, &c);
-    assert!(matches!(
-        key(&mut p, K::Char('a'), Mods::NONE, &c),
-        Action::None
-    ));
+    assert!(matches!(filter_key(&mut p, 'u', &c), Action::None));
     assert!(matches!(p.editor, Some((Field::Author, _))));
     key(&mut p, K::Esc, Mods::NONE, &c);
 
@@ -808,7 +809,7 @@ fn date_menu_lists_custom_range_before_relative_presets() {
             render(&mut p, &mut t, &c);
             let date = target(&p, |h| matches!(h, Hit::Filter(Field::Date)));
             if keyboard {
-                key(&mut p, K::Char('d'), Mods::NONE, &c);
+                filter_key(&mut p, 'd', &c);
             } else {
                 click_at(&mut p, date, &c);
             }
@@ -848,7 +849,7 @@ fn date_presets_apply_by_mouse_and_keyboard_and_clear_independently() {
         p.filter.branch = Some("HEAD".into());
         p.filter.paths = model::PathFilter::parse("first", &c).unwrap();
         p.refresh(&c).unwrap();
-        key(&mut p, K::Char('d'), Mods::NONE, &c);
+        filter_key(&mut p, 'd', &c);
         if keyboard {
             key(&mut p, K::Down, Mods::NONE, &c);
             key(&mut p, K::Down, Mods::NONE, &c);
@@ -869,7 +870,7 @@ fn date_presets_apply_by_mouse_and_keyboard_and_clear_independently() {
         assert!(p.filter.date.is_none());
         key(&mut p, K::Char('['), Mods::NONE, &c);
         assert_eq!(p.filter.date, Some(expected.clone()));
-        key(&mut p, K::Char('d'), Mods::NONE, &c);
+        filter_key(&mut p, 'd', &c);
         assert_eq!(p.choice, Some(i));
         key(&mut p, K::Esc, Mods::NONE, &c);
 
@@ -894,7 +895,7 @@ fn date_range_inputs_apply_at_wide_and_narrow_sizes() {
     for width in [48, 80, 120, 180] {
         let mut t = Terminal::new(TestBackend::new(width, 24)).unwrap();
         for keyboard in [false, true] {
-            key(&mut p, K::Char('d'), Mods::NONE, &c);
+            filter_key(&mut p, 'd', &c);
             render(&mut p, &mut t, &c);
             if keyboard {
                 key(&mut p, K::Enter, Mods::NONE, &c);
@@ -949,7 +950,7 @@ fn date_range_rejects_invalid_drafts_and_restores_the_applied_range() {
     let mut p = LogPanel::default();
     p.filter.date = Some(DateFilter::Last7Days);
     let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
-    key(&mut p, K::Char('d'), Mods::NONE, &c);
+    filter_key(&mut p, 'd', &c);
     key(&mut p, K::Char('k'), Mods::NONE, &c);
     key(&mut p, K::Char('k'), Mods::NONE, &c);
     key(&mut p, K::Enter, Mods::NONE, &c);
@@ -983,7 +984,7 @@ fn date_range_rejects_invalid_drafts_and_restores_the_applied_range() {
     assert!(p.date_range.is_none());
     assert_eq!(p.filter.date, Some(DateFilter::Last7Days));
 
-    key(&mut p, K::Char('d'), Mods::NONE, &c);
+    filter_key(&mut p, 'd', &c);
     key(&mut p, K::Up, Mods::NONE, &c);
     key(&mut p, K::Up, Mods::NONE, &c);
     key(&mut p, K::Enter, Mods::NONE, &c);
@@ -1000,7 +1001,7 @@ fn date_range_rejects_invalid_drafts_and_restores_the_applied_range() {
     key(&mut p, K::Char('t'), Mods::CONTROL, &c);
     key(&mut p, K::Char('['), Mods::NONE, &c);
     assert_eq!(p.filter.date, expected);
-    key(&mut p, K::Char('d'), Mods::NONE, &c);
+    filter_key(&mut p, 'd', &c);
     key(&mut p, K::Enter, Mods::NONE, &c);
     assert_eq!(
         p.date_range.as_ref().unwrap().values,
@@ -1029,7 +1030,7 @@ fn branch_dropdown_opens_below_its_trigger() {
             let branch = target(&p, |h| matches!(h, Hit::Filter(Field::Branch)));
             assert!(row_text(&t, branch).starts_with("Branch"));
             if keyboard {
-                key(&mut p, K::Char('b'), Mods::NONE, &c);
+                filter_key(&mut p, 'b', &c);
             } else {
                 click_at(&mut p, branch, &c);
             }
@@ -1117,7 +1118,7 @@ fn dropdown_surface_blocks_the_row_beneath_but_an_exposed_row_takes_the_first_cl
     let mut p = LogPanel::default();
     p.refresh(&c).unwrap();
     let mut t = Terminal::new(TestBackend::new(180, 30)).unwrap();
-    key(&mut p, K::Char('b'), Mods::NONE, &c);
+    filter_key(&mut p, 'b', &c);
     render(&mut p, &mut t, &c);
     let branch = target(&p, |h| matches!(h, Hit::Filter(Field::Branch)));
     let second = target(&p, |h| matches!(h, Hit::Commit(1)));
@@ -1136,7 +1137,7 @@ fn dropdown_surface_blocks_the_row_beneath_but_an_exposed_row_takes_the_first_cl
     assert_eq!(p.cursor, 1);
     assert!(p.diff.is_none());
 
-    key(&mut p, K::Char('p'), Mods::NONE, &c);
+    filter_key(&mut p, 'p', &c);
     render(&mut p, &mut t, &c);
     let files = p.panes.rect(PaneId::Files).unwrap();
     click_at(
@@ -1176,7 +1177,7 @@ fn paths_root_checkboxes_filter_the_log_without_closing_or_changing_global_scope
         v
     };
 
-    key(&mut p, K::Char('p'), Mods::NONE, &c);
+    filter_key(&mut p, 'p', &c);
     render(&mut p, &mut t, &c);
     let web = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Choice(3))));
     assert!(row_text(&t, web).contains("web") && row_text(&t, web).contains(p.icons.check(true)));
@@ -1193,7 +1194,7 @@ fn paths_root_checkboxes_filter_the_log_without_closing_or_changing_global_scope
     key(&mut p, K::Esc, Mods::NONE, &c);
     assert_eq!(c.scope, scope);
 
-    key(&mut p, K::Char('p'), Mods::NONE, &c);
+    filter_key(&mut p, 'p', &c);
     p.event(&Event::Paste("file [x].txt".into()), &c);
     key(&mut p, K::Enter, Mods::NONE, &c);
     assert_eq!(subjects(&p), ["api change"]);
@@ -1227,7 +1228,7 @@ fn paths_menu_fits_eleven_roots_and_keeps_the_last_reachable_on_a_short_screen()
     };
     p.filter.author = "me".into();
     let mut wide = Terminal::new(TestBackend::new(180, 36)).unwrap();
-    key(&mut p, K::Char('p'), Mods::NONE, &c);
+    filter_key(&mut p, 'p', &c);
     render(&mut p, &mut wide, &c);
     let header = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::AllRoots)));
     assert!(row_text(&wide, header).contains("Roots  11/11"));
@@ -1249,7 +1250,7 @@ fn paths_menu_fits_eleven_roots_and_keeps_the_last_reachable_on_a_short_screen()
     key(&mut p, K::Esc, Mods::NONE, &c);
 
     let mut short = Terminal::new(TestBackend::new(48, 12)).unwrap();
-    key(&mut p, K::Char('p'), Mods::NONE, &c);
+    filter_key(&mut p, 'p', &c);
     key(&mut p, K::Up, Mods::NONE, &c);
     key(&mut p, K::Char(' '), Mods::NONE, &c);
     render(&mut p, &mut short, &c);

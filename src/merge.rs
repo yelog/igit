@@ -1296,7 +1296,7 @@ impl Panel for MergePanel {
         let prev = self.prefix.take();
         let n = self.doc.as_ref().unwrap().chunks.len();
         let op = match k.code {
-            K::Esc | K::Char('f') => Hit::List,
+            K::Esc | K::Char('F') => Hit::List,
             K::Char('[' | ']') if !k.modifiers.intersects(M::CONTROL | M::ALT) => {
                 if let K::Char(c) = k.code {
                     self.prefix = Some(c)

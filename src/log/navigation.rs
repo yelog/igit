@@ -5,18 +5,41 @@ use crossterm::event::KeyEvent;
 
 impl LogPanel {
     pub(crate) fn key_sequence(&self) -> Option<KeySequence> {
-        if self.focus != Pane::Graph || self.editing() {
+        if self.editing() {
             return None;
         }
         match self.key_prefix {
-            Some('g') => Some(KeySequence::LogGoto),
-            Some('y') => Some(KeySequence::LogYank),
+            Some(' ') => Some(KeySequence::LogFilters),
+            Some('g') if self.focus == Pane::Graph => Some(KeySequence::LogGoto),
+            Some('y') if self.focus == Pane::Graph => Some(KeySequence::LogYank),
             _ => None,
         }
     }
 
     pub(crate) fn cancel_key_sequence(&mut self) {
         self.key_prefix = None;
+    }
+
+    pub(super) fn filter_key(&mut self, key: &KeyEvent, c: &Context) -> Result<bool> {
+        if self.key_prefix == Some(' ') {
+            self.cancel_key_sequence();
+            let field = match (key.code, key.modifiers) {
+                (K::Char('b'), Mods::NONE) => Some(Field::Branch),
+                (K::Char('u'), Mods::NONE) => Some(Field::Author),
+                (K::Char('d'), Mods::NONE) => Some(Field::Date),
+                (K::Char('p'), Mods::NONE) => Some(Field::Path),
+                _ => None,
+            };
+            if let Some(field) = field {
+                self.begin(field, c)?;
+                return Ok(true);
+            }
+        }
+        if key.code == K::Char(' ') && key.modifiers.is_empty() {
+            self.key_prefix = Some(' ');
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     pub(super) fn keep_graph_cursor_visible(&mut self) {

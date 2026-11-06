@@ -77,6 +77,7 @@ impl MergePanel {
                     ("u", "Undo last resolution or edit"),
                     ("s", "Save file draft for this session"),
                     ("A", "Review and apply file; write and stage"),
+                    ("F", "Save session draft; return to conflict list"),
                     ("Esc", "Save session draft; return to conflict list"),
                 ],
             )],

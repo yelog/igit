@@ -87,6 +87,8 @@ pub(crate) fn global_section() -> HelpSection {
             ("2", "Focus Commit above"),
             ("3", "Open Push dialog"),
             ("4", "Open Merge dialog"),
+            ("p", "Review Pull for all repositories in Roots"),
+            ("f", "Review Fetch for all repositories in Roots"),
             ("r", "Open Roots repo scope"),
             (":", "Open Actions"),
             ("F5", "Refresh workspace and open dialog"),
@@ -116,7 +118,15 @@ impl HelpCommand {
             ]);
         }
         if sequence.contains(char::is_whitespace) {
-            return None;
+            return keys::COMMANDS
+                .iter()
+                .any(|c| c.action == self.action)
+                .then(|| {
+                    keys::catalogue_sequence(sequence)
+                        .into_iter()
+                        .map(Event::Key)
+                        .collect()
+                });
         }
         let mut events = vec![];
         for token in sequence.split_whitespace() {
@@ -971,7 +981,7 @@ mod tests {
 
     #[test]
     fn help_commands_decode_modifiers_sequences_and_reject_non_shortcut_labels() {
-        for sequence in ["gg", "yy", "ym", "ya", "[c", "]c"] {
+        for sequence in ["gg", "yy", "ym", "ya", "[c", "]c", "Space b"] {
             let events = HelpCommand {
                 action: CommandAction::Keys(sequence),
             }

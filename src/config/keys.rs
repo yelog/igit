@@ -87,6 +87,8 @@ commands! {
         "focus-commit" => "2", ALL;
         "open-push" => "3", ALL;
         "open-merge" => "4", ALL;
+        "pull" => "p", ALL;
+        "fetch" => "f", ALL;
         "roots" => "r", ALL;
         "actions" => ":", ALL;
         "refresh" => "F5", ALL;
@@ -138,17 +140,18 @@ commands! {
         "copy-author" => "ya", LOG_GRAPH;
         "open" => "Enter", LOG;
         "search" => "/", LOG;
-        "branch-filter" => "b", LOG;
-        "user-filter" => "a", LOG;
-        "date-filter" => "d", LOG;
-        "paths-filter" => "p", LOG;
+        "search-refs" => "S", LOG_REFS;
+        "branch-filter" => "Space b", LOG;
+        "user-filter" => "Space u", LOG;
+        "date-filter" => "Space d", LOG;
+        "paths-filter" => "Space p", LOG;
         "clear-filters" => "x", LOG;
         "view-options" => "o", LOG;
         "toggle-refs" => "B", LOG;
         "toggle-inspector" => "I", LOG;
         "toggle-current-highlight" => "H", LOG_REFS | LOG_FILES | LOG_INFO;
         "toggle-reference-labels" => "L", LOG_REFS | LOG_FILES | LOG_INFO;
-        "select-ref" => "Space", LOG_REFS;
+        "select-ref" => "s", LOG_REFS;
         "previous-tab" => "[", LOG;
         "next-tab" => "]", LOG;
         "new-tab" => "Ctrl-t", LOG;
@@ -194,9 +197,9 @@ commands! {
         "toggle" => "Space", PUSH_REPOS;
         "edit-target" => "t", PUSH_REPOS;
         "view-options" => "o", PUSH;
-        "review" => "p", PUSH;
+        "review" => "P", PUSH;
         "retry" => "R", PUSH;
-        "fetch" => "f", PUSH;
+        "fetch" => "F", PUSH;
         "follow-tags" => "v", PUSH;
         "skip-hooks" => "x", PUSH;
         "details" => "d", PUSH;
@@ -227,7 +230,7 @@ commands! {
         "undo" => "u", MERGE_DOC;
         "save-draft" => "s", MERGE_DOC;
         "apply" => "A", MERGE_DOC;
-        "back-to-files" => "f", MERGE_DOC;
+        "back-to-files" => "F", MERGE_DOC;
     }
 }
 

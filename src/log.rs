@@ -638,7 +638,7 @@ impl Panel for LogPanel {
         }
     }
     fn help(&self) -> &'static str {
-        "j/k Navigate · gg/G First/last · H/M/L Screen top/middle/bottom · Ctrl-F/B Page · Ctrl-D/U Half-page · yy/ym/ya Copy · Tab Panes · Ctrl-W h/j/k/l Focus · / Search · b/a/d/p Filter · o View · Enter Diff · Ctrl-T New Log tab · Ctrl-W c Close"
+        "j/k Navigate · gg/G First/last · H/M/L Screen top/middle/bottom · Ctrl-F/B Page · Ctrl-D/U Half-page · yy/ym/ya Copy · Tab Panes · Ctrl-W h/j/k/l Focus · / Search · Space b/u/d/p Filters · o View · Enter Diff · Ctrl-T New Log tab · Ctrl-W c Close"
     }
     fn draw(&mut self, f: &mut Frame, a: Rect, c: &Context) {
         self.draw_content(f, a, c);
@@ -806,6 +806,9 @@ impl Panel for LogPanel {
                 self.view_menu_key(k, c)?;
                 return Ok(());
             }
+            if self.filter_key(k, c)? {
+                return Ok(());
+            }
             if let Some(a) = self.graph_key(k, c)? {
                 action = a;
                 return Ok(());
@@ -817,15 +820,14 @@ impl Panel for LogPanel {
                     c,
                 )?,
                 K::Char(']') => self.switch_tab((self.view_index + 1) % self.views.len(), c)?,
-                K::Char('/') => self.begin(
-                    if self.focus == Pane::Refs {
-                        Field::Refs
-                    } else {
-                        Field::Text
-                    },
-                    c,
-                )?,
-                K::Char('b') => self.begin(Field::Branch, c)?,
+                K::Char('/')
+                    if !k
+                        .modifiers
+                        .intersects(Mods::ALT | Mods::CONTROL | Mods::SUPER) =>
+                {
+                    self.begin(Field::Text, c)?
+                }
+                K::Char('S') if self.focus == Pane::Refs => self.begin(Field::Refs, c)?,
                 K::Char('B') => self.toggle_view_item(Item::BranchOrTag, c)?,
                 K::Char('I') => self.toggle_view_item(Item::CommitDetails, c)?,
                 K::Char('H') => self.toggle_view_item(Item::CurrentBranch, c)?,
@@ -834,9 +836,6 @@ impl Panel for LogPanel {
                 K::Char('z' | 'Z') if self.focus == Pane::Files => {
                     self.file_fold_all(key == K::Char('z'))
                 }
-                K::Char('a') => self.begin(Field::Author, c)?,
-                K::Char('d') => self.begin(Field::Date, c)?,
-                K::Char('p') => self.begin(Field::Path, c)?,
                 K::Char('x') => self.click(Hit::Reset, c)?,
                 K::Char('+') => self.click(Hit::More, c)?,
                 K::Char('j') | K::Down => self.mv(1),
@@ -873,7 +872,9 @@ impl Panel for LogPanel {
                         self.open_diff(c)?
                     }
                 }
-                K::Char(' ') if self.focus == Pane::Refs => self.activate_ref(c)?,
+                K::Char('s') if self.focus == Pane::Refs && k.modifiers.is_empty() => {
+                    self.activate_ref(c)?
+                }
                 K::Esc => self.focus = Pane::Graph,
                 _ => {}
             }

@@ -48,6 +48,53 @@ fn show_hints(app: &mut Shell, width: u16, height: u16) -> String {
 }
 
 #[test]
+fn log_space_filters_take_priority_over_global_pull_and_keep_editor_keys() {
+    use crate::ui::panes::PaneId;
+    let (_dir, mut app) = fixture();
+    screen(&mut app, 150, 40);
+    let send = |app: &mut Shell, ch| app.dispatch(&key(KeyCode::Char(ch)));
+    for (pane, suffix, context) in [
+        (PaneId::Graph, 'b', "Log / Branch Filter"),
+        (PaneId::Refs, 'u', "Log / User Filter"),
+        (PaneId::Files, 'd', "Log / Date Filter"),
+        (PaneId::Info, 'p', "Log / Paths Filter"),
+    ] {
+        app.log.focus_pane(pane);
+        assert_eq!(app.log.focused_pane(), pane);
+        send(&mut app, ' ');
+        assert_eq!(app.key_sequence(), Some(KeySequence::LogFilters));
+        send(&mut app, suffix);
+        assert!(app.pop.is_none());
+        assert_eq!(app.help_content().context(), context);
+        app.dispatch(&key(KeyCode::Esc));
+    }
+    send(&mut app, ' ');
+    let hints = show_hints(&mut app, 150, 40);
+    for name in ["Branch", "User", "Date", "Paths"] {
+        assert!(hints.contains(&format!("Open {name} filter")));
+    }
+    app.dispatch(&key(KeyCode::Esc));
+    app.dispatch(&Event::Key(KeyEvent::new(
+        KeyCode::Char('f'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(app.pop.is_none());
+    for ch in ['p', 'f'] {
+        send(&mut app, ch);
+        assert!(matches!(app.pop, Some(Popup::Update(_))));
+        app.dispatch(&key(KeyCode::Esc));
+    }
+    app.log.focus_pane(PaneId::Refs);
+    send(&mut app, '/');
+    assert_eq!(app.help_content().context(), "Log / Text Search");
+    for ch in ['p', ' ', 'f'] {
+        send(&mut app, ch);
+    }
+    assert!(app.pop.is_none());
+    assert!(screen(&mut app, 150, 40).contains("p f"));
+}
+
+#[test]
 fn key_sequence_hints_wait_200ms_and_wake_without_more_input() {
     let (_repo, mut app) = fixture();
     app.dispatch(&key(KeyCode::Char('y')));

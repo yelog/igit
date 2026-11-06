@@ -7,7 +7,7 @@ fn paths_menu_offers_both_selectors_before_roots() {
     for (w, h) in [(48, 12), (80, 24), (180, 40)] {
         let mut p = LogPanel::default();
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-        key(&mut p, K::Char('p'), Mods::NONE, &c);
+        filter_key(&mut p, 'p', &c);
         render(&mut p, &mut t, &c);
         let menu = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Surface)));
         let rows: Vec<_> = (menu.y..menu.bottom())
@@ -57,7 +57,7 @@ fn subjects(p: &LogPanel) -> Vec<&str> {
 }
 
 fn open(p: &mut LogPanel, c: &Context, tree: bool) {
-    key(p, K::Char('p'), Mods::NONE, c);
+    filter_key(p, 'p', c);
     if tree {
         key(p, K::Down, Mods::NONE, c);
     }
@@ -155,7 +155,7 @@ fn tree_click(
 fn paths_tree_applies_only_checked_roots_files_and_directories_after_ok() {
     let (_d, c, mut p) = workspace();
     let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
-    key(&mut p, K::Char('p'), Mods::NONE, &c);
+    filter_key(&mut p, 'p', &c);
     render(&mut p, &mut t, &c);
     let tree = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Choice(1))));
     click_at(&mut p, tree, &c);
@@ -277,7 +277,7 @@ fn paths_tree_keeps_native_names_and_cannot_descend_into_links_or_other_roots() 
     tree_click(&mut p, &mut t, &c, "raw-", TreeHit::Check);
     key(&mut p, K::Enter, Mods::NONE, &c);
     assert_eq!(subjects(&p), ["native name"]);
-    key(&mut p, K::Char('p'), Mods::NONE, &c);
+    filter_key(&mut p, 'p', &c);
     assert!(matches!(
         key(&mut p, K::Enter, Mods::NONE, &c),
         Action::Notice(_)

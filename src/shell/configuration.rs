@@ -300,7 +300,9 @@ impl Shell {
 
     pub(super) fn configured_footer(&self) -> String {
         format!(
-            "{} Panes  {} Push  {} Merge  {} Actions  F1 Help",
+            "{} Pull  {} Fetch  {} Panes  {} Push  {} Merge  {} Actions  F1 Help",
+            self.config.label("global", "pull"),
+            self.config.label("global", "fetch"),
             self.config.label("panes", "focus-next"),
             self.config.label("global", "open-push"),
             self.config.label("global", "open-merge"),

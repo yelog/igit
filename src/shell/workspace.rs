@@ -361,10 +361,10 @@ impl Shell {
         } else if self.ctx.repos.is_empty() {
             (": Actions   ·   Open / rescan workspace", MUTED)
         } else if foot.width < 84 {
-            ("Tab/Ctrl-W Panes  3 Push 4 Merge ?", MUTED)
+            ("p Pull f Fetch 3 Push 4 Merge F1", MUTED)
         } else {
             (
-                "Tab Panes   Ctrl-W Pane keys   3 Push   4 Merge   ·   : Actions   ? Help",
+                "Tab Panes  Ctrl-W Pane keys  p Pull  f Fetch  3 Push  4 Merge  : Actions  F1 Help",
                 MUTED,
             )
         };

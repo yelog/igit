@@ -26,6 +26,7 @@ pub(crate) struct WindowPrefix {
 pub(crate) enum KeySequence {
     LogGoto,
     LogYank,
+    LogFilters,
     MergePrevious,
     MergeNext,
     Window(WindowPrefix),
@@ -36,6 +37,7 @@ impl KeySequence {
         match self {
             Self::LogGoto => "g",
             Self::LogYank => "y",
+            Self::LogFilters => "Space",
             Self::MergePrevious => "[",
             Self::MergeNext => "]",
             Self::Window(_) => "Ctrl-W",
@@ -49,6 +51,12 @@ impl KeySequence {
                 ('y', "Copy full commit ID"),
                 ('m', "Copy full commit message"),
                 ('a', "Copy author name and email"),
+            ],
+            Self::LogFilters => &[
+                ('b', "Open Branch filter"),
+                ('u', "Open User filter"),
+                ('d', "Open Date filter"),
+                ('p', "Open Paths filter"),
             ],
             Self::MergePrevious => &[('c', "Previous unresolved conflict")],
             Self::MergeNext => &[('c', "Next unresolved conflict")],
