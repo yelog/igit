@@ -684,6 +684,23 @@ impl LogPanel {
         f.render_widget(Paragraph::new(text).style(style), area);
     }
 
+    fn repository_marker(&self, n: usize) -> &'static str {
+        let root = self.hist.revs[self.visible[n]].root;
+        let same_root = |i: usize| {
+            self.visible
+                .get(i)
+                .is_some_and(|&rev| self.hist.revs[rev].root == root)
+        };
+        // Use filtered history, including neighbors beyond the viewport. A
+        // scroll boundary is not a repository boundary, nor is a reused tint.
+        match (n > 0 && same_root(n - 1), same_root(n + 1)) {
+            (true, true) => "┃",
+            (false, true) => "╻",
+            (true, false) => "╹",
+            (false, false) => "❙",
+        }
+    }
+
     fn draw_graph(&mut self, f: &mut Frame, area: Rect, c: &Context) {
         if area.is_empty() {
             return;
@@ -770,14 +787,7 @@ impl LogPanel {
         } else {
             0
         };
-        let icons = self.icons;
-        let repo_glyph = |root: usize| icons.repo(c.repos.get(root).is_some_and(|r| r.submodule));
-        let icon_width = self.visible[start..end]
-            .iter()
-            .map(|&i| cells(repo_glyph(self.hist.revs[i].root)))
-            .max()
-            .unwrap_or(1)
-            + u16::from(w >= 50);
+        let marker_width = 1 + u16::from(w >= 50);
         let root_width = if self.options.root_names {
             self.visible[start..end]
                 .iter()
@@ -789,7 +799,7 @@ impl LogPanel {
         } else {
             0
         };
-        let stripe_width = icon_width + root_width;
+        let stripe_width = marker_width + root_width;
         let mut hash_width = if self.options.shows(Column::Hash) && fits(40) {
             9
         } else {
@@ -884,20 +894,25 @@ impl LogPanel {
             }
             f.render_widget(Block::default().style(row_style), row);
             let mut line = row;
-            let stripe = take(&mut line, stripe_width);
+            let marker = take(&mut line, marker_width);
+            // Center the strip away from the frame. Half-height caps separate
+            // roots without extra rows; keep the gutter independent of highlights.
             f.render_widget(
-                Paragraph::new(if root_width > 0 {
-                    format!(
-                        "{} {}",
-                        repo_glyph(rev.root),
-                        clipped(&c.repos[rev.root].name, root_width.saturating_sub(1).into())
-                    )
-                } else {
-                    repo_glyph(rev.root).to_owned()
-                })
-                .style(fg(repo_tint(rev.root))),
-                stripe,
+                Paragraph::new(self.repository_marker(n))
+                    .style(fg(repo_tint(rev.root)).bg(PANEL).not_bold().not_reversed()),
+                marker,
             );
+            if root_width > 0 {
+                let root = take(&mut line, root_width);
+                f.render_widget(
+                    Paragraph::new(clipped(
+                        &c.repos[rev.root].name,
+                        root.width.saturating_sub(1).into(),
+                    ))
+                    .style(fg(repo_tint(rev.root))),
+                    root,
+                );
+            }
             for (col, width) in columns {
                 let mut cell = take(&mut line, width);
                 if col == Column::Message && line.width > 0 {

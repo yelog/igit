@@ -4,6 +4,7 @@ mod column_order;
 mod panes;
 mod path_selection;
 mod reference_badges;
+mod repository_segments;
 mod text_selection;
 use super::tests::{commit, finish_preview, git, init};
 use super::*;
@@ -645,7 +646,8 @@ fn view_options_switch_dates_and_control_each_highlight_independently() {
             .position(|&n| p.hist.revs[n].subject == text)
             .unwrap();
         let row = target(p, |h| matches!(h, Hit::Commit(n) if *n == i));
-        let x = row_text(t, row).find(text).unwrap() as u16;
+        let line = row_text(t, row);
+        let x = cells(&line[..line.find(text).unwrap()]);
         t.backend().buffer()[(row.x + x, row.y)].clone()
     };
     render(&mut p, &mut t, &c);
@@ -1338,7 +1340,7 @@ fn wide_rows_prioritise_subject_before_refs_and_narrow_layout_keeps_details_reac
     render(&mut p, &mut t, &c);
     let first = target(&p, |h| matches!(h, Hit::Commit(0)));
     let text = row_text(&t, first);
-    assert_eq!(t.backend().buffer()[(first.x, first.y)].bg, SELECT);
+    assert_eq!(t.backend().buffer()[(first.x + 2, first.y)].bg, SELECT);
     assert!(text.find("Log tester").unwrap() < text.find("2026/").unwrap());
     assert!(text.find("repair the selected account").unwrap() < text.find("main").unwrap());
     assert!(!text.contains("HEAD ->"));
@@ -1423,7 +1425,7 @@ fn navigation_updates_the_row_before_git_and_escape_cancels_a_waiting_diff() {
     }
     render(&mut p, &mut t, &c);
     let row = target(&p, |h| matches!(h, Hit::Commit(1)));
-    assert_eq!(t.backend().buffer()[(row.x, row.y)].bg, SELECT);
+    assert_eq!(t.backend().buffer()[(row.x + 2, row.y)].bg, SELECT);
     assert_eq!(p.rev().unwrap().subject, "middle");
     assert!(p.details.files.is_empty() && p.file_index().is_none());
     let files = p.panes.rect(PaneId::Files).unwrap();
