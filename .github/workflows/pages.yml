@@ -1,0 +1,119 @@
+name: Pages
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  push:
+    branches: [main]
+    paths:
+      - 'pages/**'
+      - 'scripts/install/**'
+      - 'scripts/release/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: igit-pages
+  cancel-in-progress: false
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  build:
+    if: >-
+      github.repository == 'yelog/igit' &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: read
+    outputs:
+      channels: ${{ steps.site.outputs.channels }}
+    steps:
+      # Published channel data comes from Releases; installer code comes from
+      # the trusted default branch, including when resuming an older Release.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - name: Test channel generation and installer
+        run: |
+          python3 -m unittest discover -s scripts/release -p 'test_*.py'
+          python3 -m unittest discover -s scripts/install -p 'test_*.py'
+      - id: site
+        name: Assemble published release channels
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          channels=$(python3 scripts/release/pages.py --output "$RUNNER_TEMP/site")
+          echo "channels=$channels" >> "$GITHUB_OUTPUT"
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: ${{ runner.temp }}/site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+
+  verify:
+    name: Public install (${{ matrix.platform.target }}, ${{ matrix.channel.channel }})
+    needs: [build, deploy]
+    runs-on: ${{ matrix.platform.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: ${{ fromJSON(needs.build.outputs.channels) }}
+        platform:
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+    steps:
+      - name: Preserve source line endings
+        shell: bash
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - name: Install and check the public channel in an isolated directory
+        shell: bash
+        env:
+          TARGET: ${{ matrix.platform.target }}
+          CHANNEL: ${{ matrix.channel.channel }}
+          VERSION: ${{ matrix.channel.version }}
+        run: >-
+          python3 scripts/install/smoke.py --site-url https://igit.yelog.org
+          --target "$TARGET" --channel "$CHANNEL" --version "$VERSION" --allow-legacy

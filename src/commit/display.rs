@@ -113,6 +113,7 @@ impl CommitPanel {
                     self.files.retain(|f| !f.change.ignored());
                 }
                 self.options.ignored = !self.options.ignored;
+                self.request_refresh();
                 self.diff_key.clear();
                 self.sync(c);
             }

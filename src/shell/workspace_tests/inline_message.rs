@@ -13,11 +13,7 @@ fn position(text: &str, needle: &str) -> (u16, u16) {
 fn saved(app: &Shell, message: &str) {
     let state: serde_json::Value =
         serde_json::from_slice(&fs::read(app.ctx.state_dir.join("commit.json")).unwrap()).unwrap();
-    assert!(state["drafts"]
-        .as_object()
-        .unwrap()
-        .values()
-        .any(|v| v == message));
+    assert_eq!(state["message"], message);
 }
 
 #[test]
@@ -55,7 +51,16 @@ fn inline_message_mouse_and_tab_leave_the_field_with_a_saved_draft() {
             app.dispatch(&key(code));
             assert!(!app.commit.editing());
             assert_eq!(app.tab, Commit);
-            assert_eq!(app.commit.focused_pane(), PaneId::Changes);
+            assert_eq!(
+                app.commit.focused_pane(),
+                if code == KeyCode::BackTab {
+                    PaneId::Preview
+                } else {
+                    PaneId::Changes
+                }
+            );
+            // Return from the full-width preview before the next inline edit.
+            app.commit.focus_pane(PaneId::Changes);
             saved(&app, "saved by navigation");
         }
     }
@@ -77,7 +82,7 @@ fn inline_message_mouse_review_preserves_mixed_and_unselected_staging() {
     app.dispatch(&mouse(MouseEventKind::Down(MouseButton::Left), x, y));
     app.dispatch(&Event::Paste("Reviewed inline ＵＩ\n\nBody".into()));
     let text = screen(&mut app, 120, 36);
-    let (x, y) = position(&text, "Commit…");
+    let (x, y) = position(&text, "Commit   Commit and Push...");
     app.dispatch(&mouse(MouseEventKind::Down(MouseButton::Left), x, y));
     let Some(Popup::Confirm { body, .. }) = &app.pop else {
         panic!("expected commit review");

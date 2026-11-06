@@ -1,6 +1,4 @@
-use super::{
-    backend, rid, rows::CONFLICT_SELECTION, slice, word, CommitPanel, Focus, Hit, Kind, Row,
-};
+use super::{backend, rows::CONFLICT_SELECTION, slice, word, CommitPanel, Focus, Hit, Kind, Row};
 use crate::{
     core::Context,
     ui::icons::{Icon, IconMode},
@@ -83,10 +81,7 @@ impl CommitPanel {
         let area = Rect::new(*x, bar.y, w as u16, 1);
         let style = match hit {
             Hit::Submit(false) | Hit::EditSave => button_style(true),
-            Hit::Submit(true) | Hit::EditCancel => button_style(false),
-            Hit::Repo(r) if r == self.repo => fg(INK).bg(TAG),
-            Hit::Repo(r) => fg(repo_tint(r)),
-            Hit::Amend if self.amend.contains(&self.repo) => fg(BLUE),
+            Hit::Submit(true) | Hit::EditCancel | Hit::Ai => button_style(false),
             Hit::TogglePreview if self.preview_open => fg(BLUE).bg(TAG),
             Hit::ViewOptions if self.view_menu.is_some() => fg(BLUE).bg(TAG),
             Hit::Directories if self.options.directories => fg(BLUE).bg(TAG),
@@ -174,7 +169,7 @@ impl CommitPanel {
             Rect::default()
         } else if list.bottom() < changes.bottom() {
             // Only the real facing borders can resize; a compact composer's
-            // first row contains the repository tabs and the editable draft.
+            // first row contains the editable shared message.
             if composer.y == message.y {
                 self.panes.handle(SplitId::CommitMessage, last_row);
             }
@@ -254,31 +249,14 @@ impl CommitPanel {
             self.hits.push((r, Hit::Row(i)));
         }
 
-        let separate_options = composer.width < 70 && composer.height >= 3;
-        let [message, options, actions] = Layout::vertical([
+        let wrap_actions = composer.width < 52 && composer.height >= 3;
+        let [message, actions] = Layout::vertical([
             Constraint::Fill(1),
-            Constraint::Length(u16::from(separate_options)),
-            Constraint::Length(1),
+            Constraint::Length(if wrap_actions { 2 } else { 1 }),
         ])
         .areas(composer);
-        let roots = self.message_repos(c);
-        if let Some(&first) = roots.first() {
-            if !roots.contains(&self.repo) {
-                self.repo = first;
-            }
-        }
-        let tabs_width = self.tabs_width(&roots, c);
-        let [tabs, draft] = Layout::horizontal([
-            Constraint::Length(tabs_width.min(usize::from(message.width / 2)) as u16),
-            Constraint::Min(1),
-        ])
-        .areas(message);
-        self.repo_tabs(f, slice(tabs, 0), &roots, c);
-        let msg = c
-            .repos
-            .get(self.repo)
-            .and_then(|_| self.saved.drafts.get(&rid(c, self.repo)))
-            .filter(|s| !s.trim().is_empty());
+        let draft = message;
+        let msg = self.saved.message.as_ref().filter(|s| !s.trim().is_empty());
         if self.message_editing() {
             self.draw_input(f, draft, false);
         } else {
@@ -296,44 +274,34 @@ impl CommitPanel {
         }
         self.hits.push((draft, Hit::Msg));
 
-        let mut x = actions.x;
-        self.hit_button(f, actions, &mut x, "Commit…", Hit::Submit(false));
-        self.hit_button(f, actions, &mut x, "Commit & Push…", Hit::Submit(true));
-        if self.message_editing() {
-            self.hit_button(f, actions, &mut x, "Save", Hit::EditSave);
-            self.hit_button(f, actions, &mut x, "Cancel", Hit::EditCancel);
-        }
-        let submit_end = x;
-        let options = if separate_options {
-            x = options.x;
-            options
-        } else {
-            actions
-        };
-        let amend = format!(
-            "{} Amend",
-            self.icons.check(self.amend.contains(&self.repo))
+        let compact_actions = composer.width < 52 && !wrap_actions;
+        let mut action_row = slice(actions, 0);
+        let mut x = action_row.x;
+        self.hit_button(f, action_row, &mut x, "Commit", Hit::Submit(false));
+        self.hit_button(
+            f,
+            action_row,
+            &mut x,
+            if compact_actions {
+                "Commit & Push…"
+            } else {
+                "Commit and Push..."
+            },
+            Hit::Submit(true),
         );
-        self.hit_button(f, options, &mut x, &amend, Hit::Amend);
+        if wrap_actions {
+            action_row = slice(actions, 1);
+            x = action_row.x;
+        }
         let ai = if self.ai_pending.is_some() {
             "Generating…"
+        } else if compact_actions {
+            "Generate"
         } else {
             "Generate message"
         };
-        self.hit_button(
-            f,
-            options,
-            &mut x,
-            &format!("{} {ai}", self.icons.glyph(Icon::Ai)),
-            Hit::Ai,
-        );
-        self.hit_button(
-            f,
-            options,
-            &mut x,
-            self.icons.glyph(Icon::Settings),
-            Hit::Settings,
-        );
+        let ai = format!("{} {ai}", self.icons.glyph(Icon::AutoResolve));
+        self.hit_button(f, action_row, &mut x, &ai, Hit::Ai);
         let selected = self.selection(c);
         let root_count = selected
             .iter()
@@ -357,14 +325,13 @@ impl CommitPanel {
         if excluded != 0 {
             status.push_str(&format!(" · {excluded} excluded"));
         }
+        if self.checked_repos(c).iter().any(|r| self.amend.contains(r)) {
+            status.push_str(" · Amend");
+        }
         // Leave the scope visible even when the compact action row is occupied.
         let w = status.width() as u16;
-        let r = if actions
-            .right()
-            .saturating_sub(if separate_options { submit_end } else { x })
-            > w
-        {
-            Rect::new(actions.right() - w, actions.y, w, actions.height)
+        let r = if action_row.right().saturating_sub(x) > w {
+            Rect::new(action_row.right() - w, action_row.y, w, 1)
         } else if bar.right().saturating_sub(tools_end) > w {
             Rect::new(bar.right() - w, bar.y, w, bar.height)
         } else {
@@ -412,66 +379,6 @@ impl CommitPanel {
             self.hit_button(f, bar, &mut x, label, action);
         }
         x
-    }
-
-    fn tab_marker(&self, root: usize, c: &Context) -> &'static str {
-        if self.repo == root {
-            self.icons.glyph(Icon::Current)
-        } else {
-            self.icons.repo(c.repos[root].submodule)
-        }
-    }
-
-    fn tabs_width(&self, roots: &[usize], c: &Context) -> usize {
-        roots
-            .iter()
-            .map(|&r| self.tab_marker(r, c).width() + c.repos[r].name.width() + 4)
-            .sum()
-    }
-
-    fn repo_tab(&mut self, f: &mut Frame, bar: Rect, x: &mut u16, root: usize, c: &Context) {
-        let room = usize::from(bar.right().saturating_sub(*x)).saturating_sub(2);
-        if room == 0 {
-            return;
-        }
-        let marker = self.tab_marker(root, c);
-        let name = &c.repos[root].name;
-        let label = if marker.width() + 1 + name.width() <= room {
-            format!("{marker} {name}")
-        } else {
-            fit(name, room)
-        };
-        self.hit_button(f, bar, x, &label, Hit::Repo(root));
-    }
-
-    fn repo_tabs(&mut self, f: &mut Frame, bar: Rect, roots: &[usize], c: &Context) {
-        let mut x = bar.x;
-        if roots.len() > 1 && self.tabs_width(roots, c) > usize::from(bar.width) + 1 {
-            let prev = self.icons.glyph(Icon::Previous);
-            let next = self.icons.glyph(Icon::Next);
-            // In a tiny strip there is room for the current name or the arrows, not both.
-            if bar.width < (prev.width() + next.width() + 9) as u16 {
-                self.repo_tab(f, bar, &mut x, self.repo, c);
-                return;
-            }
-            let i = roots.iter().position(|&r| r == self.repo).unwrap_or(0);
-            let n = roots.len();
-            self.hit_button(f, bar, &mut x, prev, Hit::Repo(roots[(i + n - 1) % n]));
-            let end = bar.right() - next.width() as u16 - 2;
-            self.repo_tab(
-                f,
-                Rect::new(x, bar.y, end - x - 1, bar.height),
-                &mut x,
-                self.repo,
-                c,
-            );
-            x = end;
-            self.hit_button(f, bar, &mut x, next, Hit::Repo(roots[(i + 1) % n]));
-        } else {
-            for &r in roots {
-                self.repo_tab(f, bar, &mut x, r, c);
-            }
-        }
     }
 
     fn draw_preview(&mut self, f: &mut Frame, area: Rect, c: &Context, compact: bool) {

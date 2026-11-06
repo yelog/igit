@@ -243,7 +243,6 @@ fn help_tracks_keyboard_focus_across_log_commit_and_push_without_changing_git() 
     }
     app.go(Commit);
     check_context(&mut app, "Commit / Changes");
-    app.dispatch(&key(KeyCode::Char('v')));
     screen(&mut app, 120, 36);
     app.dispatch(&key(KeyCode::Tab));
     check_context(&mut app, "Commit / Preview");
@@ -573,7 +572,7 @@ fn help_enter_runs_the_selected_candidate_after_down_and_keeps_typing_in_search(
     assert!(app.pop.is_none());
     assert!(!app.log.editing());
     app.go(Commit);
-    run_help(&mut app, "Edit current repo message");
+    run_help(&mut app, "Edit shared commit message");
     assert!(app.commit.editing());
     app.dispatch(&Event::Paste("Original draft".into()));
     run_help(&mut app, "Move to line start");

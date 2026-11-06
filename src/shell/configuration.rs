@@ -299,6 +299,26 @@ impl Shell {
     }
 
     pub(super) fn configured_footer(&self) -> String {
+        if self.tab == Stash {
+            return format!(
+                "{}/{} Browse  {} Panes  {} Diff  {} Refresh  F1 Help",
+                self.config.label("stash", "move-down"),
+                self.config.label("stash", "move-up"),
+                self.config.label("panes", "focus-next"),
+                self.config.label("stash", "open"),
+                self.config.label("global", "refresh")
+            );
+        }
+        if self.tab == Branch {
+            return format!(
+                "{} New  {} Delete  {} Switch  {} Merge  {} Rename  F1 Help",
+                self.config.label("branch", "create"),
+                self.config.label("branch", "delete"),
+                self.config.label("branch", "checkout"),
+                self.config.label("branch", "merge"),
+                self.config.label("branch", "rename")
+            );
+        }
         let conflicts = if self.tab_available(Conflicts) {
             format!(
                 "  {} Conflicts",

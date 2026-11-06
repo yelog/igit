@@ -29,6 +29,8 @@ impl Shell {
             Log => &self.log.panes,
             Push => &self.push.panes,
             Conflicts => &self.merge.panes,
+            Branch => &self.branch.panes,
+            Stash => &self.stash.panes,
         }
     }
     pub(super) fn layout_mut(&mut self, tab: Tab) -> &mut PaneLayout {
@@ -37,6 +39,8 @@ impl Shell {
             Log => &mut self.log.panes,
             Push => &mut self.push.panes,
             Conflicts => &mut self.merge.panes,
+            Branch => &mut self.branch.panes,
+            Stash => &mut self.stash.panes,
         }
     }
     fn focus_id(&self) -> PaneId {
@@ -45,6 +49,8 @@ impl Shell {
             Log => self.log.focused_pane(),
             Push => self.push.focused_pane(),
             Conflicts => self.merge.focused_pane(),
+            Branch => PaneId::Branches,
+            Stash => self.stash.focused_pane(),
         }
     }
     fn focus_pane(&mut self, id: PaneId) {
@@ -53,6 +59,8 @@ impl Shell {
             Log => self.log.focus_pane(id),
             Push => self.push.focus_pane(id),
             Conflicts => self.merge.focus_pane(id),
+            Branch => (),
+            Stash => self.stash.focus_pane(id),
         }
     }
 

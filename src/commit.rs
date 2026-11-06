@@ -1,11 +1,16 @@
+mod ai;
 mod backend;
 mod discard;
 #[cfg(test)]
 mod discard_tests;
 mod display;
 mod keymap;
+#[cfg(test)]
+mod message_tests;
+mod refresh;
 mod rollback;
 mod rows;
+mod stash;
 mod tree;
 mod view;
 #[cfg(test)]
@@ -43,17 +48,20 @@ use std::{
 };
 use tree::{Kind, Row};
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Saved {
     groups: Vec<String>,
     membership: BTreeMap<String, String>,
+    message: Option<String>,
+    // Retain legacy per-repository drafts for recovery after migration.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     drafts: BTreeMap<String, String>,
     endpoint: String,
     model: String,
     prompt: String,
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct File {
     key: String,
     root: usize,
@@ -75,6 +83,7 @@ enum Focus {
 #[derive(Clone)]
 enum Edit {
     Message,
+    Stash,
     Group,
     Move,
     AISettings,
@@ -96,7 +105,6 @@ enum Hit {
     New,
     Move,
     Msg,
-    Repo(usize),
     Submit(bool),
     Amend,
     Ai,
@@ -116,18 +124,17 @@ impl Hit {
             Self::TogglePreview => "Show or hide preview  v",
             Self::ViewOptions => "View Options  o",
             Self::Directories => "Group by directory  t",
-            Self::Status => "Show Git status columns  s",
+            Self::Status => "Show Git status columns  T",
             Self::Expand(true) => "Expand all  Z",
             Self::Expand(false) => "Collapse all  z",
-            Self::Amend => "Amend the selected repository's last commit  a",
-            Self::Ai => "Review patches for AI commit messages  A",
+            Self::Amend => "Amend the highlighted repository's last commit  a",
+            Self::Ai => "Review patches for an AI commit message  A",
             Self::Settings => "AI settings  S",
             _ => return None,
         })
     }
 }
 
-#[derive(Default)]
 pub struct CommitPanel {
     pub(crate) icons: IconMode,
     pub(crate) panes: PaneLayout,
@@ -150,7 +157,6 @@ pub struct CommitPanel {
     buf: String,
     caret: usize,
     ai_scroll: u16,
-    repo: usize,
     amend: BTreeSet<usize>,
     view: Vec<Row>,
     hits: Vec<(Rect, Hit)>,
@@ -165,14 +171,72 @@ pub struct CommitPanel {
     diff_selection: TextSelection,
     message_selection: TextSelection,
     plans: Vec<Plan>,
+    stash: stash::State,
     rollback: Option<Box<Rollback>>,
     push: bool,
     move_to: usize,
     move_names: Vec<String>,
-    ai_pending: Option<std::sync::mpsc::Receiver<Result<BTreeMap<String, String>, String>>>,
-    ai_drafts: BTreeMap<String, String>,
-    ai_payload: Vec<(String, String)>,
+    pub(crate) ai_config: Option<crate::config::AiConfig>,
+    ai_settings: crate::config::AiConfig,
+    ai_pending: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    ai_draft: String,
+    ai_request: Option<ai::Request>,
     ai_error: String,
+    refresh: refresh::Refresh,
+}
+
+impl Default for CommitPanel {
+    fn default() -> Self {
+        Self {
+            icons: Default::default(),
+            panes: Default::default(),
+            saved: Default::default(),
+            loaded: Default::default(),
+            files: Default::default(),
+            checks: Default::default(),
+            fold: Default::default(),
+            options: Default::default(),
+            view_menu: Default::default(),
+            preview_open: true,
+            stacked: Default::default(),
+            hover: Default::default(),
+            last_click: Default::default(),
+            last_check: Default::default(),
+            cursor: Default::default(),
+            offset: Default::default(),
+            focus: Default::default(),
+            edit: Default::default(),
+            buf: Default::default(),
+            caret: Default::default(),
+            ai_scroll: Default::default(),
+            amend: Default::default(),
+            view: Default::default(),
+            hits: Default::default(),
+            tree: Default::default(),
+            diff: Default::default(),
+            dragged: Default::default(),
+            edit_view: Default::default(),
+            edit_follow: Default::default(),
+            diff_key: Default::default(),
+            diff_text: Default::default(),
+            diff_scroll: Default::default(),
+            diff_selection: Default::default(),
+            message_selection: Default::default(),
+            plans: Default::default(),
+            stash: Default::default(),
+            rollback: Default::default(),
+            push: Default::default(),
+            move_to: Default::default(),
+            move_names: Default::default(),
+            ai_pending: Default::default(),
+            ai_config: Default::default(),
+            ai_settings: Default::default(),
+            ai_draft: Default::default(),
+            ai_request: Default::default(),
+            ai_error: Default::default(),
+            refresh: Default::default(),
+        }
+    }
 }
 const DEF: &str = "Changes";
 const NEW: &str = "Unversioned Files";
@@ -257,9 +321,6 @@ impl CommitPanel {
                 .position(|r| !r.files.is_empty())
                 .unwrap_or(0),
         };
-        if !c.scope.contains(&self.repo) {
-            self.repo = *c.scope.iter().next().unwrap_or(&0)
-        }
     }
     fn active(&self) -> Option<&Row> {
         self.view.get(self.cursor)
@@ -282,12 +343,48 @@ impl CommitPanel {
             .into_iter()
             .collect()
     }
-    fn message_repos(&self, c: &Context) -> Vec<usize> {
-        let roots = self.checked_repos(c);
+    fn highlighted_repo(&self) -> Option<usize> {
+        let row = self.active()?;
+        let root = self.files[*row.files.first()?].root;
+        row.files
+            .iter()
+            .all(|&i| self.files[i].root == root)
+            .then_some(root)
+    }
+
+    fn browse_repo(&mut self, next: bool, c: &Context) {
+        let roots: Vec<_> = c
+            .scope
+            .iter()
+            .copied()
+            .filter(|r| self.files.iter().any(|f| f.root == *r))
+            .collect();
         if roots.is_empty() {
-            c.scope.iter().copied().collect()
-        } else {
-            roots
+            return;
+        }
+        let current = self.highlighted_repo();
+        let i = roots.iter().position(|r| Some(*r) == current).unwrap_or(0);
+        let root = roots[(i + if next { 1 } else { roots.len() - 1 }) % roots.len()];
+        let all = self.changes_tree().rows_with_folds(c, &BTreeSet::new());
+        if let Some(i) = all.iter().position(|row| {
+            !row.files.is_empty() && row.files.iter().all(|&i| self.files[i].root == root)
+        }) {
+            let target = all[i].id.clone();
+            let mut depth = all[i].depth;
+            for row in all[..i].iter().rev() {
+                if row.depth < depth {
+                    self.fold.remove(&row.id);
+                    depth = row.depth;
+                }
+            }
+            self.sync(c);
+            self.cursor = self
+                .view
+                .iter()
+                .position(|row| row.id == target)
+                .unwrap_or(0);
+            self.diff_scroll = 0;
+            self.focus = Focus::Tree;
         }
     }
     fn toggle(&mut self, index: usize) {
@@ -338,16 +435,8 @@ impl CommitPanel {
             .min(self.view.len().saturating_sub(1));
         self.diff_scroll = 0
     }
-    fn edit_message(&mut self, c: &Context) {
-        if !c.scope.contains(&self.repo) {
-            return;
-        }
-        self.buf = self
-            .saved
-            .drafts
-            .get(&rid(c, self.repo))
-            .cloned()
-            .unwrap_or_default();
+    fn edit_message(&mut self, _c: &Context) {
+        self.buf = self.saved.message.clone().unwrap_or_default();
         self.caret = self.buf.len();
         self.message_selection.clear();
         self.edit_view = (self.edit_view.0, 0, 0);
@@ -369,16 +458,12 @@ impl CommitPanel {
         self.edit = Some(Edit::Move)
     }
     fn accept(&mut self, c: &Context) -> Result<()> {
-        let previous_message = self.message_editing().then(|| {
-            let key = rid(c, self.repo);
-            let previous = self.saved.drafts.get(&key).cloned();
-            (key, previous)
-        });
+        let previous = self.saved.clone();
+        let previous_ai = self.ai_settings.clone();
         match self.edit.clone() {
+            Some(Edit::Stash) => bail!("Review the stash before creating it"),
             Some(Edit::Message) => {
-                self.saved
-                    .drafts
-                    .insert(rid(c, self.repo), self.buf.clone());
+                self.saved.message = Some(self.buf.clone());
             }
             Some(Edit::Group) => {
                 let n = self.buf.trim();
@@ -408,25 +493,24 @@ impl CommitPanel {
             }
             Some(Edit::AISettings) => {
                 let mut p = self.buf.splitn(3, '\n');
-                self.saved.endpoint = p.next().unwrap_or("").trim().into();
-                self.saved.model = p.next().unwrap_or("").trim().into();
-                self.saved.prompt = p.next().unwrap_or("").trim().into();
+                let mut settings = self.ai_settings.clone();
+                settings.endpoint = p.next().unwrap_or("").trim().into();
+                settings.model = p.next().unwrap_or("").trim().into();
+                settings.prompt = p.next().unwrap_or("").trim().into();
+                settings.validate()?;
+                self.saved.endpoint = settings.endpoint.clone();
+                self.saved.model = settings.model.clone();
+                self.saved.prompt = settings.prompt.clone();
+                self.ai_settings = settings;
             }
             Some(Edit::AIDraft) => {
-                self.saved
-                    .drafts
-                    .extend(std::mem::take(&mut self.ai_drafts));
+                self.saved.message = Some(self.ai_draft.clone());
             }
             None => {}
         }
         if let Err(error) = self.save(c) {
-            if let Some((key, previous)) = previous_message {
-                if let Some(message) = previous {
-                    self.saved.drafts.insert(key, message);
-                } else {
-                    self.saved.drafts.remove(&key);
-                }
-            }
+            self.saved = previous;
+            self.ai_settings = previous_ai;
             return Err(error);
         }
         self.message_selection.clear();
@@ -440,6 +524,11 @@ impl CommitPanel {
         if rs.is_empty() {
             bail!("Select files first")
         }
+        let msg = self.saved.message.clone().unwrap_or_default();
+        if msg.trim().is_empty() {
+            self.edit_message(c);
+            bail!("Enter a commit message for the selected files")
+        }
         for r in rs {
             let fs = self
                 .selection(c)
@@ -447,20 +536,15 @@ impl CommitPanel {
                 .filter(|f| f.root == r)
                 .map(|f| f.change.clone())
                 .collect();
-            let msg = self
-                .saved
-                .drafts
-                .get(&rid(c, r))
-                .cloned()
-                .unwrap_or_default();
-            if msg.trim().is_empty() {
-                self.repo = r;
-                self.edit_message(c);
-                bail!("Enter a commit message for {}", c.repos[r].name)
-            }
             plans.push(
-                backend::plan(r, &c.repos[r].path, fs, msg, self.amend.contains(&r))
-                    .map_err(|e| anyhow::anyhow!("{}: {e}", c.repos[r].name))?,
+                backend::plan(
+                    r,
+                    &c.repos[r].path,
+                    fs,
+                    msg.clone(),
+                    self.amend.contains(&r),
+                )
+                .map_err(|e| anyhow::anyhow!("{}: {e}", c.repos[r].name))?,
             );
         }
         plans.sort_by_key(|p| std::cmp::Reverse(p.repo.components().count()));
@@ -540,7 +624,6 @@ impl CommitPanel {
                         out.push(format!("{} {note}", self.icons.glyph(Icon::Warning)));
                     }
                     success.push(p.root);
-                    self.saved.drafts.remove(&rid(c, p.root));
                     self.amend.remove(&p.root);
                     for f in p.files {
                         self.checks
@@ -556,6 +639,15 @@ impl CommitPanel {
                     ));
                 }
             }
+        }
+        if !success.is_empty()
+            && failed.is_empty()
+            && !self
+                .files
+                .iter()
+                .any(|f| f.change.selectable() && self.checks.get(&f.key) == Some(&true))
+        {
+            self.saved.message = Some(String::new());
         }
         if let Err(e) = self.save(c) {
             out.push(format!("Failed to save local state: {e}"))
@@ -633,13 +725,12 @@ impl CommitPanel {
             }
             Hit::Move => self.move_menu(),
             Hit::Msg => self.edit_message(c),
-            Hit::Repo(r) => {
-                self.repo = r;
-                self.focus = Focus::Message;
-            }
             Hit::Amend => {
-                if !self.amend.remove(&self.repo) {
-                    self.amend.insert(self.repo);
+                let Some(root) = self.highlighted_repo() else {
+                    return err("Highlight a file or group from one repository to toggle Amend");
+                };
+                if !self.amend.remove(&root) {
+                    self.amend.insert(root);
                 }
             }
             Hit::Submit(p) => return self.review(c, p).unwrap_or_else(err),
@@ -647,12 +738,15 @@ impl CommitPanel {
             Hit::Settings => {
                 self.buf = format!(
                     "{}\n{}\n{}",
-                    self.saved.endpoint, self.saved.model, self.saved.prompt
+                    self.ai_settings.endpoint, self.ai_settings.model, self.ai_settings.prompt
                 );
                 self.caret = self.buf.len();
                 self.edit = Some(Edit::AISettings)
             }
             Hit::EditSave => {
+                if matches!(self.edit, Some(Edit::Stash)) {
+                    return self.review_stash(c).unwrap_or_else(err);
+                }
                 if let Err(e) = self.accept(c) {
                     return err(e);
                 }
@@ -684,76 +778,31 @@ impl Panel for CommitPanel {
             if p.exists() {
                 self.saved = serde_json::from_slice(&fs::read(p)?)?
             }
-            if self.saved.prompt.is_empty() {
-                self.saved.prompt="Write one concise Conventional Commit message for exactly these changes. Return the message only.".into()
+            if self.saved.message.is_none() {
+                self.saved.message = Some(
+                    (0..c.repos.len())
+                        .filter_map(|r| self.saved.drafts.get(&rid(c, r)))
+                        .find(|message| !message.trim().is_empty())
+                        .cloned()
+                        .unwrap_or_default(),
+                );
             }
+            self.ai_settings = self.ai_config.clone().unwrap_or_else(|| {
+                let mut settings = crate::config::AiConfig {
+                    endpoint: self.saved.endpoint.clone(),
+                    model: self.saved.model.clone(),
+                    ..Default::default()
+                };
+                if !self.saved.prompt.is_empty() {
+                    settings.prompt = self.saved.prompt.clone();
+                }
+                settings
+            });
             self.loaded = true
         }
-        let mut files = vec![];
-        let mut errors = vec![];
-        for (r, repo) in c.repos.iter().enumerate() {
-            let changes = backend::status(&repo.path).and_then(|mut changes| {
-                if self.options.ignored {
-                    changes.extend(backend::ignored(&repo.path)?);
-                }
-                Ok(changes)
-            });
-            match changes {
-                Ok(ch) => {
-                    for change in ch {
-                        let key = format!("{}:{}", rid(c, r), keypart(&change.path));
-                        let group = if change.ignored() {
-                            IGNORED.into()
-                        } else if change.xy == *b"??" {
-                            NEW.into()
-                        } else {
-                            self.saved
-                                .membership
-                                .get(&key)
-                                .cloned()
-                                .unwrap_or_else(|| DEF.into())
-                        };
-                        self.checks
-                            .entry(key.clone())
-                            .or_insert(group == DEF && change.selectable());
-                        files.push(File {
-                            root: r,
-                            key,
-                            change,
-                            group,
-                        })
-                    }
-                }
-                Err(e) => errors.push(format!("{}: {e}", repo.name)),
-            }
-        }
-        self.files = files;
-        self.last_check.clear();
-        self.last_click = None;
-        self.dragged = None;
-        self.diff_key.clear();
-        self.diff_selection.reset();
-        self.sync(c);
-        if !self
-            .files
-            .iter()
-            .any(|f| f.root == self.repo && c.scope.contains(&f.root))
-        {
-            self.repo = self
-                .files
-                .iter()
-                .find(|f| c.scope.contains(&f.root))
-                .map(|f| f.root)
-                .unwrap_or(self.repo)
-        }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            bail!("{}", errors.join(" | "))
-        }
+        self.refresh_files(c)
     }
     fn draw(&mut self, f: &mut Frame, a: Rect, c: &Context) {
-        self.poll_ai();
         self.draw_content(f, a, c);
         self.draw_overlays(f, a, c, true);
     }
@@ -762,7 +811,7 @@ impl Panel for CommitPanel {
         self.poll_ai();
         if pending && self.ai_pending.is_none() {
             if self.ai_error.is_empty() {
-                Action::Notice("AI drafts ready. Open Commit to review".into())
+                Action::Notice("AI message ready. Open Commit to review".into())
             } else {
                 Action::Notice(self.ai_error.clone())
             }
@@ -792,13 +841,16 @@ impl Panel for CommitPanel {
     fn help(&self) -> &'static str {
         if self.message_editing() {
             "F2/Ctrl-S Save · Esc Cancel · Enter Newline · F1 Help"
+        } else if matches!(self.edit, Some(Edit::Stash)) {
+            "Enter Review · Esc Cancel · F1 Help"
         } else {
-            "Space check · Enter/v preview · d discard · i message · c review · ? keys"
+            "Space check · Enter/v preview · s stash · d discard · i message · c review · ? keys"
         }
     }
     fn confirm(&mut self, t: &str, c: &Context) -> Action {
         match t {
             "commit" => self.submit(c),
+            "commit-stash" => self.submit_stash(c),
             "commit-ai" => self.start_ai(c).unwrap_or_else(err),
             _ => Action::None,
         }
@@ -1038,7 +1090,8 @@ impl Panel for CommitPanel {
                 }
                 K::Char('t') => return self.launch(Hit::Directories, c),
                 K::Char('o') => return self.launch(Hit::ViewOptions, c),
-                K::Char('s') => return self.launch(Hit::Status, c),
+                K::Char('s') if k.modifiers == Mod::NONE => return self.edit_stash(c),
+                K::Char('T') => return self.launch(Hit::Status, c),
                 K::Char('v') => return self.launch(Hit::TogglePreview, c),
                 K::Char('u') => return self.launch(Hit::UndoCheck, c),
                 K::Char('z') => return self.launch(Hit::Expand(false), c),
@@ -1078,17 +1131,7 @@ impl Panel for CommitPanel {
                 K::Char('S') => return self.launch(Hit::Settings, c),
                 K::Char('c') => return self.launch(Hit::Submit(false), c),
                 K::Char('P') => return self.launch(Hit::Submit(true), c),
-                K::Char(']') | K::Char('[') => {
-                    let rs = self.message_repos(c);
-                    if !rs.is_empty() {
-                        let i = rs.iter().position(|r| *r == self.repo).unwrap_or(0);
-                        self.repo = rs[(i + if k.code == K::Char(']') {
-                            1
-                        } else {
-                            rs.len() - 1
-                        }) % rs.len()]
-                    }
-                }
+                K::Char(']') | K::Char('[') => self.browse_repo(k.code == K::Char(']'), c),
                 K::Esc => return self.launch(Hit::Show(Focus::Tree), c),
                 _ => {}
             },
@@ -1113,19 +1156,20 @@ impl CommitPanel {
         self.draw_view_menu(f, a);
     }
 
-    fn draw_edit(&mut self, f: &mut Frame, a: Rect, c: &Context, cursor: bool) {
+    fn draw_edit(&mut self, f: &mut Frame, a: Rect, _c: &Context, cursor: bool) {
         let h = (a.height.saturating_sub(2)).min(17);
         let w = a.width.saturating_sub(4).min(86);
         let area = Rect::new(a.x + (a.width - w) / 2, a.y + (a.height - h) / 2, w, h);
         f.render_widget(Clear, area);
         self.hits.clear();
         let ed = self.edit.clone().unwrap();
-        let title = match ed {
-            Edit::Message => format!("Edit commit message · {}", c.repos[self.repo].name),
+        let title: String = match ed {
+            Edit::Message => "Edit commit message".into(),
+            Edit::Stash => "Create stash".into(),
             Edit::Group => "New changelist".into(),
             Edit::Move => "Move to changelist".into(),
             Edit::AISettings => "AI settings".into(),
-            Edit::AIDraft => "AI candidates · review before replacing drafts".into(),
+            Edit::AIDraft => "AI candidate · review before replacing message".into(),
         };
         let block = Block::default()
             .borders(Borders::ALL)
@@ -1137,18 +1181,22 @@ impl CommitPanel {
         if inn.height < 3 {
             return;
         }
+        let key_hint = format!(
+            "Lines: URL, model, prompt. Key: {}",
+            self.ai_settings.api_key_env
+        );
         let hint = match ed {
             Edit::Group => "Enter Save · Esc Cancel",
+            Edit::Stash if inn.width >= 48 => "All changes in Roots, including untracked files",
+            Edit::Stash => "All Roots changes + untracked",
             Edit::Message if inn.width >= 60 => {
                 "Drag to copy · Shift+arrows Select · Enter Newline · Ctrl-A All"
             }
             Edit::Message => "Drag to copy · F1 Help",
             Edit::Move => "j/k Select · Enter Apply · Esc Cancel",
-            Edit::AISettings if inn.width >= 62 => {
-                "Lines: chat/completions URL, model, prompt. Key: IGIT_LLM_API_KEY"
-            }
+            Edit::AISettings if inn.width >= 62 => &key_hint,
             Edit::AISettings => "Lines: API URL, model, prompt",
-            Edit::AIDraft => "Save replaces messages · Esc Discard",
+            Edit::AIDraft => "Save replaces shared message · Esc Discard",
         };
         word(f, slice(inn, 0), hint, Style::default().fg(MUTED));
         let text = Rect::new(inn.x, inn.y + 1, inn.width, inn.height - 2);
@@ -1175,14 +1223,8 @@ impl CommitPanel {
                 self.hits.push((r, Hit::MoveTo(s.clone())))
             }
         } else if matches!(ed, Edit::AIDraft) {
-            let mut lines = String::new();
-            for (r, repo) in c.repos.iter().enumerate() {
-                if let Some(msg) = self.ai_drafts.get(&rid(c, r)) {
-                    lines.push_str(&format!("{}\n{}\n\n", repo.name, msg))
-                }
-            }
             f.render_widget(
-                Paragraph::new(lines)
+                Paragraph::new(self.ai_draft.as_str())
                     .wrap(Wrap { trim: false })
                     .scroll((self.ai_scroll, 0)),
                 text,
@@ -1197,7 +1239,12 @@ impl CommitPanel {
         } else {
             self.icons.glyph(Icon::Enter)
         };
-        self.hit_button(f, foot, &mut x, &format!("Save {save_key}"), Hit::EditSave);
+        let save_label = if matches!(ed, Edit::Stash) {
+            format!("Review {save_key}")
+        } else {
+            format!("Save {save_key}")
+        };
+        self.hit_button(f, foot, &mut x, &save_label, Hit::EditSave);
         self.hit_button(f, foot, &mut x, "Cancel Esc", Hit::EditCancel);
     }
     fn input_position(&self) -> (u16, u16) {
@@ -1331,7 +1378,7 @@ impl CommitPanel {
                 let (a, off, hor) = self.edit_view;
                 if matches!(
                     self.edit,
-                    Some(Edit::Message | Edit::AISettings | Edit::Group)
+                    Some(Edit::Message | Edit::AISettings | Edit::Group | Edit::Stash)
                 ) && inside(a, m.column, m.row)
                 {
                     let (line, cell) = (
@@ -1370,9 +1417,9 @@ impl CommitPanel {
         if let Event::Paste(s) = e {
             if matches!(
                 self.edit,
-                Some(Edit::Message | Edit::AISettings | Edit::Group)
+                Some(Edit::Message | Edit::AISettings | Edit::Group | Edit::Stash)
             ) {
-                let s = if matches!(self.edit, Some(Edit::Group)) {
+                let s = if matches!(self.edit, Some(Edit::Group | Edit::Stash)) {
                     s.replace(['\n', '\r'], " ")
                 } else {
                     s.clone()
@@ -1394,9 +1441,12 @@ impl CommitPanel {
         if k.code == K::F(2)
             || (matches!(k.code, K::Char('s') | K::Enter) && k.modifiers.contains(Mod::CONTROL))
             || k.code == K::Enter
-                && matches!(self.edit, Some(Edit::Move | Edit::Group | Edit::AIDraft))
+                && matches!(
+                    self.edit,
+                    Some(Edit::Move | Edit::Group | Edit::AIDraft | Edit::Stash)
+                )
         {
-            return self.accept(c).map(|_| Action::None).unwrap_or_else(err);
+            return self.launch(Hit::EditSave, c);
         }
         if matches!(self.edit, Some(Edit::Move)) {
             match k.code {
@@ -1413,6 +1463,26 @@ impl CommitPanel {
                 K::Char('j') | K::Down => self.ai_scroll = self.ai_scroll.saturating_add(1),
                 K::Char('k') | K::Up => self.ai_scroll = self.ai_scroll.saturating_sub(1),
                 _ => {}
+            }
+            return Action::None;
+        }
+        if self.message_editing()
+            && k.modifiers == Mod::CONTROL
+            && matches!(k.code, K::Char('w' | 'u'))
+        {
+            if !self.remove_message_selection() {
+                let prefix = &self.buf[..self.caret];
+                let start = if k.code == K::Char('u') {
+                    prefix.rfind('\n').map_or(0, |i| i + 1)
+                } else {
+                    let word = prefix.trim_end();
+                    word.char_indices()
+                        .rev()
+                        .find(|(_, ch)| ch.is_whitespace())
+                        .map_or(0, |(i, ch)| i + ch.len_utf8())
+                };
+                self.buf.replace_range(start..self.caret, "");
+                self.caret = start;
             }
             return Action::None;
         }
@@ -1508,160 +1578,6 @@ impl CommitPanel {
         false
     }
 }
-impl CommitPanel {
-    fn ai_review(&mut self, c: &Context) -> Result<Action> {
-        if self.ai_pending.is_some() {
-            bail!("AI request in progress. Please wait")
-        }
-        if self.saved.endpoint.trim().is_empty() || self.saved.model.trim().is_empty() {
-            self.launch(Hit::Settings, c);
-            return Ok(err("Set the full service URL, model, and prompt first"));
-        }
-        let ep = self.saved.endpoint.as_str();
-        if !(ep.starts_with("https://")
-            || ep.starts_with("http://localhost:")
-            || ep.starts_with("http://127.0.0.1:")
-            || ep.starts_with("http://[::1]:"))
-            || ep.contains('@')
-            || ep.contains('#')
-            || ep.chars().any(char::is_whitespace)
-        {
-            bail!("Use HTTPS or a localhost HTTP URL with a port. Set credentials in IGIT_LLM_API_KEY")
-        }
-        let mut items = vec![];
-        let mut body = format!(
-            "Send the selected patches to {}\nModel: {}. One request per repository. Review generated drafts before replacing your messages.\n",
-            ep, self.saved.model
-        );
-        for r in self.checked_repos(c) {
-            let fs: Vec<_> = self
-                .selection(c)
-                .iter()
-                .filter(|f| f.root == r)
-                .map(|f| f.change.clone())
-                .collect();
-            let patch = backend::patch(&c.repos[r].path, &fs)?;
-            body.push_str(&format!("\n{} · {} bytes\n", c.repos[r].name, patch.len()));
-            for f in &fs {
-                body.push_str(&format!("  {}\n", f.label()))
-            }
-            items.push((rid(c, r), patch))
-        }
-        if items.is_empty() {
-            bail!("Select files first")
-        }
-        self.ai_payload = items;
-        Ok(Action::Confirm {
-            title: "AI · Send selected patches?".into(),
-            body,
-            token: "commit-ai".into(),
-        })
-    }
-    fn start_ai(&mut self, _c: &Context) -> Result<Action> {
-        use std::io::Write;
-        use std::process::{Command, Stdio};
-        let req = std::mem::take(&mut self.ai_payload);
-        if req.is_empty() {
-            bail!("No files selected")
-        }
-        let ep = self.saved.endpoint.clone();
-        let model = self.saved.model.clone();
-        let prompt = self.saved.prompt.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.ai_pending = Some(rx);
-        self.ai_error.clear();
-        std::thread::spawn(move || {
-            let result = (|| -> Result<BTreeMap<String, String>> {
-                let mut map = BTreeMap::new();
-                let mut token_file = tempfile::NamedTempFile::new()?;
-                let has_key = if let Ok(token) = std::env::var("IGIT_LLM_API_KEY") {
-                    if token.contains(['\n', '\r']) {
-                        bail!("Invalid credential")
-                    }
-                    writeln!(token_file, "Authorization: Bearer {token}")?;
-                    true
-                } else {
-                    false
-                };
-                for (k, p) in req {
-                    let mut curl = Command::new("curl");
-                    curl.arg("-q")
-                        .args([
-                            "--silent",
-                            "--show-error",
-                            "--fail",
-                            "--max-time",
-                            "60",
-                            "--connect-timeout",
-                            "8",
-                            "--header",
-                            "Content-Type: application/json",
-                            "--proto",
-                            "=http,https",
-                        ])
-                        .env_remove("IGIT_LLM_API_KEY");
-                    if has_key {
-                        curl.arg("--header")
-                            .arg(format!("@{}", token_file.path().display()));
-                    }
-                    let mut proc = curl
-                        .args(["--data-binary", "@-", "--url", &ep])
-                        .stdin(Stdio::piped())
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped())
-                        .spawn()?;
-                    let payload = serde_json::json!({"model":model,"messages":[{"role":"system","content":prompt},{"role":"user","content":p}]});
-                    proc.stdin
-                        .take()
-                        .unwrap()
-                        .write_all(&serde_json::to_vec(&payload)?)?;
-                    let out = proc.wait_with_output()?;
-                    if !out.status.success() {
-                        bail!("AI service request failed: curl {}", out.status)
-                    }
-                    let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
-                    let s = v["choices"][0]["message"]["content"]
-                        .as_str()
-                        .filter(|s| !s.trim().is_empty())
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("The service returned no valid message.content")
-                        })?;
-                    map.insert(k, s.trim().to_string());
-                }
-                Ok(map)
-            })();
-            let _ = tx.send(result.map_err(|e| e.to_string()));
-        });
-        Ok(err(
-            "Generating commit messages per repository. You can keep browsing",
-        ))
-    }
-    fn poll_ai(&mut self) {
-        if self.edit.is_some() {
-            return;
-        }
-        let Some(rx) = self.ai_pending.as_ref() else {
-            return;
-        };
-        match rx.try_recv() {
-            Ok(Ok(m)) => {
-                self.ai_drafts = m;
-                self.ai_scroll = 0;
-                self.edit = Some(Edit::AIDraft);
-                self.ai_pending = None
-            }
-            Ok(Err(e)) => {
-                self.ai_error = e;
-                self.ai_pending = None
-            }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.ai_error = "AI worker stopped".into();
-                self.ai_pending = None
-            }
-            _ => {}
-        }
-    }
-}
 #[cfg(test)]
 mod flow_tests {
     use super::*;
@@ -1689,7 +1605,7 @@ mod flow_tests {
         git(&repo, &["add", "--", "file"]).unwrap();
         let mut panel = CommitPanel::default();
         panel.refresh(&c).unwrap();
-        panel.saved.drafts.insert(rid(&c, 0), "edit".into());
+        panel.saved.message = Some("edit".into());
         let review = |panel: &mut CommitPanel| {
             let Action::Confirm { body, .. } = panel.review(&c, false).unwrap() else {
                 panic!("missing commit review");

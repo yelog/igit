@@ -10,6 +10,8 @@ use std::{
 use tempfile::TempDir;
 
 pub(super) mod discard;
+pub(super) mod stash;
+mod working;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Change {
@@ -739,6 +741,7 @@ pub fn diff(repo: &Path, f: &Change) -> Result<String> {
         return Ok(format!("New path: {}", f.label()));
     }
     let mut args = vec![
+        "--no-optional-locks",
         "diff",
         "--no-ext-diff",
         "--no-textconv",

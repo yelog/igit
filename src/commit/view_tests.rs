@@ -84,12 +84,11 @@ fn resizing_both_commit_dividers_reveals_message_body_and_preserves_review() {
     let mut p = CommitPanel::default();
     p.refresh(&c).unwrap();
     let message = "Subject\n\nDetails one\nDetails two\nDetails three";
-    p.saved.drafts.insert(rid(&c, 0), message.into());
+    p.saved.message = Some(message.into());
     let index = git(&c.repos[0].path, &["ls-files", "--stage"]).unwrap();
     let checks = p.checks.clone();
     let cursor = p.cursor;
     let mut t = Terminal::new(TestBackend::new(120, 24)).unwrap();
-    key(&mut p, &c, K::Char('v'));
     draw(&mut p, &mut t, &c);
     let old_message = p.panes.rect(PaneId::Message).unwrap();
     assert!(!read(t.backend().buffer(), old_message).contains("Details three"));
@@ -376,7 +375,7 @@ fn regrouped_commit_keeps_the_selected_index_version_and_unselected_staged_file(
     for item in [Item::Directory, Item::Module, Item::Ignored, Item::Status] {
         p.toggle_view_item(item, &c).unwrap();
     }
-    p.saved.drafts.insert(rid(&c, 0), "selected".into());
+    p.saved.message = Some("selected".into());
     let Action::Confirm { body, .. } = p.review(&c, false).unwrap() else {
         panic!("expected review");
     };
@@ -433,7 +432,6 @@ fn directory_preview_uses_the_repo_root_when_launched_in_a_subdirectory() {
         .iter()
         .position(|r| matches!(&r.kind, Kind::Directory(path) if path == &directory))
         .unwrap();
-    key(&mut p, &c, K::Char('v'));
     let mut t = Terminal::new(TestBackend::new(120, 36)).unwrap();
     draw(&mut p, &mut t, &c);
     let preview: String = read(t.backend().buffer(), p.diff)
@@ -452,7 +450,6 @@ fn compacted_directories_keep_their_children_selection_and_hit_targets() {
     let mut p = CommitPanel::default();
     let mut t = Terminal::new(TestBackend::new(120, 36)).unwrap();
     p.refresh(&c).unwrap();
-    key(&mut p, &c, K::Char('v'));
     draw(&mut p, &mut t, &c);
     let directory = Path::new("app")
         .join("src")
@@ -542,6 +539,7 @@ fn flat_layout_and_mouse_preview_resolve_identical_filenames_to_the_right_patch(
     let mut p = CommitPanel::default();
     let mut t = Terminal::new(TestBackend::new(120, 36)).unwrap();
     p.refresh(&c).unwrap();
+    key(&mut p, &c, K::Char('v')); // Hide the default preview to exercise double-click opening.
     key(&mut p, &c, K::Char('t'));
     draw(&mut p, &mut t, &c);
     assert!(p.diff.is_empty() && p.diff_key.is_empty());
@@ -617,51 +615,31 @@ fn ascii_checkbox_responds_on_both_brackets_and_disappears_when_it_cannot_fit() 
 }
 
 #[test]
-fn clipped_draft_names_do_not_overlap_repo_navigation() {
+fn shared_draft_uses_the_full_width_without_repository_names() {
     let (_d, mut c) = fixture();
     c.repos[0].name = "a-very-long-repository-name".into();
-    c.repos.push(Repo {
-        name: "long-submodule-name".into(),
-        submodule: true,
-        ..c.repos[0].clone()
-    });
-    c.scope.insert(1);
     for mode in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
         let mut p = CommitPanel {
             icons: mode,
             ..Default::default()
         };
-        let mut t = Terminal::new(TestBackend::new(32, 16)).unwrap();
-        draw(&mut p, &mut t, &c);
-        let tabs: Vec<_> = p
-            .hits
-            .iter()
-            .filter_map(|(r, h)| match h {
-                Hit::Repo(_) => Some(*r),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(tabs.len(), 3);
-        assert!(tabs.windows(2).all(|pair| pair[0].right() < pair[1].x));
-        let next = tabs[2];
-        assert_eq!(
-            read(t.backend().buffer(), next).trim(),
-            mode.glyph(Icon::Next)
-        );
-        click(&mut p, &c, next.x + 1, next.y);
-        assert_eq!(p.repo, 1);
-
-        let mut t = Terminal::new(TestBackend::new(16, 16)).unwrap();
-        draw(&mut p, &mut t, &c);
-        let tabs: Vec<_> = p
-            .hits
-            .iter()
-            .filter_map(|(_, h)| match h {
-                Hit::Repo(r) => Some(*r),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(tabs, [1]); // Only the current name fits; no invisible arrow can switch roots.
+        p.refresh(&c).unwrap();
+        p.saved.message = Some("Shared subject".into());
+        for width in [16, 32, 80, 120] {
+            let mut t = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            draw(&mut p, &mut t, &c);
+            let composer = p.panes.rect(PaneId::Message).unwrap();
+            let message = p
+                .hits
+                .iter()
+                .find(|(_, hit)| matches!(hit, Hit::Msg))
+                .unwrap()
+                .0;
+            assert!(message.width >= composer.width.saturating_sub(2));
+            let text = read(t.backend().buffer(), composer);
+            assert!(text.contains("Shared subject"), "{text}");
+            assert!(!text.contains(&c.repos[0].name));
+        }
     }
 }
 
@@ -712,8 +690,8 @@ fn ai_review_of_a_replaced_file_never_includes_the_unchecked_child() {
 
     let mut panel = CommitPanel::default();
     panel.refresh(&c).unwrap();
-    panel.saved.endpoint = "http://127.0.0.1:1/mock".into();
-    panel.saved.model = "test".into();
+    panel.ai_settings.endpoint = "http://127.0.0.1:1/mock".into();
+    panel.ai_settings.model = "test".into();
     assert_eq!(panel.selection(&c).len(), 1);
     let Action::Confirm { body, token, .. } =
         panel.event(&Event::Key(KeyEvent::new(K::Char('A'), Mod::NONE)), &c)
@@ -724,7 +702,8 @@ fn ai_review_of_a_replaced_file_never_includes_the_unchecked_child() {
     assert!(body.lines().any(|line| line.trim() == "node"));
     assert!(!body.contains("private.txt"));
     // Inspect the patch queued for the model without sending anything to a service.
-    let [(_, patch)] = panel.ai_payload.as_slice() else {
+    let [ai::Patch { content: patch, .. }] = panel.ai_request.as_ref().unwrap().patches.as_slice()
+    else {
         panic!("expected one repository's patch");
     };
     assert!(patch.contains("-tracked contents"));

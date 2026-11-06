@@ -79,14 +79,16 @@ impl HelpContent {
     }
 }
 
-pub(crate) fn global_section(show_conflicts: bool) -> HelpSection {
+pub(crate) fn global_section(show_conflicts: bool, show_roots: bool) -> HelpSection {
     const BINDINGS: &[Binding] = &[
+        ("r", "Open Roots repo scope"),
         ("1", "Switch to Commit tab"),
         ("2", "Switch to Log tab"),
         ("3", "Switch to Push tab"),
+        ("5", "Switch to Branch tab"),
+        ("6", "Switch to Stash tab"),
         ("p", "Review Pull for all repositories in Roots"),
         ("f", "Review Fetch for all repositories in Roots"),
-        ("r", "Open Roots repo scope"),
         (":", "Open Actions"),
         ("F5", "Refresh workspace"),
         ("F1", "Open help for current pane"),
@@ -95,7 +97,7 @@ pub(crate) fn global_section(show_conflicts: bool) -> HelpSection {
         ("4", "Switch to Conflicts tab"),
     ];
     let count = BINDINGS.len() - usize::from(!show_conflicts);
-    HelpSection::new("Global Actions", &BINDINGS[..count])
+    HelpSection::new("Global Actions", &BINDINGS[usize::from(!show_roots)..count])
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -761,7 +763,7 @@ mod tests {
                     ("Z", "Expand all folders"),
                 ],
             ),
-            vec![global_section(false)],
+            vec![global_section(false, true)],
         ))
     }
     fn key(code: K) -> Event {
@@ -826,7 +828,7 @@ mod tests {
         for (width, height) in [(44, 12), (80, 24), (120, 36)] {
             let mut help = HelpState::new(HelpContent::new(
                 HelpSection::new("Commit / Text Selection", BINDINGS),
-                vec![global_section(false)],
+                vec![global_section(false, true)],
             ));
             let text = draw(&mut help, width, height);
             for (keys, description) in BINDINGS {

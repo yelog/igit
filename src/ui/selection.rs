@@ -234,6 +234,10 @@ impl TextSelection {
         self.head
     }
 
+    pub fn mouse_active(&self) -> bool {
+        self.press.is_some()
+    }
+
     pub fn extend(&mut self, from: usize, to: usize) {
         if self.range().is_none() {
             self.anchor = from;

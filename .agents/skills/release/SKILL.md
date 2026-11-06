@@ -81,14 +81,15 @@ other release scripts. Do not duplicate version arithmetic in ad hoc commands.
 
    ```sh
    python3 -B -m unittest discover -s scripts/release -p 'test_*.py'
+   python3 -B -m unittest discover -s scripts/install -p 'test_*.py'
    cargo fmt --all --check
    cargo clippy --locked --all-targets -- -D warnings
    cargo test --locked --all-targets
    cargo build --release --locked --bins
    ```
 
-   Then package and smoke-test both native binaries with `distribution.py`,
-   following the release guide. Use a temporary output directory; never replace
+   Then package and smoke-test both native binaries with `distribution.py` and
+   `scripts/install/smoke.py`, following the release guide. Use a temporary output directory; never replace
    the maintainer's installation or use their repositories. On Linux, build the
    native musl target used by CI instead of labeling a GNU binary as musl.
    Follow running command sessions to their actual exit status; yielding output
@@ -117,10 +118,18 @@ other release scripts. Do not duplicate version arithmetic in ad hoc commands.
    target archives plus `SHA256SUMS`, and no draft flag. Download its assets to
    a temporary directory, run `distribution.py checksums DIR VERSION --verify`,
    and smoke-test the native archive if the host matches a release target.
-5. Report complete only after the exact CI/Release runs and downloaded asset
-   verification pass. Include the release and run URLs. Otherwise report
-   "pushed; release verification incomplete" with the outstanding step. No
-   Pages, package registry, Homebrew tap, or installer publication is configured.
+5. Follow the Pages run triggered by that successful Release. Verify deployment
+   and the public installation matrix, then confirm the matching channel at
+   `https://igit.yelog.org/channels/CHANNEL.json` names the expected version and
+   checksums. A preexisting site run is not evidence for the new release. Pages
+   reads published Releases and never changes their tags or assets. Setup and
+   recovery are in the release guide; missing DNS/HTTPS is an outstanding step,
+   not a reason to alter the release. Old binaries such as `v0.1.0-beta.1` need
+   installer-based checks; new CI archives must include the built-in updater.
+6. Report complete only after the exact CI/Release runs, downloaded asset
+   verification, and Pages installation checks pass. Include the release and
+   run URLs. Otherwise report "pushed; release verification incomplete" with
+   the outstanding step. Package registries and Homebrew taps are not configured.
 
 ## Resume and failures
 

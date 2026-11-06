@@ -30,7 +30,6 @@ fn workspace_nodes(app: &Shell) -> Vec<(PaneId, Rect)> {
 fn maximize_preserves_commit_sizes_and_log_stays_tiled_and_resizable() {
     let (_dir, mut app) = fixture();
     let before = snapshot(&app.ctx.repos[0].path);
-    send(&mut app, "v");
     screen(&mut app, 120, 36);
     send(&mut app, "Ctrl-w 2 +");
     screen(&mut app, 120, 36);
@@ -122,6 +121,8 @@ fn maximize_works_on_narrow_screens_while_log_stays_tiled() {
                 Log => &app.log.panes,
                 Push => &app.push.panes,
                 Conflicts => &app.merge.panes,
+                Branch => &app.branch.panes,
+                Stash => &app.stash.panes,
             };
             assert_eq!(
                 layout.nodes().iter().filter(|(_, r)| !r.is_empty()).count(),

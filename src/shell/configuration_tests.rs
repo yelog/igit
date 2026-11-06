@@ -3,6 +3,20 @@ use crate::config::keys::parse_sequence;
 use crate::ui::clipboard::CopyCapture;
 use crossterm::event::MouseEvent;
 
+#[test]
+fn ai_settings_reach_commit_from_application_configuration() {
+    let (_dir, original) = fixture();
+    let config = AppConfig::from_toml("[ai]\nendpoint='http://localhost:11434/v1/chat/completions'\nmodel='configured-model'\nprompt='Custom prompt'").unwrap();
+    let mut app = Shell::with_config(original.ctx.clone(), config);
+    send(&mut app, "A");
+    let Some(Popup::Confirm { body, .. }) = &app.pop else {
+        panic!("expected AI review: {}", app.msg);
+    };
+    assert!(body.contains("Model: configured-model"));
+    assert!(body.contains("http://localhost:11434/v1/chat/completions"));
+    send(&mut app, "Esc");
+}
+
 fn configure(app: &mut Shell, text: &str) {
     app.config = AppConfig::from_toml(&format!("[ui]\nicons='ascii'\n{text}")).unwrap();
     app.merge.shortcut_labels = app.config.shortcut_labels("merge");

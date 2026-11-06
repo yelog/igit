@@ -4,6 +4,32 @@ use crate::ui::panes::PaneId;
 use crossterm::event::MouseEvent;
 use std::fs;
 mod inline_message;
+mod refresh;
+
+#[test]
+fn push_entry_renders_loading_before_reads_and_keeps_navigation_and_quit_available() {
+    let (_dir, mut app) = fixture();
+    let before = snapshot(&app.ctx.repos[0].path);
+    app.go(Push);
+    assert!(app.push.reads_pending());
+    assert!(
+        !app.push.busy(),
+        "read loading must not acquire the remote write guard"
+    );
+    assert!(screen(&mut app, 120, 36).contains("Loading outgoing commits"));
+    assert!(app.poll_timeout() <= Duration::from_millis(16));
+    app.dispatch(&key(KeyCode::Char('P')));
+    assert!(app.pop.is_none());
+    app.dispatch(&key(KeyCode::Char('F')));
+    assert!(!app.push.busy());
+    app.go(Commit);
+    assert_eq!(app.tab, Commit);
+    app.quit_box();
+    assert!(matches!(&app.pop, Some(Popup::Confirm { token, .. }) if token == "__quit"));
+    app.dispatch(&key(KeyCode::Esc));
+    app.push.finish_loading(&app.ctx);
+    assert_eq!(snapshot(&app.ctx.repos[0].path), before);
+}
 
 #[test]
 fn conflicts_tab_stays_available_until_the_git_operation_is_complete() {
@@ -16,7 +42,7 @@ fn conflicts_tab_stays_available_until_the_git_operation_is_complete() {
     let head = git(&["rev-parse", "HEAD"]);
 
     app.dispatch(&key(KeyCode::F(5)));
-    assert!(header(&mut app).contains("Commit  Log  Push  Conflicts"));
+    assert!(header(&mut app).contains("Commit Log Branch Stash Push Conflicts"));
     assert_eq!(app.tab, Commit, "refresh must not steal focus");
     let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(44, 12)).unwrap();
     terminal.draw(|f| app.draw(f)).unwrap();
@@ -145,6 +171,8 @@ fn pane_navigation_stays_in_the_active_tab_and_keeps_git_state() {
     screen(&mut app, 120, 36);
     assert_eq!(app.help_content().context(), "Commit / Changes");
     app.dispatch(&key(KeyCode::Tab));
+    assert_eq!(app.help_content().context(), "Commit / Preview");
+    app.dispatch(&key(KeyCode::Tab));
     assert_eq!(app.help_content().context(), "Commit / Message");
     click_tab(&mut app, Log);
     assert_eq!(app.help_content().context(), "Log / Branch Tree");
@@ -258,7 +286,11 @@ fn workspace_tabs_open_on_commit_and_switch_in_header_order_at_each_size() {
         let log = screen(&mut app, w, h);
         let header = log.lines().next().unwrap();
         assert!(header.starts_with(" Log  + "), "{header}");
-        assert!(header.ends_with(" Commit  Log  Push "), "{header}");
+        assert!(
+            header.ends_with(" Commit  Log  Branch  Stash  Push ")
+                || header.ends_with(" Commit Log Branch Stash Push"),
+            "{header}"
+        );
         assert_eq!(app.regions.body, Rect::new(0, 1, w, h - 2));
         assert_eq!(app.regions.log_tabs.y, app.regions.tab(Log).y);
         assert_eq!(app.regions.log_tabs.right(), app.regions.tab(Commit).x);
@@ -378,6 +410,7 @@ fn commit_and_push_refreshes_the_tabs_and_keeps_reviews_separate() {
     app.dispatch(&key(KeyCode::Char('y')));
     assert_eq!(app.tab, Push);
     assert!(screen(&mut app, 140, 36).contains("Push Commits"));
+    app.push.finish_loading(&app.ctx);
     app.dispatch(&key(KeyCode::Char('P')));
     assert!(matches!(&app.pop, Some(Popup::Confirm { owner: Push, .. })));
     app.dispatch(&key(KeyCode::Esc));

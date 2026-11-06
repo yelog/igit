@@ -9,6 +9,7 @@ mod navigation;
 mod paths;
 mod preview;
 mod refs;
+pub(crate) mod snapshot;
 pub(crate) mod view;
 use self::display::Item;
 use crate::{

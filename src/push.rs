@@ -1,6 +1,8 @@
 mod display;
 mod files;
 mod keymap;
+mod loading;
+mod preview;
 mod submodules;
 mod view;
 #[cfg(test)]
@@ -31,17 +33,17 @@ use std::{
     sync::mpsc::{self, Receiver},
 };
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Target {
     remote: String,
     dst: String,
 }
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Out {
     id: String,
     msg: String,
 }
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Entry {
     idx: usize,
     source: String,
@@ -101,6 +103,11 @@ pub struct PushPanel {
     pub(crate) icons: IconMode,
     pub(crate) panes: PaneLayout,
     entries: Vec<Entry>,
+    load: loading::Load<Vec<Entry>>,
+    load_scope: Option<loading::Scope>,
+    load_error: Option<String>,
+    preview_load: loading::Load<preview::Loaded>,
+    preview_request: Option<preview::Request>,
     checked: BTreeSet<usize>,
     expanded: BTreeSet<usize>,
     targets: BTreeMap<usize, Target>,
@@ -134,11 +141,33 @@ fn remote_list(p: &Path) -> Vec<String> {
         .collect()
 }
 fn get_t(r: &Repo, branch: &str) -> Target {
-    let cfg = |k: &str| git(&r.path, &["config", "--get", k]).unwrap_or_default();
+    // Read the effective config once, including global/conditional includes.
+    // NUL-delimited values preserve spaces and branch subsection case.
+    let values = git_bytes(
+        &r.path,
+        &[
+            "config",
+            "--null",
+            "--get-regexp",
+            r"^(branch\..*\.(remote|pushremote|merge)|remote\.pushdefault)$",
+        ],
+    )
+    .unwrap_or_default();
+    let values: BTreeMap<_, _> = String::from_utf8_lossy(&values)
+        .split('\0')
+        .filter_map(|item| item.split_once('\n'))
+        .map(|(key, value)| {
+            (
+                key.to_owned(),
+                value.trim_end_matches(['\n', '\r']).to_owned(),
+            )
+        })
+        .collect();
+    let cfg = |k: &str| values.get(k).cloned().unwrap_or_default();
     let upstream = cfg(&format!("branch.{branch}.remote"));
-    let mut remote = cfg(&format!("branch.{branch}.pushRemote"));
+    let mut remote = cfg(&format!("branch.{branch}.pushremote"));
     if remote.is_empty() {
-        remote = cfg("remote.pushDefault")
+        remote = cfg("remote.pushdefault")
     }
     if remote.is_empty() {
         remote = upstream.clone()
@@ -191,18 +220,22 @@ fn entry(i: usize, r: &Repo, t: Option<&Target>) -> Entry {
             .as_ref()
             .map(|h| format!("{h}..{head}"))
             .unwrap_or_else(|| head.clone());
-        let n = git(&r.path, &["rev-list", "--count", &range])?.parse()?;
-        let logs = git(
-            &r.path,
-            &["log", "--max-count=60", "--format=%H%x09%s", &range, "--"],
-        )?
-        .lines()
-        .filter_map(|x| x.split_once('\t'))
-        .map(|(id, msg)| Out {
-            id: id.into(),
-            msg: msg.into(),
-        })
-        .collect();
+        let n: usize = git(&r.path, &["rev-list", "--count", &range])?.parse()?;
+        let logs = if n == 0 {
+            Vec::new()
+        } else {
+            git(
+                &r.path,
+                &["log", "--max-count=60", "--format=%H%x09%s", &range, "--"],
+            )?
+            .lines()
+            .filter_map(|x| x.split_once('\t'))
+            .map(|(id, msg)| Out {
+                id: id.into(),
+                msg: msg.into(),
+            })
+            .collect()
+        };
         Ok(Entry {
             idx: i,
             source,
@@ -369,214 +402,21 @@ impl PushPanel {
     fn selected(&self) -> Option<(usize, Option<usize>)> {
         self.rows().get(self.pos).copied()
     }
-    fn inspect(&mut self, c: &Context) {
-        self.detail_selection.reset();
-        self.preview = Preview::default();
-        self.detail_off = 0;
-        let Some((i, sub)) = self.selected() else {
-            return;
-        };
-        let Some(e) = self.entries.iter().find(|e| e.idx == i) else {
-            return;
-        };
-        let p = &c.repos[i].path;
-        if !e.error.is_empty() {
-            self.preview.body = e.error.clone();
-            self.preview.summary = e.error.clone();
-            return;
-        }
-        if sub.is_none() && e.n == 0 {
-            return;
-        }
-        let selected = sub.and_then(|k| e.logs.get(k));
-        let (files, desc) = if let Some(h) = selected {
-            (
-                git_bytes(
-                    p,
-                    &[
-                        "diff-tree",
-                        "--root",
-                        "--diff-merges=first-parent",
-                        "--no-commit-id",
-                        "--name-status",
-                        "-z",
-                        "-r",
-                        "--find-renames",
-                        &h.id,
-                        "--",
-                    ],
-                )
-                .map(files::name_status),
-                git(
-                    p,
-                    &[
-                        "show",
-                        "-s",
-                        "--format=%s%n%n%b%n%h   %an <%ae>%n%ai",
-                        &h.id,
-                    ],
-                )
-                .unwrap_or_default(),
-            )
-        } else {
-            let paths = if let Some(base) = &e.tracking {
-                git_bytes(
-                    p,
-                    &[
-                        "diff",
-                        "--name-status",
-                        "-z",
-                        "--find-renames",
-                        base,
-                        &e.head,
-                        "--",
-                    ],
-                )
-                .map(files::name_status)
-            } else {
-                git_bytes(p, &["ls-tree", "-r", "--name-only", "-z", &e.head])
-                    .map(files::added_paths)
-            };
-            (
-                paths,
-                format!(
-                    "{} {} {}:{}\n\n{} outgoing commits.\n{}\n\n{}",
-                    e.source,
-                    self.icons.glyph(Icon::Right),
-                    e.t.remote,
-                    e.t.dst,
-                    e.n,
-                    e.tracking
-                        .as_ref()
-                        .map(|h| format!("Last fetched tip: {:.10}", h))
-                        .unwrap_or_else(|| "New target (no tracking ref)".into()),
-                    if e.n > 60 {
-                        "List displays newest 60; the complete branch will be pushed."
-                    } else {
-                        "Select a commit to inspect its files."
-                    }
-                ),
-            )
-        };
-        let files = match files {
-            Ok(files) => files,
-            Err(err) => {
-                self.preview.body = format!("Unable to load changed files: {err}\n\n{desc}");
-                self.preview.summary = self.preview.body.clone();
-                return;
-            }
-        };
-        let summary = if let Some(Err(err)) = self.results.get(&i) {
-            format!("FAILED: {err}\n\n{desc}")
-        } else {
-            desc
-        };
-        self.preview = Preview {
-            tree: FileTree::new(&files, self.grouping),
-            files,
-            body: summary.clone(),
-            summary,
-            is_patch: false,
-        };
-        if self.show_details {
-            self.inspect_file(c);
-        }
-    }
-    fn open_file(&mut self, c: &Context) {
-        let Some((i, k)) = self.selected() else {
-            return;
-        };
-        let Some(file) = self
-            .preview
-            .tree
-            .file_index()
-            .and_then(|i| self.preview.files.get(i))
-        else {
-            return;
-        };
-        let path = &file.path;
-        let x = self.entries.iter().find(|e| e.idx == i).unwrap();
-        let mut cmd = command(&c.repos[i].path);
-        cmd.arg("--literal-pathspecs");
-        if let Some(h) = k.and_then(|k| x.logs.get(k)) {
-            cmd.args([
-                "show",
-                "--diff-merges=first-parent",
-                "--format=",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--find-renames",
-                &h.id,
-            ]);
-        } else if let Some(base) = &x.tracking {
-            cmd.args([
-                "diff",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--find-renames",
-                base,
-                &x.head,
-            ]);
-        } else {
-            let item = cmd
-                .args(["ls-tree", "-z", &x.head, "--"])
-                .arg(path)
-                .output()
-                .ok();
-            let oid = item
-                .as_ref()
-                .and_then(|o| o.stdout.split(|v| *v == b'\t').next())
-                .and_then(|s| std::str::from_utf8(s).ok())
-                .and_then(|s| s.split_whitespace().nth(2));
-            self.preview.is_patch = false;
-            self.preview.body = match oid {
-                Some(id)
-                    if git(&c.repos[i].path, &["cat-file", "-s", id])
-                        .ok()
-                        .and_then(|s| s.parse::<usize>().ok())
-                        .is_some_and(|n| n <= 1_048_576) =>
-                {
-                    match git_bytes(&c.repos[i].path, &["cat-file", "blob", id]) {
-                        Ok(b) if !b.contains(&0) => format!(
-                            "New target: {}\n\n{}",
-                            label(path),
-                            String::from_utf8_lossy(&b)
-                                .chars()
-                                .take(30000)
-                                .collect::<String>()
-                        ),
-                        _ => "Binary or non-blob entry".into(),
-                    }
-                }
-                _ => "Preview unavailable: large file or not a blob".into(),
-            };
-            self.detail_off = 0;
-            return;
-        }
-
-        cmd.arg("--").arg(path);
-        if let Some(previous) = &file.previous {
-            cmd.arg(previous);
-        }
-        let out = cmd.output();
-        (self.preview.body, self.preview.is_patch) = match out {
-            Ok(o) if o.status.success() => (
-                String::from_utf8_lossy(&o.stdout)
-                    .chars()
-                    .take(30000)
-                    .collect(),
-                true,
-            ),
-            Ok(o) => (String::from_utf8_lossy(&o.stderr).into_owned(), false),
-            Err(e) => (e.to_string(), false),
-        };
-        self.detail_off = 0;
-    }
     fn inspect_file(&mut self, c: &Context) {
+        if self.preview_load.loading()
+            && self
+                .preview_request
+                .as_ref()
+                .is_some_and(|request| request.file.is_none())
+        {
+            return;
+        }
         self.detail_selection.reset();
         if self.preview.tree.file_index().is_some() {
             self.open_file(c);
         } else {
+            self.preview_load.cancel();
+            self.preview_request = None;
             self.preview.is_patch = false;
             self.detail_off = 0;
             self.preview.body = match self.preview.tree.selected() {
@@ -623,6 +463,9 @@ impl PushPanel {
         }
     }
     fn target(&mut self, i: usize) {
+        if self.read_status().is_some() || self.busy() {
+            return;
+        }
         if let Some(e) = self
             .entries
             .iter()
@@ -634,6 +477,16 @@ impl PushPanel {
     fn review(&mut self, c: &Context, retry: bool) -> Action {
         if self.busy() {
             return Action::Notice(self.busy.clone());
+        }
+        if let Some(message) = self.read_status() {
+            return Action::Notice(message.into());
+        }
+        if self
+            .load_scope
+            .as_ref()
+            .is_some_and(|scope| !scope.matches(c))
+        {
+            return Action::Notice("Roots changed; refresh before reviewing a push".into());
         }
         if retry && self.last_fetch {
             return Action::Notice("Retry Fetch after fixing the remote".into());
@@ -679,6 +532,18 @@ impl PushPanel {
     fn start(&mut self, c: &Context, fetch: bool) -> Action {
         if self.busy() {
             return Action::Notice(self.busy.clone());
+        }
+        if let Some(message) = self.read_status() {
+            return Action::Notice(message.into());
+        }
+        if self
+            .load_scope
+            .as_ref()
+            .is_some_and(|scope| !scope.matches(c))
+        {
+            return Action::Notice(
+                "Roots changed; refresh before starting a remote operation".into(),
+            );
         }
         let (tx, rx) = mpsc::channel();
         let js = std::mem::take(&mut self.review);
@@ -759,6 +624,7 @@ impl PushPanel {
             format!("{n} failed / not executed · select row for details")
         };
         let _ = self.refresh(c);
+        self.inspect(c);
         Some(msg)
     }
 }
@@ -781,40 +647,23 @@ impl Panel for PushPanel {
         }
     }
     fn refresh(&mut self, c: &Context) -> Result<()> {
-        let old = self.reseed.is_none().then(|| self.selected()).flatten();
-        self.entries = c
-            .scope
-            .iter()
-            .map(|&i| entry(i, &c.repos[i], self.targets.get(&i)))
-            .collect();
-        if let Some(rs) = self.reseed.take() {
-            self.checked = rs.iter().copied().collect();
-            self.expanded = self.checked.clone();
-            self.init = true
+        let old = self.selected_identity();
+        let scope_changed = self
+            .load_scope
+            .as_ref()
+            .is_some_and(|scope| !scope.matches(c));
+        self.load_scope = Some(loading::Scope::new(c));
+        self.load_error = None;
+        self.load.request();
+        self.review.clear();
+        self.entries.retain(|e| c.scope.contains(&e.idx));
+        if scope_changed || old != self.selected_identity() {
+            self.pos = old
+                .as_ref()
+                .and_then(|identity| self.position_for_identity(identity))
+                .unwrap_or(0);
+            self.inspect(c);
         }
-        if !self.init {
-            if let Some(e) = self.entries.iter().find(|e| e.n > 0) {
-                self.checked.insert(e.idx);
-                self.expanded.insert(e.idx);
-            }
-            self.init = true
-        }
-        self.entries.sort_by(|a, b| {
-            c.repos[a.idx]
-                .name
-                .to_lowercase()
-                .cmp(&c.repos[b.idx].name.to_lowercase())
-                .then(a.idx.cmp(&b.idx))
-        });
-        let rows = self.rows();
-        self.pos = old
-            .and_then(|key| rows.iter().position(|x| *x == key))
-            .or_else(|| {
-                rows.iter()
-                    .position(|(i, commit)| commit.is_none() && self.checked.contains(i))
-            })
-            .unwrap_or(0);
-        self.inspect(c);
         Ok(())
     }
     fn draw(&mut self, f: &mut Frame, a: Rect, c: &Context) {
@@ -1100,7 +949,7 @@ mod tests {
     fn g(p: &Path, a: &[&str]) -> String {
         git(p, a).unwrap()
     }
-    fn make(parent: &Path, n: &str) -> PathBuf {
+    pub(super) fn make(parent: &Path, n: &str) -> PathBuf {
         let repo = parent.join(n);
         let bare = parent.join(format!("{n}.git"));
         fs::create_dir(&repo).unwrap();
@@ -1153,6 +1002,7 @@ mod tests {
                 ..Default::default()
             };
             p.refresh(&c).unwrap();
+            p.finish_loading(&c);
             let mut term = Terminal::new(TestBackend::new(44, 16)).unwrap();
             let draw = |p: &mut PushPanel, term: &mut Terminal<TestBackend>| {
                 term.draw(|f| p.draw(f, f.area(), &c)).unwrap();
@@ -1221,11 +1071,13 @@ mod tests {
         c.repos[1].name = "a-tools".into();
         let mut p = PushPanel::default();
         p.refresh(&c).unwrap();
+        p.finish_loading(&c);
         assert_eq!(p.entries.iter().map(|e| e.idx).collect::<Vec<_>>(), [1, 0]);
         assert_eq!(p.checked, BTreeSet::from([0]));
         assert_eq!(p.selected(), Some((0, None)));
         p.reseed = Some(vec![1]);
         p.refresh(&c).unwrap();
+        p.finish_loading(&c);
         assert_eq!(p.checked, BTreeSet::from([1]));
         assert_eq!(p.selected(), Some((1, None)));
     }
@@ -1269,6 +1121,7 @@ mod tests {
         let c = Context::discover(td.path()).unwrap();
         let mut p = PushPanel::default();
         p.refresh(&c).unwrap();
+        p.finish_loading(&c);
         let statuses: BTreeMap<_, _> = p
             .preview
             .files
@@ -1297,6 +1150,7 @@ mod tests {
                 })
                 .unwrap();
             p.activate_file(row, false, &c);
+            p.finish_loading(&c);
         };
         for (path, included, excluded) in [
             ("src/a/index.vue", "+first updated", "second updated"),
@@ -1313,6 +1167,7 @@ mod tests {
         assert!(p.preview.body.contains("rename to src/renamed.ts"));
         p.preview.tree.fold_all(true);
         p.inspect_file(&c);
+        p.finish_loading(&c);
         assert!(!p.preview.is_patch);
         assert_eq!(p.preview.body, p.preview.summary);
         assert!(!p.preview.body.contains("rename from"));
@@ -1348,6 +1203,7 @@ mod tests {
 
         p.pos = 1; // The individual outgoing commit has the same five statuses.
         p.inspect(&c);
+        p.finish_loading(&c);
         assert_eq!(p.preview.files.len(), 5);
         assert_eq!(p.preview.tree.visible.len(), 5);
         assert!(p
@@ -1367,6 +1223,7 @@ mod tests {
             },
         );
         p.refresh(&c).unwrap();
+        p.finish_loading(&c);
         assert!(p.preview.files.iter().all(|f| f.status == b'A'));
         assert_eq!(p.preview.tree.visible.len(), p.preview.files.len());
         select(&mut p, "src/a/index.vue");
@@ -1377,6 +1234,7 @@ mod tests {
         let root = g(&repo, &["rev-list", "--max-parents=0", "HEAD"]);
         p.pos = 1 + p.entries[0].logs.iter().position(|h| h.id == root).unwrap();
         p.inspect(&c);
+        p.finish_loading(&c);
         assert_eq!(p.preview.files.len(), 1);
         assert_eq!(p.preview.files[0].status, b'A');
         assert_eq!(snapshot(), before);
@@ -1398,8 +1256,10 @@ mod tests {
         let c = Context::discover(td.path()).unwrap();
         let mut p = PushPanel::default();
         p.refresh(&c).unwrap();
+        p.finish_loading(&c);
         p.pos = 1;
         p.inspect(&c);
+        p.finish_loading(&c);
         assert_eq!(p.preview.files.len(), 1);
         assert_eq!(p.preview.files[0].path, PathBuf::from("side.ts"));
         p.preview.tree.cursor = p
@@ -1410,6 +1270,7 @@ mod tests {
             .position(|&n| matches!(p.preview.tree.nodes[n].kind, Kind::File(0)))
             .unwrap();
         p.open_file(&c);
+        p.finish_loading(&c);
         assert!(p.preview.body.contains("+side branch content"));
         assert!(!p.preview.body.contains("main branch content"));
     }
@@ -1494,6 +1355,7 @@ mod tests {
             ..Default::default()
         };
         p.refresh(&c).unwrap();
+        p.finish_loading(&c);
         assert!(matches!(p.review(&c, false), Action::Confirm { .. }));
         g(
             &t.path().join("b.git"),
@@ -1522,9 +1384,11 @@ mod tests {
         assert_ne!(g(&t.path().join("b.git"), &["rev-parse", "main"]), reviewed);
         c.scope.remove(&1);
         p.refresh(&c).unwrap();
+        p.finish_loading(&c);
         assert!(matches!(p.review(&c, true), Action::Notice(_)));
         c.scope.insert(1);
         p.refresh(&c).unwrap();
+        p.finish_loading(&c);
         assert!(matches!(p.review(&c, true), Action::Confirm { .. }));
         assert_eq!(p.review.len(), 1);
         assert_eq!(p.review[0].idx, 1);

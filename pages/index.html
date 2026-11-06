@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install IGit</title>
+<style>
+body{max-width:52rem;margin:4rem auto;padding:0 1.5rem;font:17px/1.6 system-ui,sans-serif;color:#202421;background:#f8f8f4}h1{font-size:3rem;line-height:1.1}h2{margin-top:2.5rem}pre{padding:1rem;background:#e9ede8;overflow:auto;font-size:.85rem}a{color:#24533c}code{font-size:.9em}
+</style>
+<h1>IGit</h1>
+<p>A terminal workspace for your Git repositories. Open it with <code>igit</code> or <code>ig</code>.</p>
+<p><a href="https://github.com/yelog/igit">Source and documentation</a> · <a href="https://github.com/yelog/igit/releases">Release downloads</a></p>
+<h2>macOS and Linux</h2>
+<p>Install the beta channel on Intel/Apple Silicon macOS or x86_64/ARM64 Linux. Requires Python 3.9+, curl, and Git.</p>
+<pre><code>curl -fsSL https://igit.yelog.org/install-beta.sh | sh</code></pre>
+<p>For the stable channel, use <code>install.sh</code>. A channel becomes available after its first release.</p>
+<h2>Windows x86_64</h2>
+<p>Run in PowerShell, then open a new terminal. Git and curl must be available.</p>
+<pre><code>$env:IGIT_CHANNEL = 'beta'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm https://igit.yelog.org/install.ps1.txt -ErrorAction Stop | iex"</code></pre>
+<h2>Update</h2>
+<pre><code>igit update --check
+igit update</code></pre>
+<p>Native installations retain their release channel. Use <code>--channel stable</code> or <code>--channel beta</code> to switch explicitly. If your installed version predates this command, rerun its installer to update.</p>
+<p><a href="https://github.com/yelog/igit/blob/main/docs/installation.md">Installation options and troubleshooting</a></p>
+</html>

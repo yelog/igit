@@ -10,6 +10,15 @@ mouse = true
 [ui]
 icons = "nerd-font"
 
+[ai]
+# Full OpenAI-compatible chat completions URL, including its path.
+# A user [ai] table takes precedence over saved workspace AI settings.
+endpoint = ""
+model = ""
+prompt = "Write one concise Conventional Commit message covering exactly the selected changes across all supplied repositories. Return only the commit message, without Markdown fences or commentary."
+api_key_env = "IGIT_LLM_API_KEY"
+timeout_seconds = 60
+
 [keybindings]
 # Prefix hints appear after this delay; prefixes remain until used or canceled.
 hint_delay_ms = 200
@@ -21,6 +30,8 @@ focus-commit = ["1"]
 focus-log = ["2"]
 open-push = ["3"]
 open-merge = ["4"]
+focus-branch = ["5"]
+focus-stash = ["6"]
 pull = ["p"]
 fetch = ["f"]
 roots = ["r"]
@@ -58,6 +69,36 @@ increase-height = ["Ctrl-w +"]
 decrease-height = ["Ctrl-w -"]
 reset-sizes = ["Ctrl-w ="]
 close-log-tab = ["Ctrl-w c"]
+
+[keybindings.stash]
+move-down = ["j", "Down"]
+move-up = ["k", "Up"]
+collapse = ["h", "Left"]
+expand = ["l", "Right"]
+toggle = ["Space"]
+open = ["Enter"]
+first-item = ["g", "Home"]
+last-item = ["G", "End"]
+page-down = ["PgDn"]
+page-up = ["PgUp"]
+collapse-all = ["z"]
+expand-all = ["Z"]
+
+[keybindings.branch]
+move-down = ["j", "Down"]
+move-up = ["k", "Up"]
+collapse = ["h", "Left"]
+expand = ["l", "Right"]
+toggle = ["Space"]
+first-item = ["g", "Home"]
+last-item = ["G", "End"]
+page-down = ["PgDn"]
+page-up = ["PgUp"]
+create = ["a"]
+delete = ["d"]
+checkout = ["Enter"]
+merge = ["m"]
+rename = ["r"]
 
 [keybindings.log]
 move-down = ["j", "Down"]
@@ -114,7 +155,8 @@ move-to-group = ["m"]
 preview = ["v"]
 view-options = ["o"]
 toggle-directories = ["t"]
-toggle-status = ["s"]
+toggle-status = ["T"]
+stash = ["s"]
 collapse-all = ["z"]
 expand-all = ["Z"]
 undo-selection = ["u"]

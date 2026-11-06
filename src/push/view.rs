@@ -316,9 +316,17 @@ impl PushPanel {
         let content = block.inner(area);
         f.render_widget(block, area);
         let [toolbar, inner] = Layout::vertical([C::Length(1), C::Min(0)]).areas(content);
-        if self.busy() {
+        if self.busy() || self.read_status().is_some() {
             f.render_widget(
-                Paragraph::new(format!(" {}", self.busy)).style(Style::new().fg(ACCENT)),
+                Paragraph::new(format!(
+                    " {}",
+                    if self.busy() {
+                        &self.busy
+                    } else {
+                        self.read_status().unwrap()
+                    }
+                ))
+                .style(Style::new().fg(ACCENT)),
                 toolbar,
             );
         } else {
@@ -630,10 +638,17 @@ impl PushPanel {
             ],
         );
         let height = usize::from(inner.height.saturating_sub(1));
-        if self.preview.tree.nodes.is_empty() && self.preview.body.is_empty() {
+        if self.preview.tree.nodes.is_empty() {
             if height > 0 {
+                let message = if self.load.loading() && self.entries.is_empty() {
+                    "Loading outgoing commits…"
+                } else if self.preview.body.is_empty() {
+                    "No commits selected"
+                } else {
+                    self.preview.body.lines().next().unwrap_or_default()
+                };
                 f.render_widget(
-                    Paragraph::new("No commits selected")
+                    Paragraph::new(message)
                         .style(Style::new().fg(MUTED))
                         .centered(),
                     Rect::new(
@@ -785,7 +800,7 @@ impl PushPanel {
             let width = (label.width() as u16).min(right - area.x);
             let row = Rect::new(right - width, action_y, width, 1);
             let primary = matches!(hit, Hit::Send);
-            let enabled = !primary || n > 0 && !self.busy();
+            let enabled = !primary || n > 0 && !self.busy() && self.read_status().is_none();
             let style = if enabled {
                 button_style(primary)
             } else {

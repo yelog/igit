@@ -20,7 +20,11 @@ pub const PUSH: u16 = 896;
 pub const MERGE_FILES: u16 = 1024;
 pub const MERGE_DOC: u16 = 2048;
 pub const MERGE: u16 = 3072;
-pub const ALL: u16 = 4095;
+pub const BRANCH: u16 = 4096;
+pub const STASH_LIST: u16 = 8192;
+pub const STASH_FILES: u16 = 16384;
+pub const STASH: u16 = STASH_LIST | STASH_FILES;
+pub const ALL: u16 = 32767;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommandAction {
@@ -87,13 +91,29 @@ commands! {
         "focus-log" => "2", ALL;
         "open-push" => "3", ALL;
         "open-merge" => "4", ALL;
+        "focus-branch" => "5", ALL;
+        "focus-stash" => "6", ALL;
         "pull" => "p", ALL;
         "fetch" => "f", ALL;
-        "roots" => "r", ALL;
+        "roots" => "r", ALL & !BRANCH;
         "actions" => ":", ALL;
         "refresh" => "F5", ALL;
         "help" => "?", ALL;
         "quit" => "q", ALL;
+    }
+    "stash" {
+        "move-down" => "j", STASH;
+        "move-up" => "k", STASH;
+        "collapse" => "h", STASH;
+        "expand" => "l", STASH;
+        "toggle" => "Space", STASH;
+        "open" => "Enter", STASH;
+        "first-item" => "g", STASH;
+        "last-item" => "G", STASH;
+        "page-down" => "PgDn", STASH;
+        "page-up" => "PgUp", STASH;
+        "collapse-all" => "z", STASH_FILES;
+        "expand-all" => "Z", STASH_FILES;
     }
     "panes" {
         "focus-next" => "Tab", ALL;
@@ -119,6 +139,22 @@ commands! {
         "decrease-height" => "Ctrl-w -", ALL;
         "reset-sizes" => "Ctrl-w =", ALL;
         "close-log-tab" => "Ctrl-w c", LOG;
+    }
+    "branch" {
+        "move-down" => "j", BRANCH;
+        "move-up" => "k", BRANCH;
+        "collapse" => "h", BRANCH;
+        "expand" => "l", BRANCH;
+        "toggle" => "Space", BRANCH;
+        "first-item" => "g", BRANCH;
+        "last-item" => "G", BRANCH;
+        "page-down" => "PgDn", BRANCH;
+        "page-up" => "PgUp", BRANCH;
+        "create" => "a", BRANCH;
+        "delete" => "d", BRANCH;
+        "checkout" => "Enter", BRANCH;
+        "merge" => "m", BRANCH;
+        "rename" => "r", BRANCH;
     }
     "log" {
         "move-down" => "j", LOG;
@@ -175,7 +211,8 @@ commands! {
         "preview" => "v", COMMIT;
         "view-options" => "o", COMMIT;
         "toggle-directories" => "t", COMMIT;
-        "toggle-status" => "s", COMMIT;
+        "toggle-status" => "T", COMMIT;
+        "stash" => "s", COMMIT;
         "collapse-all" => "z", COMMIT;
         "expand-all" => "Z", COMMIT;
         "undo-selection" => "u", COMMIT;
@@ -263,6 +300,9 @@ pub fn context(title: &str) -> u16 {
         "Push / Diff and Details" => PUSH_DETAILS,
         "Merge / Conflicted Files" => MERGE_FILES,
         "Merge / Left Source" | "Merge / Result" | "Merge / Right Source" => MERGE_DOC,
+        "Branch / Branch Tree" => BRANCH,
+        "Stash / Repositories" => STASH_LIST,
+        "Stash / File Tree" => STASH_FILES,
         _ => 0,
     }
 }

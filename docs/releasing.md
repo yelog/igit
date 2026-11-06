@@ -3,8 +3,8 @@
 The repository's [release skill](../.agents/skills/release/SKILL.md) prepares
 beta/stable versions, checks the source, and coordinates publication through
 GitHub Actions. This adapts LazyDB's version and Changelog workflow to IGit's
-two commands and system-Git runtime. Creating this automation does not publish
-the current `0.1.0` source.
+two commands and system-Git runtime. Editing automation does not authorize a
+new software release.
 
 ## Maintainer entry points
 
@@ -39,7 +39,9 @@ a clean source tree, and ancestry on `origin/main`. It does not create tags.
 
 [CI](../.github/workflows/ci.yml) runs on pull requests, main pushes, and manual
 dispatch. It checks formatting, Clippy, release tooling, and Rust tests, then
-builds both binaries and smoke-tests each extracted native archive.
+builds both binaries and smoke-tests each extracted native archive. It also
+installs each archive in an isolated directory and verifies both native updater
+entry points. Windows installer contracts run under PowerShell 5.1 and 7.
 [Release](../.github/workflows/release.yml) runs on `v*` tags or manual dispatch
 with an existing tag. It validates that tag and invokes the same CI workflow
 against its resolved commit SHA, then publishes those exact artifacts. It
@@ -57,8 +59,9 @@ The matrix describes configured build/test coverage. Terminal-specific keyboard,
 mouse, clipboard, and Kitty integration still need interactive verification on
 the target platform. Linux binaries use musl to avoid a host glibc dependency.
 Git must be installed separately; optional AI requests also need system curl.
-Windows ARM64, package managers, installers, self-updates, code signing, and
-notarization are outside this release workflow.
+Windows ARM64, package managers, code signing, and notarization are outside this
+release workflow. Native installers and explicit software updates are described
+in [Installation](installation.md).
 
 Archives are named `igit_VERSION_TARGET.tar.gz` or `.zip`, with one directory
 of the same base name. Each contains `igit` and `ig` (`.exe` on Windows),
@@ -70,14 +73,16 @@ use `shasum -a 256 FILE` on macOS, `sha256sum FILE` on Linux, or
 `Get-FileHash FILE -Algorithm SHA256` in PowerShell.
 
 The Actions jobs need only the built-in `GITHUB_TOKEN`: read-only for planning
-and testing, `contents: write` for publication. No repository secret, model
-endpoint, or external tap is required. Action revisions and Rust are pinned.
+and testing, `contents: write` for publication, and `pages: write` plus
+`id-token: write` for Pages deployment. No repository secret, model endpoint,
+or external tap is required. Action revisions and Rust are pinned.
 Runner labels follow [GitHub's hosted runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
 
 ## Local verification
 
 ```sh
 python3 -B -m unittest discover -s scripts/release -p 'test_*.py'
+python3 -B -m unittest discover -s scripts/install -p 'test_*.py'
 cargo fmt --all --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked --all-targets
@@ -91,6 +96,7 @@ release_dist="$(mktemp -d)"
 release_version="$(python3 scripts/release/metadata.py version)"
 release_archive="$(python3 scripts/release/distribution.py package aarch64-apple-darwin --bin-dir target/release --output "$release_dist")"
 python3 scripts/release/distribution.py smoke "$release_archive" "$release_version" aarch64-apple-darwin
+python3 scripts/install/smoke.py --archive "$release_archive" --version "$release_version" --target aarch64-apple-darwin
 ```
 
 On Linux, install the native musl target and linker, then build with `--target
@@ -108,6 +114,55 @@ With all five downloaded archives in a directory, validate the complete asset
 set with `python3 scripts/release/distribution.py checksums DIR VERSION
 --verify`. Without `--verify`, that command generates SHA256SUMS, so use it only
 while assembling a release, not to verify a downloaded checksum file.
+
+## Installer site and channels
+
+[Pages](../.github/workflows/pages.yml) assembles installers and channel manifests
+after a successful Release, on installer-related main pushes, or by manual
+dispatch. It reads installer code from trusted `main` and obtains binary URLs
+and checksums from published GitHub Releases. It excludes drafts, selects each
+channel's highest numeric version, and requires the exact five archives plus
+`SHA256SUMS`. Stable never falls back to beta. If no stable release exists,
+`channels/stable.json` is absent and stable installation reports that the channel
+is unavailable.
+
+`scripts/release/pages.py` builds only this public allowlist: `index.html`,
+`CNAME`, `.nojekyll`, standalone `install.sh` and `install-beta.sh`, Windows
+`install.ps1` / `install.ps1.txt`, and available channel manifests. The text copy
+avoids script MIME download behavior in PowerShell. Both Unix entry points embed
+the Python installer and work directly through `curl | sh`, without a checkout.
+
+One-time setup for `igit.yelog.org`:
+
+1. Enable repository Settings → Pages with **GitHub Actions** as its source.
+2. Set the Pages custom domain to `igit.yelog.org`.
+3. Configure its DNS CNAME to `yelog.github.io`, then enable HTTPS once GitHub
+   has provisioned the certificate.
+4. Dispatch Pages and follow its deployment and online verification jobs.
+
+`pages/CNAME` records the intended host; with custom workflows it does not
+replace the repository's Pages settings. Follow GitHub's
+[custom-domain setup](https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/managing-a-custom-domain-for-your-github-pages-site).
+Pages settings and DNS must be ready before the public install checks can pass.
+
+The online matrix installs each available channel on all five native targets in
+temporary directories, without modifying user PATH or profiles. It checks both
+commands and their no-op updates. Published binaries predating the updater
+(such as `v0.1.0-beta.1`) use the installer check instead. Newly built CI archives
+must provide the built-in updater; they cannot use that legacy exception.
+Deploying installer scripts alone does not add an updater to old binaries.
+
+To inspect generated files locally without deploying:
+
+```sh
+site_output="$(mktemp -d)"
+python3 scripts/release/pages.py --output "$site_output"
+```
+
+If Pages fails after a Release publishes, retain that immutable Release and
+repair/retry only the site workflow within the authorized scope. Verify the
+published channel JSON, expected version, installer endpoints, and online
+matrix before reporting installation availability.
 
 ## Publication and recovery
 
@@ -129,5 +184,6 @@ If a source or workflow correction is needed, commit it through the normal
 development process and use a new release version. A retry of the same immutable
 tag is appropriate only for an authorized transient-failure recovery. Inspect
 actual refs, draft assets, and run logs before retrying a timed-out operation.
-Report "pushed; release verification incomplete" until the exact workflows and
-downloaded assets are verified; a successful push alone is not a completed release.
+Report "pushed; release verification incomplete" until the exact CI/Release
+workflows, downloaded assets, and the corresponding Pages deployment/online
+checks pass; a successful push alone is not a completed release.

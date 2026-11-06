@@ -44,3 +44,9 @@ decimal rollover policy described in [Releasing](docs/releasing.md).
 - [`3ddd75e`](https://github.com/yelog/igit/commit/3ddd75eebec021b79d34a89313aea073687ea615) test: respect native separators in path filter assertions
 
 ## Unreleased
+
+### Added
+
+- Add native macOS, Linux, and Windows installers at `igit.yelog.org`, with separate stable and beta channels.
+- Add `igit update` and `ig update` with read-only checks, JSON output, explicit channel changes, and verified installation ownership.
+- Verify installation and updates in the five-platform CI matrix; deploy installer scripts and published release manifests through GitHub Pages.

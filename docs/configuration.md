@@ -98,6 +98,11 @@ binding; the action's mouse button remains available.
 | `version` | `1` | Configuration schema version |
 | `terminal.mouse` | `true` | Enable mouse capture and IGit mouse interactions; CLI `--mouse on/off` overrides it |
 | `ui.icons` | `"nerd-font"` | Icon mode; CLI `--icons` overrides it |
+| `ai.endpoint` | `""` | Full OpenAI-compatible chat completions URL; HTTPS or localhost HTTP with a port |
+| `ai.model` | `""` | Model identifier sent to the configured service |
+| `ai.prompt` | See defaults | System prompt used to generate one message for all selected changes |
+| `ai.api_key_env` | `"IGIT_LLM_API_KEY"` | Environment variable containing the optional bearer token |
+| `ai.timeout_seconds` | `60` | Total request timeout, from `1` to `600` seconds |
 | `keybindings.hint_delay_ms` | `200` | Delay before showing sequence continuations, from `0` to `10000` milliseconds |
 | `keybindings.global` | See defaults | Switch workspace tabs, review Pull/Fetch, Roots, Actions, refresh, help, quit |
 | `keybindings.panes` | See defaults | Focus/cycle panes, resize/reset sizes, maximize/restore, optional Kitty synchronization, close a Log tab |
@@ -106,10 +111,56 @@ binding; the action's mouse button remains available.
 | `keybindings.push` | See defaults | Movement, repository selection, targets, fetch, push review and retry |
 | `keybindings.merge` | See defaults | Conflicts tab: navigation, resolutions, undo, drafts, Apply and Continue review |
 
-These settings do not store repository selections, message drafts, AI endpoint
-settings, pane sizes, or display-menu choices. Existing workspace state remains
+These settings do not store repository selections, message drafts, pane sizes,
+or display-menu choices. Existing workspace state remains
 under `IGIT_STATE_DIR` / `XDG_STATE_HOME/igit`; see [README](../README.md#ai-commit-messages-optional).
-API keys still come only from `IGIT_LLM_API_KEY`.
+API keys come only from the configured environmtent variable.
+
+## AI commit messages
+
+Add `[ai]` to the same user settings file, or select your file with
+`igit --config /path/to/settings.toml`. For a local compatible service:
+
+```toml
+[ai]
+endpoint = "http://localhost:11434/v1/chat/completions"
+model = "your-local-model"
+prompt = """
+Write one Conventional Commit message covering all supplied repositories.
+Use a short subject and a body describing the changes when useful.
+Return only the commit message, without Markdown fences.
+"""
+api_key_env = "MY_LLM_API_KEY"
+timeout_seconds = 120
+```
+
+The endpoint must include the complete chat completions path. Remote services
+require HTTPS; local HTTP accepts `localhost`, `127.0.0.1`, or `[::1]` with an
+explicit port. Set the named environment variable before launching IGit if the
+service requires authentication. An unset or empty variable sends no bearer
+header, which supports local services without authentication. Do not put keys
+in the URL or settings file; inline `api_key` fields are not accepted.
+
+`prompt` is the system message and supports multiline Unicode text. IGit appends
+the reviewed patches as a separate user message: a JSON array of objects with
+`repository` and `patch` fields. No template placeholders are required. The
+response must provide a nonempty `choices[0].message.content`. Streaming and
+provider-specific native APIs are not used; configure a compatible endpoint.
+
+When a user `[ai]` table is present, its merged values take precedence over the
+workspace's old AI settings at startup. Without that table, saved workspace
+endpoint/model/prompt remain available. `S` edits those three values for the
+current session and saves the workspace fallback; it does not rewrite the user
+settings file. On restart, `[ai]` takes precedence again. Timeout and credential
+variable settings come from the user file or defaults.
+
+**Generate message** (`A`) first reviews the destination, model, file lists and
+patches. Confirmation sends one request containing only checked files in the
+current Roots, up to 160 KB of patch content in total. A staged file sends its
+index version; later unstaged edits and unchecked files are excluded. Accept
+the returned candidate to replace the shared draft, then edit it normally.
+Request errors and canceled reviews preserve the original draft. Each selected
+repository gets a separate Git commit with that same message after commit review.
 
 ## Key syntax and contexts
 
@@ -132,6 +183,36 @@ Global `pull` and `fetch` default to `p` and `f`. Push's own `review` and `fetch
 default to `P` and `F`, and Merge's `back-to-files` defaults to `F`. If an
 override still uses `p` or `f` for one of those panel commands, change that
 override or rebind the conflicting global command.
+
+`global.focus-branch` defaults to `5`. `[keybindings.branch]` controls `create`
+(`a`), `delete` (`d`), `checkout` (`Enter`), `merge` (`m`), `rename` (`r`), and
+tree navigation. The global `roots` binding is inactive in Branch because `r`
+renames; use Actions → Roots there. Branch name entry and confirmation retain
+their fixed controls. For example:
+
+```toml
+[keybindings.global]
+focus-branch = ["F8"]
+
+[keybindings.branch]
+create = ["n"]
+rename = ["R"]
+```
+
+`commit.stash` defaults to `s`: it opens the shared stash-message editor for
+all changes in Roots, including untracked files. `commit.toggle-status` now
+defaults to `T`; the same option remains in View Options. Remap either under
+`[keybindings.commit]`, for example `stash = ["F9"]`. Within the stash editor,
+Enter/Ctrl-S/F2 reviews and Esc cancels; typed characters bypass normal-mode
+bindings. If an existing custom `toggle-status` binding uses `s`, move or
+unbind it when enabling the default stash shortcut.
+
+`global.focus-stash` defaults to `6`. `[keybindings.stash]` provides
+`move-down`, `move-up`, `collapse`, `expand`, `toggle`, `open`, `first-item`,
+`last-item`, `page-down`, and `page-up` for the repository and file trees.
+`collapse-all` (`z`) and `expand-all` (`Z`) apply only to Files. For example,
+`open = ["v"]` changes the normal-mode file comparison key. The open Diff
+retains the same fixed revision controls as Log, including `Esc` to close.
 
 In the merge editor, `auto-resolve` (`a`) applies only non-conflicting changes
 (the toolbar's All action). `resolve-simple` (`m`) runs **Resolve Automatically**:
@@ -293,9 +374,9 @@ and that `igit_resize.py` is installed. Requests retain the one-second timeout.
 
 ## Pane maximize and Kitty synchronization
 
-`toggle-pane-maximized` defaults to `Ctrl-w f` in Commit, Push, and Conflicts.
+`toggle-pane-maximized` defaults to `Ctrl-w f` in Commit, Stash, Push, and Conflicts.
 It fills the workspace with the focused pane. Tab continues through enabled
-panes; `1` / `2` / `3` / `4` switches to Commit, Log, Push, or Conflicts when
+panes; `1` / `2` / `5` / `6` / `3` / `4` switches to Commit, Log, Branch, Stash, Push, or Conflicts when
 available. Log stays tiled. The next press in a supported tab restores the saved split sizes.
 Maximizing is session-only. Local divider resize/reset and mouse resizing are
 disabled while maximized; smart resize can still hand off to Kitty.

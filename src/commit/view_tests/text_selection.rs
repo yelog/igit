@@ -39,7 +39,7 @@ fn text_selection_message_mouse_keyboard_replace_save_and_cancel_preserve_index_
         p.refresh(&c).unwrap();
         let checks = p.checks.clone();
         let original = "Title ＵＩ e\u{301} 👩‍💻\nSecond line\n";
-        p.saved.drafts.insert(rid(&c, 0), original.into());
+        p.saved.message = Some(original.into());
         p.edit_message(&c);
         p.caret = 0;
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -76,7 +76,7 @@ fn text_selection_message_mouse_keyboard_replace_save_and_cancel_preserve_index_
         assert_eq!(p.buf, "Replace\ngy");
         press(&mut p, &c, K::F(2), Mod::NONE);
         assert!(p.edit.is_none());
-        assert_eq!(p.saved.drafts[&rid(&c, 0)], "Replace\ngy");
+        assert_eq!(p.saved.message.as_deref().unwrap(), "Replace\ngy");
         p.edit_message(&c);
         p.event(&Event::Paste("discard me".into()), &c);
         press(&mut p, &c, K::Char('a'), Mod::CONTROL);
@@ -84,7 +84,7 @@ fn text_selection_message_mouse_keyboard_replace_save_and_cancel_preserve_index_
         assert!(p.edit.is_some() && p.selected_text().is_none());
         press(&mut p, &c, K::Esc, Mod::NONE);
         assert!(p.edit.is_none());
-        assert_eq!(p.saved.drafts[&rid(&c, 0)], "Replace\ngy");
+        assert_eq!(p.saved.message.as_deref().unwrap(), "Replace\ngy");
         assert_eq!(p.checks, checks);
     }
     assert_eq!(
@@ -142,7 +142,7 @@ fn text_selection_message_drag_can_cross_a_scrolled_viewport_and_vertical_keys_k
         .map(|i| format!("line{i:02} ＵＩ"))
         .collect::<Vec<_>>()
         .join("\n");
-    p.saved.drafts.insert(rid(&c, 0), message.clone());
+    p.saved.message = Some(message.clone());
     p.edit_message(&c);
     p.caret = 0;
     let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();

@@ -70,6 +70,17 @@ impl Shell {
 
     fn draw_header(&mut self, f: &mut Frame, mut row: Rect) -> Rect {
         let show_icons = row.width >= 72 && self.icons != IconMode::Ascii;
+        let tab_width = Tab::DISPLAY_ORDER
+            .into_iter()
+            .filter(|&t| self.tab_available(t))
+            .map(|t| t.name().width() + 2)
+            .sum::<usize>();
+        let context_width = match self.tab {
+            Log => 11,
+            Push => 14,
+            _ => 0,
+        };
+        let compact = tab_width + context_width > usize::from(row.width);
         f.render_widget(Block::default().style(Style::new().bg(TAG)), row);
         for tab in Tab::DISPLAY_ORDER.into_iter().rev() {
             if !self.tab_available(tab) {
@@ -90,8 +101,12 @@ impl Shell {
                     Log => Icon::Log,
                     Push => Icon::Push,
                     Conflicts => Icon::Conflict,
+                    Branch => Icon::Branch,
+                    Stash => Icon::Folder,
                 };
                 format!(" {} {} ", self.icons.glyph(icon), tab.name())
+            } else if compact {
+                format!(" {}", tab.name())
             } else {
                 format!(" {} ", tab.name())
             };
@@ -186,6 +201,8 @@ impl Shell {
                     self.push.draw(f, work, &self.ctx);
                 }
                 Conflicts => self.merge.draw(f, work, &self.ctx),
+                Branch => self.branch.draw(f, work, &self.ctx),
+                Stash => self.stash.draw(f, work, &self.ctx),
             }
         }
 
@@ -197,7 +214,7 @@ impl Shell {
             ("F1 Help   Esc Back".into(), MUTED)
         } else if self.panel().editing() {
             (
-                if matches!(self.tab, Push | Conflicts)
+                if matches!(self.tab, Push | Conflicts | Branch)
                     || self.tab == Commit && self.commit.message_editing()
                 {
                     self.panel().help()
@@ -217,7 +234,7 @@ impl Shell {
             )
         } else if self.config.changed() {
             (self.configured_footer(), MUTED)
-        } else if matches!(self.tab, Push | Conflicts) {
+        } else if matches!(self.tab, Push | Conflicts | Branch | Stash) {
             (self.panel().help().into(), MUTED)
         } else {
             (

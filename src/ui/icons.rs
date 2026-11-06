@@ -86,8 +86,6 @@ glyphs! {
     Next        => cod::COD_CHEVRON_RIGHT, "›", ">";
     Back        => cod::COD_ARROW_LEFT, "←", "<";
     Close       => cod::COD_CLOSE, "×", "x";
-    Settings    => cod::COD_SETTINGS_GEAR, "⚙", "cfg";
-    Ai          => cod::COD_SPARKLE, "✧", "AI";
     Help        => cod::COD_QUESTION, "?", "?";
     Enter       => md::MD_KEYBOARD_RETURN, "↵", "Enter";
     Up          => cod::COD_ARROW_UP, "↑", "^";

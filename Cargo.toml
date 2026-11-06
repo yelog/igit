@@ -29,6 +29,7 @@ tempfile = "3"
 similar = "2"
 unicode-width = "0.2"
 regex-lite = "0.1"
+notify = "8.2.1"
 
 [profile.release]
 strip = true

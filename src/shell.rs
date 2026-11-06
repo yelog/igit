@@ -5,14 +5,16 @@ mod startup;
 mod update;
 mod workspace;
 
-use self::Tab::{Commit, Conflicts, Log, Push};
+use self::Tab::{Branch, Commit, Conflicts, Log, Push, Stash};
 use crate::{
+    branch::BranchPanel,
     commit::{CommitPanel, Rollback, RollbackEvent},
     config::{keys::CommandAction, AppConfig},
     core::{Context, Repo},
     log::LogPanel,
     merge::MergePanel,
     push::PushPanel,
+    stash::StashPanel,
     ui::{
         help::{global_section, HelpContent, HelpEvent, HelpSection, HelpState},
         icons::{Icon, IconMode},
@@ -55,9 +57,12 @@ enum Tab {
     Log,
     Push,
     Conflicts,
+    Branch,
+    Stash,
 }
 impl Tab {
-    const DISPLAY_ORDER: [Self; 4] = [Commit, Log, Push, Conflicts];
+    const DISPLAY_ORDER: [Self; 6] = [Commit, Log, Branch, Stash, Push, Conflicts];
+    const SHORTCUT_ORDER: [Self; 6] = [Commit, Log, Push, Conflicts, Branch, Stash];
 
     fn name(self) -> &'static str {
         match self {
@@ -65,6 +70,8 @@ impl Tab {
             Log => "Log",
             Push => "Push",
             Conflicts => "Conflicts",
+            Branch => "Branch",
+            Stash => "Stash",
         }
     }
 
@@ -74,6 +81,8 @@ impl Tab {
             Log => "focus-log",
             Push => "open-push",
             Conflicts => "open-merge",
+            Branch => "focus-branch",
+            Stash => "focus-stash",
         }
     }
 }
@@ -94,6 +103,7 @@ const HEADER: &str = concat!(
 );
 const HELP: &str = "Usage: igit [OPTIONS] [DIRECTORY]  (alias: ig)
 
+  update [OPTIONS]           check or update a native installation
   --icons MODE               nerd-font (default), unicode or ascii
   --mouse MODE               on or off (overrides settings)
   --config PATH              use an explicit settings.toml
@@ -103,8 +113,8 @@ const HELP: &str = "Usage: igit [OPTIONS] [DIRECTORY]  (alias: ig)
   -h, --help                 show this help
   -V, --version              print version
 
-Tabs: 1 Commit / 2 Log / 3 Push / 4 Conflicts (when available)   p Pull / f Fetch
-r repositories   ? / F1 help   q quit
+Tabs: 1 Commit / 2 Log / 5 Branch / 6 Stash / 3 Push / 4 Conflicts (when available)   p Pull / f Fetch
+r repositories (Branch: rename; use Actions for Roots)   ? / F1 help   q quit
 Runs Git on your local working trees; mutations require a reviewed confirmation.";
 enum Popup {
     Rollback(Box<Rollback>),
@@ -146,6 +156,8 @@ struct Shell {
     commit: CommitPanel,
     push: PushPanel,
     merge: MergePanel,
+    branch: BranchPanel,
+    stash: StashPanel,
     tab: Tab,
     main_tab: Tab,
     remote_refs_changed: bool,
@@ -190,6 +202,8 @@ impl Shell {
             commit: Default::default(),
             push: Default::default(),
             merge: Default::default(),
+            branch: Default::default(),
+            stash: Default::default(),
             tab: Commit,
             main_tab: Commit,
             remote_refs_changed: false,
@@ -204,8 +218,12 @@ impl Shell {
         };
         s.log.icons = icons;
         s.commit.icons = icons;
+        s.commit.ai_config = s.config.ai.clone();
         s.push.icons = icons;
         s.merge.icons = icons;
+        s.branch.icons = icons;
+        s.stash.icons = icons;
+        s.branch.shortcut_labels = s.config.shortcut_labels("branch");
         s.merge.shortcut_labels = s.config.shortcut_labels("merge");
         s.push.shortcut_labels = s.config.shortcut_labels("push");
         s
@@ -219,6 +237,8 @@ impl Shell {
             Commit => &self.commit,
             Push => &self.push,
             Conflicts => &self.merge,
+            Branch => &self.branch,
+            Stash => &self.stash,
         }
     }
     fn key_sequence(&self) -> Option<KeySequence> {
@@ -251,6 +271,8 @@ impl Shell {
             Commit => self.commit.event(ev, &self.ctx),
             Push => self.push.event(ev, &self.ctx),
             Conflicts => self.merge.event(ev, &self.ctx),
+            Branch => self.branch.event(ev, &self.ctx),
+            Stash => self.stash.event(ev, &self.ctx),
         };
         self.action(action);
         let after = self.key_sequence();
@@ -274,6 +296,22 @@ impl Shell {
         self.refresh_conflicts();
         if self.tab == Push {
             self.refresh_push();
+        }
+        if self.tab == Branch {
+            self.refresh_branch();
+        }
+        if self.tab == Stash {
+            self.refresh_stash();
+        }
+    }
+    fn refresh_stash(&mut self) {
+        if let Err(error) = self.stash.refresh(&self.ctx) {
+            self.notice(format!("Stash: {error:#}"));
+        }
+    }
+    fn refresh_branch(&mut self) {
+        if let Err(error) = self.branch.refresh(&self.ctx) {
+            self.notice(format!("Branch: {error:#}"));
         }
     }
     fn refresh_log(&mut self) {
@@ -317,6 +355,10 @@ impl Shell {
             return;
         }
         self.msg.clear();
+        // Commit can discover external conflicts before a full workspace refresh.
+        if tab == Conflicts {
+            self.refresh_conflicts();
+        }
         if !self.tab_available(tab) {
             self.notice("No conflicts or operations to continue in Roots".into());
             return;
@@ -336,13 +378,24 @@ impl Shell {
         self.layout_mut(self.tab).begin();
         self.tab = tab;
         match tab {
-            Commit => self.main_tab = tab,
+            Commit => {
+                self.main_tab = tab;
+                self.commit.resume_refresh();
+            }
             Log => {
                 self.main_tab = tab;
                 self.load_log();
             }
             Push => self.refresh_push(),
             Conflicts => (),
+            Branch => {
+                self.main_tab = tab;
+                self.refresh_branch();
+            }
+            Stash => {
+                self.main_tab = tab;
+                self.refresh_stash();
+            }
         }
     }
     fn action(&mut self, a: Action) {
@@ -357,7 +410,7 @@ impl Shell {
                 self.refresh();
                 self.notice(s)
             }
-            Action::Go(n) => self.go(Tab::DISPLAY_ORDER[n.min(3)]),
+            Action::Go(n) => self.go(Tab::SHORTCUT_ORDER[n.min(Tab::SHORTCUT_ORDER.len() - 1)]),
             Action::CloseDialog => {
                 if matches!(self.tab, Push | Conflicts) {
                     self.go(self.main_tab);
@@ -409,6 +462,8 @@ impl Shell {
             Commit => self.commit.confirm(token, &self.ctx),
             Push => self.push.confirm(token, &self.ctx),
             Conflicts => self.merge.confirm(token, &self.ctx),
+            Branch => self.branch.confirm(token, &self.ctx),
+            Stash => self.stash.confirm(token, &self.ctx),
         };
         self.action(a)
     }
@@ -533,18 +588,21 @@ impl Shell {
                     Commit => self.commit.keymap(),
                     Push => self.push.keymap(),
                     Conflicts => self.merge.keymap(),
+                    Branch => self.branch.keymap(),
+                    Stash => self.stash.keymap(),
                 };
                 if self.can_return_to_main_tab() {
                     content.sections.push(HelpSection::new(
                         "Workspace tabs",
-                        &[("Esc", "Return to the last Commit or Log tab")],
+                        &[("Esc", "Return to the last Commit, Log, Branch or Stash tab")],
                     ));
                 }
                 if !self.panel().editing() {
                     self.pane_help(&mut content);
-                    content
-                        .sections
-                        .push(global_section(self.tab_available(Conflicts)));
+                    content.sections.push(global_section(
+                        self.tab_available(Conflicts),
+                        self.tab != Branch,
+                    ));
                 }
                 content
             }
@@ -827,7 +885,7 @@ impl Shell {
                 }
             }
             Push => self.push.dismiss_group_menu(),
-            Conflicts => (),
+            Conflicts | Branch | Stash => (),
         }
         !self.panel().editing()
     }
@@ -835,7 +893,7 @@ impl Shell {
         match self.tab {
             Push => self.push.at_root(),
             Conflicts => self.merge.at_root(),
-            Commit | Log => false,
+            Commit | Log | Branch | Stash => false,
         }
     }
     fn dispatch(&mut self, ev: &Event) {
@@ -858,6 +916,15 @@ impl Shell {
     fn dispatch_builtin(&mut self, ev: &Event) {
         if matches!(ev,Event::Key(k) if k.kind==KeyEventKind::Release) {
             return;
+        }
+        if matches!(ev, Event::FocusGained) {
+            self.commit.resume_refresh();
+            if self.tab == Branch && self.pop.is_none() && !self.branch.editing() {
+                self.refresh_branch();
+            }
+            if self.tab == Stash && self.pop.is_none() && !self.stash.editing() {
+                self.refresh_stash();
+            }
         }
         if matches!(ev, Event::Resize(_, _) | Event::FocusLost | Event::Paste(_)) {
             self.cancel_key_sequences();
@@ -907,7 +974,7 @@ impl Shell {
                 }
             }
         }
-        if matches!(self.tab, Commit | Log | Conflicts)
+        if matches!(self.tab, Commit | Log | Branch | Stash | Conflicts)
             && matches!(
                 ev,
                 Event::Key(_)
@@ -950,8 +1017,8 @@ impl Shell {
                         self.go(self.main_tab);
                         return;
                     }
-                    KeyCode::Char(ch @ '1'..='4') => {
-                        self.go(Tab::DISPLAY_ORDER[(ch as u8 - b'1') as usize]);
+                    KeyCode::Char(ch @ '1'..='6') => {
+                        self.go(Tab::SHORTCUT_ORDER[(ch as u8 - b'1') as usize]);
                         return;
                     }
                     KeyCode::Char(ch @ ('p' | 'f')) if k.modifiers.is_empty() => {
@@ -962,7 +1029,7 @@ impl Shell {
                         });
                         return;
                     }
-                    KeyCode::Char('r') => {
+                    KeyCode::Char('r') if self.tab != Branch => {
                         self.global(0);
                         return;
                     }
@@ -1000,6 +1067,16 @@ impl Shell {
     }
     fn poll(&mut self) -> bool {
         let mut change = self.poll_log_load();
+        change |= self.stash.poll_preview(&self.ctx);
+        if self.tab == Commit && self.pop.is_none() {
+            match self.commit.poll_refresh(&mut self.ctx) {
+                Ok(redraw) => change |= redraw,
+                Err(error) => {
+                    self.notice(format!("Commit: {error:#}"));
+                    change = true;
+                }
+            }
+        }
         change |= self.key_picker.poll(Instant::now());
         let popup = match self.pop.as_mut() {
             Some(Popup::Help { origin, .. }) => origin.as_deref_mut(),
@@ -1011,6 +1088,9 @@ impl Shell {
                     self.refresh();
                 } else {
                     self.refresh_log();
+                    if self.tab == Branch {
+                        self.refresh_branch();
+                    }
                     if self.tab == Push {
                         self.refresh_push();
                     }
@@ -1042,6 +1122,13 @@ impl Shell {
             self.notice(msg);
             change = true
         }
+        match self.push.poll_loading(&self.ctx) {
+            Ok(redraw) => change |= redraw,
+            Err(error) => {
+                self.notice(format!("Push: {error:#}"));
+                change = true;
+            }
+        }
         // A fetch/push can finish after leaving Push. Reload moved refs
         // without interrupting a Log editor, Diff, text selection or pending key.
         if self.remote_refs_changed
@@ -1050,6 +1137,9 @@ impl Shell {
             && self.log.key_sequence().is_none()
         {
             self.refresh_log();
+            if self.tab == Branch {
+                self.refresh_branch();
+            }
             change = true;
         }
         change |= seq != self.push.progress_seq;
@@ -1068,12 +1158,17 @@ impl Shell {
     }
     fn poll_timeout(&self) -> Duration {
         const IDLE: Duration = Duration::from_millis(150);
-        let idle = if self.log_load.pending() {
+        let idle = if self.log_load.pending() || self.push.reads_pending() {
             Duration::from_millis(16)
         } else {
             IDLE
         };
-        let timeout = self.log.preview_wakeup().unwrap_or(idle).min(idle);
+        let timeout = self
+            .log
+            .preview_wakeup()
+            .unwrap_or(idle)
+            .min(self.stash.preview_wakeup().unwrap_or(idle))
+            .min(idle);
         self.key_picker
             .wakeup(Instant::now())
             .map_or(timeout, |remaining| remaining.min(timeout))
@@ -1521,6 +1616,12 @@ mod update_tests;
 mod workspace_tests;
 
 #[cfg(test)]
+mod branch_tests;
+
+#[cfg(test)]
+mod stash_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crossterm::event::{KeyEvent, MouseEvent};
@@ -1592,7 +1693,6 @@ mod tests {
             key(&mut app, k);
         }
         key(&mut app, KeyCode::Char('j')); // Highlight the repository.
-        key(&mut app, KeyCode::Char('v'));
         assert!(screen(&mut app).contains("on main"));
         git(&repo, &["switch", "-qc", "fresh-main"]).unwrap();
         git(&repo, &["tag", "fresh-main"]).unwrap();

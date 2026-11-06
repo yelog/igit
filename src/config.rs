@@ -23,7 +23,69 @@ struct Settings {
     version: u32,
     terminal: Terminal,
     ui: Ui,
+    ai: AiConfig,
     keybindings: Keybindings,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AiConfig {
+    pub endpoint: String,
+    pub model: String,
+    pub prompt: String,
+    pub api_key_env: String,
+    pub timeout_seconds: u64,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        toml::from_str::<Settings>(DEFAULT_TOML)
+            .expect("valid embedded AI settings")
+            .ai
+    }
+}
+
+impl AiConfig {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if !self.endpoint.is_empty() {
+            let valid = self
+                .endpoint
+                .split_once("://")
+                .is_some_and(|(scheme, rest)| {
+                    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+                    let local = ["localhost:", "127.0.0.1:", "[::1]:"].iter().any(|prefix| {
+                        authority
+                            .strip_prefix(prefix)
+                            .is_some_and(|port| port.parse::<u16>().is_ok_and(|port| port != 0))
+                    });
+                    !authority.is_empty() && (scheme == "https" || (scheme == "http" && local))
+                });
+            if !valid
+                || self.endpoint.contains(['@', '#', '\\'])
+                || self
+                    .endpoint
+                    .chars()
+                    .any(|c| c.is_whitespace() || c.is_control())
+            {
+                bail!("ai.endpoint: use a full HTTPS URL or localhost HTTP URL with a port; credentials belong in the configured environment variable")
+            }
+        }
+        if self.prompt.trim().is_empty() {
+            bail!("ai.prompt must not be empty")
+        }
+        let mut chars = self.api_key_env.chars();
+        if !chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            bail!("ai.api_key_env must be an environment variable name")
+        }
+        if !(1..=600).contains(&self.timeout_seconds) {
+            bail!("ai.timeout_seconds must be between 1 and 600")
+        }
+        Ok(())
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,9 +107,11 @@ struct Keybindings {
     commit: Group,
     push: Group,
     merge: Group,
+    branch: Group,
+    stash: Group,
 }
 impl Keybindings {
-    fn groups(&self) -> [(&str, &Group); 6] {
+    fn groups(&self) -> [(&str, &Group); 8] {
         [
             ("global", &self.global),
             ("panes", &self.panes),
@@ -55,6 +119,8 @@ impl Keybindings {
             ("commit", &self.commit),
             ("push", &self.push),
             ("merge", &self.merge),
+            ("branch", &self.branch),
+            ("stash", &self.stash),
         ]
     }
     fn group(&self, name: &str) -> &Group {
@@ -82,6 +148,7 @@ impl BoundCommand {
 pub struct AppConfig {
     pub icons: IconMode,
     pub mouse: bool,
+    pub ai: Option<AiConfig>,
     pub hint_delay: Duration,
     pub commands: Vec<BoundCommand>,
 }
@@ -107,7 +174,9 @@ impl AppConfig {
     pub fn from_toml(overrides: &str) -> Result<Self> {
         let defaults: Settings = toml::from_str(DEFAULT_TOML)?;
         let mut merged: toml::Value = toml::from_str(DEFAULT_TOML)?;
-        merge(&mut merged, toml::from_str(overrides)?);
+        let overrides: toml::Value = toml::from_str(overrides)?;
+        let has_ai = overrides.get("ai").is_some();
+        merge(&mut merged, overrides);
         let settings: Settings = merged.try_into()?;
         if settings.version != 1 {
             bail!(
@@ -149,9 +218,11 @@ impl AppConfig {
             });
         }
         validate(&commands)?;
+        settings.ai.validate()?;
         Ok(Self {
             icons,
             mouse: settings.terminal.mouse,
+            ai: has_ai.then_some(settings.ai),
             hint_delay: Duration::from_millis(settings.keybindings.hint_delay_ms),
             commands,
         })
@@ -201,9 +272,17 @@ impl AppConfig {
     }
 
     pub fn shortcut_labels(&self, group: &str) -> BTreeMap<&'static str, String> {
+        let contexts = COMMANDS
+            .iter()
+            .filter(|command| command.group == group)
+            .fold(0, |contexts, command| contexts | command.contexts);
         self.commands
             .iter()
-            .filter(|c| c.changed() && (c.command.group == group || c.command.group == "global"))
+            .filter(|c| {
+                c.changed()
+                    && (c.command.group == group
+                        || c.command.group == "global" && c.command.contexts & contexts != 0)
+            })
             .filter_map(|c| {
                 Some((
                     c.command.action.keys()?,
@@ -332,6 +411,47 @@ mod tests {
         let disabled = AppConfig::from_toml("[keybindings.commit]\nreview = []").unwrap();
         assert_eq!(disabled.label("commit", "review"), "—");
     }
+    #[test]
+    fn ai_configuration_merges_defaults_and_accepts_custom_prompt() {
+        assert!(AppConfig::default().ai.is_none());
+        let config = AppConfig::from_toml("[ai]\nendpoint='http://localhost:11434/v1/chat/completions'\nmodel='my-model'\nprompt='''Write a subject.\nThen explain in 中文.'''\napi_key_env='CUSTOM_LLM_KEY'\ntimeout_seconds=120").unwrap();
+        let ai = config.ai.unwrap();
+        assert_eq!(ai.model, "my-model");
+        assert_eq!(ai.prompt, "Write a subject.\nThen explain in 中文.");
+        assert_eq!(ai.api_key_env, "CUSTOM_LLM_KEY");
+        assert_eq!(ai.timeout_seconds, 120);
+        let partial = AppConfig::from_toml("[ai]\nmodel='local'")
+            .unwrap()
+            .ai
+            .unwrap();
+        assert_eq!(partial.prompt, AiConfig::default().prompt);
+        assert_eq!(partial.api_key_env, "IGIT_LLM_API_KEY");
+    }
+
+    #[test]
+    fn ai_configuration_rejects_invalid_destination_credentials_and_limits() {
+        for text in [
+            "endpoint='http://remote.invalid/v1/chat/completions'",
+            "endpoint='http://localhost:abc/v1/chat/completions'",
+            "endpoint='http://localhost:1234@remote.invalid/v1/chat/completions'",
+            "endpoint='https:///v1/chat/completions'",
+            "endpoint='https://user:secret@service.invalid/chat/completions'",
+            "endpoint='https://service.invalid/chat#fragment'",
+            "endpoint='file:///tmp/patches'",
+            "api_key='not-allowed'",
+            "api_key_env='BAD KEY'",
+            "api_key_env='1KEY'",
+            "prompt='  '",
+            "timeout_seconds=0",
+            "timeout_seconds=601",
+        ] {
+            assert!(
+                AppConfig::from_toml(&format!("[ai]\n{text}")).is_err(),
+                "{text}"
+            );
+        }
+    }
+
     #[test]
     fn unknown_fields_values_and_ambiguous_bindings_fail() {
         for text in [
