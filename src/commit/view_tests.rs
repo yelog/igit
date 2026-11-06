@@ -424,13 +424,14 @@ fn regrouped_commit_keeps_the_selected_index_version_and_unselected_staged_file(
 #[test]
 fn directory_preview_uses_the_repo_root_when_launched_in_a_subdirectory() {
     let (_d, mut c) = fixture();
-    c.workspace = c.repos[0].path.join("src/ｕｉ");
+    let directory = Path::new("src").join("ｕｉ");
+    c.workspace = c.repos[0].path.join(&directory);
     let mut p = CommitPanel::default();
     p.refresh(&c).unwrap();
     p.cursor = p
         .view
         .iter()
-        .position(|r| matches!(&r.kind, Kind::Directory(path) if path == Path::new("src/ｕｉ")))
+        .position(|r| matches!(&r.kind, Kind::Directory(path) if path == &directory))
         .unwrap();
     key(&mut p, &c, K::Char('v'));
     let mut t = Terminal::new(TestBackend::new(120, 36)).unwrap();
@@ -440,7 +441,7 @@ fn directory_preview_uses_the_repo_root_when_launched_in_a_subdirectory() {
         .collect();
     assert!(preview.contains(&format!(
         "Workspace{}",
-        c.repos[0].path.join("src/ｕｉ").display()
+        c.repos[0].path.join(&directory).display()
     )));
     assert_eq!(p.selection(&c).len(), 2);
 }
@@ -453,8 +454,12 @@ fn compacted_directories_keep_their_children_selection_and_hit_targets() {
     p.refresh(&c).unwrap();
     key(&mut p, &c, K::Char('v'));
     draw(&mut p, &mut t, &c);
-    let directory = "app/src/ｕｉ";
-    let a = row_area(&p, directory);
+    let directory = Path::new("app")
+        .join("src")
+        .join("ｕｉ")
+        .display()
+        .to_string();
+    let a = row_area(&p, &directory);
     // Clicking indentation or the name only browses; the disclosure and checkbox are separate.
     click(&mut p, &c, a.x, a.y);
     draw(&mut p, &mut t, &c);
@@ -472,7 +477,7 @@ fn compacted_directories_keep_their_children_selection_and_hit_targets() {
     assert_eq!(p.active().unwrap().label, directory);
     assert_eq!(p.check_counts(p.active().unwrap()), (1, 2));
     draw(&mut p, &mut t, &c);
-    let a = row_area(&p, directory);
+    let a = row_area(&p, &directory);
     let (arrow, _) = p.row_controls(p.active().unwrap(), a);
     click(&mut p, &c, arrow.x, arrow.y);
     assert!(!p.view.iter().any(|r| r.label == "model"));

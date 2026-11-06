@@ -413,6 +413,8 @@ fn help_follows_all_merge_columns_and_preserves_the_result_editor() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path();
     git(repo, &["init", "-q", "-b", "main"]).unwrap();
+    git(repo, &["config", "user.name", "Help tester"]).unwrap();
+    git(repo, &["config", "user.email", "help@example.invalid"]).unwrap();
     let save = |text: &str| {
         fs::write(repo.join("conflict.txt"), text).unwrap();
         git(repo, &["add", "--", "conflict.txt"]).unwrap();
@@ -439,6 +441,7 @@ fn help_follows_all_merge_columns_and_preserves_the_result_editor() {
     git(repo, &["checkout", "-q", "main"]).unwrap();
     save("current\n");
     assert!(git(repo, &["merge", "--no-commit", "topic"]).is_err());
+    assert!(!git(repo, &["ls-files", "--unmerged"]).unwrap().is_empty());
     let before_git = snapshot(repo);
     let before_file = fs::read(repo.join("conflict.txt")).unwrap();
     let mut ctx = Context::discover(repo).unwrap();

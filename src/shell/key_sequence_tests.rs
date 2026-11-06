@@ -30,6 +30,12 @@ fn save(repo: &Path, message: &str) {
 fn fixture() -> (tempfile::TempDir, Shell) {
     let repo = tempfile::tempdir().unwrap();
     git(repo.path(), &["init", "-q", "-b", "main"]).unwrap();
+    git(repo.path(), &["config", "user.name", "Hint tester"]).unwrap();
+    git(
+        repo.path(),
+        &["config", "user.email", "hints@example.invalid"],
+    )
+    .unwrap();
     for message in ["first revision", "second revision"] {
         fs::write(repo.path().join("file"), message).unwrap();
         save(repo.path(), message);
@@ -365,6 +371,9 @@ fn key_sequence_merge_hints_cancel_without_leaving_the_document_or_changing_git(
     fs::write(repo.path().join("file"), content("current")).unwrap();
     save(repo.path(), "current");
     assert!(git(repo.path(), &["merge", "--no-commit", "topic"]).is_err());
+    assert!(!git(repo.path(), &["ls-files", "--unmerged"])
+        .unwrap()
+        .is_empty());
     let snapshot = || {
         [
             git(repo.path(), &["rev-parse", "HEAD"]).unwrap(),

@@ -462,11 +462,24 @@ mod tests {
             push::{entry, job, push_one},
         };
         let td = tempfile::tempdir().unwrap();
-        let dir = td.path().canonicalize().unwrap();
+        // Git accepts Windows verbatim paths for -C, but not for init or remote URLs.
+        let dir = if cfg!(windows) {
+            td.path().to_path_buf()
+        } else {
+            td.path().canonicalize().unwrap()
+        };
         let root = dir.join("parent");
         let child = dir.join("child");
         let parent_remote = dir.join("parent.git");
         let new_remote = dir.join("new.git");
+        let url = |path: &Path| {
+            path.to_str()
+                .unwrap()
+                .replace(std::path::MAIN_SEPARATOR, "/")
+        };
+        let child_url = url(&child);
+        let parent_url = url(&parent_remote);
+        let new_url = url(&new_remote);
         repo(&root);
         repo(&child);
         advance(&child, "f", "shared");
@@ -487,24 +500,18 @@ mod tests {
                 "-q",
                 "--name",
                 "sdk",
-                child.to_str().unwrap(),
+                &child_url,
                 path,
             ],
         );
         g(&root, &["commit", "-qm", "shared gitlink"]);
-        g(
-            &root,
-            &["remote", "add", "origin", parent_remote.to_str().unwrap()],
-        );
+        g(&root, &["remote", "add", "origin", &parent_url]);
         g(&root, &["push", "-qu", "origin", "main"]);
         let base = g(&root, &["rev-parse", "HEAD"]);
         let sub = root.join(path);
-        g(
-            &sub,
-            &["remote", "add", "mirror", new_remote.to_str().unwrap()],
-        );
+        g(&sub, &["remote", "add", "mirror", &new_url]);
         let repo = Repo {
-            path: root.clone(),
+            path: root.canonicalize().unwrap(),
             name: "parent".into(),
             branch: "main".into(),
             submodule: false,
@@ -528,17 +535,13 @@ mod tests {
             "published a gitlink unavailable at the new source"
         );
         assert_eq!(g(&parent_remote, &["rev-parse", "main"]), base);
-        declare(child.to_str().unwrap(), "restore the original source");
+        declare(&child_url, "restore the original source");
         assert!(
             push().is_err(),
             "the intermediate parent commit is also published"
         );
         assert_eq!(g(&parent_remote, &["rev-parse", "main"]), base);
-        assert!(g(
-            &root,
-            &["ls-remote", "--heads", new_remote.to_str().unwrap()]
-        )
-        .is_empty());
+        assert!(g(&root, &["ls-remote", "--heads", &new_url]).is_empty());
 
         // The child is published explicitly; the parent must now accept that history.
         g(&sub, &["push", "-q", "mirror", "HEAD:refs/heads/main"]);
@@ -557,7 +560,7 @@ mod tests {
                 "clone",
                 "-q",
                 "--recurse-submodules",
-                parent_remote.to_str().unwrap(),
+                &parent_url,
                 fresh.to_str().unwrap(),
             ],
         );

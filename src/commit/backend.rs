@@ -903,14 +903,15 @@ mod tests {
     fn untracked_first_commit_and_stale_review() {
         let d = setup();
         let r = d.path();
-        put(r, "a*[x]", "hello\n");
-        let before = p(r, &["a*[x]"]);
-        put(r, "a*[x]", "new\n");
+        let name = if cfg!(windows) { "a[x]" } else { "a*[x]" };
+        put(r, name, "hello\n");
+        let before = p(r, &[name]);
+        put(r, name, "new\n");
         assert!(execute(&before).is_err());
         assert!(oid(r).unwrap().is_none());
-        let after = p(r, &["a*[x]"]);
+        let after = p(r, &[name]);
         execute(&after).unwrap();
-        assert_eq!(get(r, &["show", "HEAD:a*[x]"]), "new");
+        assert_eq!(get(r, &["show", &format!("HEAD:{name}")]), "new");
         assert!(status(r).unwrap().is_empty());
     }
     fn change(r: &Path, path: &str) -> Change {

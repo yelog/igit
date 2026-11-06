@@ -1030,7 +1030,12 @@ mod tests {
     fn native_history_and_literal_patch() {
         let d = init();
         let p = d.path();
-        commit(p, "[literal]*.txt", "root");
+        let name = if cfg!(windows) {
+            "[literal].txt"
+        } else {
+            "[literal]*.txt"
+        };
+        commit(p, name, "root");
         commit(p, "Z.txt", "second");
         git(p, &["checkout", "-qb", "topic", "HEAD~1"]);
         commit(p, "branch", "topic work");
@@ -1045,13 +1050,13 @@ mod tests {
         assert_eq!(dd.files[0].raw, b"branch");
         let root = r.iter().find(|v| v.subject == "root").unwrap();
         let f = model::details(p, root).unwrap();
-        assert_eq!(f.files[0].raw, b"[literal]*.txt");
+        assert_eq!(f.files[0].raw, name.as_bytes());
         assert!(model::patch(p, root, &f.files[0])
             .unwrap()
             .iter()
             .any(|s| s == "+root"));
         let filter = Filter {
-            paths: model::PathFilter::parse("[literal]*.txt", &c).unwrap(),
+            paths: model::PathFilter::parse(name, &c).unwrap(),
             ..Default::default()
         };
         let selected = model::load(&c, &filter, 10).revs;

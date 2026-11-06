@@ -575,7 +575,10 @@ mod tests {
         panel.set_directory_grouping(true, &c);
         assert_eq!(panel.active().unwrap().id, file_key);
         assert!(panel.fold.contains(&sibling));
-        assert_eq!(panel.view[dir_row(&panel, 1, "pkg/src")].label, "pkg/src");
+        assert_eq!(
+            panel.view[dir_row(&panel, 1, "pkg/src")].label,
+            Path::new("pkg").join("src").display().to_string()
+        );
         panel.set_directory_grouping(false, &c);
         assert_eq!(panel.active().unwrap().id, file_key);
         assert_eq!(panel.checks, checks);

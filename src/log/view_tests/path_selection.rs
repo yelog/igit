@@ -1,5 +1,7 @@
 use super::*;
 
+const LITERAL_NAME: &str = if cfg!(windows) { "[x].rs" } else { "[x]*.rs" };
+
 #[test]
 fn paths_menu_offers_both_selectors_before_roots() {
     let d = init();
@@ -28,9 +30,10 @@ fn workspace() -> (tempfile::TempDir, Context, LogPanel) {
         git(&repo, &["init", "-q", "-b", "main"]);
         git(&repo, &["config", "user.name", "Path Tester"]);
         git(&repo, &["config", "user.email", "test@example.invalid"]);
+        let literal = format!("lib/{LITERAL_NAME}");
         for (file, label) in [
-            ("lib/[x]*.rs", "literal"),
-            ("lib/xray.rs", "decoy"),
+            (literal.as_str(), "literal"),
+            ("lib/x.rs", "decoy"),
             ("docs/read me.md", "docs"),
             ("web", "namesake"),
         ] {
@@ -70,13 +73,13 @@ fn paths_multiline_matches_file_or_directory_literally_and_keeps_invalid_drafts(
     let mut t = Terminal::new(TestBackend::new(48, 12)).unwrap();
     open(&mut p, &c, false);
     // Bracketed paste keeps CRLF as one newline; ordinary Enter adds another path.
-    p.event(&Event::Paste("lib/[x]*.rs\r\ndocs".into()), &c);
+    p.event(&Event::Paste(format!("lib/{LITERAL_NAME}\r\ndocs")), &c);
     key(&mut p, K::Enter, Mods::NONE, &c);
     p.event(&Event::Paste("web".into()), &c); // A directory or file can have a repo's name.
     assert_eq!(subjects(&p).len(), 8);
     render(&mut p, &mut t, &c);
     let area = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::PathText)));
-    assert!(row_text(&t, area).contains("lib/[x]*.rs"));
+    assert!(row_text(&t, area).contains(&format!("lib/{LITERAL_NAME}")));
     assert!(row_text(&t, Rect::new(area.x, area.y + 1, area.width, 1)).contains("docs"));
     let apply = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Apply)));
     click_at(&mut p, apply, &c);
@@ -104,7 +107,10 @@ fn paths_multiline_matches_file_or_directory_literally_and_keeps_invalid_drafts(
 
     open(&mut p, &c, false);
     key(&mut p, K::Char('u'), Mods::CONTROL, &c);
-    p.event(&Event::Paste("api/lib/[x]*.rs\nweb/docs".into()), &c);
+    p.event(
+        &Event::Paste(format!("api/lib/{LITERAL_NAME}\nweb/docs")),
+        &c,
+    );
     key(&mut p, K::Enter, Mods::CONTROL, &c);
     assert_eq!(subjects(&p), ["api literal", "web docs"]);
     key(&mut p, K::Char('t'), Mods::CONTROL, &c);
@@ -175,7 +181,7 @@ fn paths_tree_applies_only_checked_roots_files_and_directories_after_ok() {
 
     tree_click(&mut p, &mut t, &c, "api (", TreeHit::Fold);
     tree_click(&mut p, &mut t, &c, "D lib", TreeHit::Fold);
-    tree_click(&mut p, &mut t, &c, "[x]*.rs", TreeHit::Check);
+    tree_click(&mut p, &mut t, &c, LITERAL_NAME, TreeHit::Check);
     render(&mut p, &mut t, &c);
     assert!(row_text(&t, tree_hit(&p, &t, "api (", TreeHit::Row)).contains("[-]"));
     tree_click(&mut p, &mut t, &c, "api (", TreeHit::Fold);
@@ -188,7 +194,7 @@ fn paths_tree_applies_only_checked_roots_files_and_directories_after_ok() {
     assert_eq!(subjects(&p), ["api literal", "web docs"]);
     assert_eq!(
         p.filter.paths.text(&c).unwrap(),
-        "api/lib/[x]*.rs\nweb/docs"
+        format!("api/lib/{LITERAL_NAME}\nweb/docs")
     );
     assert_eq!(c.scope.len(), 2);
 
@@ -221,7 +227,7 @@ fn paths_tree_can_uncheck_an_inherited_child_without_unchecking_its_siblings() {
     key(&mut p, K::Char(' '), Mods::NONE, &c); // Entire api root
     key(&mut p, K::Right, Mods::NONE, &c);
     tree_click(&mut p, &mut t, &c, "D lib", TreeHit::Fold);
-    tree_click(&mut p, &mut t, &c, "xray.rs", TreeHit::Check);
+    tree_click(&mut p, &mut t, &c, "x.rs", TreeHit::Check);
     key(&mut p, K::Enter, Mods::NONE, &c);
     assert_eq!(subjects(&p), ["api docs", "api literal", "api namesake"]);
     open(&mut p, &c, false);
