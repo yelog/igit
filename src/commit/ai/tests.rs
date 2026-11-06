@@ -27,6 +27,9 @@ fn server(
             assert!(Instant::now() < deadline, "AI request never arrived");
             thread::sleep(Duration::from_millis(5));
         };
+        // Windows accepted sockets inherit the listener's nonblocking mode.
+        // Keep accept bounded above, then read the request with a timeout.
+        stream.set_nonblocking(false).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
