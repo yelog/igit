@@ -433,6 +433,7 @@ fn stash_operations_use_linked_worktree_destination_and_shared_stash_list() {
 fn stash_apply_refuses_saved_untracked_paths_now_inside_a_hidden_submodule() {
     let (_dir, c) = fixture();
     let (_origin_dir, origin) = fixture();
+    let origin_url = run(&origin.repos[0].path, &["rev-parse", "--show-toplevel"]);
     let repo = &c.repos[0].path;
     fs::create_dir(repo.join("module")).unwrap();
     fs::write(repo.join("module/new.txt"), "saved untracked\n").unwrap();
@@ -444,7 +445,7 @@ fn stash_apply_refuses_saved_untracked_paths_now_inside_a_hidden_submodule() {
             "protocol.file.allow=always",
             "submodule",
             "add",
-            origin.repos[0].path.to_str().unwrap(),
+            &origin_url,
             "module",
         ],
     );
