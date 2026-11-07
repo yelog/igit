@@ -42,6 +42,8 @@ class DistributionTests(unittest.TestCase):
                     self.assertEqual(
                         contents[name], (self.binaries / name).read_bytes()
                     )
+                for name in ("NOTICE.txt", "licenses/Apache-2.0.txt"):
+                    self.assertEqual(contents[name], (self.root / name).read_bytes())
                 repeated = distribution.package(
                     self.root, self.binaries, self.root / "again", target, "0.1.0"
                 )

@@ -25,6 +25,8 @@ TARGETS = (
 DOCUMENTS = (
     "README.md",
     "CHANGELOG.md",
+    "NOTICE.txt",
+    "licenses/Apache-2.0.txt",
     "config/default.toml",
     "docs/configuration.md",
     "docs/releasing.md",

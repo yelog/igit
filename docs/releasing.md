@@ -65,8 +65,9 @@ in [Installation](installation.md).
 
 Archives are named `igit_VERSION_TARGET.tar.gz` or `.zip`, with one directory
 of the same base name. Each contains `igit` and `ig` (`.exe` on Windows),
-README, Changelog, default configuration, the configuration guide, and the
-optional Kitty resize helper. Install both commands into a directory on PATH.
+README, Changelog, third-party notices and licenses, default configuration,
+the configuration guide, and the optional Kitty resize helper. Install both
+commands into a directory on PATH.
 Every published release contains exactly five archives and `SHA256SUMS`.
 Compare your downloaded archive's SHA-256 with its entry before installing;
 use `shasum -a 256 FILE` on macOS, `sha256sum FILE` on Linux, or
