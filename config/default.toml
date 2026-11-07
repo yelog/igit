@@ -19,6 +19,10 @@ prompt = "Write one concise Conventional Commit message covering exactly the sel
 api_key_env = "IGIT_LLM_API_KEY"
 timeout_seconds = 60
 
+[updates]
+check_on_startup = true
+check_interval_hours = 24
+
 [keybindings]
 # Prefix hints appear after this delay; prefixes remain until used or canceled.
 hint_delay_ms = 200
@@ -34,6 +38,7 @@ focus-stash = ["5"]
 open-merge = ["6"]
 pull = ["p"]
 fetch = ["f"]
+update = ["F9"]
 roots = ["r"]
 actions = [":"]
 refresh = ["F5"]

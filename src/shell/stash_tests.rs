@@ -54,7 +54,7 @@ fn stash_operations_confirm_cancel_remap_and_refresh_the_current_entry() {
         assert_eq!(git(&repo, &["stash", "list"]).unwrap(), entries);
     }
     app.config =
-        AppConfig::from_toml("[keybindings.stash]\napply=['F8']\npop=['F9']\ndrop=['F10']\n")
+        AppConfig::from_toml("[keybindings.global]\nupdate=[]\n[keybindings.stash]\napply=['F8']\npop=['F9']\ndrop=['F10']\n")
             .unwrap();
     assert!(app
         .configured_footer()
@@ -169,7 +169,10 @@ fn commit_stash_binding_review_cancel_and_saved_entry_work_through_shell() {
     ] {
         git(&repo, &["config", name, value]).unwrap();
     }
-    app.config = AppConfig::from_toml("[keybindings.commit]\nstash=['F9']\n").unwrap();
+    app.config = AppConfig::from_toml(
+        "[keybindings.global]\nupdate=[]\n[keybindings.commit]\nstash=['F9']\n",
+    )
+    .unwrap();
     let before = snapshot(&repo);
     app.dispatch(&key(KeyCode::Char('s')));
     assert!(!app.commit.editing(), "original binding was remapped");
@@ -276,7 +279,7 @@ fn stash_global_and_panel_bindings_can_be_remapped() {
     let (_temp, fixture) = fixture();
     save(&fixture);
     let config = AppConfig::from_toml(
-        "[keybindings.global]\nfocus-stash=['F9']\n[keybindings.stash]\nopen=['v']\n",
+        "[keybindings.global]\nupdate=[]\nfocus-stash=['F9']\n[keybindings.stash]\nopen=['v']\n",
     )
     .unwrap();
     let mut app = Shell::with_config(fixture.ctx.clone(), config);

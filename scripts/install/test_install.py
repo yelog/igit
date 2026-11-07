@@ -136,6 +136,35 @@ class NativeTests(unittest.TestCase):
                 installer.run(self.args("--channel", "stable"))
         self.assertEqual(self.snapshot(), before)
 
+    def test_unmanaged_inspection_never_reads_or_writes_an_installation(self):
+        for published, running, expected in [
+            ("0.1.0-beta.2", "0.1.0-beta.1", "manager_action_required"),
+            ("0.1.0-beta.2", "0.1.0-beta.2", "up_to_date"),
+            ("0.1.0-beta.1", "0.1.0-beta.2", "up_to_date"),
+            ("0.2.0", "0.1.0", "manager_action_required"),
+        ]:
+            args = installer.parser().parse_args([
+                "--unmanaged", "--check", "--running-version", running,
+                "--install-root", str(self.root), "--install-dir", str(self.bin),
+            ])
+            with patch.object(installer, "inspect_installation", side_effect=AssertionError("must not read another installation")), patch.object(installer, "install_release", side_effect=AssertionError("must not install")), patch.object(installer, "host_target", return_value=self.target):
+                report = self.run_version(published, args)
+            self.assertEqual(report["status"], expected)
+            self.assertEqual(report["current_version"], running)
+            self.assertEqual(report["channel"], installer.channel_for(running))
+            self.assertIn("original package manager", report["action"])
+            self.assertFalse(self.root.exists())
+            self.assertFalse(self.bin.exists())
+
+    def test_unmanaged_mode_cannot_install_and_reviewed_version_is_pinned(self):
+        with self.assertRaisesRegex(ValueError, "requires --check"):
+            self.run_version("0.1.0-beta.2", self.args("--unmanaged", "--running-version", "0.1.0-beta.1"))
+        self.run_version("0.1.0-beta.1")
+        before = self.snapshot()
+        with self.assertRaisesRegex(ValueError, "not the published channel version"):
+            self.run_version("0.1.0-beta.3", self.args("--version", "0.1.0-beta.2"))
+        self.assertEqual(self.snapshot(), before)
+
     def test_checksum_and_either_binary_failure_preserve_active_installation(self):
         self.run_version("0.1.0-beta.1")
         before = self.snapshot()

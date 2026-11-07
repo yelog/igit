@@ -90,7 +90,25 @@ igit update --channel stable
 Use `--allow-downgrade` to opt into a lower version, including a channel switch
 whose newest version is older than the installed one. Without this flag, a
 same-channel check never downgrades and a lower-version channel switch fails.
-No updates run automatically when opening the workspace.
+The TUI checks for updates in the background 1.5 seconds after its first
+workspace frame. Successful checks are cached for 24 hours across workspaces;
+automatic failures stay quiet. Installation always requires your confirmation.
+Configure or disable startup checks in [settings](configuration.md#update-checks).
+
+Press `F9` in normal mode, click the bottom-left version/update label, or choose
+**Update IGit** in Actions. Update Center shows the running version, channel,
+available version, and installation result. **Close** is focused initially;
+`Tab` selects another button, `Enter` activates it, and `Esc` closes the window.
+Buttons are also clickable. `r` checks again when no check/install is running
+and no restart is pending; `j/k` or the wheel scrolls details.
+
+Native copies offer **Install update**, retaining their channel and validating
+the exact reviewed version. Closing the window leaves installation running.
+Once complete, choose **Restart IGit** or relaunch later; finish text editing
+and remote operations before restarting. Restart reuses the original command
+arguments. Cargo/manual copies check their running version's stable/beta channel
+and show instructions when a newer release is available; they are updated using
+their original installation method.
 
 **The published `v0.1.0-beta.1` predates the built-in update command.** Rerun the
 appropriate installation command above to update that version. Once a later

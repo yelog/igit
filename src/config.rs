@@ -24,7 +24,21 @@ struct Settings {
     terminal: Terminal,
     ui: Ui,
     ai: AiConfig,
+    updates: UpdateConfig,
     keybindings: Keybindings,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateConfig {
+    pub check_on_startup: bool,
+    pub check_interval_hours: u64,
+}
+
+impl UpdateConfig {
+    pub fn interval(&self) -> Duration {
+        Duration::from_secs(self.check_interval_hours * 60 * 60)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -149,6 +163,7 @@ pub struct AppConfig {
     pub icons: IconMode,
     pub mouse: bool,
     pub ai: Option<AiConfig>,
+    pub updates: UpdateConfig,
     pub hint_delay: Duration,
     pub commands: Vec<BoundCommand>,
 }
@@ -219,10 +234,19 @@ impl AppConfig {
         }
         validate(&commands)?;
         settings.ai.validate()?;
+        if settings.updates.check_interval_hours == 0
+            || settings.updates.check_interval_hours > u64::MAX / 3600
+        {
+            bail!(
+                "updates.check_interval_hours must be between 1 and {}",
+                u64::MAX / 3600
+            )
+        }
         Ok(Self {
             icons,
             mouse: settings.terminal.mouse,
             ai: has_ai.then_some(settings.ai),
+            updates: settings.updates,
             hint_delay: Duration::from_millis(settings.keybindings.hint_delay_ms),
             commands,
         })

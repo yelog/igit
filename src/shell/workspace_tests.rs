@@ -294,7 +294,11 @@ fn workspace_tabs_open_on_commit_and_switch_in_header_order_at_each_size() {
         assert_eq!(app.regions.body, Rect::new(0, 1, w, h - 2));
         assert_eq!(app.regions.log_tabs.y, app.regions.tab(Log).y);
         assert_eq!(app.regions.log_tabs.right(), app.regions.tab(Commit).x);
-        assert!(log.lines().last().unwrap().starts_with(" IGit   "));
+        assert!(log
+            .lines()
+            .last()
+            .unwrap()
+            .starts_with(&format!(" IGit  v{}", env!("CARGO_PKG_VERSION"))));
         for removed in ["IGit", "Console", "Roots", "Actions", "Help"] {
             assert!(!header.contains(removed), "{header}");
         }

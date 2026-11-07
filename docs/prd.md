@@ -59,6 +59,16 @@ deployment and its online matrix. The published `v0.1.0-beta.1` predates the
 updater and must be updated by rerunning its installer. See
 [Installation](installation.md) for requirements and recovery.
 
+**Software Update Center.** The bottom-left version/status label, `F9` in normal
+mode, and Actions open one keyboard/mouse dialog. Startup checks begin after
+1.5 seconds, cache successful results for 24 hours across workspaces, and keep
+automatic failures quiet. Both settings are configurable. Native updates retain
+their channel and install only the reviewed version after explicit activation;
+Close is focused initially. The worker continues if the dialog closes, and
+completion offers a separate restart. Cargo/manual copies can check releases
+but receive original-installation instructions. Software checks and installation
+do not change repository scope, Git data, or workspace drafts.
+
 **Pane maximize (R7/R8 extension).** `Ctrl-W f` maximizes/restores the focused
 pane in Commit, Push, and Conflicts without changing saved split sizes. Tab
 retains access to all enabled panes. Log keeps all
@@ -72,7 +82,7 @@ key repeats cannot trigger synchronization. Configuration examples include an
 
 The table records the 0.1.0 delivery baseline. Items marked partial or next steps are not release claims. See P0, A7, and A9 for the current Commit changes and observed checks, and A11 for Push comparison.
 
-**Workspace header and footer (R1/R7/R8).** One header row combines Log's filter tabs and `+` (or Push's contextual title) on the left with workspace tabs on the right. The old workspace name and Console / Roots / Actions / Help toolbar are removed; those actions remain accessible through shortcuts and Actions. The footer starts with `IGit` followed by existing contextual hints or notifications. At 120×36, 80×25, and 44×12, content starts immediately below the header, Log tab controls stay separate from workspace tab hit areas, and existing input/review guards still apply.
+**Workspace header and footer (R1/R7/R8).** One header row combines Log's filter tabs and `+` (or Push's contextual title) on the left with workspace tabs on the right. The old workspace name and Console / Roots / Actions / Help toolbar are removed; those actions remain accessible through shortcuts and Actions. The footer starts with `IGit v<VERSION>` and update status, followed by contextual hints or notifications. At 120×36, 80×25, and 44×12, content starts immediately below the header, Log tab controls stay separate from workspace tab hit areas, and existing input/review guards still apply.
 
 | ID | Original requirement | Delivered behavior and limits |
 | --- | --- | --- |

@@ -1,5 +1,7 @@
 //! Explicit software updates are separate from workspace Pull/Fetch operations.
+mod inspection;
 use anyhow::{bail, Context, Result};
+pub(crate) use inspection::{inspect, install, restart_path, Inspection, Status};
 use std::{ffi::OsString, fs, path::Path, process::Command};
 
 const HELP: &str = "Usage: igit update [OPTIONS]  (alias: ig update)
@@ -21,6 +23,8 @@ struct Options {
     downgrade: bool,
     json: bool,
     help: bool,
+    unmanaged: bool,
+    version: Option<String>,
 }
 
 fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options> {
@@ -90,6 +94,15 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<()> {
     let mut command = helper(temporary.path(), &executable, &options)?;
     // Installed ownership determines the paths and default channel. Ambient
     // installer variables must not redirect an update to another installation.
+    clean_environment(&mut command);
+    let status = command.status().context("start the native update helper")?;
+    if !status.success() {
+        bail!("IGit update failed; see the installer report above")
+    }
+    Ok(())
+}
+
+fn clean_environment(command: &mut Command) {
     for name in [
         "IGIT_INSTALL_DIR",
         "IGIT_INSTALL_ROOT",
@@ -99,11 +112,6 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<()> {
     ] {
         command.env_remove(name);
     }
-    let status = command.status().context("start the native update helper")?;
-    if !status.success() {
-        bail!("IGit update failed; see the installer report above")
-    }
-    Ok(())
 }
 
 #[cfg(unix)]
@@ -113,9 +121,12 @@ fn helper(directory: &Path, executable: &Path, options: &Options) -> Result<Comm
     let mut command = Command::new("python3");
     command
         .arg(&script)
-        .arg("--from-executable")
-        .arg(executable)
         .args(["--running-version", env!("CARGO_PKG_VERSION")]);
+    if options.unmanaged {
+        command.arg("--unmanaged");
+    } else {
+        command.arg("--from-executable").arg(executable);
+    }
     for (enabled, flag) in [
         (options.check, "--check"),
         (options.json, "--json"),
@@ -127,6 +138,9 @@ fn helper(directory: &Path, executable: &Path, options: &Options) -> Result<Comm
     }
     if let Some(channel) = &options.channel {
         command.args(["--channel", channel]);
+    }
+    if let Some(version) = &options.version {
+        command.args(["--version", version]);
     }
     Ok(command)
 }
@@ -145,9 +159,12 @@ fn helper(directory: &Path, executable: &Path, options: &Options) -> Result<Comm
             "-File",
         ])
         .arg(&script)
-        .arg("-FromExecutable")
-        .arg(executable)
         .args(["-RunningVersion", env!("CARGO_PKG_VERSION")]);
+    if options.unmanaged {
+        command.arg("-Unmanaged");
+    } else {
+        command.arg("-FromExecutable").arg(executable);
+    }
     for (enabled, flag) in [
         (options.check, "-Check"),
         (options.json, "-Json"),
@@ -159,6 +176,9 @@ fn helper(directory: &Path, executable: &Path, options: &Options) -> Result<Comm
     }
     if let Some(channel) = &options.channel {
         command.args(["-Channel", channel]);
+    }
+    if let Some(version) = &options.version {
+        command.args(["-Version", version]);
     }
     Ok(command)
 }

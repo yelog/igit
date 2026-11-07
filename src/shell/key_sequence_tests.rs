@@ -398,7 +398,13 @@ fn key_sequence_merge_hints_cancel_without_leaving_the_document_or_changing_git(
         assert!(!screen(&mut app, 80, 24).contains(description));
         let text = show_hints(&mut app, 80, 24);
         assert!(text.contains(description), "{text}");
-        assert!(text.lines().last().unwrap().contains("Save and Close"));
+        assert!(text
+            .lines()
+            .rev()
+            .nth(1)
+            .unwrap()
+            .contains("Save and Close"));
+        assert!(text.lines().last().unwrap().contains("IGit  v"));
         app.dispatch(&key(KeyCode::Esc));
         assert!(app.key_sequence().is_none());
         assert!(screen(&mut app, 80, 24).contains("Merge Revisions for"));

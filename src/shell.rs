@@ -2,6 +2,7 @@ mod cli;
 mod configuration;
 mod kitty;
 mod panes;
+mod software_update;
 mod startup;
 mod update;
 mod workspace;
@@ -44,7 +45,6 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph, Wrap},
     Frame, Terminal,
 };
-#[cfg(test)]
 use std::path::PathBuf;
 use std::{
     collections::BTreeSet,
@@ -92,6 +92,7 @@ enum MenuAction {
     Switch(Tab),
     Roots,
     Update(update::Kind),
+    SoftwareUpdate,
     Refresh,
     Open,
     Console,
@@ -124,11 +125,12 @@ Options may appear before or after the panel. Use igit -- log or igit ./log
 to open a directory named log; use igit log -- -file for an option-like filename.
 
 Tabs: 1 Commit / 2 Log / 3 Push / 4 Branch / 5 Stash / 6 Conflicts (when available)   p Pull / f Fetch
-r repositories (Branch: rename; use Actions for Roots)   ? / F1 help   q quit
+r repositories (Branch: rename; use Actions for Roots)   F9 updates   ? / F1 help   q quit
 Runs Git on your local working trees; mutations require a reviewed confirmation.";
 enum Popup {
     Rollback(Box<Rollback>),
     Update(update::Dialog),
+    SoftwareUpdate,
     Scope {
         picked: BTreeSet<usize>,
         row: usize,
@@ -183,6 +185,8 @@ struct Shell {
     msg: String,
     journal: Vec<String>,
     quit: bool,
+    restart: Option<PathBuf>,
+    software_update: software_update::SoftwareUpdate,
     regions: workspace::Regions,
     pop_hits: Vec<(Rect, usize)>,
     key_picker: KeySequencePicker,
@@ -229,6 +233,8 @@ impl Shell {
             msg: "".into(),
             journal: vec![],
             quit: false,
+            restart: None,
+            software_update: Default::default(),
             regions: Default::default(),
             pop_hits: vec![],
             key_picker: KeySequencePicker::default(),
@@ -495,6 +501,10 @@ impl Shell {
     }
     fn quit_box(&mut self) {
         self.cancel_key_sequences();
+        if self.software_update.installing() {
+            self.notice("Wait for the software update to finish before quitting".into());
+            return;
+        }
         if self.push.busy() {
             self.notice(
                 "A remote operation is running. Wait for it to finish before quitting".into(),
@@ -546,6 +556,7 @@ impl Shell {
         match self.pop.as_ref() {
             Some(Popup::Rollback(dialog)) => dialog.keymap(),
             Some(Popup::Update(dialog)) => dialog.keymap(),
+            Some(Popup::SoftwareUpdate) => self.software_update.keymap(),
             Some(Popup::Scope { .. }) => HelpContent::new(
                 HelpSection::new(
                     "Roots / Repository scope",
@@ -668,6 +679,7 @@ impl Shell {
                 MenuAction::Refresh,
                 MenuAction::Open,
                 MenuAction::Console,
+                MenuAction::SoftwareUpdate,
                 MenuAction::Quit,
             ])
     }
@@ -683,6 +695,7 @@ impl Shell {
                 })
             }
             Some(MenuAction::Console) => self.global(4),
+            Some(MenuAction::SoftwareUpdate) => self.open_software_update(),
             Some(MenuAction::Quit) => self.global(3),
             None => (),
         }
@@ -714,6 +727,10 @@ impl Shell {
                     }
                 }
             }
+            return;
+        }
+        if matches!(self.pop, Some(Popup::SoftwareUpdate)) {
+            self.software_update_event(ev);
             return;
         }
         if let Some(Popup::Rollback(dialog)) = self.pop.as_mut() {
@@ -772,6 +789,7 @@ impl Shell {
         self.pop = match popup {
             Popup::Rollback(_) => unreachable!("rollback events are handled above"),
             Popup::Update(_) => unreachable!("update events are handled above"),
+            Popup::SoftwareUpdate => unreachable!("software update events are handled above"),
             Popup::Confirm {
                 title,
                 body,
@@ -892,8 +910,10 @@ impl Shell {
                     match Context::discover(std::path::Path::new(&path)) {
                         Ok(c) => {
                             let kitty = std::mem::take(&mut self.kitty);
+                            let software_update = std::mem::take(&mut self.software_update);
                             *self = Self::with_config(c, self.config.clone());
                             self.kitty = kitty;
+                            self.software_update = software_update;
                             return;
                         }
                         Err(e) => self.notice(e.to_string()),
@@ -1111,6 +1131,10 @@ impl Shell {
                         self.global(5);
                         return;
                     }
+                    KeyCode::F(9) if k.modifiers.is_empty() => {
+                        self.open_software_update();
+                        return;
+                    }
                     _ => (),
                 }
             }
@@ -1129,6 +1153,7 @@ impl Shell {
     }
     fn poll(&mut self) -> bool {
         let mut change = self.poll_log_load();
+        change |= self.software_update.poll();
         change |= self.stash.poll_preview(&self.ctx);
         if self.tab == Commit && self.pop.is_none() {
             match self.commit.poll_refresh(&mut self.ctx) {
@@ -1245,6 +1270,11 @@ impl Shell {
             .map_or(timeout, |remaining| remaining.min(timeout))
     }
     fn draw_popup(&mut self, f: &mut Frame, a: Rect) {
+        if matches!(self.pop, Some(Popup::SoftwareUpdate)) {
+            self.software_update
+                .draw(f, a, self.icons, &mut self.pop_hits);
+            return;
+        }
         if let Some(Popup::Rollback(dialog)) = self.pop.as_mut() {
             dialog.draw(f, a, &self.ctx);
             return;
@@ -1295,6 +1325,7 @@ impl Shell {
         let title = match pop {
             Popup::Rollback(_) => unreachable!("rollback is rendered above"),
             Popup::Update(_) => unreachable!("update is rendered above"),
+            Popup::SoftwareUpdate => unreachable!("software update is rendered above"),
             Popup::Scope { .. } => "Workspace roots",
             Popup::Help { .. } => "IGit · Keyboard shortcuts",
             Popup::Confirm { title, .. } => title,
@@ -1321,6 +1352,7 @@ impl Shell {
         match pop {
             Popup::Rollback(_) => unreachable!("rollback is rendered above"),
             Popup::Update(_) => unreachable!("update is rendered above"),
+            Popup::SoftwareUpdate => unreachable!("software update is rendered above"),
             Popup::Confirm {
                 body: text,
                 yes,
@@ -1429,6 +1461,7 @@ impl Shell {
                         MenuAction::Refresh => "Refresh workspace".into(),
                         MenuAction::Open => "Open / rescan workspace…".into(),
                         MenuAction::Console => "Console".into(),
+                        MenuAction::SoftwareUpdate => format!("{}  Update IGit…", label("update")),
                         MenuAction::Quit => "Quit".into(),
                     };
                     let r = Rect::new(inner.x, inner.y + (i - start) as u16, inner.width, 1);
@@ -1595,10 +1628,14 @@ pub fn run() -> Result<()> {
     let mut dirty = true;
     let mut buffered = None;
     while !app.quit {
-        if dirty {
+        let scheduled_redraw = if dirty {
             term.draw(|f| app.draw(f))?;
-        }
-        dirty = false;
+            app.software_update
+                .schedule(&app.ctx.state_dir, &app.config.updates)
+        } else {
+            false
+        };
+        dirty = scheduled_redraw;
         if buffered.is_some() || event::poll(app.poll_timeout())? {
             let e = match buffered.take() {
                 Some(e) => e,
@@ -1636,6 +1673,24 @@ pub fn run() -> Result<()> {
         }
         if app.poll() {
             dirty = true
+        }
+    }
+    if let Some(executable) = app.restart.take() {
+        drop(term);
+        drop(guard);
+        let mut command = std::process::Command::new(executable);
+        command.args(env::args_os().skip(1));
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            return Err(command.exec().into());
+        }
+        #[cfg(windows)]
+        {
+            let status = command.status()?;
+            if !status.success() {
+                bail!("Restarted IGit exited with {status}");
+            }
         }
     }
     Ok(())

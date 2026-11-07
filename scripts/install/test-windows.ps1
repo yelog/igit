@@ -135,6 +135,42 @@ try {
     [IO.File]::WriteAllText((Join-Path $foreignBin 'ig.exe'), 'foreign command')
     Assert-Fails { Install-TestArchive $foreignRoot $foreignBin '0.1.0-beta.1' } 'Existing EXEs cannot be shadowed.'
     Assert-True ([IO.File]::ReadAllText((Join-Path $foreignBin 'ig.exe')) -ceq 'foreign command') 'Foreign commands stay untouched.'
+
+    if ($native) {
+        $manifest.assets.$IgitTarget.url = "https://github.com/yelog/igit/releases/download/v0.1.0-beta.1/igit_0.1.0-beta.1_$IgitTarget.zip"
+        $inspectionManifest = $manifest | ConvertTo-Json -Depth 8
+        $originalDownload = ${function:Invoke-IgitDownload}
+        function Invoke-IgitDownload([string]$Url, [string]$Destination, [long]$Limit = 0) {
+            Assert-True ($Url.EndsWith('/beta.json')) 'Unmanaged inspection retains the running release channel.'
+            [IO.File]::WriteAllText($Destination, $inspectionManifest, $IgitUtf8)
+        }
+        $Unmanaged = $true
+        $FromExecutable = ''
+        $Channel = ''
+        $Version = ''
+        $InstallRoot = Join-Path $temporary 'unmanaged-root'
+        $InstallDir = Join-Path $temporary 'unmanaged-bin'
+        $Check = $true
+        try {
+            foreach ($case in @(
+                @('0.0.9-beta.1', 'manager_action_required'),
+                @('0.1.0-beta.1', 'up_to_date'),
+                @('0.2.0-beta.1', 'up_to_date')
+            )) {
+                $RunningVersion = $case[0]
+                $report = Invoke-IgitInstall
+                Assert-True ($report.status -eq $case[1]) 'Unmanaged inspection compares versions without installing.'
+                Assert-True ($report.current_version -eq $RunningVersion -and $report.channel -eq 'beta') 'Report identifies the running version and channel.'
+                Assert-True ($report.action.Contains('original package manager')) 'Unmanaged copies provide owner guidance.'
+                Assert-True (-not (Test-Path -LiteralPath $InstallRoot) -and -not (Test-Path -LiteralPath $InstallDir)) 'Inspection creates no installation files.'
+            }
+            $Check = $false
+            Assert-Fails { Invoke-IgitInstall } 'Unmanaged mode must never install.'
+        } finally {
+            ${function:Invoke-IgitDownload} = $originalDownload
+            $Unmanaged = $false
+        }
+    }
     Write-Output "Windows installer contract tests passed (native executable checks: $native)."
 } finally {
     [Console]::OutputEncoding = $previousEncoding

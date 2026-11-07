@@ -44,6 +44,30 @@ igit --icons ascii --mouse off /path/to/workspace
 
 The complete reference is [`config/default.toml`](../config/default.toml).
 
+## Update checks
+
+```toml
+[updates]
+check_on_startup = true
+check_interval_hours = 24
+
+[keybindings.global]
+update = ["F9"]
+```
+
+Startup checks begin 1.5 seconds after the first workspace frame and never
+install automatically. `check_interval_hours` must be at least 1. Successful
+checks, including available versions, are cached in `update-check.json` under
+the global state directory (`IGIT_STATE_DIR`, `$XDG_STATE_HOME/igit`, or
+`~/.local/state/igit`). The cache identifies the running executable and native
+ownership record; invalid, stale, future-dated, and mismatched entries are ignored.
+Automatic failures do not interrupt work.
+
+`check_on_startup = false` disables automatic checking and cached startup
+indicators. Manual checks still work. The `update` binding follows the normal-mode
+remapping rules; the version label and Actions remain clickable entry points.
+Update Center's `r` bypasses the cache. See [updating](installation.md#updating).
+
 ## Example
 
 Create the selected directory and save a `settings.toml` containing just the
@@ -213,7 +237,7 @@ replaces the complete `g g` sequence.
 `commit.stash` defaults to `s`: it opens the shared stash-message editor for
 all changes in Roots, including untracked files. `commit.toggle-status` now
 defaults to `T`; the same option remains in View Options. Remap either under
-`[keybindings.commit]`, for example `stash = ["F9"]`. Within the stash editor,
+`[keybindings.commit]`, for example `stash = ["F10"]`. Within the stash editor,
 Enter/Ctrl-S/F2 reviews and Esc cancels; typed characters bypass normal-mode
 bindings. If an existing custom `toggle-status` binding uses `s`, move or
 unbind it when enabling the default stash shortcut.
@@ -229,7 +253,7 @@ retains the same fixed revision controls as Log, including `Esc` to close.
 `drop = ["d"]`. Each opens confirmation for the selected stash from either
 normal-mode pane. The open Diff keeps its read-only controls. Uppercase `P`
 is Pop; lowercase `p` remains global Pull. To remap, for example, set
-`pop = ["F9"]`. Confirmations use fixed `y` to proceed and `Esc` to cancel;
+`pop = ["F10"]`. Confirmations use fixed `y` to proceed and `Esc` to cancel;
 Enter initially selects Cancel. Apply/pop follow the repository's `stash.index`
 configuration, displayed in the review, with no staging restoration by default.
 See [Git stash semantics](https://git-scm.com/docs/git-stash).

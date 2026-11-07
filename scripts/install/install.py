@@ -356,12 +356,15 @@ def parser():
     result.add_argument("--allow-downgrade", action="store_true")
     result.add_argument("--from-executable", help=argparse.SUPPRESS)
     result.add_argument("--running-version", help=argparse.SUPPRESS)
+    result.add_argument("--unmanaged", action="store_true", help=argparse.SUPPRESS)
     return result
 
 
 def run(args):
     if sys.version_info < (3, 9):
         raise ValueError("Python 3.9 or newer is required")
+    if args.unmanaged and (not args.check or args.from_executable or not args.running_version):
+        raise ValueError("unmanaged inspection requires --check and --running-version")
     executable = Path(args.from_executable).resolve(strict=True) if args.from_executable else None
     if executable:
         root = executable.parent.parent.parent
@@ -369,12 +372,15 @@ def run(args):
         if state is None or state["version"] != args.running_version:
             raise ValueError("executable is not owned by the active native installation")
         install_dir, target = Path(state["bin_dir"]), state["target"]
+    elif args.unmanaged:
+        state = None
+        target = host_target()
     else:
         root = Path(args.install_root or Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))) / "igit").expanduser().resolve()
         install_dir = Path(args.install_dir or Path.home() / ".local/bin").expanduser().resolve()
         state = inspect_installation(root, install_dir)
         target = state["target"] if state else host_target()
-    channel = args.channel or (state["channel"] if state else "stable")
+    channel = args.channel or (state["channel"] if state else channel_for(args.running_version) if args.unmanaged else "stable")
     if channel not in {"stable", "beta"}:
         raise ValueError("invalid release channel")
     locked = os.environ.get("IGIT_CHANNEL_LOCKED")
@@ -383,7 +389,7 @@ def run(args):
     base = os.environ.get("IGIT_CHANNEL_BASE_URL", BASE_URL).rstrip("/")
     if not allowed_url(base):
         raise ValueError("invalid channel base URL")
-    current = state["version"] if state else None
+    current = state["version"] if state else args.running_version if args.unmanaged else None
     report = {"schema": 1, "product": "igit", "channel": channel, "current_version": current, "target_version": None}
     with tempfile.TemporaryDirectory(prefix="igit-download-") as temporary:
         temporary = Path(temporary)
@@ -398,7 +404,7 @@ def run(args):
         report["target_version"] = version
         comparison = (version_key(version) > version_key(current)) - (version_key(version) < version_key(current)) if current else 1
         if comparison < 0 and not args.allow_downgrade:
-            if channel != state["channel"]:
+            if state and channel != state["channel"]:
                 raise ValueError("channel switch would downgrade IGit; use --allow-downgrade explicitly")
             report["status"] = "up_to_date"
         elif comparison == 0:
@@ -415,6 +421,10 @@ def run(args):
             report["status"] = "updated" if state else "installed"
             if not executable:
                 configure_path(install_dir, not args.no_modify_path)
+    if args.unmanaged:
+        report["action"] = "Update with the original package manager, rebuild IGit, or use https://igit.yelog.org/."
+        if report["status"] == "update_available":
+            report["status"] = "manager_action_required"
     return report
 
 

@@ -10,6 +10,7 @@ param(
     [switch]$AllowDowngrade,
     [string]$FromExecutable,
     [string]$RunningVersion,
+    [switch]$Unmanaged,
     [switch]$LibraryOnly
 )
 
@@ -318,18 +319,22 @@ function Invoke-IgitInstall {
     if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem) { throw 'This installer requires 64-bit Windows.' }
     $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
     if ($arch -ne 'AMD64') { throw "Unsupported Windows architecture: $arch" }
+    if ($Unmanaged -and (-not $Check -or $FromExecutable -or -not $RunningVersion)) { throw 'Unmanaged inspection requires Check and RunningVersion.' }
     if ($FromExecutable) {
         $executable = Get-IgitFullPath $FromExecutable
         $root = [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($executable)))
         $state = Get-IgitInstallation $root '' $executable
         if (-not $state -or $state.version -cne $RunningVersion) { throw 'Executable is not owned by the active native installation.' }
         $bin = $state.bin_dir
+    } elseif ($Unmanaged) {
+        $state = $null
+        Get-IgitVersionParts $RunningVersion | Out-Null
     } else {
         $root = Get-IgitFullPath $(if ($InstallRoot) { $InstallRoot } else { Join-Path $env:LOCALAPPDATA 'IGit' })
         $bin = Get-IgitFullPath $(if ($InstallDir) { $InstallDir } else { Join-Path $root 'bin' })
         $state = Get-IgitInstallation $root $bin
     }
-    $selectedChannel = if ($Channel) { $Channel } elseif ($state) { $state.channel } else { 'stable' }
+    $selectedChannel = if ($Channel) { $Channel } elseif ($state) { $state.channel } elseif ($Unmanaged -and $RunningVersion.Contains('-beta.')) { 'beta' } else { 'stable' }
     $base = if ($env:IGIT_CHANNEL_BASE_URL) { $env:IGIT_CHANNEL_BASE_URL.TrimEnd('/') } else { 'https://igit.yelog.org/channels' }
     if (-not (Test-IgitUrl $base)) { throw 'Invalid channel base URL.' }
     $temporary = Join-Path ([IO.Path]::GetTempPath()) ('igit-install-' + [Guid]::NewGuid().ToString('N'))
@@ -341,10 +346,11 @@ function Invoke-IgitInstall {
         $manifest = Read-IgitJson $manifestPath
         Assert-IgitManifest $manifest $selectedChannel $base
         if ($Version -and $Version -cne $manifest.version) { throw 'Requested version is not the published channel version.' }
-        $report = [ordered]@{ schema = 1; product = 'igit'; channel = $selectedChannel; current_version = $(if ($state) { $state.version } else { $null }); target_version = $manifest.version; status = '' }
-        $comparison = if ($state) { Compare-IgitVersion $manifest.version $state.version } else { 1 }
+        $currentVersion = if ($state) { $state.version } elseif ($Unmanaged) { $RunningVersion } else { $null }
+        $report = [ordered]@{ schema = 1; product = 'igit'; channel = $selectedChannel; current_version = $currentVersion; target_version = $manifest.version; status = '' }
+        $comparison = if ($currentVersion) { Compare-IgitVersion $manifest.version $currentVersion } else { 1 }
         if ($comparison -lt 0 -and -not $AllowDowngrade) {
-            if ($selectedChannel -ne $state.channel) { throw 'Channel switch would downgrade IGit; use --allow-downgrade explicitly.' }
+            if ($state -and $selectedChannel -ne $state.channel) { throw 'Channel switch would downgrade IGit; use --allow-downgrade explicitly.' }
             $report.status = 'up_to_date'
         } elseif ($comparison -eq 0) { $report.status = 'up_to_date' }
         elseif ($Check) { $report.status = 'update_available' }
@@ -368,6 +374,10 @@ function Invoke-IgitInstall {
                     [Console]::Error.WriteLine("PATH setup skipped; add $bin to your user PATH. " + $_.Exception.Message)
                 }
             }
+        }
+        if ($Unmanaged) {
+            $report.action = 'Update with the original package manager, rebuild IGit, or use https://igit.yelog.org/.'
+            if ($report.status -eq 'update_available') { $report.status = 'manager_action_required' }
         }
         return $report
     } finally { Remove-Item -LiteralPath $temporary -Recurse -Force }

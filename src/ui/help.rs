@@ -91,6 +91,7 @@ pub(crate) fn global_section(show_conflicts: bool, show_roots: bool) -> HelpSect
         ("f", "Review Fetch for all repositories in Roots"),
         (":", "Open Actions"),
         ("F5", "Refresh workspace"),
+        ("F9", "Open Update Center"),
         ("F1", "Open help for current pane"),
         ("?", "Open help for current pane"),
         ("q", "Review and quit IGit"),

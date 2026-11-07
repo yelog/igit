@@ -27,6 +27,24 @@ arguments, identifying the actual running executable. Ambient install-path and
 channel variables cannot redirect that update. Unix needs Python 3.9+ and curl;
 Windows uses Windows PowerShell and curl.exe. No Rust runtime dependency is added.
 
+[Software Update Center](../src/shell/software_update.rs) owns a single background
+check/install worker, footer status, and dialog controls independently of
+workspace Pull/Fetch. It starts an optional check 1.5 seconds after the first
+workspace frame. [The cache](../src/shell/software_update/cache.rs) atomically
+stores successful typed reports in the global state directory and validates
+their age, executable identity, native ownership record, and channel/version.
+Manual checks bypass it. Automatic errors remain quiet; manual errors are shown
+in the dialog. Opening another workspace retains the worker and result.
+
+[Typed installer access](../src/installation/inspection.rs) captures structured
+reports from the embedded helper. Read-only unmanaged inspection compares the
+running version against its channel without reading another installation's
+state. Native installation pins the reviewed channel/version and keeps all
+existing ownership/checksum/staging checks. Shell prevents quit during an
+install and prevents restart during text editing or remote operations. An
+explicit restart resolves the activated native executable, restores terminal
+modes, and reuses the original CLI arguments.
+
 `install.json` records fixed native ownership and paths. Each immutable
 `releases/VERSION_TARGET` directory has a file-hash record. On Unix both command
 symlinks resolve through one atomically replaced `current` symlink. Windows CMD
@@ -98,7 +116,7 @@ another window. Smart focus or resize enables the terminal marker. The helper
 has no dependency on the user's Neovim or LazyDB helper.
 
 1. [shell::run](../src/shell.rs) enables alternate screen, raw mode, mouse reporting, and bracketed paste, then paints a loading view before any repository discovery. [startup.rs](../src/shell/startup.rs) discovers repositories and initializes Commit and Conflicts on a worker, reporting stages over `mpsc`. The terminal thread handles resize and cancellation while polling; errors and cancellation restore terminal modes. Discovered branch labels are reused without another branch scan. The normal event loop starts when the workspace is ready. `--list-roots` remains a synchronous plain-output command.
-2. [Workspace layout](../src/shell/workspace.rs) records the positions of right-aligned workspace tabs, the left-side Log tab strip in the same header row, and the active panel. The footer prefixes contextual hints or notifications with `IGit`. `Shell::dispatch` handles top-level overlays such as help/review first, then routes input to the active tab. Panels report text input through `editing()` so ordinary characters do not trigger global commands. [Pane geometry](../src/ui/panes.rs) registers pane rectangles/dividers for the active tab; adjustable sizes are stored in session character cells. Keyboard and mouse share bounds and size preferences; restoring defaults reallocates against the current terminal size. [Pane routing](../src/shell/panes.rs) handles Tab in registration order, finds directional neighbors by actual edges/overlap, and keeps an entire drag with the divider that received the press. Text selection and file dragging keep their original panel event routes.
+2. [Workspace layout](../src/shell/workspace.rs) records the positions of right-aligned workspace tabs, the left-side Log tab strip in the same header row, and the active panel. The footer prefixes contextual hints or notifications with `IGit v<VERSION>` and software-update status. `Shell::dispatch` handles top-level overlays such as help/review first, then routes input to the active tab. Panels report text input through `editing()` so ordinary characters do not trigger global commands. [Pane geometry](../src/ui/panes.rs) registers pane rectangles/dividers for the active tab; adjustable sizes are stored in session character cells. Keyboard and mouse share bounds and size preferences; restoring defaults reallocates against the current terminal size. [Pane routing](../src/shell/panes.rs) handles Tab in registration order, finds directional neighbors by actual edges/overlap, and keeps an entire drag with the divider that received the press. Text selection and file dragging keep their original panel event routes.
 3. The active panel receives `Panel::event` and returns an `Action`. It owns its selected row, focus, and scroll position. Shell owns panel switching, notifications, and confirmation. To request confirmation, the panel stores a concrete plan and returns `Confirm { title, body, token }`. Shell records the requesting panel, initially selects Cancel, and calls that panel's `confirm(token, context)` only after confirmation.
 4. For **Commit & Push**: Commit builds per-repository plans → user reviews → repositories commit individually → `Action::Committed` returns the successful repository set → Shell refreshes the workspace, switches to Push, and initially checks those repositories → user separately reviews and starts pushing. A local commit created and a remote updated are independent results.
 

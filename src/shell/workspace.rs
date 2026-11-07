@@ -10,6 +10,7 @@ use ratatui::{
 pub(super) struct Regions {
     pub(super) body: Rect,
     pub(super) log_tabs: Rect,
+    pub(super) software_update: Rect,
     tabs: [Rect; Tab::DISPLAY_ORDER.len()],
 }
 
@@ -38,6 +39,10 @@ impl Shell {
             return;
         }
         if press {
+            if inside(self.regions.software_update, x, y) {
+                self.open_software_update();
+                return;
+            }
             if let Some(tab) = Tab::DISPLAY_ORDER
                 .into_iter()
                 .find(|&tab| inside(self.regions.tab(tab), x, y))
@@ -135,20 +140,23 @@ impl Shell {
             return;
         }
         if self.tab == Conflicts && self.merge.has_document() {
-            self.regions.body = a;
+            let editor = Rect::new(a.x, a.y, a.width, a.height - 1);
+            self.regions.body = editor;
             self.merge.panes.active = self.pop.is_none();
             self.merge.panes.maximized = self.pane_is_maximized();
             let notice = if self.maximize_pending {
-                "Synchronizing Kitty layout…"
+                "Synchronizing Kitty layout…".to_owned()
             } else {
-                &self.msg
+                self.msg.clone()
             };
-            self.merge.draw_editor(f, a, &self.ctx, notice);
+            self.merge.draw_editor(f, editor, &self.ctx, &notice);
+            let hint = format!("{} Updates  F1 Help", self.config.label("global", "update"));
+            self.draw_footer(f, Rect::new(a.x, a.bottom() - 1, a.width, 1), &hint, MUTED);
             let hints = Rect::new(
                 a.x,
                 a.y,
                 a.width,
-                a.height - 1 - u16::from(!notice.is_empty()),
+                editor.height - 1 - u16::from(!notice.is_empty()),
             );
             self.draw_workspace_overlays(f, hints);
             return;
@@ -238,24 +246,43 @@ impl Shell {
             (self.panel().help().into(), MUTED)
         } else {
             (
-                if foot.width < 84 {
+                if foot.width < 60 {
+                    "F9 Updates  F1 Help"
+                } else if foot.width < 100 {
                     "Tab Panes  p Pull  f Fetch  F1 Help"
                 } else {
-                    "Tab Panes  Ctrl-W Pane keys  p Pull  f Fetch  : Actions  F1 Help"
+                    "Tab Panes  Ctrl-W Pane keys  p Pull  f Fetch  F9 Updates  F1 Help"
                 }
                 .into(),
                 MUTED,
             )
         };
+        self.draw_footer(f, foot, &hint, color);
+        self.draw_workspace_overlays(f, work);
+    }
+
+    fn draw_footer(&mut self, f: &mut Frame, foot: Rect, hint: &str, color: ratatui::style::Color) {
+        let brand = " IGit ";
+        let version = format!(" v{}", env!("CARGO_PKG_VERSION"));
+        let (status, status_style) = self.software_update.footer_status(self.icons);
+        let start = foot.x + brand.width() as u16;
+        let visible_width = foot.width.saturating_sub(brand.width() as u16);
+        self.regions.software_update = Rect::new(
+            start,
+            foot.y,
+            ((version.width() + status.width()) as u16).min(visible_width),
+            1,
+        );
         f.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(" IGit ", button_style(true)),
+                Span::styled(brand, button_style(true)),
+                Span::styled(version, Style::new().fg(MUTED)),
+                Span::styled(status, status_style),
                 Span::styled(format!("  {hint}"), Style::new().fg(color)),
             ]))
             .style(Style::new().bg(TAG)),
             foot,
         );
-        self.draw_workspace_overlays(f, work);
     }
 
     fn draw_workspace_overlays(&mut self, f: &mut Frame, work: Rect) {

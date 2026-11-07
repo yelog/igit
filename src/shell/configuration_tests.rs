@@ -523,7 +523,7 @@ fn configuration_keeps_unmodified_prefix_mouse_actions_and_copy_precedence() {
     let capture = CopyCapture::start();
     configure(
         &mut app,
-        "[keybindings.global]\nquit=[]\nroots=['Q Q']\n[keybindings.log]\npage-down=['F9']",
+        "[keybindings.global]\nquit=[]\nupdate=[]\nroots=['Q Q']\n[keybindings.log]\npage-down=['F9']",
     );
     send(&mut app, "F1");
     app.dispatch(&Event::Paste("Page down".into()));
@@ -566,7 +566,7 @@ fn configuration_keeps_unmodified_prefix_mouse_actions_and_copy_precedence() {
 fn configuration_multistep_named_continuations_and_mouse_off() {
     let (_dir, mut app) = fixture();
     app.go(Log);
-    configure(&mut app, "[terminal]\nmouse=false\n[keybindings.global]\nroots=['F8 Enter']\nfocus-commit=['F9 x y']");
+    configure(&mut app, "[terminal]\nmouse=false\n[keybindings.global]\nupdate=[]\nroots=['F8 Enter']\nfocus-commit=['F9 x y']");
     screen(&mut app, 120, 36);
     let header = app.regions.tab(Commit);
     app.dispatch(&Event::Mouse(MouseEvent {

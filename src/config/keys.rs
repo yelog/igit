@@ -95,6 +95,7 @@ commands! {
         "open-merge" => "6", ALL;
         "pull" => "p", ALL;
         "fetch" => "f", ALL;
+        "update" => "F9", ALL;
         "roots" => "r", ALL & !BRANCH;
         "actions" => ":", ALL;
         "refresh" => "F5", ALL;
