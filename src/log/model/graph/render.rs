@@ -115,12 +115,31 @@ impl NodeGlyphs {
 #[derive(Clone, Copy, Default)]
 struct Cell {
     dirs: u8,
+    upper: u8,
+    lower: u8,
+    slopes: u8,
     color: usize,
-    junction: bool,
+    edge: Option<usize>,
+    crossing: bool,
     shortcut: Option<(usize, bool)>,
 }
 
 impl Cell {
+    fn add(&mut self, edge: usize, dirs: u8, color: usize, up: bool, slope: u8) {
+        self.crossing |= self.edge.is_some_and(|old| old != edge);
+        if self.dirs & (UP | DOWN) == 0 {
+            self.color = color;
+        }
+        self.dirs |= dirs;
+        self.slopes |= slope;
+        if up {
+            self.upper |= dirs;
+        } else {
+            self.lower |= dirs;
+        }
+        self.edge = Some(edge);
+    }
+
     fn glyph(self, glyphs: NodeGlyphs) -> char {
         if let Some((_, up)) = self.shortcut {
             return match (glyphs, up) {
@@ -130,6 +149,35 @@ impl Cell {
                 (_, false) => '↓',
             };
         }
+        // Upper and lower half-row paths can share a cell without crossing.
+        // Preserve the two diagonal paths rather than turning them into a '+'.
+        let diagonal = match (self.upper, self.lower) {
+            (4, 8) | (9, 6) => Some(false),
+            (8, 4) | (5, 10) => Some(true),
+            _ => None,
+        };
+        if let Some(rising) = diagonal {
+            return match (glyphs, rising, self.dirs == 15) {
+                (NodeGlyphs::Ascii, true, _) => '/',
+                (NodeGlyphs::Ascii, false, _) => '\\',
+                (NodeGlyphs::Connected, true, true) => '\u{1fba8}',
+                (NodeGlyphs::Connected, false, true) => '\u{1fba9}',
+                (_, true, _) => '╱',
+                (_, false, _) => '╲',
+            };
+        }
+        if self.crossing {
+            // Only a commit dot joins different edges. Do not invent junctions
+            // at rasterized crossings between independent parent connections.
+            return match (glyphs, self.slopes) {
+                (NodeGlyphs::Ascii, 1) => '/',
+                (NodeGlyphs::Ascii, 2) => '\\',
+                (NodeGlyphs::Ascii, _) => 'x',
+                (_, 1) => '╱',
+                (_, 2) => '╲',
+                (_, _) => '╳',
+            };
+        }
         if glyphs == NodeGlyphs::Ascii {
             return match self.dirs {
                 0 => ' ',
@@ -137,9 +185,19 @@ impl Cell {
                 4 | 8 | 12 => '-',
                 5 | 10 => '/',
                 6 | 9 => '\\',
-                15 if !self.junction => 'x',
                 _ => '+',
             };
+        }
+        if glyphs == NodeGlyphs::Connected {
+            // Standard Unicode diagonal mid-lines, drawn natively by the same
+            // terminals as connected dots. Endpoints meet at cell boundaries.
+            match self.dirs {
+                5 => return '\u{1fba0}',  // upper center to middle left
+                9 => return '\u{1fba1}',  // upper center to middle right
+                6 => return '\u{1fba2}',  // middle left to lower center
+                10 => return '\u{1fba3}', // lower center to middle right
+                _ => (),
+            }
         }
         match self.dirs {
             0 => ' ',
@@ -151,20 +209,19 @@ impl Cell {
             12 => '─',
             5 => '╯',
             6 => '╮',
-            7 => '┤',
             9 => '╰',
             10 => '╭',
-            11 => '├',
-            13 => '┴',
-            14 => '┬',
-            _ if self.junction => '┼',
-            _ => '╪', // Two edges cross without sharing a commit.
+            _ => match self.slopes {
+                1 => '╱',
+                2 => '╲',
+                _ => '╳',
+            },
         }
     }
 }
 
 impl Graph {
-    // Pan the entire frame only when the selected node leaves the old window.
+    #[cfg(test)]
     pub(in crate::log) fn window(
         &self,
         rows: Range<usize>,
@@ -172,17 +229,26 @@ impl Graph {
         budget: usize,
         previous: usize,
     ) -> Window {
-        let total = self.rows[rows]
-            .iter()
-            .map(|r| r.last + 1)
-            .max()
-            .unwrap_or(0);
+        self.window_with_edges(rows, selected, budget, previous, true)
+    }
+
+    // Pan the entire frame only when the selected node leaves the old window.
+    pub(in crate::log) fn window_with_edges(
+        &self,
+        rows: Range<usize>,
+        selected: usize,
+        budget: usize,
+        previous: usize,
+        long_edges: bool,
+    ) -> Window {
+        let layout = self.rows(long_edges);
+        let total = layout[rows].iter().map(|r| r.last + 1).max().unwrap_or(0);
         let count = if Window::rail_width(total) <= budget {
             total
         } else {
             budget.saturating_sub(2).div_ceil(2).max(1)
         };
-        let node = self.rows.get(selected).map_or(0, |r| r.node.lane);
+        let node = layout.get(selected).map_or(0, |r| r.node.lane);
         let first = previous
             .min(node)
             .max((node + 1).saturating_sub(count))
@@ -216,62 +282,54 @@ impl Graph {
         head: bool,
         long_edges: bool,
     ) -> Vec<(char, usize, Option<usize>)> {
-        let row = &self.rows[index];
-        let mut cells = vec![Cell::default(); Window::rail_width(w.count)];
-        for offset in 0..w.count {
-            let Some(rails) = self.lanes.get(w.first + offset) else {
-                continue;
-            };
-            let first = rails.partition_point(|rail| rail.parent < index);
-            let c = &mut cells[offset * 2];
-            for rail in rails[first..].iter().take_while(|rail| rail.child <= index) {
-                if !long_edges
-                    && !rail.joined
-                    && rail.parent - rail.child > 12
-                    && index > rail.child + 1
-                    && index < rail.parent - 1
-                {
-                    c.color = rail.color;
-                    c.shortcut = if index == rail.child + 2 {
-                        Some((rail.parent, false))
-                    } else if index == rail.parent - 2 {
-                        Some((rail.child, true))
-                    } else {
-                        None
-                    };
-                    continue;
-                }
-                if rail.child < index {
-                    c.dirs |= UP;
-                }
-                if rail.parent > index {
-                    c.dirs |= DOWN;
-                }
-                c.color = rail.color;
-            }
-        }
-
+        let row = &self.rows(long_edges)[index];
         let origin = 2 * w.first;
         let node_x = 2 * row.node.lane;
-        for link in &row.links {
-            let tip = 2 * link.lane;
-            let lo = node_x.min(tip);
-            let hi = node_x.max(tip);
-            for x in lo.max(origin)..=hi.min(origin + cells.len() - 1) {
-                let c = &mut cells[x - origin];
-                if c.dirs & (UP | DOWN) == 0 {
-                    c.color = link.color;
-                }
+        let mut node_dirs = 0;
+        let mut cells = vec![Cell::default(); Window::rail_width(w.count)];
+        for segment in &row.segments {
+            let edge = self.edges[segment.edge];
+            let from = 2 * segment.from;
+            // Both halves of a connection meet at exactly the same boundary
+            // column; moving/scrolling a viewport never changes this geometry.
+            let boundary = segment.from + segment.to;
+            let slope = if boundary == from {
+                0
+            } else if (boundary > from) == segment.up {
+                1
+            } else {
+                2
+            };
+            let lo = from.min(boundary);
+            let hi = from.max(boundary);
+            for x in lo.max(origin)..=hi.min(origin + cells.len().saturating_sub(1)) {
+                let mut dirs = 0;
                 if x > lo {
-                    c.dirs |= LEFT;
+                    dirs |= LEFT;
                 }
                 if x < hi {
-                    c.dirs |= RIGHT;
+                    dirs |= RIGHT;
                 }
-                c.junction |= x == tip;
+                if x == boundary {
+                    dirs |= if segment.up { UP } else { DOWN };
+                }
+                if let Some(c) = cells.get_mut(x - origin) {
+                    c.add(segment.edge, dirs, edge.color, segment.up, slope);
+                }
+                if x == node_x && (edge.child == index || edge.parent == index) {
+                    node_dirs |= dirs;
+                }
+            }
+            if segment.arrow {
+                if let Some(c) = from.checked_sub(origin).and_then(|x| cells.get_mut(x)) {
+                    c.shortcut = Some((
+                        if segment.up { edge.child } else { edge.parent },
+                        segment.up,
+                    ));
+                    c.color = edge.color;
+                }
             }
         }
-
         let mut out = Vec::with_capacity(w.width());
         let edge = |hidden_node, hidden_rail, node_arrow, arrow| {
             if hidden_node {
@@ -293,7 +351,7 @@ impl Graph {
         }
         out.extend(cells.into_iter().enumerate().map(|(x, c)| {
             if origin + x == node_x {
-                (glyphs.node(c.dirs, head), row.node.color, None)
+                (glyphs.node(node_dirs, head), row.node.color, None)
             } else {
                 (
                     c.glyph(glyphs),

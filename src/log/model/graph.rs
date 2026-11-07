@@ -1,214 +1,193 @@
-//! Lay out the visible DAG once. A rail has two endpoints regardless of how
-//! many rows it crosses; terminal width and the cursor do not enter the layout.
+//! IDEA-style permanent branch order, projected into compact visible rows.
+//! Parent edges keep their own identity all the way to the parent commit.
+mod color;
+mod layout;
+mod load;
 mod render;
+#[cfg(test)]
+mod tests;
+pub(in crate::log) use color::graph_color;
 pub(in crate::log) use render::{NodeGlyphs, Window as GraphWindow};
 
 use super::Rev;
-use std::collections::{BTreeSet, HashMap};
+use std::{collections::HashMap, sync::OnceLock};
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 struct Track {
     lane: usize,
     color: usize,
 }
 
+#[derive(Clone, Copy, Default)]
+struct Node {
+    order: usize,
+    color: usize,
+}
+
+#[derive(Default)]
+pub(in crate::log) struct PermanentLayout {
+    nodes: HashMap<(usize, String), Node>,
+}
+
+impl PermanentLayout {
+    fn new(revs: &[Rev]) -> Self {
+        let refs: Vec<_> = revs.iter().collect();
+        let graph = Graph::topology(&refs);
+        Self {
+            nodes: revs
+                .iter()
+                .zip(graph.nodes)
+                .map(|(rev, node)| ((rev.root, rev.oid.clone()), node))
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Edge {
+    child: usize,
+    parent: usize,
+    color: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Segment {
+    edge: usize,
+    from: usize,
+    to: usize,
+    up: bool,
+    arrow: bool,
+}
+
 #[derive(Default)]
 struct Row {
     node: Track,
-    // Horizontal connections between the node and these rails on this row.
-    links: Vec<Track>,
+    segments: Vec<Segment>,
     first: usize,
     last: usize,
 }
 
-struct Rail {
-    child: usize,
-    parent: usize,
-    color: usize,
-    joined: bool,
-}
-
 #[derive(Default)]
 pub(in crate::log) struct Graph {
-    rows: Vec<Row>,
-    // Each list is chronological; adjacent intervals may meet at a commit.
-    lanes: Vec<Vec<Rail>>,
-}
-
-#[derive(Default)]
-struct Slots {
-    live: BTreeSet<usize>,
-    free: BTreeSet<usize>,
-    count: usize,
-}
-
-impl Slots {
-    fn vacant(&self, from: usize) -> usize {
-        self.free
-            .range(from..)
-            .next()
-            .copied()
-            .unwrap_or(self.count.max(from))
-    }
-
-    fn claim(&mut self, lane: usize) {
-        if lane >= self.count {
-            self.free.extend(self.count..lane);
-            self.count = lane + 1;
-        }
-        self.free.remove(&lane);
-        self.live.insert(lane);
-    }
-
-    fn release(&mut self, lane: usize) {
-        self.live.remove(&lane);
-        self.free.insert(lane);
-    }
+    nodes: Vec<Node>,
+    edges: Vec<Edge>,
+    // Long-edge visibility changes lane positions, not just the painted glyphs.
+    compact: Vec<Row>,
+    expanded: OnceLock<Vec<Row>>,
 }
 
 impl Graph {
+    #[cfg(test)]
     pub(in crate::log) fn new<'a>(revs: impl IntoIterator<Item = &'a Rev>) -> Self {
         let revs: Vec<_> = revs.into_iter().collect();
-        let mut index = HashMap::new();
-        let mut tips = HashMap::new();
-        for (i, r) in revs.iter().enumerate() {
-            index.insert((r.root, r.oid.as_str()), i);
-            if r.is_head_tip() {
-                tips.insert(r.root, i);
-            } else {
-                tips.entry(r.root).or_insert(i);
-            }
-        }
-
-        // A repository's HEAD (or its first visible tip) owns its first-parent
-        // line. Stop at a gap; adjacent search results need not be related.
-        let mut primary = vec![false; revs.len()];
-        for &tip in tips.values() {
-            let mut row = tip;
-            loop {
-                primary[row] = true;
-                let r = revs[row];
-                match r
-                    .parents
-                    .first()
-                    .and_then(|p| index.get(&(r.root, p.as_str())))
-                {
-                    Some(&next) if next > row => row = next,
-                    _ => break,
-                }
-            }
-        }
-
-        let mut graph = Self::default();
-        let mut arrivals = vec![Vec::<Track>::new(); revs.len()];
-        let mut slots = Slots::default();
-        let mut next_color = 1;
-        let mut fork_color = || {
-            let c = next_color;
-            next_color += 1;
-            c
-        };
-        for (i, r) in revs.into_iter().enumerate() {
-            let incoming = std::mem::take(&mut arrivals[i]);
-            let preferred = incoming
-                .iter()
-                .find(|t| primary[i] && t.color == 0)
-                .or(incoming.first());
-            // Protect lane zero for a HEAD that has not appeared yet. A lane can
-            // move left at a commit only with an explicit link to its old column.
-            let first_slot = usize::from(i < tips[&r.root]);
-            let vacant = slots.vacant(first_slot);
-            let node = Track {
-                lane: preferred.map_or(vacant, |t| t.lane.min(vacant)),
-                color: if primary[i] {
-                    0
-                } else {
-                    preferred.map_or_else(&mut fork_color, |t| t.color)
-                },
-            };
-            slots.claim(node.lane);
-            let mut links: Vec<_> = incoming
-                .iter()
-                .copied()
-                .filter(|t| t.lane != node.lane)
-                .collect();
-            let mut continues_below_node = false;
-            for (n, parent) in r.parents.iter().enumerate() {
-                let Some(&end) = index
-                    .get(&(r.root, parent.as_str()))
-                    .filter(|&&end| end > i)
-                else {
-                    continue;
-                };
-                let first = n == 0;
-                // Share the remaining run to the same parent. Keep the primary
-                // line straight if a side branch reached for its parent first:
-                // those two real edges then meet at the parent, not at this child.
-                let shared = arrivals[end]
-                    .iter()
-                    .filter(|t| !first || !primary[i] || t.lane == node.lane)
-                    .min_by_key(|t| t.lane.abs_diff(node.lane));
-                let track = if let Some(&t) = shared {
-                    // A shared run has a real incoming connection in its middle.
-                    // Keep it continuous even when empty long edges are shortened.
-                    if let Some(rail) = graph.lanes.get_mut(t.lane).and_then(|v| v.last_mut()) {
-                        rail.joined = true;
-                    }
-                    t
-                } else {
-                    // If the first parent joined an existing rail, the next
-                    // parent can leave directly below the dot without a detour.
-                    let t = Track {
-                        lane: if continues_below_node {
-                            slots.vacant(first_slot)
-                        } else {
-                            node.lane
-                        },
-                        color: if first { node.color } else { fork_color() },
-                    };
-                    slots.claim(t.lane);
-                    if graph.lanes.len() <= t.lane {
-                        graph.lanes.resize_with(t.lane + 1, Vec::new);
-                    }
-                    graph.lanes[t.lane].push(Rail {
-                        child: i,
-                        parent: end,
-                        color: t.color,
-                        joined: false,
-                    });
-                    arrivals[end].push(t);
-                    t
-                };
-                if track.lane == node.lane {
-                    continues_below_node = true;
-                } else {
-                    links.push(Track {
-                        lane: track.lane,
-                        color: if first || track.color == 0 {
-                            node.color
-                        } else {
-                            track.color
-                        },
-                    });
-                }
-            }
-            graph.rows.push(Row {
-                node,
-                links,
-                first: *slots.live.first().unwrap(),
-                last: *slots.live.last().unwrap(),
-            });
-            for t in incoming.into_iter().chain([node]) {
-                if graph
-                    .lanes
-                    .get(t.lane)
-                    .and_then(|v| v.last())
-                    .is_none_or(|rail| rail.parent <= i)
-                {
-                    slots.release(t.lane);
-                }
-            }
-        }
+        let mut graph = Self::topology(&revs);
+        graph.project();
         graph
+    }
+
+    #[cfg(test)]
+    pub(in crate::log) fn filtered(revs: &[Rev], visible: &[usize]) -> Self {
+        Self::using_layout(revs, visible, &PermanentLayout::default())
+    }
+
+    pub(in crate::log) fn using_layout(
+        revs: &[Rev],
+        visible: &[usize],
+        layout: &PermanentLayout,
+    ) -> Self {
+        let refs: Vec<_> = revs.iter().collect();
+        let mut graph = Self::topology(&refs);
+        let known: Option<Vec<_>> = revs
+            .iter()
+            .map(|r| layout.nodes.get(&(r.root, r.oid.clone())).copied())
+            .collect();
+        // Refs may move between the metadata read and the history read. Never
+        // mix two incompatible DFS orders; the loaded DAG is the safe fallback.
+        if let Some(nodes) = known {
+            graph.nodes = nodes;
+            for edge in &mut graph.edges {
+                let owner = if graph.nodes[edge.child].order >= graph.nodes[edge.parent].order {
+                    edge.child
+                } else {
+                    edge.parent
+                };
+                edge.color = graph.nodes[owner].color;
+            }
+        }
+        let mut positions = vec![None; revs.len()];
+        for (row, &index) in visible.iter().enumerate() {
+            positions[index] = Some(row);
+        }
+        let mut filtered = Self {
+            nodes: visible.iter().map(|&i| graph.nodes[i]).collect(),
+            edges: graph
+                .edges
+                .into_iter()
+                .filter_map(|edge| {
+                    Some(Edge {
+                        child: positions[edge.child]?,
+                        parent: positions[edge.parent]?,
+                        color: edge.color,
+                    })
+                })
+                .collect(),
+            ..Self::default()
+        };
+        filtered.project();
+        filtered
+    }
+
+    fn topology(revs: &[&Rev]) -> Self {
+        let index: HashMap<_, _> = revs
+            .iter()
+            .enumerate()
+            .map(|(i, r)| ((r.root, r.oid.as_str()), i))
+            .collect();
+        let mut parents = vec![Vec::new(); revs.len()];
+        let mut has_child = vec![false; revs.len()];
+        for (i, r) in revs.iter().enumerate() {
+            for oid in &r.parents {
+                if let Some(&parent) = index.get(&(r.root, oid.as_str())) {
+                    if parent > i && !parents[i].contains(&parent) {
+                        parents[i].push(parent);
+                        has_child[parent] = true;
+                    }
+                }
+            }
+        }
+        let nodes = layout::order(revs, &parents, &has_child);
+        let mut edges = Vec::new();
+        for (child, parents) in parents.into_iter().enumerate() {
+            for parent in parents {
+                let owner = if nodes[child].order >= nodes[parent].order {
+                    child
+                } else {
+                    parent
+                };
+                edges.push(Edge {
+                    child,
+                    parent,
+                    color: nodes[owner].color,
+                });
+            }
+        }
+        Self {
+            nodes,
+            edges,
+            ..Self::default()
+        }
+    }
+
+    fn project(&mut self) {
+        self.compact = layout::project(&self.nodes, &self.edges, false);
+    }
+
+    fn rows(&self, long_edges: bool) -> &[Row] {
+        if long_edges {
+            self.expanded
+                .get_or_init(|| layout::project(&self.nodes, &self.edges, true))
+        } else {
+            &self.compact
+        }
     }
 }

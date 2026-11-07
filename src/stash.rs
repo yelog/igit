@@ -23,6 +23,8 @@ use operations::{Operation, Review};
 use ratatui::{layout::Rect, Frame};
 use std::{collections::BTreeSet, time::Duration};
 
+pub(crate) const REVIEW_TOKEN: &str = "stash-operation";
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Row {
     root: usize,
@@ -170,8 +172,8 @@ impl StashPanel {
         let review = Review::prepare(c, root, source, entries, operation)?;
         let action = Action::Confirm {
             title: operation.title().into(),
-            body: review.body.clone(),
-            token: "stash-operation".into(),
+            body: review.body(),
+            token: REVIEW_TOKEN.into(),
         };
         self.review = Some(review);
         Ok(action)
@@ -362,7 +364,7 @@ impl Panel for StashPanel {
             .unwrap_or_else(|e| Action::Notice(format!("Stash: {e:#}")))
     }
     fn confirm(&mut self, token: &str, c: &Context) -> Action {
-        if token != "stash-operation" {
+        if token != REVIEW_TOKEN {
             return Action::None;
         }
         let Some(review) = self.review.take() else {

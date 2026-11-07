@@ -24,6 +24,10 @@ pub(super) struct Snapshot {
 
 impl Snapshot {
     pub fn read(repo: &Repo) -> Result<Self> {
+        Self::read_with_default(repo).map(|(snapshot, _)| snapshot)
+    }
+
+    pub fn read_with_default(repo: &Repo) -> Result<(Self, Option<String>)> {
         let data = git(
             &repo.path,
             &[
@@ -36,12 +40,19 @@ impl Snapshot {
         let head = git(&repo.path, &["symbolic-ref", "-q", "HEAD"]).ok();
         let oid = git(&repo.path, &["rev-parse", "--verify", "HEAD"]).ok();
         let mut branches = BTreeMap::new();
+        let mut remote_heads = BTreeMap::new();
         // NUL fields preserve Unicode and even newlines in worktree paths.
         let fields: Vec<_> = data.split('\0').collect();
         for fields in fields.chunks_exact(5) {
             let reference = fields[0].trim_start_matches('\n');
             if !fields[3].is_empty() {
-                continue; // origin/HEAD is an alias, not a branch.
+                if let Some(remote) = reference
+                    .strip_prefix("refs/remotes/")
+                    .and_then(|name| name.strip_suffix("/HEAD"))
+                {
+                    remote_heads.insert(remote, fields[3]);
+                }
+                continue; // Keep default-branch metadata, but omit symbolic aliases from the list.
             }
             let remote = reference.starts_with("refs/remotes/");
             let name = short_ref(reference);
@@ -79,16 +90,33 @@ impl Snapshot {
                 },
             );
         }
-        let remotes = git(&repo.path, &["remote"])?
+        let remotes: Vec<_> = git(&repo.path, &["remote"])?
             .lines()
             .map(str::to_owned)
             .collect();
-        Ok(Self {
-            head,
-            oid,
-            branches,
-            remotes,
-        })
+        let default_branch = std::iter::once("origin")
+            .chain(remotes.iter().map(String::as_str))
+            .find_map(|remote| {
+                let target = *remote_heads.get(remote)?;
+                let name = target.strip_prefix(&format!("refs/remotes/{remote}/"))?;
+                let local = format!("refs/heads/{name}");
+                branches.contains_key(target).then(|| {
+                    if branches.contains_key(&local) {
+                        local
+                    } else {
+                        target.into()
+                    }
+                })
+            });
+        Ok((
+            Self {
+                head,
+                oid,
+                branches,
+                remotes,
+            },
+            default_branch,
+        ))
     }
 
     pub fn local_name<'a>(&self, branch: &'a Branch) -> Option<&'a str> {
@@ -127,5 +155,8 @@ pub(super) struct Repository {
     pub root: usize,
     pub name: String,
     pub path: PathBuf,
+    pub submodule: bool,
     pub state: Result<Snapshot, String>,
+    pub default_branch: Option<String>,
+    pub upstream_widths: Option<(usize, usize)>,
 }

@@ -8,14 +8,20 @@ use unicode_width::UnicodeWidthStr;
 mod navigation;
 mod presentation;
 
-fn expand_remotes(panel: &mut BranchPanel, c: &Context, root: usize) {
-    panel.tree.cursor = panel
-        .tree
-        .rows
-        .iter()
-        .position(|r| r.id == format!("{root}:refs/remotes/"))
-        .unwrap();
-    key(panel, c, K::Char('l'));
+fn expand_group(panel: &mut BranchPanel, c: &Context, id: &str) {
+    panel.tree.cursor = panel.tree.rows.iter().position(|r| r.id == id).unwrap();
+    if matches!(
+        panel.tree.rows[panel.tree.cursor].kind,
+        Kind::Folder { open: false, .. }
+    ) {
+        key(panel, c, K::Char('l'));
+    }
+}
+
+fn expand_branch_path(panel: &mut BranchPanel, c: &Context, root: usize, reference: &str) {
+    for (slash, _) in reference.match_indices('/').skip(1) {
+        expand_group(panel, c, &format!("{root}:{}", &reference[..=slash]));
+    }
 }
 
 fn run(path: &Path, args: &[&str]) -> String {
@@ -132,6 +138,54 @@ fn tracking(c: &Context, local: &str, remote: &str) {
 }
 
 #[test]
+fn branch_opens_current_and_default_paths() {
+    let (_temp, c, mut p) = fixture();
+    let repo = &c.repos[0].path;
+    run(repo, &["switch", "-c", "team/active/current"]);
+    run(repo, &["branch", "team/pending/other"]);
+    run(repo, &["branch", "release/stable"]);
+    run(repo, &["branch", "topic/other"]);
+    tracking(&c, "release/stable", "release/stable");
+    run(
+        repo,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/release/stable",
+        ],
+    );
+    let leaves = |p: &BranchPanel| {
+        p.tree
+            .rows
+            .iter()
+            .filter_map(|row| match &row.kind {
+                Kind::Branch(branch) => Some(branch.name.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    reload(&mut p, &c);
+    let visible = leaves(&p);
+    assert!(visible.contains(&"team/active/current".to_owned()));
+    assert!(visible.contains(&"release/stable".to_owned()));
+    assert!(
+        !visible.iter().any(|name| name.ends_with("/other")),
+        "{visible:?}"
+    );
+    assert!(!visible.contains(&"origin/release/stable".to_owned()));
+
+    run(repo, &["branch", "-d", "release/stable"]);
+    reload(&mut p, &c);
+    let visible = leaves(&p);
+    assert!(
+        visible.contains(&"origin/release/stable".to_owned()),
+        "{visible:?}"
+    );
+    assert!(!visible.contains(&"origin/HEAD".to_owned()));
+}
+
+#[test]
 fn tree_pins_slash_current_groups_remotes_and_shows_real_upstreams() {
     let (_temp, mut c, mut p) = fixture();
     let repo = &c.repos[0].path;
@@ -166,7 +220,6 @@ fn tree_pins_slash_current_groups_remotes_and_shows_real_upstreams() {
     assert!(leaves[0].current);
     assert_eq!(leaves[0].upstream, "refs/remotes/origin/release/next");
     assert!(!leaves.iter().any(|b| b.name == "origin/HEAD"));
-    expand_remotes(&mut p, &c, 0);
     assert!(p
         .tree
         .rows
@@ -176,7 +229,7 @@ fn tree_pins_slash_current_groups_remotes_and_shows_real_upstreams() {
         .tree
         .rows
         .iter()
-        .any(|r| r.label == "release" && r.depth == 3));
+        .any(|r| r.label == "release" && r.depth == 2));
     select(&mut p, 0, "refs/heads/feature/z/current");
     let rendered = screen(&mut p, &c, 120, 36);
     assert!(
@@ -431,7 +484,7 @@ fn remote_checkout_creates_tracking_branch_and_reuses_it_without_remote_writes()
     tracking(&c, "main", "feature/remote");
     let remote = run(repo, &["rev-parse", "refs/remotes/origin/feature/remote"]);
     reload(&mut p, &c);
-    expand_remotes(&mut p, &c, 0);
+    expand_branch_path(&mut p, &c, 0, "refs/remotes/origin/feature/remote");
     select(&mut p, 0, "refs/remotes/origin/feature/remote");
     key(&mut p, &c, K::Enter);
     assert_eq!(p.input.as_ref().unwrap().name, "feature/remote");

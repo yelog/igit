@@ -5,7 +5,7 @@ mod path_filter;
 pub(super) use branch_filter::BranchFilter;
 pub(super) use path_filter::PathFilter;
 mod presentation;
-pub(super) use graph::{Graph, GraphWindow, NodeGlyphs};
+pub(super) use graph::{graph_color, Graph, GraphWindow, NodeGlyphs};
 #[cfg(test)]
 mod tests;
 
@@ -32,6 +32,7 @@ pub(super) fn plain(v: &[u8]) -> String {
 }
 #[derive(Clone, Default)]
 pub(super) struct Filter {
+    pub file_history: Option<super::file_history::Target>,
     pub query: String,
     pub author: String,
     pub date: Option<DateFilter>,
@@ -97,9 +98,16 @@ pub(super) struct Rev {
     pub email: String,
     pub subject: String,
     pub refs: String,
+    pub file: Option<HistoryPath>,
+}
+#[derive(Clone, Debug)]
+pub(super) struct HistoryPath {
+    pub raw: Vec<u8>,
+    pub before: Option<Vec<u8>>,
 }
 #[derive(Default)]
 pub(super) struct History {
+    pub graph_layout: graph::PermanentLayout,
     pub revs: Vec<Rev>,
     pub branches: Vec<Branch>,
     pub current: HashMap<usize, String>,
@@ -230,7 +238,12 @@ fn revisions(
     tips: &[String],
     limit: usize,
 ) -> Result<Vec<Rev>> {
-    let Some(paths) = f.paths.for_root(root) else {
+    let paths = if let Some(file) = &f.file_history {
+        (file.root == root).then(|| vec![file.path.as_path()])
+    } else {
+        f.paths.for_root(root)
+    };
+    let Some(paths) = paths else {
         return Ok(Vec::new());
     };
     let mut a = vec![
@@ -272,6 +285,20 @@ fn revisions(
     if let Some(date) = &f.date {
         date.args(&mut a);
     }
+    if f.file_history.is_some() {
+        a.extend(
+            [
+                "--follow",
+                "--full-history",
+                "--diff-merges=separate",
+                "--name-status",
+                "--find-renames",
+                "--no-ext-diff",
+                "--no-textconv",
+            ]
+            .map(str::to_owned),
+        );
+    }
     a.extend_from_slice(tips);
     a.push("--".into());
     let output = crate::core::command(dir)
@@ -286,14 +313,15 @@ fn revisions(
         );
     }
     let data = output.stdout;
-    let mut it = data.split(|b| *b == 0);
+    let mut it = data.split(|b| *b == 0).peekable();
     let mut out = vec![];
+    let mut seen = HashSet::new();
     while let Some(id) = it.next().filter(|s| !s.is_empty()) {
         let mut next = || {
             it.next()
                 .ok_or_else(|| anyhow!("incomplete git log record"))
         };
-        out.push(Rev {
+        let mut rev = Rev {
             root,
             oid: plain(id),
             parents: plain(next()?)
@@ -307,7 +335,42 @@ fn revisions(
             refs: plain(next()?),
             email: plain(next()?),
             authored_date: plain(next()?).replace("/0", "/"),
-        });
+            file: None,
+        };
+        if f.file_history.is_some() {
+            // -z keeps filenames literal. A status owns one path (two for a
+            // rename); consuming those fields prevents hash-like filenames
+            // from being confused with the next fixed-length commit record.
+            while let Some(status) = it.peek().copied() {
+                if (status.len() == 40 || status.len() == 64)
+                    && status.iter().all(u8::is_ascii_hexdigit)
+                {
+                    break;
+                }
+                it.next();
+                let status = status.strip_prefix(b"\n").unwrap_or(status);
+                if status.is_empty() {
+                    continue;
+                }
+                let first = it.next().context("missing history filename")?;
+                let (raw, before) = if matches!(status.first(), Some(b'R' | b'C')) {
+                    (
+                        it.next().context("missing renamed history filename")?,
+                        Some(first.to_vec()),
+                    )
+                } else {
+                    (first, None)
+                };
+                rev.file = Some(HistoryPath {
+                    raw: raw.to_vec(),
+                    before,
+                });
+            }
+        }
+        // A merge has one name-status record per changed parent, but one row.
+        if seen.insert(rev.oid.clone()) {
+            out.push(rev);
+        }
     }
     Ok(out)
 }
@@ -460,13 +523,29 @@ fn reachable(
 }
 
 pub(super) fn load(c: &Context, f: &Filter, limit: usize) -> History {
-    let mut h = History::default();
+    let mut file_context;
+    let c = if let Some(file) = &f.file_history {
+        file_context = c.clone();
+        file_context.scope.retain(|root| *root == file.root);
+        &file_context
+    } else {
+        c
+    };
+    let (graph_layout, errors) = graph::PermanentLayout::load(c);
+    let mut h = History {
+        graph_layout,
+        errors,
+        ..Default::default()
+    };
     let mut streams = Vec::new();
     // Load a page for each global root; the tab can toggle these cached streams independently.
     if let Some(r) = c.scope.iter().find_map(|&i| c.repos.get(i)) {
         h.dates = local_dates(&r.path);
     }
     for &i in &c.scope {
+        if f.file_history.as_ref().is_some_and(|file| file.root != i) {
+            continue;
+        }
         let Some(r) = c.repos.get(i) else { continue };
         let start = h.branches.len();
         if let Err(e) = read_refs(&r.path, i, &mut h) {

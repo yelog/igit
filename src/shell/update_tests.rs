@@ -126,13 +126,24 @@ fn workspace_fetch_reviews_scope_and_updates_refs_only_after_confirmation() {
             && text.contains("origin")
     );
     assert!(!text.contains("hidden") && !text.contains("Rebase"));
+    for ch in ['y', 'n'] {
+        press(&mut app, ch);
+        assert_eq!(app.help_content().context(), "Update / Review");
+    }
     app.dispatch(&key(KeyCode::Enter)); // Cancel is initially focused.
     assert!(app.pop.is_none());
     assert_eq!(tracking(&active), old_tracking);
 
     press(&mut app, 'f');
+    press(&mut app, 'l');
+    press(&mut app, 'h');
+    app.dispatch(&key(KeyCode::Enter));
+    assert!(app.pop.is_none());
+    assert_eq!(tracking(&active), old_tracking);
+
+    press(&mut app, 'f');
     let text = screen(&mut app, 44, 12);
-    click(&mut app, &text, "y Fetch 1");
+    click(&mut app, &text, "Fetch 1");
     assert!(finish(&mut app).contains("active: OK"));
     assert_eq!(tracking(&active), next);
     assert_eq!(snapshot(&active), before);
@@ -163,10 +174,10 @@ fn workspace_pull_integrates_diverged_branches_with_the_reviewed_strategy() {
             click(&mut app, &text, "r Rebase");
             assert!(screen(&mut app, 44, 12).contains("(o) r Rebase"));
             app.dispatch(&key(KeyCode::Tab));
-            app.dispatch(&key(KeyCode::Enter));
         } else {
-            press(&mut app, 'y');
+            press(&mut app, 'l');
         }
+        app.dispatch(&key(KeyCode::Enter));
         assert!(finish(&mut app).contains("project: OK"));
         let parents = g(&local, &["show", "-s", "--format=%P"]);
         if rebase {
@@ -209,7 +220,8 @@ fn workspace_pull_keeps_conflicts_and_refuses_a_branch_switched_after_review() {
         && line.contains("Detached HEAD")));
     g(&stale, &["switch", "-c", "same-head"]);
     g(&stale, &["branch", "--set-upstream-to=origin/main"]);
-    press(&mut app, 'y');
+    app.dispatch(&key(KeyCode::Tab));
+    app.dispatch(&key(KeyCode::Enter));
     let text = finish(&mut app);
     assert!(text.contains("1 succeeded · 2 failed · 1 skipped"));
     for (name, status) in [

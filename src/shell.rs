@@ -1,3 +1,4 @@
+mod cli;
 mod configuration;
 mod kitty;
 mod panes;
@@ -14,7 +15,7 @@ use crate::{
     log::LogPanel,
     merge::MergePanel,
     push::PushPanel,
-    stash::StashPanel,
+    stash::{StashPanel, REVIEW_TOKEN},
     ui::{
         help::{global_section, HelpContent, HelpEvent, HelpSection, HelpState},
         icons::{Icon, IconMode},
@@ -43,11 +44,12 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph, Wrap},
     Frame, Terminal,
 };
+#[cfg(test)]
+use std::path::PathBuf;
 use std::{
     collections::BTreeSet,
     env,
     io::{self, IsTerminal},
-    path::PathBuf,
     time::{Duration, Instant},
 };
 use unicode_width::UnicodeWidthStr;
@@ -101,7 +103,12 @@ const HEADER: &str = concat!(
     " — terminal Git workbench"
 );
 const HELP: &str = "Usage: igit [OPTIONS] [DIRECTORY]  (alias: ig)
+       igit [OPTIONS] <commit|log|push|branch|stash> [DIRECTORY]
+       igit [OPTIONS] log [FILE]
 
+  commit / log / push / branch / stash
+                             open the selected panel (default: Commit)
+  log FILE                   open a file-history tab in its owning worktree
   update [OPTIONS]           check or update a native installation
   --icons MODE               nerd-font (default), unicode or ascii
   --mouse MODE               on or off (overrides settings)
@@ -111,6 +118,10 @@ const HELP: &str = "Usage: igit [OPTIONS] [DIRECTORY]  (alias: ig)
   --list-roots [DIRECTORY]   print detected Git worktrees
   -h, --help                 show this help
   -V, --version              print version
+  --                         treat remaining arguments as literal paths
+
+Options may appear before or after the panel. Use igit -- log or igit ./log
+to open a directory named log; use igit log -- -file for an option-like filename.
 
 Tabs: 1 Commit / 2 Log / 3 Push / 4 Branch / 5 Stash / 6 Conflicts (when available)   p Pull / f Fetch
 r repositories (Branch: rename; use Actions for Roots)   ? / F1 help   q quit
@@ -142,6 +153,14 @@ enum Popup {
         path: String,
     },
 }
+
+fn confirm_uses_letter_keys(owner: Tab, token: &str) -> bool {
+    !matches!(
+        (owner, token),
+        (Push, "push") | (Stash, REVIEW_TOKEN) | (Log, crate::log::REVIEW_TOKEN)
+    )
+}
+
 struct Shell {
     config: AppConfig,
     kitty: kitty::Kitty,
@@ -432,10 +451,11 @@ impl Shell {
                 self.pop = Some(Popup::Confirm {
                     title,
                     body,
+                    yes: !confirm_uses_letter_keys(self.tab, &token)
+                        && (self.tab, token.as_str()) != (Log, crate::log::REVIEW_TOKEN),
                     token,
                     owner: self.tab,
                     scroll: 0,
-                    yes: false,
                 })
             }
             Action::Committed {
@@ -541,7 +561,7 @@ impl Shell {
                 ),
                 vec![],
             ),
-            Some(Popup::Confirm { .. }) => HelpContent::new(
+            Some(Popup::Confirm { owner, token, .. }) => HelpContent::new(
                 HelpSection::new(
                     "Review / Confirm action",
                     &[
@@ -549,12 +569,20 @@ impl Shell {
                         ("k", "Scroll review up"),
                         ("Tab", "Switch focused button"),
                         ("Enter", "Activate selected button"),
-                        ("y", "Confirm reviewed action"),
-                        ("n", "Cancel review and return"),
                         ("Esc", "Cancel review and return"),
                     ],
                 ),
-                vec![],
+                if confirm_uses_letter_keys(*owner, token) {
+                    vec![HelpSection::new(
+                        "Review shortcuts",
+                        &[
+                            ("y", "Confirm reviewed action"),
+                            ("n", "Cancel review and return"),
+                        ],
+                    )]
+                } else {
+                    vec![]
+                },
             ),
             Some(Popup::Menu { .. }) => HelpContent::new(
                 HelpSection::new(
@@ -764,14 +792,17 @@ impl Shell {
                 ) {
                     yes = !yes
                 }
+                let letter_keys = confirm_uses_letter_keys(owner, &token);
                 if hit == Some(1)
-                    || key == Some(KeyCode::Char('y'))
                     || (key == Some(KeyCode::Enter) && yes)
+                    || (letter_keys && key == Some(KeyCode::Char('y')))
                 {
                     self.confirm(owner, &token);
                     return;
                 }
-                if hit == Some(0) || key == Some(KeyCode::Char('n')) || key == Some(KeyCode::Enter)
+                if hit == Some(0)
+                    || key == Some(KeyCode::Enter)
+                    || (letter_keys && key == Some(KeyCode::Char('n')))
                 {
                     return;
                 }
@@ -891,7 +922,8 @@ impl Shell {
                 }
             }
             Push => self.push.dismiss_group_menu(),
-            Conflicts | Branch | Stash => (),
+            Branch => self.branch.dismiss_view_menu(),
+            Conflicts | Stash => (),
         }
         !self.panel().editing()
     }
@@ -915,7 +947,20 @@ impl Shell {
         if matches!(ev, Event::Key(k) if k.kind == KeyEventKind::Release) {
             return;
         }
-        if !self.smart_pane_event(ev) && !self.configured_event(ev) {
+        if self.smart_pane_event(ev) {
+            return;
+        }
+        if self.tab == Log
+            && self.pop.is_none()
+            && self.pending_keys.is_none()
+            && self.window_prefix.is_none()
+            && self.key_sequence().is_none()
+            && self.log.inline_diff_key(ev)
+        {
+            self.panel_event(ev);
+            return;
+        }
+        if !self.configured_event(ev) {
             self.dispatch_builtin(ev);
         }
     }
@@ -1006,6 +1051,12 @@ impl Shell {
             return;
         }
         if let Event::Key(k) = ev {
+            // Help and configured actions may replay directly through this
+            // route, bypassing dispatch's raw-key preview guard.
+            if self.tab == Log && self.window_prefix.is_none() && self.log.inline_diff_key(ev) {
+                self.panel_event(ev);
+                return;
+            }
             if self.tab == Commit
                 && self.commit.message_editing()
                 && matches!(k.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::F(6))
@@ -1206,6 +1257,22 @@ impl Shell {
             state.draw(f, a, self.icons);
             return;
         }
+        if let Some(Popup::Confirm {
+            owner: Stash,
+            token,
+            scroll,
+            yes,
+            ..
+        }) = self.pop.as_mut()
+        {
+            if token == REVIEW_TOKEN
+                && self
+                    .stash
+                    .draw_review(f, a, scroll, *yes, &mut self.pop_hits)
+            {
+                return;
+            }
+        }
         let Some(pop) = self.pop.as_ref() else { return };
         let h = match pop {
             Popup::Scope { .. } => self.ctx.repos.len().saturating_add(5).min(24) as u16,
@@ -1258,6 +1325,8 @@ impl Shell {
                 body: text,
                 yes,
                 scroll,
+                owner,
+                token,
                 ..
             } => {
                 f.render_widget(
@@ -1266,7 +1335,12 @@ impl Shell {
                         .scroll((*scroll, 0)),
                     body,
                 );
-                controls.extend([(" n Cancel ", 0, !yes), (" y Confirm ", 1, *yes)])
+                let (cancel, confirm) = if confirm_uses_letter_keys(*owner, token) {
+                    (" n Cancel ", " y Confirm ")
+                } else {
+                    (" Cancel ", " Confirm ")
+                };
+                controls.extend([(cancel, 0, !yes), (confirm, 1, *yes)])
             }
             Popup::Scope { picked, row } => {
                 let start = (row + 1).saturating_sub(body.height as usize);
@@ -1392,6 +1466,15 @@ impl Shell {
             self.pop_hits.push((r, n));
             x += r.width + 2
         }
+        if matches!(pop, Popup::Confirm { owner: Log, token, .. } if token == crate::log::REVIEW_TOKEN)
+            && inner.right().saturating_sub(x) >= 10
+        {
+            let r = Rect::new(x, inner.bottom() - 1, inner.right() - x, 1);
+            f.render_widget(
+                Paragraph::new("j/k Scroll").style(Style::default().fg(MUTED)),
+                r,
+            );
+        }
     }
 }
 #[derive(Default)]
@@ -1420,73 +1503,30 @@ impl Drop for Tty {
     }
 }
 pub fn run() -> Result<()> {
-    let mut list = false;
-    let mut icons = None;
-    let mut mouse = None;
-    let mut config_path = None;
-    let mut check_config = false;
-    let mut print_config = false;
-    let mut path = None;
-    let mut args = env::args_os().skip(1);
-    while let Some(a) = args.next() {
-        if a == "--help" || a == "-h" {
+    let options = match cli::parse(env::args_os().skip(1))? {
+        cli::Command::Help => {
             println!("{HEADER}\n\n{HELP}");
             return Ok(());
-        } else if a == "--version" || a == "-V" {
+        }
+        cli::Command::Version => {
             println!("{HEADER}");
             return Ok(());
-        } else if a == "--list-roots" {
-            list = true
-        } else if a == "--icons" {
-            let value = args.next().ok_or_else(|| {
-                anyhow::anyhow!("Missing --icons mode: expected nerd-font, unicode or ascii")
-            })?;
-            icons = Some(parse_icons(&value.to_string_lossy())?);
-        } else if let Some(value) = a.to_str().and_then(|s| s.strip_prefix("--icons=")) {
-            icons = Some(parse_icons(value)?);
-        } else if a == "--config" {
-            config_path = Some(PathBuf::from(
-                args.next()
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| anyhow::anyhow!("Missing --config path"))?,
-            ));
-        } else if let Some(value) = a.to_str().and_then(|s| s.strip_prefix("--config=")) {
-            if value.is_empty() {
-                bail!("Missing --config path");
-            }
-            config_path = Some(PathBuf::from(value));
-        } else if a == "--mouse" {
-            let value = args
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("Missing --mouse mode: expected on or off"))?;
-            mouse = Some(parse_mouse(&value.to_string_lossy())?);
-        } else if let Some(value) = a.to_str().and_then(|s| s.strip_prefix("--mouse=")) {
-            mouse = Some(parse_mouse(value)?);
-        } else if a == "--check-config" {
-            check_config = true;
-        } else if a == "--print-default-config" {
-            print_config = true;
-        } else if a.to_string_lossy().starts_with('-') {
-            bail!("Unknown option: {}\n{HELP}", a.to_string_lossy())
-        } else if path.is_none() {
-            path = Some(PathBuf::from(a))
-        } else {
-            bail!("{HELP}")
         }
-    }
-    if print_config {
+        cli::Command::Open(options) => options,
+    };
+    if options.print_config {
         print!("{}", crate::config::DEFAULT_TOML);
         return Ok(());
     }
-    let (config_path, required) = crate::config::settings_path(config_path)?;
+    let (config_path, required) = crate::config::settings_path(options.config_path.clone())?;
     let mut config = AppConfig::load(&config_path, required)?;
-    if let Some(icons) = icons {
+    if let Some(icons) = options.icons {
         config.icons = icons;
     }
-    if let Some(mouse) = mouse {
+    if let Some(mouse) = options.mouse {
         config.mouse = mouse;
     }
-    if check_config {
+    if options.check_config {
         println!(
             "Configuration valid: {}{}",
             config_path.display(),
@@ -1498,9 +1538,9 @@ pub fn run() -> Result<()> {
         );
         return Ok(());
     }
-    let p = path.unwrap_or(env::current_dir()?);
-    if list {
-        let ctx = Context::discover(&p)?;
+    let launch = options.launch(&env::current_dir()?)?;
+    if options.list {
+        let ctx = Context::discover(&launch.workspace)?;
         for r in &ctx.repos {
             println!(
                 "{}\t{}\t{}\t{}",
@@ -1548,7 +1588,7 @@ pub fn run() -> Result<()> {
     .is_ok();
     let mut term = Terminal::new(CrosstermBackend::new(out))?;
     term.clear()?;
-    let Some(mut app) = startup::open(&mut term, p, config)? else {
+    let Some(mut app) = startup::open(&mut term, launch, config)? else {
         return Ok(());
     };
     app.kitty = kitty;
@@ -1601,20 +1641,6 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn parse_icons(value: &str) -> Result<IconMode> {
-    value
-        .parse()
-        .map_err(|reason: &str| anyhow::anyhow!("Invalid --icons value '{value}': {reason}"))
-}
-
-fn parse_mouse(value: &str) -> Result<bool> {
-    match value {
-        "on" => Ok(true),
-        "off" => Ok(false),
-        _ => bail!("Invalid --mouse value '{value}': expected on or off"),
-    }
-}
-
 #[cfg(test)]
 mod key_sequence_tests;
 
@@ -1624,6 +1650,8 @@ mod configuration_tests;
 mod discard_tests;
 #[cfg(test)]
 mod help_tests;
+#[cfg(test)]
+mod log_tests;
 #[cfg(test)]
 mod maximize_tests;
 #[cfg(test)]

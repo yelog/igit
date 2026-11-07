@@ -94,6 +94,9 @@ impl LogPanel {
         }
     }
     pub(super) fn begin(&mut self, k: Field, c: &Context) -> Result<()> {
+        if k == Field::Path && self.filter.file_history.is_some() {
+            return Ok(());
+        }
         self.discard_editor();
         self.view_menu = None;
         self.last = None;
@@ -268,6 +271,9 @@ impl LogPanel {
     }
     pub(super) fn clear_field(&mut self, k: Field, c: &Context) -> Result<()> {
         if k == Field::Path {
+            if self.filter.file_history.is_some() {
+                return Ok(());
+            }
             return self.clear_paths(c);
         }
         if matches!(k, Field::Date | Field::Branch) {

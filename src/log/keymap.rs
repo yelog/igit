@@ -3,7 +3,33 @@ use crate::ui::help::{HelpContent, HelpSection as Section};
 
 impl LogPanel {
     pub(crate) fn keymap(&self) -> HelpContent {
-        let modal = if self.diff.as_ref().is_some_and(|d| d.comparison.is_some()) {
+        if self.filter.file_history.is_some() && self.focus == Pane::Info && !self.editing() {
+            return HelpContent::new(
+                Section::new(
+                    "Log / File History Diff",
+                    &[
+                        ("Tab", "Focus commit history"),
+                        ("[", "Focus previous revision"),
+                        ("]", "Focus next revision"),
+                        ("n", "Next change"),
+                        ("p", "Previous change"),
+                        ("j", "Scroll all revisions down"),
+                        ("k", "Scroll all revisions up"),
+                        ("h", "Scroll focused revision left"),
+                        ("l", "Scroll focused revision right"),
+                        ("f", "Fold or unfold unchanged regions"),
+                        ("z", "Zoom focused revision / restore columns"),
+                        ("Ctrl-a", "Select complete revision"),
+                        ("y", "Copy selection or complete revision"),
+                        ("Esc", "Clear selection; otherwise focus history"),
+                    ],
+                ),
+                vec![],
+            );
+        }
+        let modal = if let Some(dialog) = &self.commit_dialog {
+            Some(dialog.help())
+        } else if self.diff.as_ref().is_some_and(|d| d.comparison.is_some()) {
             Some(Section::new(
                 if self
                     .diff
@@ -246,6 +272,8 @@ impl LogPanel {
                     ("yy", "Copy full commit ID"),
                     ("ym", "Copy full commit message"),
                     ("ya", "Copy author name and email"),
+                    ("a", "Open commit actions"),
+                    ("F2", "Edit commit message"),
                     ("Enter", "Open commit file diff"),
                 ],
             ),

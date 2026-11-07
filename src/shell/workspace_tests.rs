@@ -412,7 +412,13 @@ fn commit_and_push_refreshes_the_tabs_and_keeps_reviews_separate() {
     assert!(screen(&mut app, 140, 36).contains("Push Commits"));
     app.push.finish_loading(&app.ctx);
     app.dispatch(&key(KeyCode::Char('P')));
-    assert!(matches!(&app.pop, Some(Popup::Confirm { owner: Push, .. })));
+    let text = screen(&mut app, 80, 24);
+    assert!(text.contains("Confirm") && !text.contains("y Confirm") && !text.contains("n Cancel"));
+    for ch in ['y', 'n'] {
+        app.dispatch(&key(KeyCode::Char(ch)));
+        assert!(matches!(&app.pop, Some(Popup::Confirm { owner: Push, .. })));
+        assert!(!app.push.busy());
+    }
     app.dispatch(&key(KeyCode::Esc));
     assert_eq!(app.tab, Push);
     app.dispatch(&key(KeyCode::Esc));
@@ -439,4 +445,22 @@ fn commit_and_push_refreshes_the_tabs_and_keeps_reviews_separate() {
         "unselected staged"
     );
     assert_eq!(git(&remote, &["rev-parse", "main"]).unwrap(), original_head);
+
+    let before_push = snapshot(&repo);
+    app.go(Push);
+    app.push.finish_loading(&app.ctx);
+    app.dispatch(&key(KeyCode::Char('P')));
+    app.dispatch(&key(KeyCode::Enter));
+    assert!(app.pop.is_none() && app.push.busy());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.push.busy() {
+        app.poll();
+        assert!(Instant::now() < deadline, "push timed out: {}", app.msg);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        git(&remote, &["rev-parse", "main"]).unwrap(),
+        git(&repo, &["rev-parse", "HEAD"]).unwrap()
+    );
+    assert_eq!(snapshot(&repo), before_push);
 }

@@ -23,12 +23,12 @@ pub(super) struct WorkspaceLoad {
 }
 
 impl WorkspaceLoad {
-    pub(super) fn start(path: PathBuf, config: AppConfig) -> Result<Self> {
+    pub(super) fn start(launch: cli::Launch, config: AppConfig) -> Result<Self> {
         let (sender, receiver) = mpsc::channel();
         thread::Builder::new()
             .name("igit-startup".into())
             .spawn(move || {
-                let result = load_workspace(&path, config, &sender);
+                let result = load_workspace(&launch, config, &sender);
                 let _ = sender.send(Message::Ready(result.map(Box::new)));
             })?;
         Ok(Self {
@@ -49,12 +49,19 @@ impl WorkspaceLoad {
     }
 }
 
-fn load_workspace(path: &Path, config: AppConfig, sender: &Sender<Message>) -> Result<Shell> {
-    let ctx = Context::discover(path)?;
+fn load_workspace(
+    launch: &cli::Launch,
+    config: AppConfig,
+    sender: &Sender<Message>,
+) -> Result<Shell> {
+    let ctx = Context::discover(&launch.workspace)?;
     sender
         .send(Message::Stage("Loading changes..."))
         .map_err(|_| anyhow::anyhow!("Workspace loading cancelled"))?;
     let mut app = Shell::unloaded(ctx, config);
+    if let Some(file) = &launch.file_history {
+        app.log.set_file_history(&app.ctx, file)?;
+    }
     // Discovery already supplied current branch labels. Log is deferred until opened.
     if let Err(error) = app.commit.refresh(&app.ctx) {
         app.notice(format!("Commit: {error:#}"));
@@ -63,6 +70,9 @@ fn load_workspace(path: &Path, config: AppConfig, sender: &Sender<Message>) -> R
         .send(Message::Stage("Checking conflicts..."))
         .map_err(|_| anyhow::anyhow!("Workspace loading cancelled"))?;
     app.refresh_conflicts();
+    // Enter through the regular activation path so each panel starts its own reads.
+    // In particular, entering Log starts a separate worker and never waits for history.
+    app.go(launch.tab);
     Ok(app)
 }
 
@@ -96,12 +106,13 @@ pub(super) fn draw_loading(f: &mut Frame, path: &Path, stage: &str) {
 
 pub(super) fn open<B: Backend>(
     terminal: &mut Terminal<B>,
-    path: PathBuf,
+    launch: cli::Launch,
     config: AppConfig,
 ) -> Result<Option<Shell>> {
     // This draw must precede even discovery: filesystem traversal can also be slow.
-    terminal.draw(|f| draw_loading(f, &path, DISCOVERING))?;
-    let mut loading = WorkspaceLoad::start(path.clone(), config)?;
+    terminal.draw(|f| draw_loading(f, &launch.workspace, DISCOVERING))?;
+    let path = launch.workspace.clone();
+    let mut loading = WorkspaceLoad::start(launch, config)?;
     loop {
         let mut dirty = false;
         if event::poll(Duration::from_millis(16))? {

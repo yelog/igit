@@ -26,13 +26,24 @@ fn draw(view: &mut RevisionDiff, w: u16, h: u16, icons: IconMode) -> Terminal<Te
     t
 }
 
+fn draw_inline(view: &mut RevisionDiff, w: u16, h: u16, icons: IconMode) -> Terminal<TestBackend> {
+    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+    t.draw(|f| view.draw_inline(f, f.area(), icons)).unwrap();
+    t
+}
+
 fn text(t: &Terminal<TestBackend>) -> String {
     let b = t.backend().buffer();
     (0..b.area.height)
         .map(|y| {
-            (0..b.area.width)
-                .map(|x| b[(x, y)].symbol())
-                .collect::<String>()
+            let mut line = String::new();
+            let mut x = 0;
+            while x < b.area.width {
+                let symbol = b[(x, y)].symbol();
+                line.push_str(symbol);
+                x += unicode_width::UnicodeWidthStr::width(symbol).max(1) as u16;
+            }
+            line
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -296,4 +307,181 @@ fn selection_excludes_alignment_padding() {
         drag_text(&mut view, (code.x, code.y), (code.x + 3, code.y + 3)),
         "keep\nend"
     );
+}
+
+#[test]
+fn inline_merge_has_one_toolbar_and_revision_heading_without_modal_controls() {
+    let mut view = fixture();
+    let terminal = draw_inline(&mut view, 180, 24, IconMode::Unicode);
+    let screen = text(&terminal);
+    let lines = screen.lines().collect::<Vec<_>>();
+    for label in ["↑", "↓", "Unfold", "Zoom", "2 changes, No conflicts"] {
+        assert!(lines[0].contains(label), "missing {label}: {screen}");
+    }
+    for label in [
+        "11111111",
+        "22222222",
+        "33333333",
+        "Parent 1",
+        "Result",
+        "Parent 2",
+        "example.js",
+    ] {
+        assert!(lines[1].contains(label), "missing {label}: {screen}");
+    }
+    assert!(lines[2].contains("function sample()"), "{screen}");
+    for label in ["Repository Diff", "Close", "files", "Tab Pane", "Apply"] {
+        assert!(!screen.contains(label), "unexpected {label}: {screen}");
+    }
+    assert!(view
+        .hits
+        .iter()
+        .all(|(_, target)| !matches!(target, Target::Close | Target::File(_))));
+    assert!(view
+        .code_areas
+        .iter()
+        .all(|area| area.y == 2 && area.height == 21));
+    assert_eq!(view.page, 21);
+    assert!(view.hits.iter().any(|(_, t)| matches!(t, Target::Fold(_))));
+    assert!(terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .any(|c| c.fg == Color::Rgb(207, 142, 109)));
+
+    view.name = "src/a/long/directory/path/example名.js".into();
+    let narrower = text(&draw_inline(&mut view, 120, 24, IconMode::Unicode));
+    let heading = narrower.lines().nth(1).unwrap();
+    assert!(heading.contains("example名.js"), "{heading}");
+    assert!(!heading.contains("src/a/long"));
+}
+
+#[test]
+fn inline_two_way_and_merge_split_at_the_same_widths_as_the_overlay() {
+    let mut before_after = RevisionDiff::two_way(
+        "example.js".into(),
+        ["1111111111111111".into(), "2222222222222222".into()],
+        ["const answer = 1;\n".into(), "const answer = 2;\n".into()],
+        Default::default(),
+    );
+    let mut merge = fixture();
+    for (view, threshold, count) in [(&mut before_after, 48, 2), (&mut merge, 72, 3)] {
+        for width in [threshold, 100, 180] {
+            let terminal = draw_inline(view, width, 12, IconMode::Ascii);
+            assert_eq!(
+                view.code_areas.iter().filter(|r| !r.is_empty()).count(),
+                count
+            );
+            assert!(text(&terminal).contains("11111111"));
+            assert!(text(&terminal).contains("22222222"));
+        }
+        draw_inline(view, threshold - 1, 12, IconMode::Ascii);
+        assert_eq!(view.code_areas.iter().filter(|r| !r.is_empty()).count(), 1);
+        assert!(!view.code_areas[1].is_empty());
+        key(view, K::Tab);
+        draw_inline(view, threshold - 1, 12, IconMode::Ascii);
+        assert!(!view.code_areas[2 % count].is_empty());
+        key(view, K::BackTab);
+        draw_inline(view, 180, 12, IconMode::Ascii);
+        let zoom = view
+            .hits
+            .iter()
+            .find(|(_, target)| matches!(target, Target::Zoom))
+            .unwrap()
+            .0;
+        view.event(&Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: zoom.x,
+            row: zoom.y,
+            modifiers: M::NONE,
+        }));
+        let zoomed = draw_inline(view, 180, 12, IconMode::Ascii);
+        assert!(text(&zoomed).lines().next().unwrap().contains("Split"));
+        assert_eq!(view.code_areas.iter().filter(|r| !r.is_empty()).count(), 1);
+        assert!(!view.code_areas[1].is_empty());
+    }
+    let screen = text(&draw_inline(&mut before_after, 180, 12, IconMode::Ascii));
+    assert!(screen.contains("After") && screen.contains("1 difference"));
+    assert!(!screen.contains("Parent") && !screen.contains("No conflicts"));
+    assert!(!screen.contains("2222222222222222"));
+}
+
+#[test]
+fn inline_scrolling_and_selection_share_the_visible_code_geometry() {
+    let mut view = fixture();
+    draw_inline(&mut view, 180, 12, IconMode::Unicode);
+    let code = view.code_areas[1];
+    assert_eq!(
+        drag_text(
+            &mut view,
+            (code.x, code.y),
+            (code.x + "function sample() {".width() as u16, code.y)
+        ),
+        "function sample() {"
+    );
+    key(&mut view, K::Char('f'));
+    draw_inline(&mut view, 180, 12, IconMode::Unicode);
+    assert_eq!(view.total, 28);
+    assert_eq!(view.page, 9);
+    key(&mut view, K::Char('j'));
+    let scrolled = draw_inline(&mut view, 180, 12, IconMode::Unicode);
+    assert_eq!(view.scroll, 1);
+    assert_eq!(
+        view.view
+            .tracks
+            .iter()
+            .filter(|track| matches!(track.axis, Scroll::Vertical))
+            .count(),
+        3
+    );
+    assert!(view
+        .view
+        .tracks
+        .iter()
+        .filter(|track| matches!(track.axis, Scroll::Vertical))
+        .all(|track| track.position == 1 && track.area.y == 2 && track.area.height == 9));
+    let top = text(&scrolled).lines().nth(2).unwrap().to_owned();
+    assert_eq!(top.matches("const 名").count(), 3, "{top}");
+    key(&mut view, K::Char('G'));
+    assert_eq!(view.scroll, view.total - view.page);
+    assert!(matches!(key(&mut view, K::Esc), RevisionEvent::Close));
+}
+
+#[test]
+fn inline_rendering_stays_inside_its_area_even_when_tiny() {
+    let mut view = fixture();
+    for (w, h) in [
+        (180, 24),
+        (72, 12),
+        (48, 8),
+        (16, 4),
+        (10, 3),
+        (1, 1),
+        (0, 0),
+    ] {
+        let area = rect(5, 3, w, h);
+        let mut terminal = Terminal::new(TestBackend::new(190, 30)).unwrap();
+        terminal
+            .draw(|f| {
+                f.render_widget(Block::default().bg(Color::Magenta), f.area());
+                view.draw_inline(f, area, IconMode::Ascii);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                if !inside(area, x, y) {
+                    assert_eq!(buffer[(x, y)].bg, Color::Magenta, "{w}x{h} at {x},{y}");
+                }
+            }
+        }
+        assert!(view.hits.iter().all(|(hit, _)| {
+            hit.x >= area.x
+                && hit.y >= area.y
+                && hit.right() <= area.right()
+                && hit.bottom() <= area.bottom()
+        }));
+        assert!(!text(&terminal).contains("Close"));
+    }
 }

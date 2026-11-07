@@ -185,8 +185,9 @@ override still uses `p` or `f` for one of those panel commands, change that
 override or rebind the conflicting global command.
 
 `global.focus-branch` defaults to `4`. `[keybindings.branch]` controls `create`
-(`a`), `delete` (`d`), `checkout` (`Enter`), `merge` (`m`), `rename` (`r`), and
-tree navigation. The global `roots` binding is inactive in Branch because `r`
+(`a`), `delete` (`d`), `checkout` (`Enter`), `merge` (`m`), `rename` (`r`),
+`view-options` (`o`, opens Group By), and tree navigation. The global `roots`
+binding is inactive in Branch because `r`
 renames; use Actions → Roots there. Branch name entry and confirmation retain
 their fixed controls. For example:
 
@@ -198,6 +199,10 @@ focus-branch = ["F8"]
 create = ["n"]
 rename = ["R"]
 ```
+
+In the Log commit list, `[keybindings.log]` exposes `commit-actions` (`a`)
+and `edit-message` (`F2`). The action menu and message editor keep their
+own controls.
 
 Branch navigation commands include `first-item` (`g g`, Home), `last-item`
 (`G`, End), `screen-top` / `screen-middle` / `screen-bottom` (`H/M/L`),
@@ -389,7 +394,7 @@ and that `igit_resize.py` is installed. Requests retain the one-second timeout.
 
 ## Pane maximize and Kitty synchronization
 
-`toggle-pane-maximized` defaults to `Ctrl-w f` in Commit, Stash, Push, and Conflicts.
+`toggle-pane-maximized` defaults to `Ctrl-w f` in Commit, Branch, Stash, Push, and Conflicts.
 It fills the workspace with the focused pane. Tab continues through enabled
 panes. Use `1` through `5` for Commit, Log, Push, Branch, and Stash, respectively,
 or `6` for Conflicts when available. Log stays tiled. The next press in a

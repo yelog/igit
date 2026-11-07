@@ -1,10 +1,9 @@
 //! Immediate Roots checkboxes and two draft editors for the current Log's path filter.
-mod input;
 mod tree;
 
+use super::input::TextInput;
 use super::*;
 use crossterm::event::KeyEvent;
-use input::PathInput;
 use model::PathFilter;
 use std::collections::BTreeSet;
 use tree::PathTree;
@@ -13,7 +12,7 @@ pub(super) use tree::TreeHit;
 pub(super) const COMMANDS: [&str; 2] = ["Select...", "Select in Tree..."];
 
 pub(super) enum Dialog {
-    Text(PathInput),
+    Text(TextInput),
     Tree(PathTree),
 }
 
@@ -67,7 +66,7 @@ impl LogPanel {
 
     pub(super) fn path_choice(&mut self, index: usize, c: &Context) -> Result<()> {
         match index {
-            0 => self.path_dialog = Some(Dialog::Text(PathInput::new(self.filter.paths.text(c)?))),
+            0 => self.path_dialog = Some(Dialog::Text(TextInput::new(self.filter.paths.text(c)?))),
             1 => self.path_dialog = Some(Dialog::Tree(PathTree::new(&self.filter, c))),
             _ => {
                 let Some(&id) = self
@@ -154,7 +153,7 @@ impl LogPanel {
     }
 
     pub(super) fn open_path_text_for_paste(&mut self, paste: &str) {
-        let mut input = PathInput::new(
+        let mut input = TextInput::new(
             self.editor
                 .as_ref()
                 .map(|(_, v)| v.clone())
@@ -252,8 +251,18 @@ impl LogPanel {
         );
         let (apply, enabled) = match &mut self.path_dialog {
             Some(Dialog::Text(input)) => {
-                input.draw(f, body);
-                self.hit(input_area(body), Hit::Dropdown(DropdownHit::PathText));
+                let area = input_area(body);
+                input.draw(f, area);
+                self.hit(area, Hit::Dropdown(DropdownHit::PathText));
+                if !body.is_empty() {
+                    f.render_widget(
+                        Paragraph::new(
+                            "One relative path per line · Enter: new line · Ctrl-S: apply",
+                        )
+                        .style(fg(DIM)),
+                        Rect::new(body.x, body.bottom() - 1, body.width, 1),
+                    );
+                }
                 ("Apply F2", true)
             }
             Some(Dialog::Tree(tree)) => {

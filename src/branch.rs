@@ -1,4 +1,5 @@
 //! Repository-scoped branch browsing and reviewed local Git operations.
+mod display;
 mod keymap;
 mod loading;
 mod model;
@@ -10,13 +11,18 @@ mod view;
 
 use crate::{
     core::Context,
-    ui::{icons::IconMode, panes::PaneLayout, *},
+    ui::{
+        icons::IconMode,
+        panes::{PaneId, PaneLayout},
+        *,
+    },
 };
 use anyhow::{Context as _, Result};
 use crossterm::event::{
     Event, KeyCode as K, KeyEventKind, KeyModifiers as Mods, MouseButton, MouseEventKind as M,
 };
 use model::{Branch, Repository, Snapshot};
+use navigation::{Motion, Viewport};
 use operations::{Operation, Review};
 use ratatui::{layout::Rect, Frame};
 use std::collections::BTreeMap;
@@ -32,21 +38,34 @@ struct NameInput {
 
 #[derive(Clone, Copy)]
 enum Hit {
+    Repository(usize),
     Row(usize),
     Operation(Operation),
+    ViewOptions,
+    GroupBy,
+    MenuSurface,
     Submit,
     Cancel,
+}
+
+#[derive(Default, PartialEq, Eq)]
+enum Focus {
+    Repositories,
+    #[default]
+    Branches,
 }
 
 #[derive(Default)]
 pub struct BranchPanel {
     repos: Vec<Repository>,
+    repo_root: Option<usize>,
+    repo_viewport: Viewport,
     tree: Tree,
+    viewport: Viewport,
+    focus: Focus,
     loading: loading::Loading,
-    upstream_width: Option<usize>,
-    top: usize,
-    viewport: Rect,
     goto_pending: bool,
+    view_menu: bool,
     hits: Vec<(Rect, Hit)>,
     input: Option<NameInput>,
     review: Option<Review>,
@@ -56,8 +75,56 @@ pub struct BranchPanel {
 }
 
 impl BranchPanel {
+    pub(crate) fn has_repository_pane(&self) -> bool {
+        self.repos.len() > 1
+    }
+
+    pub(crate) fn focused_pane(&self) -> PaneId {
+        if self.focus == Focus::Repositories && self.has_repository_pane() {
+            PaneId::BranchRepos
+        } else {
+            PaneId::Branches
+        }
+    }
+
+    pub(crate) fn focus_pane(&mut self, id: PaneId) {
+        match id {
+            PaneId::BranchRepos if self.has_repository_pane() => self.focus = Focus::Repositories,
+            PaneId::Branches => self.focus = Focus::Branches,
+            _ => (),
+        }
+    }
+
+    fn repository_index(&self) -> Option<usize> {
+        let root = self.repo_root?;
+        self.repos.iter().position(|repo| repo.root == root)
+    }
+
+    fn repository(&self) -> Option<&Repository> {
+        self.repository_index().map(|index| &self.repos[index])
+    }
+
+    fn select_repository(&mut self, index: usize) {
+        let Some(repo) = self.repos.get(index) else {
+            return;
+        };
+        self.repo_viewport.reveal(index, self.repos.len());
+        if self.repo_root != Some(repo.root) {
+            self.repo_root = Some(repo.root);
+            self.tree.rebuild(Some(repo));
+            self.viewport.top = 0;
+            self.keep_branch_visible();
+            // Right-hand rows and actions refer to the tree from the last frame.
+            self.hits
+                .retain(|(_, hit)| matches!(hit, Hit::Repository(_)));
+        }
+    }
+
     fn selection(&self) -> Option<(usize, Branch)> {
         let row = self.tree.rows.get(self.tree.cursor)?;
+        if self.focused_pane() != PaneId::Branches || Some(row.root) != self.repo_root {
+            return None;
+        }
         if let Kind::Branch(branch) = &row.kind {
             Some((row.root, branch.clone()))
         } else {
@@ -200,6 +267,9 @@ impl BranchPanel {
             }
             return Ok(Action::None);
         }
+        if self.view_menu && self.view_menu_event(event) {
+            return Ok(Action::None);
+        }
         if let Event::Key(key) = event {
             if self.navigation_key(key) {
                 return Ok(Action::None);
@@ -213,11 +283,22 @@ impl BranchPanel {
                     .modifiers
                     .intersects(Mods::CONTROL | Mods::ALT | Mods::SUPER) =>
             {
+                if k.code == K::Char('o') && !c.repos.is_empty() {
+                    self.open_view_menu();
+                    return Ok(Action::None);
+                }
+                if self.focused_pane() == PaneId::BranchRepos {
+                    if matches!(k.code, K::Enter | K::Char('l') | K::Right) {
+                        self.focus_pane(PaneId::Branches);
+                    }
+                    return Ok(Action::None);
+                }
+                let repo = self.repository_index().map(|index| &self.repos[index]);
                 match k.code {
-                    K::Char('h') | K::Left => self.tree.horizontal(true, &self.repos),
-                    K::Char('l') | K::Right => self.tree.horizontal(false, &self.repos),
-                    K::Char(' ') => self.tree.toggle(&self.repos),
-                    K::Enter if self.selection().is_none() => self.tree.toggle(&self.repos),
+                    K::Char('h') | K::Left => self.tree.horizontal(true, repo),
+                    K::Char('l') | K::Right => self.tree.horizontal(false, repo),
+                    K::Char(' ') => self.tree.toggle(repo),
+                    K::Enter if self.selection().is_none() => self.tree.toggle(repo),
                     K::Enter => return self.operate(Operation::Checkout, c),
                     K::Char('a') => return self.operate(Operation::Create, c),
                     K::Char('d') => return self.operate(Operation::Delete, c),
@@ -228,27 +309,41 @@ impl BranchPanel {
             }
             Event::Mouse(m) => match m.kind {
                 M::Down(MouseButton::Left) => {
-                    let hit = self
-                        .hits
-                        .iter()
-                        .find(|(r, _)| inside(*r, m.column, m.row))
-                        .map(|(_, hit)| *hit);
+                    if let Some(id) = self.panes.at(m.column, m.row) {
+                        self.focus_pane(id);
+                    }
+                    let hit = self.hit_at(m.column, m.row);
                     match hit {
+                        Some(Hit::ViewOptions) => self.open_view_menu(),
+                        Some(Hit::Repository(index)) => self.select_repository(index),
                         Some(Hit::Row(row)) => {
                             self.tree.cursor = row;
-                            self.tree.toggle(&self.repos);
+                            let repo = self.repository_index().map(|index| &self.repos[index]);
+                            self.tree.toggle(repo);
                         }
                         Some(Hit::Operation(op)) => return self.operate(op, c),
                         _ => (),
                     }
                 }
-                M::ScrollDown if inside(self.viewport, m.column, m.row) => self.tree.move_by(3),
-                M::ScrollUp if inside(self.viewport, m.column, m.row) => self.tree.move_by(-3),
+                M::ScrollDown | M::ScrollUp => {
+                    let pane = if inside(self.repo_viewport.area, m.column, m.row) {
+                        Some(PaneId::BranchRepos)
+                    } else if inside(self.viewport.area, m.column, m.row) {
+                        Some(PaneId::Branches)
+                    } else {
+                        None
+                    };
+                    if let Some(id) = pane {
+                        self.focus_pane(id);
+                        let delta = if m.kind == M::ScrollDown { 3 } else { -3 };
+                        self.navigate(Motion::Move(delta));
+                    }
+                }
                 _ => (),
             },
             _ => (),
         }
-        self.keep_cursor_visible();
+        self.keep_branch_visible();
         Ok(Action::None)
     }
 }
@@ -269,14 +364,20 @@ impl Panel for BranchPanel {
     }
 
     fn editing(&self) -> bool {
-        self.input.is_some()
+        self.input.is_some() || self.view_menu
     }
 
     fn help(&self) -> &'static str {
         if self.input.is_some() {
             "Enter Review   Ctrl-U Clear   Esc Cancel"
+        } else if self.view_menu {
+            "Space/Enter Toggle   Esc Close   F1 Help"
+        } else if self.focused_pane() == PaneId::BranchRepos {
+            "j/k Repos   Enter Branches   Tab Panes   F1 Help"
+        } else if self.has_repository_pane() {
+            "Tab Repos   o Group By   a New   d Delete   Enter Switch   m Merge   r Rename   F1 Help"
         } else {
-            "a New   d Delete   Enter Switch   m Merge   r Rename   F1 Help"
+            "o Group By   a New   d Delete   Enter Switch   m Merge   r Rename   F1 Help"
         }
     }
 

@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PaneId {
     Stashes,
+    BranchRepos,
     Branches,
     Changes,
     Message,
@@ -33,10 +34,12 @@ pub(crate) enum PaneId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum SplitId {
     StashFiles,
+    BranchRepos,
     CommitPreview,
     CommitMessage,
     LogRefs,
     LogInspector,
+    LogHistory,
     LogDetails,
     PushColumns,
     PushDetails,

@@ -1,8 +1,9 @@
-use super::*;
 use crate::ui::selection::{at_column, next, previous};
+use crossterm::event::{KeyCode as K, KeyEvent, KeyModifiers as Mods};
+use ratatui::{layout::Rect, widgets::Paragraph, Frame};
 use unicode_width::UnicodeWidthStr;
 
-pub(in crate::log) struct PathInput {
+pub(super) struct TextInput {
     pub(super) text: String,
     caret: usize,
     area: Rect,
@@ -10,7 +11,7 @@ pub(in crate::log) struct PathInput {
     left: usize,
 }
 
-impl PathInput {
+impl TextInput {
     pub(super) fn new(text: String) -> Self {
         Self {
             caret: text.len(),
@@ -26,7 +27,7 @@ impl PathInput {
         self.caret += value.len();
     }
 
-    pub(in crate::log) fn paste(&mut self, value: &str) {
+    pub(super) fn paste(&mut self, value: &str) {
         self.insert(&value.replace("\r\n", "\n").replace('\r', "\n"));
     }
 
@@ -54,7 +55,7 @@ impl PathInput {
         self.go_to(row.saturating_add_signed(delta).min(last), col);
     }
 
-    pub(in crate::log) fn place(&mut self, x: u16, y: u16) {
+    pub(super) fn place(&mut self, x: u16, y: u16) {
         self.go_to(
             self.top + usize::from(y.saturating_sub(self.area.y)),
             self.left + usize::from(x.saturating_sub(self.area.x)),
@@ -96,8 +97,8 @@ impl PathInput {
         }
     }
 
-    pub(super) fn draw(&mut self, f: &mut Frame, body: Rect) {
-        self.area = input_area(body);
+    pub(super) fn draw(&mut self, f: &mut Frame, area: Rect) {
+        self.area = area;
         if !self.area.is_empty() {
             let (row, col) = self.position();
             self.top = self
@@ -125,13 +126,6 @@ impl PathInput {
                 self.area.x + (col - self.left) as u16,
                 self.area.y + (row - self.top) as u16,
             ));
-        }
-        if !body.is_empty() {
-            f.render_widget(
-                Paragraph::new("One relative path per line · Enter: new line · Ctrl-S: apply")
-                    .style(fg(DIM)),
-                Rect::new(body.x, body.bottom() - 1, body.width, 1),
-            );
         }
     }
 }

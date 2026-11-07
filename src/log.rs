@@ -1,11 +1,15 @@
 //! Multi-root history: preserve each root's topology and operate on the selected root's objects.
+mod actions;
 mod branches;
 mod display;
+mod file_history;
 mod filters;
+mod input;
 mod inspector;
 mod keymap;
 mod model;
 mod navigation;
+mod operations;
 mod paths;
 mod preview;
 mod refs;
@@ -37,6 +41,9 @@ use ratatui::{
 };
 use std::time::{Duration, Instant};
 use view::*;
+
+pub(crate) const REVIEW_TOKEN: &str = "log-commit-action";
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 enum Pane {
     Refs,
@@ -88,6 +95,8 @@ enum DropdownHit {
 enum Hit {
     Ref(usize),
     Commit(usize),
+    CommitScroll(usize),
+    CommitActions,
     GraphJump(usize),
     File(usize),
     Filter(Field),
@@ -168,6 +177,10 @@ pub struct LogPanel {
     branch_menu: Option<branches::Menu>,
     date_range: Option<DateRangeEditor>,
     diff: Option<DiffView>,
+    history_diff: Option<DiffView>,
+    history_mouse: bool,
+    commit_dialog: Option<actions::Dialog>,
+    commit_review: Option<operations::Review>,
     hits: Vec<(Rect, Hit)>,
     bounds: Rect,
     info_selection: TextSelection,
@@ -213,6 +226,10 @@ impl Default for LogPanel {
             branch_menu: None,
             date_range: None,
             diff: None,
+            history_diff: None,
+            history_mouse: false,
+            commit_dialog: None,
+            commit_review: None,
             hits: vec![],
             bounds: Rect::default(),
             info_selection: TextSelection::default(),
@@ -289,7 +306,7 @@ impl LogPanel {
             })
             .map(|(i, _)| i)
             .collect();
-        self.graph = Graph::new(self.visible.iter().map(|&i| &self.hist.revs[i]));
+        self.graph = Graph::using_layout(&self.hist.revs, &self.visible, &self.hist.graph_layout);
         self.graph_origin = 0;
         self.graph_top = 0;
         self.cancel_key_sequence();
@@ -304,6 +321,11 @@ impl LogPanel {
         Ok(())
     }
     fn open_diff(&mut self, c: &Context) -> Result<()> {
+        if self.filter.file_history.is_some() {
+            self.focus = Pane::Info;
+            self.preview.expedite();
+            return Ok(());
+        }
         if self.preview.loading() {
             if let Some(r) = self.rev() {
                 self.diff = Some(DiffView {
@@ -325,70 +347,15 @@ impl LogPanel {
         Ok(())
     }
     fn open_diff_file(&mut self, c: &Context, index: usize) -> Result<()> {
-        let (Some(r), Some(file)) = (self.rev(), self.details.files.get(index)) else {
+        let (Some(rev), Some(file)) = (self.rev(), self.details.files.get(index)) else {
             return Ok(());
         };
-        let repo = &c.repos[r.root];
-        let mut diff = DiffView {
-            file: Some(index),
-            name: format!(
-                "{} · {} · {}",
-                repo.name,
-                &r.oid[..8],
-                model::plain(&file.raw)
-            ),
-            ..Default::default()
-        };
-        if r.parents.len() > 1 {
-            match model::merge_diff::sources(&repo.path, r, file) {
-                Ok(sources) => {
-                    let annotations = sources.each_ref().map(|s| s.description.clone());
-                    let texts = sources.map(|s| s.text);
-                    diff.comparison = Some(crate::merge::RevisionDiff::new(
-                        model::plain(&file.raw),
-                        [r.parents[0].clone(), r.oid.clone(), r.parents[1].clone()],
-                        texts,
-                        annotations,
-                    ));
-                }
-                Err(error) => {
-                    diff.lines.push(error.to_string());
-                    diff.lines.push(String::new());
-                }
-            }
-        }
-        if r.parents.len() <= 1 {
-            match model::merge_diff::pair(&repo.path, r, file) {
-                Ok(sources) => {
-                    let annotations = sources.each_ref().map(|s| s.description.clone());
-                    let texts = sources.map(|s| s.text);
-                    diff.comparison = Some(crate::merge::RevisionDiff::two_way(
-                        model::plain(&file.raw),
-                        [
-                            r.parents
-                                .first()
-                                .cloned()
-                                .unwrap_or_else(|| "Empty tree".into()),
-                            r.oid.clone(),
-                        ],
-                        texts,
-                        annotations,
-                    ));
-                }
-                Err(error) => {
-                    diff.lines.push(error.to_string());
-                    diff.lines.push(String::new());
-                }
-            }
-        }
-        if diff.comparison.is_none() {
-            diff.lines.extend(model::patch(&repo.path, r, file)?);
-            if let Some(parent) = file.parent.and_then(|p| r.parents.get(p)) {
-                diff.name
-                    .push_str(&format!(" · Changes to {}", &parent[..8]));
-            }
-        }
-        self.diff = Some(diff);
+        self.diff = Some(file_history::comparison(
+            &c.repos[rev.root],
+            rev,
+            file,
+            index,
+        )?);
         Ok(())
     }
 
@@ -424,6 +391,20 @@ impl LogPanel {
         }
     }
     fn mouse_down(&mut self, button: MouseButton, x: u16, y: u16, c: &Context) -> Result<()> {
+        if button == MouseButton::Right && !self.editing() {
+            // A graph-edge arrow can be drawn on top of a commit row. Context
+            // actions address the row itself, not the arrow's destination.
+            let row = self.hits.iter().find_map(|(r, hit)| match hit {
+                Hit::Commit(row) if inside(*r, x, y) => Some(*row),
+                _ => None,
+            });
+            if let Some(row) = row {
+                self.focus = Pane::Graph;
+                self.select_row(row);
+                self.open_commit_actions(c, Some((x, y)))?;
+            }
+            return Ok(());
+        }
         let target = self
             .hits
             .iter()
@@ -509,10 +490,14 @@ impl LogPanel {
                     self.open_diff(c)?
                 }
             }
-            Hit::GraphJump(n) => {
+            Hit::GraphJump(n) | Hit::CommitScroll(n) => {
                 self.focus = Pane::Graph;
                 self.last = None;
                 self.select_row(n);
+            }
+            Hit::CommitActions => {
+                self.focus = Pane::Graph;
+                self.open_commit_actions(c, None)?;
             }
             Hit::File(n) => {
                 let dbl = self.double(Pane::Files, n);
@@ -557,7 +542,11 @@ impl LogPanel {
             Hit::Tab(i) => self.switch_tab(i, c)?,
             Hit::CloseTab => self.close_tab(c)?,
             Hit::Reset => {
-                self.filter = Filter::default();
+                self.filter = self
+                    .filter
+                    .file_history
+                    .as_ref()
+                    .map_or_else(Filter::default, file_history::Target::filter);
                 self.ref_query.clear();
                 self.reload(c, false)?
             }
@@ -625,6 +614,10 @@ impl LogPanel {
     }
     pub(crate) fn draw_overlays(&mut self, f: &mut Frame, a: Rect, c: &Context) {
         if a.is_empty() {
+            return;
+        }
+        if self.commit_dialog.is_some() {
+            self.draw_commit_dialog(f, a, c);
             return;
         }
         if self.editor.is_some() {
@@ -698,14 +691,28 @@ impl Panel for LogPanel {
         self.reload(c, true)
     }
     fn editing(&self) -> bool {
-        self.editor.is_some() || self.diff.is_some() || self.view_menu.is_some()
+        self.editor.is_some()
+            || self.diff.is_some()
+            || self.view_menu.is_some()
+            || self.commit_dialog.is_some()
     }
     fn selected_text(&self) -> Option<&str> {
+        if self.commit_dialog.is_some() {
+            return None;
+        }
         if let Some(diff) = &self.diff {
             diff.comparison.as_ref().map_or_else(
                 || diff.selection.selected_text(),
                 crate::merge::RevisionDiff::selected_text,
             )
+        } else if self.filter.file_history.is_some() && self.focus == Pane::Info && !self.editing()
+        {
+            self.history_diff.as_ref().and_then(|diff| {
+                diff.comparison.as_ref().map_or_else(
+                    || diff.selection.selected_text(),
+                    crate::merge::RevisionDiff::selected_text,
+                )
+            })
         } else if self.editor.is_none() && self.view_menu.is_none() && self.focus == Pane::Info {
             self.info_selection.selected_text()
         } else {
@@ -713,13 +720,22 @@ impl Panel for LogPanel {
         }
     }
     fn help(&self) -> &'static str {
-        "j/k Navigate · gg/G First/last · H/M/L Screen top/middle/bottom · Ctrl-F/B Page · Ctrl-D/U Half-page · yy/ym/ya Copy · Tab Panes · Ctrl-W h/j/k/l Focus · / Search · Space b/u/d/p Filters · o View · Enter Diff · Ctrl-T New Log tab · Ctrl-W c Close"
+        "j/k Navigate · gg/G First/last · H/M/L Screen top/middle/bottom · Ctrl-F/B Page · Ctrl-D/U Half-page · yy/ym/ya Copy · a Actions · F2 Edit message · Tab Panes · Ctrl-W h/j/k/l Focus · / Search · Space b/u/d/p Filters · o View · Enter Diff · Ctrl-T New Log tab · Ctrl-W c Close"
     }
     fn draw(&mut self, f: &mut Frame, a: Rect, c: &Context) {
         self.draw_content(f, a, c);
         self.draw_overlays(f, a, c);
     }
+    fn confirm(&mut self, token: &str, c: &Context) -> Action {
+        self.confirm_commit_action(token, c)
+    }
     fn event(&mut self, e: &Event, c: &Context) -> Action {
+        if let Some(action) = self.history_event(e) {
+            return action;
+        }
+        if self.commit_dialog.is_some() {
+            return self.commit_dialog_event(e, c);
+        }
         if let Some(merge) = self.diff.as_mut().and_then(|d| d.comparison.as_mut()) {
             use crate::merge::RevisionEvent;
             let event = merge.event(e);
@@ -931,6 +947,12 @@ impl Panel for LogPanel {
                 K::Char('H') => self.toggle_view_item(Item::CurrentBranch, c)?,
                 K::Char('L') => self.toggle_view_item(Item::ReferenceLabels, c)?,
                 K::Char('o') => self.toggle_view_menu(),
+                K::Char('a') if self.focus == Pane::Graph && k.modifiers.is_empty() => {
+                    self.open_commit_actions(c, None)?
+                }
+                K::F(2) if self.focus == Pane::Graph && k.modifiers.is_empty() => {
+                    self.edit_commit_message(c)?
+                }
                 K::Char('z' | 'Z') if self.focus == Pane::Files => {
                     self.file_fold_all(key == K::Char('z'))
                 }
@@ -1077,6 +1099,7 @@ mod tests {
             email: String::new(),
             subject: String::new(),
             refs: String::new(),
+            file: None,
         };
         let rows = vec![
             make(0, "c", vec!["p"]),

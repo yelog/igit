@@ -91,13 +91,14 @@ fn stash_operation_reviews_are_read_only_and_describe_the_exact_entry() {
     let before = state(repo);
     for operation in [Operation::Apply, Operation::Pop, Operation::Drop] {
         let review = prepare(&c, 1, operation);
+        let body = review.body();
         for text in [
             "stash@{1}",
             "saved 1",
             &review.source.oid,
             &review.source.saved,
         ] {
-            assert!(review.body.contains(text), "{text}");
+            assert!(body.contains(text), "{text}");
         }
         assert_eq!(state(repo), before);
     }
@@ -144,7 +145,7 @@ fn stash_apply_honors_reviewed_saved_staging_option() {
     let repo = &c.repos[0].path;
     run(repo, &["config", "stash.index", "true"]);
     let review = prepare(&c, 0, Operation::Apply);
-    assert!(review.body.contains("Restore saved staging: Yes"));
+    assert!(review.body().contains("Staging: Restore (stash.index)"));
     review.execute(&c).unwrap();
     assert_eq!(run(repo, &["show", ":mixed.txt"]), "staged 2");
     assert_eq!(

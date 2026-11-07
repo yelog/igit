@@ -605,12 +605,12 @@ impl Dialog {
         } else {
             vec![
                 (
-                    format!(" y {} {} ", self.kind.label(), self.ready),
+                    format!(" {} {} ", self.kind.label(), self.ready),
                     CONFIRM,
                     self.confirm_focused,
                     self.ready > 0,
                 ),
-                (" n Cancel ".into(), CANCEL, !self.confirm_focused, true),
+                (" Cancel ".into(), CANCEL, !self.confirm_focused, true),
             ]
         };
         for (label, id, focused, enabled) in actions {

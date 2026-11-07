@@ -48,7 +48,7 @@ impl KeySequence {
     fn shortcuts(self) -> Vec<(char, &'static str)> {
         let entries: &[(char, &str)] = match self {
             Self::LogGoto => &[('g', "Go to first commit")],
-            Self::BranchGoto => &[('g', "Go to first branch row")],
+            Self::BranchGoto => &[('g', "Go to first row")],
             Self::LogYank => &[
                 ('y', "Copy full commit ID"),
                 ('m', "Copy full commit message"),

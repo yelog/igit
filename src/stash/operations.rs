@@ -10,6 +10,7 @@ use std::{
 mod scope;
 #[cfg(test)]
 mod tests;
+mod view;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Operation {
@@ -24,6 +25,27 @@ impl Operation {
             Self::Apply => "Apply stash",
             Self::Pop => "Pop stash",
             Self::Drop => "Drop stash",
+        }
+    }
+
+    fn summary(self) -> [&'static str; 2] {
+        match self {
+            Self::Apply => ["Keeps the stash", "Applies changes to the worktree."],
+            Self::Pop => [
+                "Drops after a successful apply",
+                "A failed apply keeps the stash.",
+            ],
+            Self::Drop => [
+                "Removes the stash without applying",
+                "Cannot be undone from IGit.",
+            ],
+        }
+    }
+
+    fn note(self) -> &'static str {
+        match self {
+            Self::Apply | Self::Pop => "Git refuses to overwrite local edits. Check Commit and Conflicts for partial changes before retrying.",
+            Self::Drop => "Working files and the index stay unchanged.",
         }
     }
 }
@@ -97,17 +119,33 @@ impl Destination {
                 == Some("true"),
         })
     }
+
+    fn branch_label(&self) -> String {
+        model::label(
+            self.branch
+                .strip_prefix("refs/heads/")
+                .unwrap_or(&self.branch),
+        )
+    }
+
+    fn staging_label(&self) -> &'static str {
+        if self.restore_index {
+            "Restore (stash.index)"
+        } else {
+            "Do not restore"
+        }
+    }
 }
 
 pub(super) struct Review {
     root: usize,
+    repo_name: String,
     path: PathBuf,
     source: Entry,
     entries: Vec<Entry>,
     destination: Option<Destination>,
     paths: Vec<PathBuf>,
     operation: Operation,
-    pub body: String,
 }
 
 impl Review {
@@ -138,32 +176,40 @@ impl Review {
         } else {
             vec![]
         };
-        let effect = match operation {
-            Operation::Apply => "Apply the saved changes to this repository. Keep the stash entry.",
-            Operation::Pop => "Apply the saved changes, then remove this stash entry only if applying succeeds. Conflicts keep the stash.",
-            Operation::Drop => "Remove this stash entry without applying it. Working files and the index are unchanged. This cannot be undone from IGit.",
-        };
-        let mut body = format!(
-            "{effect}\n\nRepository: {}\nPath: {}\n\nStash: {}\nSaved: {}\nMessage: {}\nObject: {}\n",
-            model::label(&repo.name), model::label(&repo.path.to_string_lossy()), source.selector, source.saved, source.subject, source.oid
-        );
-        if let Some(target) = &destination {
-            body.push_str(&format!(
-                "\nApply to: {}\nCurrent commit: {}\nRestore saved staging: {}\n\nGit will refuse to overwrite local edits. Conflicts or partial changes may remain; inspect Commit and Conflicts before retrying.\n",
-                target.branch.strip_prefix("refs/heads/").unwrap_or(&target.branch), target.head,
-                if target.restore_index { "Yes (stash.index)" } else { "No" }
-            ));
-        }
         Ok(Self {
             root,
+            repo_name: model::label(&repo.name),
             path: repo.path.clone(),
             source: source.clone(),
             entries,
             destination,
             paths,
             operation,
-            body,
         })
+    }
+
+    fn path_label(&self) -> String {
+        model::label(&self.path.to_string_lossy())
+    }
+
+    pub fn body(&self) -> String {
+        let [effect, explanation] = self.operation.summary();
+        let source = &self.source;
+        let mut body = format!(
+            "{effect}\n{explanation}\n\nRepository: {}\nPath: {}\n\nStash: {}\nSaved: {}\nMessage: {}\nObject: {}\n",
+            self.repo_name, self.path_label(), source.selector, source.saved, source.subject, source.oid
+        );
+        if let Some(target) = &self.destination {
+            body.push_str(&format!(
+                "\nApply to: {}\nCurrent commit: {}\nStaging: {}\n",
+                target.branch_label(),
+                target.head,
+                target.staging_label()
+            ));
+        }
+        body.push('\n');
+        body.push_str(self.operation.note());
+        body
     }
 
     fn check_entries(&self) -> Result<()> {

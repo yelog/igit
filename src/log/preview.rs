@@ -1,5 +1,5 @@
 //! A navigation burst needs one inspector, for the row where it ends.
-use super::{inspector::Inspector, model, Details, LogPanel};
+use super::{file_history, inspector::Inspector, model, Details, DiffView, LogPanel};
 use crate::core::Context;
 use anyhow::{anyhow, Result};
 use std::{
@@ -10,7 +10,7 @@ use std::{
 
 pub(super) const NAV_SETTLE: Duration = Duration::from_millis(60);
 
-type Loaded = Result<(Details, Inspector)>;
+type Loaded = Result<(Details, Inspector, Option<DiffView>)>;
 
 struct Job {
     generation: u64,
@@ -72,6 +72,8 @@ impl LogPanel {
         self.details = Details::default();
         self.inspector = Inspector::default();
         self.diff = None;
+        self.history_diff = None;
+        self.history_mouse = false;
     }
 
     pub(crate) fn preview_wakeup(&self) -> Option<Duration> {
@@ -88,9 +90,10 @@ impl LogPanel {
         if let Some(result) = self.preview.take_result() {
             let open_diff = self.diff.take_if(|d| d.waiting_for_files).is_some();
             match result {
-                Ok((details, tree)) => {
+                Ok((details, tree, history_diff)) => {
                     self.details = details;
                     self.inspector = tree;
+                    self.history_diff = history_diff;
                     if open_diff {
                         self.open_diff(c)?;
                     }
@@ -108,13 +111,31 @@ impl LogPanel {
         {
             self.preview.due = None;
             if let Some(rev) = self.rev().cloned() {
-                let path = c.repos[rev.root].path.clone();
+                let repo = c.repos[rev.root].clone();
+                let history_file = self.filter.file_history.clone();
                 let (send, reply) = mpsc::channel();
                 thread::spawn(move || {
-                    let loaded = model::details(&path, &rev).map(|details| {
-                        let tree = Inspector::new(&details);
-                        (details, tree)
-                    });
+                    let loaded = (|| {
+                        if let Some(target) = history_file {
+                            let file = model::File {
+                                raw: rev.file.as_ref().map_or_else(
+                                    || target.path.as_os_str().as_encoded_bytes().to_vec(),
+                                    |file| file.raw.clone(),
+                                ),
+                                ..Default::default()
+                            };
+                            let diff = file_history::comparison(&repo, &rev, &file, 0)?;
+                            let details = Details {
+                                files: vec![file],
+                                ..Default::default()
+                            };
+                            Ok((details, Inspector::default(), Some(diff)))
+                        } else {
+                            let details = model::details(&repo.path, &rev)?;
+                            let tree = Inspector::new(&details);
+                            Ok((details, tree, None))
+                        }
+                    })();
                     let _ = send.send(loaded);
                 });
                 self.preview.running = Some(Job {
@@ -163,6 +184,7 @@ mod tests {
                 ..Default::default()
             },
             Inspector::default(),
+            None,
         )))
         .unwrap();
         assert!(!p.poll_preview(&c).unwrap());

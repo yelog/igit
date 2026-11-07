@@ -23,19 +23,7 @@ pub(super) fn ref_color(kind: model::RefKind) -> Color {
     }
 }
 fn lane(t: usize) -> Color {
-    const C: [Color; 6] = [
-        Color::Rgb(96, 164, 81),
-        Color::Rgb(92, 124, 198),
-        Color::Rgb(135, 111, 192),
-        Color::Rgb(74, 165, 167),
-        Color::Rgb(192, 114, 131),
-        Color::Rgb(180, 152, 91),
-    ];
-    if t == 0 {
-        Color::Rgb(184, 147, 77)
-    } else {
-        C[(t - 1) % C.len()]
-    }
+    model::graph_color(t)
 }
 pub(super) fn boxof(title: String, focus: bool) -> Block<'static> {
     Block::default()
@@ -254,6 +242,9 @@ fn subject_spans(s: &str) -> Vec<Span<'_>> {
 }
 impl LogPanel {
     pub(super) fn pane_visible(&self, pane: Pane) -> bool {
+        if self.filter.file_history.is_some() {
+            return matches!(pane, Pane::Graph | Pane::Info);
+        }
         match pane {
             Pane::Refs => self.show_refs,
             Pane::Graph => true,
@@ -296,6 +287,10 @@ impl LogPanel {
         f.render_widget(Block::default().style(fg(INK).bg(PANEL)), a);
         if !self.pane_visible(self.focus) {
             self.focus = Pane::Graph;
+        }
+        if self.filter.file_history.is_some() {
+            self.draw_history(f, a, c);
+            return;
         }
         let percent = |n: u16, p: u32| (u32::from(n) * p / 100) as u16;
         // At narrow widths, give the sidebars less space while keeping the graph
@@ -377,9 +372,22 @@ impl LogPanel {
         }
     }
     fn graph_toolbar(&mut self, f: &mut Frame, area: Rect, c: &Context) -> u16 {
+        if self.filter.file_history.is_some() {
+            return self.history_toolbar(f, area);
+        }
         let two = area.width < 56 && area.height >= 5;
         let mut a = one(area.x, area.y, area.width);
         self.view_button(f, &mut a);
+        if a.width >= 27 && self.rev().is_some() {
+            let r = take_right(&mut a, 4);
+            self.button(
+                f,
+                r,
+                " ...",
+                self.commit_dialog.is_some(),
+                Hit::CommitActions,
+            );
+        }
         let input = self
             .editor
             .as_ref()
@@ -670,7 +678,7 @@ impl LogPanel {
         }
     }
 
-    fn draw_graph(&mut self, f: &mut Frame, area: Rect, c: &Context) {
+    pub(super) fn draw_graph(&mut self, f: &mut Frame, area: Rect, c: &Context) {
         if area.is_empty() {
             return;
         }
@@ -699,6 +707,18 @@ impl LogPanel {
         let start = self.graph_top;
         let end = (start + avail).min(self.visible.len());
         if self.visible.is_empty() {
+            if let Some(file) = &self.filter.file_history {
+                let message = if c.scope.contains(&file.root) {
+                    "No commits for this file with the current filters"
+                } else {
+                    "File's repository is outside Roots"
+                };
+                f.render_widget(
+                    Paragraph::new(message).style(fg(DIM)),
+                    one(area.x, area.y + tools, area.width),
+                );
+                return;
+            }
             let reset;
             let msg = if c.scope.is_empty() {
                 "No repositories in scope"
@@ -808,11 +828,12 @@ impl LogPanel {
             } else {
                 remaining.saturating_sub(1)
             };
-            self.graph.window(
+            self.graph.window_with_edges(
                 start..end,
                 self.cursor,
                 usize::from(budget),
                 self.graph_origin,
+                self.options.long_edges,
             )
         });
         let graph_width = graph_window.map_or(0, |window| {
@@ -914,7 +935,7 @@ impl LogPanel {
                 );
                 self.hit(
                     r,
-                    Hit::Commit(i * (total - 1) / avail.saturating_sub(1).max(1)),
+                    Hit::CommitScroll(i * (total - 1) / avail.saturating_sub(1).max(1)),
                 );
             }
         }
@@ -1161,6 +1182,9 @@ impl LogPanel {
         }
     }
     fn title(f: &Filter, c: &Context) -> String {
+        if let Some(file) = &f.file_history {
+            return file.title();
+        }
         let mut v = Vec::new();
         let paths = f.paths_label(c);
         if !paths.is_empty() {

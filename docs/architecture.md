@@ -77,8 +77,8 @@ it requests flags directly instead of blocking on a capability query; unsupporte
 backends retain ordinary keyboard input. The Kitty adapter survives
 workspace rescans; unit-test Shell constructors never discover a live terminal.
 
-Pane maximize is a session-only Shell flag applied to Commit, Stash, Push, and
-Conflicts. Log always registers its enabled pane rectangles and dividers.
+Pane maximize is a session-only Shell flag applied to Commit, Branch, Stash,
+Push, and Conflicts. Log always registers its enabled pane rectangles and dividers.
 The active panel receives the available work area; hidden panes retain their
 logical Tab order with empty rectangles and clear their hit/selection geometry.
 No split preferences change until the user restores and resizes. Smart maximize
@@ -133,6 +133,35 @@ When help opens, Shell captures the original area's `HelpContent` without extend
 
 Mouse gestures separately record press coordinates and whether actual dragging occurred. Only `Drag(Left)` across cells starts selection. Ordinary `Down → Up` retains the press-time caret without remapping on release. Closing a notification, scrolling, or relayout therefore cannot turn a click into copying. Release, keypress, clearing selection, and source changes end unfinished gestures. `cargo test --locked click_after_copy --lib` covers another click after copying, movement within one cell, and redraws between press/release.
 
+### Direct Panel Startup and Embedded File History
+
+[CLI parsing](../src/shell/cli.rs) separates startup presentation options, a panel
+command, and an optional directory/file target before opening the terminal.
+`log <file>` locates an existing ancestor for discovery, allowing deleted paths.
+Startup sets Log's file intent before its initial background load. Branch,
+Push, and Stash use their existing tab-entry paths; the native updater and
+noninteractive configuration/listing commands retain their own behavior.
+
+[File history](../src/log/file_history.rs) resolves the deepest discovered owning
+worktree and adds a tab-local target to `Filter`. The target is separate from
+ordinary path-filter drafts and remains fixed across resets. The history query
+uses literal path arguments, `--follow --full-history --diff-merges=separate`,
+NUL-delimited metadata/name-status records, and deduplicates merge rows by OID.
+Each revision retains actual parents plus the historical filename and rename
+source; comparisons use immutable blobs, including the old path before a rename.
+Rename traversal inherits [Git's single-file follow semantics](https://git-scm.com/docs/git-log#Documentation/git-log.txt---follow),
+including its limitations for complex nonlinear rename histories.
+
+The existing preview worker also builds the inline file comparison; generation
+checks reject obsolete results after navigation, refresh, or tab/scope changes.
+The normal Log Diff and inline History Diff share the comparison builder and
+[revision renderer](../src/merge/view/revision.rs). Inline rendering removes
+modal chrome and registers two Log panes with its own resizable divider. It
+does not report text editing; focused revision keys are routed ahead of global
+Pull/Fetch, while workspace navigation, pane controls, and review guards remain
+available. The Lua companion plugin uses argv-based Neovim terminal jobs and
+window-local options; it performs no Git operations itself.
+
 ## Repositories, Scope, and Persistence
 
 Workspace Pull and Fetch build a read-only plan from global Roots. Each worktree is checked again before running Git. Pull also revalidates the branch, HEAD, upstream, and resolved remote URL; Fetch revalidates the configured remotes. After confirmation, a worker runs one `git pull` or `git fetch --all` per eligible worktree, with submodule recursion disabled. Pull integrates the reviewed upstream with an explicit Merge or Rebase strategy. The update dialog remains active through completion so another workspace write cannot overlap it. Presentation rows retain the reviewed identity, branch/target labels, and repository tint; structured worker outcomes map back in plan order. Row selection and Details scrolling are view-only state and cannot change the batch. Shell refreshes Log after Fetch and the workspace after Pull. Failures and Git conflict state remain per repository.
@@ -161,7 +190,9 @@ and read-only revision controls are reused. Stash creation belongs to Commit
 below. [operations.rs](../src/stash/operations.rs) owns single-use Apply/Pop/Drop
 reviews. Each review retains the repository path, entry selector/object,
 complete entry list, and (for apply/pop) HEAD, branch, index records, and the
-`stash.index` option. Native apply uses the immutable object ID and suppresses
+`stash.index` option. [operations/view.rs](../src/stash/operations/view.rs)
+renders the reviewed snapshot; Shell handles confirmation input and dispatch.
+Native apply uses the immutable object ID and suppresses
 submodule recursion. [scope.rs](../src/stash/operations/scope.rs) checks saved
 tracked/index/untracked paths before review and execution: a saved untracked
 file must not be restored inside a newly added submodule, nested repository,
@@ -174,19 +205,22 @@ operation returns Shell's Refresh action, updating Stash, Commit, and Conflicts.
 List refresh falls back to the nearest entry/header in the same repository.
 There is no new persistent state.
 
-**Branch.** [branch.rs](../src/branch.rs) owns tree focus, name input, and the
-pending shell review. [model.rs](../src/branch/model.rs) reads local and remote
-refs, commit IDs, symbolic HEAD, upstreams, and worktree ownership without
-loading history. [tree.rs](../src/branch/tree.rs) builds scoped repository and
-slash-folder rows with current-first traversal, branch counts, and stable
-fold/focus IDs. Explicit fold overrides keep remote groups closed initially
-while retaining user choices through refresh and Roots changes.
-[navigation.rs](../src/branch/navigation.rs) maintains the viewport after each
-motion and exposes `gg` to the shell's existing sequence picker.
-[rows.rs](../src/branch/rows.rs) measures branch/upstream columns in terminal
-cells and uses shared Log reference colors. [view.rs](../src/branch/view.rs)
-owns responsive controls/details and row/action hit targets. State is
-session-only; no new persistence or dependency is introduced.
+**Branch.** [branch.rs](../src/branch.rs) owns repository selection, pane focus,
+name input, and the pending shell review. [model.rs](../src/branch/model.rs) reads
+local and remote refs, commit IDs, symbolic HEAD, upstreams, and worktree ownership
+without loading history. [loading.rs](../src/branch/loading.rs) reads scoped snapshots
+and builds the selected tree in the background. Changing repositories projects
+rows from the cache; a completed refresh uses the latest selection and folds.
+The same ref scan reads remote HEAD aliases for initial expansion; this
+display metadata stays separate from reviewed branch state.
+[tree.rs](../src/branch/tree.rs) projects grouped or flat rows for one
+repository with stable fold and cursor identities. The [Group By menu](../src/branch/display.rs)
+toggles prefix grouping from cached refs. [navigation.rs](../src/branch/navigation.rs) maintains both
+viewports and exposes `gg` to the shell's sequence picker.
+[rows.rs](../src/branch/rows.rs) measures upstream columns per repository and
+uses shared Log reference colors. [view.rs](../src/branch/view.rs) uses the
+shared pane layout for the repository list and selected branch tree, hiding
+the repository list for single-repository Roots. State is session-only.
 
 [operations.rs](../src/branch/operations.rs) prepares a single-repository review
 and rechecks Roots, worktree path, refs, HEAD, upstreams, worktree ownership and
@@ -197,14 +231,13 @@ and merges disable autostash. Checkout/merge protect ignored files and suppress
 recursive submodule updates. Git provides its normal locking and overwrite
 checks; IGit does not lock out other Git processes between reads and execution.
 Success and failure both refresh workspace state, including partial conflict
-results. Branch reads/writes are synchronous, first loaded on entry rather than
-startup. F5, reentry, focus return, and completed remote operations refresh it
-while active. Name drafts and pending reviews retain their original source
-identity across refreshes.
+results. Ref scans first run on entry; F5, reentry, focus return, and completed
+remote operations refresh them while Branch is active. Name drafts and pending
+reviews retain their original source identity across refreshes.
 
-Log's [display menu](../src/log/display.rs) stores session preferences and temporary menu focus without writing project/state files. Filters and selected SHA remain per Log tab. `Rev` retains author email, author date, and commit date; sorting still uses commit time. After refresh/tab changes, [presentation metadata](../src/log/model/presentation.rs) reads per-repository identity. Loaded OIDs are queried in batches for `%G?` only when signatures are visible; `git cherry HEAD <resolved-tip>` runs only when cherry highlighting is enabled and another branch is selected. Queries use the shared Git environment, report failures per repository, and preserve history. Rendering, hover, and row navigation do not run these commands. Signature verification/patch comparison use synchronous refresh and can increase load time for large histories. Shortening long edges changes only character rendering; arrow hit areas retain true visible endpoints and do not modify the DAG.
+Log's [display menu](../src/log/display.rs) stores session preferences and temporary menu focus without writing project/state files. Filters and selected SHA remain per Log tab. `Rev` retains author email, author date, and commit date; sorting still uses commit time. After refresh/tab changes, [presentation metadata](../src/log/model/presentation.rs) reads per-repository identity. Loaded OIDs are queried in batches for `%G?` only when signatures are visible; `git cherry HEAD <resolved-tip>` runs only when cherry highlighting is enabled and another branch is selected. Queries use the shared Git environment, report failures per repository, and preserve history. Rendering, hover, and row navigation do not run these commands. Signature verification/patch comparison use synchronous refresh and can increase load time for large histories. Shortening long edges recomputes the visible row projection and releases hidden columns; arrow hit areas retain the real visible endpoints without modifying the underlying DAG.
 
-**Log: multiple commit graphs on one screen.** Each repository starts from local branches, remote-tracking branches, tags, and valid HEAD. `git log --date-order` produces a topologically valid sequence; sequences are then merged by their head timestamps. [Rail layout](../src/log/model/graph.rs) matches real visible parents/children by repository ID + object ID. Long vertical edges store only start/end rows. Paths to a common parent may share their trailing rail; the main rail prefers the first parent. Completed rails free columns for reuse, with bends recorded at column changes. [Character rendering](../src/log/model/graph/render.rs) expands only the current viewport; all rows share a horizontal origin. The default is 160 commits per repository, capped at 3,200. Text/hash filter changes do not reload all history; `regex-lite` matches in memory. Queries use full ref names across repositories and Git namespaces to distinguish identically named branches, remotes, and tags. Log tabs store only filters/selection; switching reuses the same panel and reloads visible data. Roots applies to all tabs.
+**Log: multiple commit graphs on one screen.** Each repository starts from local branches, remote-tracking branches, tags, and valid HEAD. `git log --date-order` produces a topologically valid sequence; sequences are then merged by their head timestamps. [Graph metadata](../src/log/model/graph/load.rs) reads full object IDs, parents, and branch/tag decorations once per history load, without loading all messages or authors. Its cached permanent ordering keeps fragment colors stable when older commits are outside the display page. [Graph topology](../src/log/model/graph.rs) matches real parents/children by repository ID + object ID. Each parent edge remains independent until its parent commit. [Layout](../src/log/model/graph/layout.rs) orders branch heads by Git reference priority, assigns DFS fragment indices, and sorts each row's node and passing edges using IDEA's endpoint comparator. Removing a node or folding a long edge changes the next row's positions; adjacent half-row segments share one boundary coordinate. The compact projection is prepared with history; the expanded projection is cached lazily. [Character rendering](../src/log/model/graph/render.rs) draws only the viewport with one horizontal origin, separating crossings from commit joins. [Colors](../src/log/model/graph/color.rs) use reference names and fragment indices, independently of screen columns. Text/hash filtering keeps the loaded topology's ordering/colors and includes only real edges with both endpoints visible. The default is 160 commits per repository, capped at 3,200. Text/hash filter changes do not reload all history; `regex-lite` matches in memory. Queries use full ref names across repositories and Git namespaces to distinguish identically named branches, remotes, and tags. Log tabs store only filters/selection; switching reuses the same panel and reloads visible data. Roots applies to all tabs.
 
 The [Branch menu](../src/log/branches.rs) builds candidates from loaded refs within the current tab's Roots, listing each full ref once across repositories. Hover, submenu scrolling, and search do not run Git. `branch-favorites.json` in workspace state stores only manual star preferences, atomically replaced through a temporary file without changing repository configuration. Each Log tab has its own [branch expression](../src/log/model/branch_filter.rs). Full refs resolve per repository before queries; history and reachability use identical starts/exclusions. Cherry comparison is enabled only for one unambiguous branch.
 
@@ -213,6 +246,8 @@ The [Branch menu](../src/log/branches.rs) builds candidates from loaded refs wit
 Loaded refs remain cached in `History`; the [reference tree](../src/log/refs.rs) intersects global Roots, tab-local Roots, and `PathFilter::for_root` before aggregating rows and ownership metadata. Cached Roots changes rebuild both history visibility and the reference tree without new Git queries. Applied paths, refresh, and tab restoration rebuild refs through the existing reload paths; the tree's repository scope does not depend on matching commits.
 
 The commit-list cursor moves in memory. During continuous navigation, [detail loading](../src/log/preview.rs) waits for selection to remain stable for 60ms, then reads changed files, body, and containing branches and builds the file tree in the background. At most one detail query runs at a time, with only the latest pending row retained. Selection changes/refresh invalidate older requests. Branches reload even when the SHA remains identical across refresh. Shell handles queued consecutive movement keys in order and redraws their final position once; before other actions it redraws, so mouse hit testing sees the current row.
+
+[Commit actions](../src/log/actions.rs) capture one row's root, worktree path and full OID independently of filters, viewport and preview. Names and messages use the [shared Log editor](../src/log/input.rs); Shell confirms a single-use [operation plan](../src/log/operations.rs). Execution rechecks scope, target, branch/HEAD and operation eligibility. Ref creation uses the immutable commit; checkout suppresses submodule recursion and protects ignored files. Undo resets softly. Revert and older history rewrites preflight tracked changes and paths that may be overwritten. The rebase todo names only commits in the reviewed linear range and disables automatic ref updates, autosquash and autostash. Editing the tip amends only the message. Git owns ref and index locking and retains native conflict state. The result refreshes Log, Commit, Branch data and Conflicts.
 
 [Historical merge details](../src/log/model/merge_diff.rs) read the combined changed paths plus each parent-to-result path list, preserving NUL-delimited byte paths and a parent index for each leaf. The combined list follows [Git combined diff semantics](https://git-scm.com/docs/git-diff#_combined_diff_format): only paths modified against all parents appear there. File lists and parent subjects load in the existing preview worker, with the same generation invalidation. Every selected file reads exact `ls-tree` entries and immutable blobs through `cat-file`, capped at 512 KiB each; no index, working file, merge operation or clean/smudge filter supplies its contents. Missing entries are empty sides with explicit labels. The selected commit determines the presentation: two parents use the same three versions from every file group; an ordinary commit compares its parent and itself in two panes. Initial commits have an empty Before source. Unsupported text/object types fall back to a bounded patch; in that fallback, parent leaves still select the corresponding parent explicitly.
 

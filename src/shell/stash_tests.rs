@@ -11,23 +11,44 @@ fn stash_operations_confirm_cancel_remap_and_refresh_the_current_entry() {
     finish(&mut app);
     let before = snapshot(&repo);
     let entries = git(&repo, &["stash", "list"]).unwrap();
-    for (shortcut, title) in [
-        ('a', "Apply stash"),
-        ('P', "Pop stash"),
-        ('d', "Drop stash"),
+    for (shortcut, title, consequence, button) in [
+        ('a', "Apply stash", "Keeps the stash", "Apply"),
+        ('P', "Pop stash", "Drops after a successful apply", "Pop"),
+        ('d', "Drop stash", "Cannot be undone from IGit.", "Drop"),
     ] {
         app.dispatch(&key(KeyCode::Char(shortcut)));
         assert!(
-            matches!(&app.pop, Some(Popup::Confirm { title: actual, yes: false, owner: Stash, .. }) if actual == title)
+            matches!(&app.pop, Some(Popup::Confirm { title: actual, yes: true, owner: Stash, .. }) if actual == title)
         );
         for (width, height) in [(120, 36), (80, 24), (44, 12)] {
             let text = screen(&mut app, width, height);
+            let (primary, _) = app.pop_hits.iter().find(|(_, id)| *id == 1).unwrap();
+            let footer = text.lines().nth(usize::from(primary.y)).unwrap();
             assert!(
-                text.contains(title) && text.contains("Cancel") && text.contains("Confirm"),
+                text.contains(title)
+                    && text.contains(consequence)
+                    && text.contains("Repository")
+                    && footer.contains("Cancel")
+                    && footer.contains(button)
+                    && !footer.contains("Confirm"),
                 "{text}"
             );
         }
-        app.dispatch(&key(KeyCode::Enter)); // Cancel owns initial focus.
+        assert!(app
+            .help_content()
+            .sections
+            .iter()
+            .flat_map(|section| section.bindings)
+            .all(|(shortcut, _)| !matches!(*shortcut, "y" | "n")));
+        for ch in ['y', 'n'] {
+            app.dispatch(&key(KeyCode::Char(ch)));
+            assert!(matches!(
+                &app.pop,
+                Some(Popup::Confirm { owner: Stash, .. })
+            ));
+        }
+        app.dispatch(&key(KeyCode::Tab));
+        app.dispatch(&key(KeyCode::Enter));
         assert!(app.pop.is_none());
         assert_eq!(snapshot(&repo), before);
         assert_eq!(git(&repo, &["stash", "list"]).unwrap(), entries);
@@ -47,12 +68,54 @@ fn stash_operations_confirm_cancel_remap_and_refresh_the_current_entry() {
         assert!(matches!(&app.pop, Some(Popup::Confirm { title: actual, .. }) if actual == title));
         app.dispatch(&key(KeyCode::Esc));
     }
+    app.dispatch(&key(KeyCode::F(8)));
+    app.dispatch(&key(KeyCode::Enter));
+    assert!(app.msg.contains("Applied stash"), "{}", app.msg);
+    assert_eq!(git(&repo, &["stash", "list"]).unwrap(), entries);
+    let applied = snapshot(&repo);
+    assert_ne!(applied, before);
+
     app.dispatch(&key(KeyCode::F(10)));
-    app.dispatch(&key(KeyCode::Char('y')));
+    app.dispatch(&key(KeyCode::Enter));
     assert!(app.msg.contains("Dropped stash"), "{}", app.msg);
     assert!(git(&repo, &["stash", "list"]).unwrap().is_empty());
     assert!(screen(&mut app, 80, 24).contains("No stashes"));
+    assert_eq!(snapshot(&repo), applied);
+}
+
+#[test]
+fn stash_review_scrolls_to_full_details_with_the_consequence_and_cancel_still_visible() {
+    let (_temp, mut app) = fixture();
+    save(&app);
+    let repo = app.ctx.repos[0].path.clone();
+    let head = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+    let before = snapshot(&repo);
+    let entries = git(&repo, &["stash", "list"]).unwrap();
+    app.go(Stash);
+    app.dispatch(&key(KeyCode::Char('a')));
+    let first = screen(&mut app, 44, 12);
+    assert!(first.contains("j/k Scroll") && !first.contains("Current HEAD"));
+    for _ in 0..32 {
+        app.dispatch(&key(KeyCode::Char('j')));
+        screen(&mut app, 44, 12);
+    }
+    let last = screen(&mut app, 44, 12);
+    assert!(
+        last.contains("Keeps the stash") && last.contains("Current HEAD"),
+        "{last}"
+    );
+    assert!(last.contains(&head[head.len() - 8..]), "{last}");
+
+    let (cancel, _) = app.pop_hits.iter().find(|(_, id)| *id == 0).unwrap();
+    app.dispatch(&Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: cancel.x + 1,
+        row: cancel.y,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert!(app.pop.is_none());
     assert_eq!(snapshot(&repo), before);
+    assert_eq!(git(&repo, &["stash", "list"]).unwrap(), entries);
 }
 
 #[test]
@@ -82,7 +145,7 @@ fn stash_pop_conflicts_refresh_commit_and_conflicts_and_keep_the_saved_entry() {
     let entries = git(&repo, &["stash", "list"]).unwrap();
     app.go(Stash);
     app.dispatch(&key(KeyCode::Char('P')));
-    app.dispatch(&key(KeyCode::Char('y')));
+    app.dispatch(&key(KeyCode::Enter));
     assert!(
         app.msg.contains("Stash kept") && app.msg.contains("Conflicts tab"),
         "{}",

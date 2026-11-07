@@ -98,9 +98,12 @@ fn update_panels_fit_controls_columns_and_repository_icons_in_all_modes() {
                     text.contains("11 ready") && text.contains("11 in Roots"),
                     "{text}"
                 );
-                assert!(text.contains(&format!("y {} 11", kind.label())), "{text}");
                 assert!(
-                    text.contains("n Cancel") && text.contains("Details"),
+                    text.contains(&format!("{} 11", kind.label()))
+                        && !text.contains(&format!("y {} 11", kind.label()))
+                        && text.contains("Cancel")
+                        && !text.contains("n Cancel")
+                        && text.contains("Details"),
                     "{text}"
                 );
                 assert!(
@@ -219,7 +222,8 @@ fn update_empty_and_unavailable_repositories_disable_confirmation() {
         let (_, hits, text) = draw(&mut dialog, 44, 12, IconMode::Ascii);
         assert!(text.contains("0 ready"));
         assert!(!hits.iter().any(|(_, id)| *id == CONFIRM));
-        assert!(!dialog.event(&key(K::Char('y')), None));
+        assert!(!dialog.event(&key(K::Tab), None));
+        assert!(dialog.event(&key(K::Enter), None));
         assert!(matches!(dialog.stage, Stage::Review(_)));
         if count == 0 {
             assert!(text.contains("No repositories in Roots"));

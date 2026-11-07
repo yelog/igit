@@ -1,6 +1,7 @@
 //! Exercise the rendered cells and actual input dispatch together.
 mod branch_menu;
 mod column_order;
+mod commit_actions;
 mod merge_diff;
 mod panes;
 mod path_selection;
@@ -751,7 +752,7 @@ fn view_options_long_edges_restore_rails_and_shortcut_arrows_jump_to_the_real_en
         refs: "HEAD".into(),
         ..Default::default()
     });
-    p.hist.revs.extend((0..20).map(|i| model::Rev {
+    p.hist.revs.extend((0..40).map(|i| model::Rev {
         oid: format!("side{i}"),
         ..Default::default()
     }));
@@ -762,41 +763,52 @@ fn view_options_long_edges_restore_rails_and_shortcut_arrows_jump_to_the_real_en
     p.rebuild_visible(None).unwrap();
     let mut t = Terminal::new(TestBackend::new(120, 36)).unwrap();
     render(&mut p, &mut t, &c);
-    let old = target(&p, |h| matches!(h, Hit::GraphJump(21)));
+    let old = target(&p, |h| matches!(h, Hit::GraphJump(41)));
     assert_eq!(row_text(&t, old), "v");
     p.toggle_view_menu();
     p.view_menu_hit(display::MenuHit::MoveColumn(display::Column::Graph, 1), &c)
         .unwrap();
     p.toggle_view_menu();
     render(&mut p, &mut t, &c);
-    let down = target(&p, |h| matches!(h, Hit::GraphJump(21)));
+    let down = target(&p, |h| matches!(h, Hit::GraphJump(41)));
     assert!(down.x > old.x && down.y == old.y);
     assert_eq!(row_text(&t, down), "v");
     click_at(&mut p, old, &c);
-    assert_eq!(p.cursor, 2, "former arrow only selects its row");
+    assert_eq!(p.cursor, 1, "former arrow only selects its row");
     view_column(&mut p, display::Column::Graph, &c);
     render(&mut p, &mut t, &c);
     assert!(!p.hits.iter().any(|(_, h)| matches!(h, Hit::GraphJump(_))));
     view_column(&mut p, display::Column::Graph, &c);
     render(&mut p, &mut t, &c);
-    assert_eq!(target(&p, |h| matches!(h, Hit::GraphJump(21))), down);
+    assert_eq!(target(&p, |h| matches!(h, Hit::GraphJump(41))), down);
     let middle = target(&p, |h| matches!(h, Hit::Commit(10)));
-    assert_eq!(t.backend().buffer()[(down.x, middle.y)].symbol(), " ");
+    assert_eq!(
+        t.backend().buffer()[(down.x, middle.y)].symbol(),
+        "*",
+        "folding reclaims the empty lane"
+    );
     click_at(&mut p, down, &c);
     assert_eq!(p.rev().unwrap().oid, "parent");
     p.options.long_edges = true;
+    p.cursor = 0;
+    p.graph_top = 0;
     render(&mut p, &mut t, &c);
-    assert!(!p.hits.iter().any(|(_, h)| matches!(h, Hit::GraphJump(_))));
+    assert!(p.hits.iter().any(|(_, h)| matches!(h, Hit::GraphJump(41))));
     assert_eq!(t.backend().buffer()[(down.x, middle.y)].symbol(), "|");
 
-    // A second child joins the shared rail in its middle. Shortening that run
-    // would leave the incoming horizontal connection dangling.
+    // A second child retains its own edge and endpoint arrows to the parent.
     p.options.long_edges = false;
     p.hist.revs[5].parents = vec!["parent".into()];
     p.rebuild_visible(None).unwrap();
     render(&mut p, &mut t, &c);
-    assert!(!p.hits.iter().any(|(_, h)| matches!(h, Hit::GraphJump(_))));
-    assert_eq!(t.backend().buffer()[(down.x, middle.y)].symbol(), "|");
+    assert_eq!(
+        p.hits
+            .iter()
+            .filter(|(_, h)| matches!(h, Hit::GraphJump(41)))
+            .count(),
+        2
+    );
+    assert_eq!(t.backend().buffer()[(down.x, middle.y)].symbol(), "*");
 }
 
 #[test]
@@ -1479,9 +1491,9 @@ fn dense_graph_keeps_one_origin_per_frame_and_pans_to_the_selected_node() {
 
     // A terminal that supports private connected dots must still respect an
     // explicit fallback for nodes, edges, and both kinds of offscreen marker.
-    for (mode, head, dot, rail, bend, right_node, right_rail, left_node) in [
-        (IconMode::Unicode, "◉", "●", "│", "╮", '▶', '›', '◀'),
-        (IconMode::Ascii, "@", "*", "|", "\\", ']', '>', '['),
+    for (mode, head, dot, rail, right_node, right_rail, left_node) in [
+        (IconMode::Unicode, "◉", "●", "│", '▶', '›', '◀'),
+        (IconMode::Ascii, "@", "*", "|", ']', '>', '['),
     ] {
         p.icons = mode;
         for width in [120, 80, 180] {
@@ -1503,8 +1515,7 @@ fn dense_graph_keeps_one_origin_per_frame_and_pans_to_the_selected_node() {
             p.cursor = 1;
             render(&mut p, &mut t, &c);
             assert!(row_text(&t, merge).contains(left_node));
-            let x = cell_col(&t, right_tip, dot);
-            assert_eq!(t.backend().buffer()[(x, merge.y)].symbol(), bend);
+            cell_col(&t, right_tip, dot);
             let origin = p.graph_origin;
             p.cursor = 2; // next parent is in the adjacent lane already on screen
             render(&mut p, &mut t, &c);

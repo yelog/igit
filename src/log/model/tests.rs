@@ -474,11 +474,14 @@ fn graph_colors_follow_real_merge_lanes_and_clone_objects_stay_separate() {
             .position(|(c, _)| matches!(c, '●' | '◉'))
             .unwrap()
     };
-    assert_eq!(bands[0][0], ('◉', 0));
-    assert!(bands[0].iter().any(|&(c, color)| c == '╮' && color != 0));
-    assert_eq!(bands[row(&main)][dot(&bands[row(&main)])].1, 0);
-    assert_ne!(bands[row(&topic)][dot(&bands[row(&topic)])].1, 0);
-    assert_eq!(bands[row(&base)][0], ('●', 0));
+    let main_color = bands[0][0].1;
+    assert_eq!(bands[0][0].0, '◉');
+    assert!(bands[0]
+        .iter()
+        .any(|&(c, color)| c != ' ' && color != main_color));
+    assert_eq!(bands[row(&main)][dot(&bands[row(&main)])].1, main_color);
+    assert_ne!(bands[row(&topic)][dot(&bands[row(&topic)])].1, main_color);
+    assert_eq!(bands[row(&base)][0], ('●', main_color));
 
     let clone = tmp.path().join("two");
     g(
@@ -511,9 +514,14 @@ fn graph_colors_follow_real_merge_lanes_and_clone_objects_stay_separate() {
     let bands = draw(&rows);
     let head = rows.iter().position(|r| r.is_head_tip()).unwrap();
     assert_eq!(dot(&bands[head]), 0);
-    // At the merge, this incoming topic joins from above while another parent
-    // can leave to the right on the very same row.
-    assert!(bands[head].iter().any(|(c, _)| matches!(c, '╯' | '┴')));
+    // The unmerged branch joins the real HEAD from the preceding row while
+    // HEAD's two parents leave toward distinct positions in the next row.
+    let g = Graph::new(&rows);
+    let w = g.window(0..rows.len(), head, 80, 0);
+    assert!(g
+        .cells(head, w, NodeGlyphs::Connected, true)
+        .iter()
+        .any(|&(ch, _)| !matches!(ch, ' ' | '│')));
 }
 
 fn graph_rev(id: &str, parents: &[&str]) -> Rev {
@@ -545,15 +553,20 @@ fn graph_lines(rows: &[Rev], glyphs: NodeGlyphs) -> Vec<String> {
 }
 
 #[test]
-fn many_tips_pointing_at_one_parent_share_the_run_to_it() {
+fn many_tips_pointing_at_one_parent_keep_their_independent_edges() {
     let mut rows: Vec<_> = (0..20)
         .map(|i| graph_rev(&i.to_string(), &["base"]))
         .collect();
     rows.push(graph_rev("base", &[]));
     let lines = graph_lines(&rows, NodeGlyphs::Unicode);
-    assert_eq!(lines[0], "●  ");
-    assert!(lines[1..20].iter().all(|line| line == "├─●"));
-    assert_eq!(lines[20], "●  ");
+    assert_eq!(lines[0].chars().count(), 39);
+    for (i, line) in lines[..20].iter().enumerate() {
+        assert_eq!(line.chars().position(|ch| ch == '●'), Some(2 * i));
+        assert!(!line
+            .chars()
+            .any(|ch| matches!(ch, '├' | '┤' | '┬' | '┴' | '┼')));
+    }
+    assert_eq!(lines[20].chars().next(), Some('●'));
 }
 
 #[test]
@@ -566,7 +579,7 @@ fn compacting_an_outer_track_draws_the_bend_and_filter_gaps_stay_open() {
         graph_rev("C", &[]),
     ];
     let lines = graph_lines(&rows, NodeGlyphs::Unicode);
-    assert_eq!(&lines[2..], ["● │", "●─╯", "●  "]);
+    assert_eq!(&lines[2..], ["●╭╯", "●╯ ", "●  "]);
 
     rows.remove(3); // A's real parent B is not a visible row. C cannot replace B.
     let lines = graph_lines(&rows, NodeGlyphs::Unicode);
@@ -575,23 +588,23 @@ fn compacting_an_outer_track_draws_the_bend_and_filter_gaps_stay_open() {
 }
 
 #[test]
-fn a_merge_can_continue_below_its_node_after_its_first_parent_joins_the_trunk() {
+fn a_merge_keeps_both_parent_connections_until_their_actual_commits() {
     let rows = [
         graph_rev("head", &["base"]),
         graph_rev("merge", &["base", "topic"]),
         graph_rev("topic", &["base"]),
         graph_rev("base", &[]),
     ];
-    assert_eq!(
-        graph_lines(&rows, NodeGlyphs::Unicode),
-        ["●  ", "├─●", "├─●", "●  "]
-    );
-    // The merge and topic are in the same column, with different real ports:
-    // the merge connects left and down, the topic left and up.
-    assert_eq!(
-        &graph_lines(&rows, NodeGlyphs::Connected)[1..3],
-        ["├─\u{f5fe}", "├─\u{f602}"]
-    );
+    let lines = graph_lines(&rows, NodeGlyphs::Unicode);
+    let columns: Vec<_> = lines
+        .iter()
+        .map(|line| line.chars().position(|ch| ch == '●').unwrap())
+        .collect();
+    assert_eq!(columns, [0, 2, 4, 0]);
+    let connected = graph_lines(&rows, NodeGlyphs::Connected);
+    // A first parent goes down independently; a second parent leaves right.
+    assert_eq!(connected[1].chars().nth(2), Some('\u{f5fc}'));
+    assert!(!lines.iter().any(|line| line.contains('├')));
 }
 
 #[test]

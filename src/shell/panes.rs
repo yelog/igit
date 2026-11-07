@@ -49,7 +49,7 @@ impl Shell {
             Log => self.log.focused_pane(),
             Push => self.push.focused_pane(),
             Conflicts => self.merge.focused_pane(),
-            Branch => PaneId::Branches,
+            Branch => self.branch.focused_pane(),
             Stash => self.stash.focused_pane(),
         }
     }
@@ -59,7 +59,7 @@ impl Shell {
             Log => self.log.focus_pane(id),
             Push => self.push.focus_pane(id),
             Conflicts => self.merge.focus_pane(id),
-            Branch => (),
+            Branch => self.branch.focus_pane(id),
             Stash => self.stash.focus_pane(id),
         }
     }

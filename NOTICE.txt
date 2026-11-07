@@ -1,0 +1,14 @@
+IGit's graph layout and color calculations include Rust adaptations of
+IntelliJ IDEA graph algorithms.
+
+This software includes code from IntelliJ IDEA
+Copyright (C) JetBrains s.r.o.
+https://www.jetbrains.com/idea/
+
+Adapted components: GraphLayoutBuilder, GraphElementComparatorByLayoutIndex,
+PrintElementGeneratorImpl, GitRefManager, GraphColorManagerImpl, and
+DefaultColorGenerator. The adaptations replace JVM graph objects/caches with
+repository-qualified Rust topology and terminal row projections/rendering.
+
+These components are provided under the Apache License, Version 2.0.
+See licenses/Apache-2.0.txt and docs/plans/2026-11-07-idea-graph-topology.md.

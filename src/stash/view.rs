@@ -10,6 +10,21 @@ use ratatui::{
 };
 
 impl StashPanel {
+    pub(crate) fn draw_review(
+        &self,
+        f: &mut Frame,
+        area: Rect,
+        scroll: &mut u16,
+        confirm_focused: bool,
+        hits: &mut Vec<(Rect, usize)>,
+    ) -> bool {
+        let Some(review) = &self.review else {
+            return false;
+        };
+        review.draw(f, area, self.icons, scroll, confirm_focused, hits);
+        true
+    }
+
     pub(super) fn draw_content(&mut self, f: &mut Frame, area: Rect, c: &Context) {
         self.hits.clear();
         self.panes.begin();

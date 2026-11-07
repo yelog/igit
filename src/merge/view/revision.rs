@@ -162,32 +162,58 @@ impl RevisionDiff {
         file: usize,
         count: usize,
     ) {
+        self.draw_comparison(f, area, icons, Some((file, count)));
+    }
+
+    pub(crate) fn draw_inline(&mut self, f: &mut Frame, area: Rect, icons: IconMode) {
+        self.draw_comparison(f, area, icons, None);
+    }
+
+    fn draw_comparison(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        icons: IconMode,
+        files: Option<(usize, usize)>,
+    ) {
+        let inline = files.is_none();
         self.hits.clear();
         self.code_areas.fill(Rect::default());
         self.view.tracks.clear();
         f.render_widget(Clear, area);
         fill(f, area, EDITOR_BG);
-        if area.width < 16 || area.height < 6 {
-            put(f, area, "Diff · Esc Close", style(FG));
+        if area.width < 16 || area.height < if inline { 4 } else { 6 } {
+            put(
+                f,
+                area,
+                if inline { "Diff" } else { "Diff · Esc Close" },
+                style(FG),
+            );
             return;
         }
         let ascii = icons == IconMode::Ascii;
-        let [title, toolbar, body, footer] =
-            Layout::vertical([C::Length(1), C::Length(1), C::Min(3), C::Length(1)]).areas(area);
-        fill(f, title, CHROME);
-        let mut title_space = title;
-        let close = right(&mut title_space, 7.min(title.width));
-        put(f, close, " Close ", style(MUTED).bg(CHROME));
-        self.hits.push((close, Target::Close));
-        put(
-            f,
-            title_space,
-            clipped(
-                &format!(" Repository Diff: {}", self.name),
-                title_space.width as usize,
-            ),
-            style(FG).bg(CHROME),
-        );
+        let (toolbar, body, footer) = if inline {
+            let [toolbar, body] = Layout::vertical([C::Length(1), C::Min(3)]).areas(area);
+            (toolbar, body, None)
+        } else {
+            let [title, toolbar, body, footer] =
+                Layout::vertical([C::Length(1), C::Length(1), C::Min(3), C::Length(1)]).areas(area);
+            fill(f, title, CHROME);
+            let mut title_space = title;
+            let close = right(&mut title_space, 7.min(title.width));
+            put(f, close, " Close ", style(MUTED).bg(CHROME));
+            self.hits.push((close, Target::Close));
+            put(
+                f,
+                title_space,
+                clipped(
+                    &format!(" Repository Diff: {}", self.name),
+                    title_space.width as usize,
+                ),
+                style(FG).bg(CHROME),
+            );
+            (toolbar, body, Some(footer))
+        };
 
         fill(f, toolbar, TOOLBAR);
         let mut tools = toolbar;
@@ -201,7 +227,18 @@ impl RevisionDiff {
                 if self.changes.len() == 1 { "" } else { "s" }
             )
         };
-        if tools.width >= 70 {
+        let fold = if self.view.folding {
+            " Unfold "
+        } else {
+            " Fold "
+        };
+        let zoom = if self.zoom { " Split " } else { " Zoom " };
+        let summary_min_width = if inline {
+            (6 + fold.width() + zoom.width() + summary.width()) as u16
+        } else {
+            70
+        };
+        if tools.width >= summary_min_width {
             let status = right(&mut tools, summary.width() as u16);
             put(f, status, summary, style(MUTED).bg(TOOLBAR));
         }
@@ -219,31 +256,17 @@ impl RevisionDiff {
             Target::Change(1),
             current != self.changes.len().checked_sub(1) && !self.changes.is_empty(),
         );
-        self.button(f, &mut tools, " < ", Target::File(-1), file > 0);
-        let counter = format!("{}/{} files", file + 1, count);
-        if tools.width >= counter.width() as u16 {
-            let at = left(&mut tools, counter.width() as u16);
-            put(f, at, counter, style(ACCENT).bg(TOOLBAR));
+        if let Some((file, count)) = files {
+            self.button(f, &mut tools, " < ", Target::File(-1), file > 0);
+            let counter = format!("{}/{} files", file + 1, count);
+            if tools.width >= counter.width() as u16 {
+                let at = left(&mut tools, counter.width() as u16);
+                put(f, at, counter, style(ACCENT).bg(TOOLBAR));
+            }
+            self.button(f, &mut tools, " > ", Target::File(1), file + 1 < count);
         }
-        self.button(f, &mut tools, " > ", Target::File(1), file + 1 < count);
-        self.button(
-            f,
-            &mut tools,
-            if self.view.folding {
-                " Unfold "
-            } else {
-                " Fold "
-            },
-            Target::FoldAll,
-            true,
-        );
-        self.button(
-            f,
-            &mut tools,
-            if self.zoom { " Split " } else { " Zoom " },
-            Target::Zoom,
-            true,
-        );
+        self.button(f, &mut tools, fold, Target::FoldAll, true);
+        self.button(f, &mut tools, zoom, Target::Zoom, true);
 
         let split = area.width >= if self.three_way { 72 } else { 48 } && !self.zoom;
         let cols = if split {
@@ -262,7 +285,7 @@ impl RevisionDiff {
         };
         let map = RowMap::new(&self.chunks, &self.view, None);
         self.total = map.total;
-        self.page = body.height.saturating_sub(3) as usize;
+        self.page = body.height.saturating_sub(if inline { 2 } else { 3 }) as usize;
         if self.follow {
             let section = &map.sections[self.selected];
             self.scroll = keep_visible(
@@ -287,7 +310,25 @@ impl RevisionDiff {
             } else {
                 revision
             };
-            let caption = format!(" {} {}  {role}", icons.glyph(Icon::Locked), short);
+            let mut caption = format!(" {} {}  {role}", icons.glyph(Icon::Locked), short);
+            if inline {
+                if pane == 1 {
+                    let name = if caption.width() + 2 + self.name.width() <= col.width as usize {
+                        self.name.as_str()
+                    } else {
+                        self.name.rsplit('/').next().unwrap_or(&self.name)
+                    };
+                    if caption.width() + 2 + name.width() <= col.width as usize {
+                        caption.push_str("  ");
+                        caption.push_str(name);
+                    }
+                }
+                let note = &self.annotations[pane];
+                if !note.is_empty() && caption.width() + 3 + note.width() <= col.width as usize {
+                    caption.push_str(" · ");
+                    caption.push_str(note);
+                }
+            }
             put(
                 f,
                 heading,
@@ -299,12 +340,14 @@ impl RevisionDiff {
                 }),
             );
             self.hits.push((heading, Target::Pane(pane)));
-            put(
-                f,
-                rect(col.x, col.y + 1, col.width, 1),
-                clipped(&format!(" {}", self.annotations[pane]), col.width as usize),
-                style(MUTED),
-            );
+            if !inline {
+                put(
+                    f,
+                    rect(col.x, col.y + 1, col.width, 1),
+                    clipped(&format!(" {}", self.annotations[pane]), col.width as usize),
+                    style(MUTED),
+                );
+            }
             if split && pane > 0 {
                 for y in col.y + 1..col.bottom() {
                     put(
@@ -316,7 +359,15 @@ impl RevisionDiff {
                 }
             }
             let numbers = map.numbers[pane].max(1).ilog10() as u16 + 1;
-            let metrics = Columns::read_only(pane, col, numbers, split);
+            let mut metrics = Columns::read_only(pane, col, numbers, split);
+            if inline {
+                // The inline view has one revision heading and no annotation
+                // row. Keep the same gutters and scrollbar, reclaiming its row.
+                for area in [&mut metrics.code, &mut metrics.numbers, &mut metrics.rail] {
+                    area.y -= 1;
+                    area.height += 1;
+                }
+            }
             let width = metrics.code.width as usize;
             self.view.limits[pane] = map.widths[pane].saturating_sub(width);
             self.view.hscroll[pane] = self.view.hscroll[pane].min(self.view.limits[pane]);
@@ -409,20 +460,22 @@ impl RevisionDiff {
                 );
             }
         }
-        fill(f, footer, CHROME);
-        let hint = if footer.width >= 105 {
-            " Esc Close · Tab Pane · n/p Change · [/] File · f Fold · z Zoom · h/l Scroll · y Copy"
-        } else if footer.width >= 65 {
-            " Esc Close · Tab Pane · n/p Change · [/] File · f Fold · z Zoom"
-        } else {
-            " Esc Close · Tab Pane · n/p Change"
-        };
-        put(
-            f,
-            footer,
-            clipped(hint, footer.width as usize),
-            style(MUTED).bg(CHROME),
-        );
+        if let Some(footer) = footer {
+            fill(f, footer, CHROME);
+            let hint = if footer.width >= 105 {
+                " Esc Close · Tab Pane · n/p Change · [/] File · f Fold · z Zoom · h/l Scroll · y Copy"
+            } else if footer.width >= 65 {
+                " Esc Close · Tab Pane · n/p Change · [/] File · f Fold · z Zoom"
+            } else {
+                " Esc Close · Tab Pane · n/p Change"
+            };
+            put(
+                f,
+                footer,
+                clipped(hint, footer.width as usize),
+                style(MUTED).bg(CHROME),
+            );
+        }
     }
 
     fn activate(&mut self, target: Target) -> RevisionEvent {

@@ -1,9 +1,121 @@
 use super::{test_support::*, *};
-use crate::core::git;
+use crate::{core::git, ui::panes::PaneId};
 use crossterm::event::MouseEvent;
 
 fn ready(app: &mut Shell) {
     app.branch.finish_loading(&app.ctx);
+}
+
+#[test]
+fn branch_layout_tracks_roots_and_keeps_actions_on_the_selected_repository() {
+    let (temp, single) = fixture();
+    let first = single.ctx.repos[0].path.clone();
+    let second = first.parent().unwrap().join("tools");
+    std::fs::create_dir(&second).unwrap();
+    git(&second, &["init", "-q", "-b", "main"]).unwrap();
+    git(
+        &second,
+        &[
+            "-c",
+            "user.name=Branch tester",
+            "-c",
+            "user.email=branch@example.invalid",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--no-gpg-sign",
+            "--allow-empty",
+            "-qm",
+            "second base",
+        ],
+    )
+    .unwrap();
+    git(&first, &["branch", "first-only"]).unwrap();
+    git(&second, &["branch", "second-only"]).unwrap();
+    let first_before = snapshot(&first);
+    let second_before = snapshot(&second);
+    let mut ctx = Context::discover(temp.path()).unwrap();
+    ctx.state_dir = temp.path().join("branch-layout-state");
+    let mut app = Shell::unloaded(
+        ctx,
+        AppConfig {
+            icons: IconMode::Ascii,
+            ..AppConfig::default()
+        },
+    );
+    app.go(Branch);
+    ready(&mut app);
+    for (w, h) in [(120, 36), (80, 25), (44, 12)] {
+        let initial = screen(&mut app, w, h);
+        assert!(!initial.contains("second-only"), "{initial}");
+        assert!(
+            initial.contains("first-only") && initial.contains("Repositories"),
+            "{initial}"
+        );
+        assert!(
+            initial.contains("R repo") && initial.contains("R tools"),
+            "{initial}"
+        );
+        let left = app.branch.panes.rect(PaneId::BranchRepos).unwrap();
+        let right = app.branch.panes.rect(PaneId::Branches).unwrap();
+        assert_eq!(left.right(), right.x);
+    }
+    app.dispatch(&key(KeyCode::Tab));
+    assert_eq!(app.help_content().context(), "Branch / Repositories");
+    app.dispatch(&key(KeyCode::Char('j')));
+    let other = screen(&mut app, 120, 36);
+    assert!(other.contains("second-only") && !other.contains("first-only"));
+    app.dispatch(&key(KeyCode::Char('a')));
+    assert!(!app.branch.editing() && app.pop.is_none());
+    app.dispatch(&key(KeyCode::Enter));
+    assert_eq!(app.help_content().context(), "Branch / Branch Tree");
+    app.dispatch(&key(KeyCode::Char('a')));
+    app.dispatch(&Event::Paste("from-tools".into()));
+    app.dispatch(&key(KeyCode::Enter));
+    let Some(Popup::Confirm { body, .. }) = app.pop.as_ref() else {
+        panic!("Expected review: {}", app.msg);
+    };
+    assert!(body.contains(&format!("Path: {}", second.display())));
+    app.dispatch(&key(KeyCode::Char('y')));
+    assert!(git(&first, &["show-ref", "--verify", "refs/heads/from-tools"]).is_err());
+    assert_eq!(
+        git(&second, &["rev-parse", "from-tools"]).unwrap(),
+        second_before[0]
+    );
+    assert_eq!(snapshot(&first), first_before);
+    assert_eq!(snapshot(&second), second_before);
+    ready(&mut app);
+    screen(&mut app, 80, 25);
+    let left = app.branch.panes.rect(PaneId::BranchRepos).unwrap();
+    app.dispatch(&Event::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: left.x + 2,
+        row: left.y + 2,
+        modifiers: KeyModifiers::NONE,
+    }));
+    let first_again = screen(&mut app, 80, 25);
+    assert!(first_again.contains("first-only") && !first_again.contains("second-only"));
+    app.dispatch(&Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: left.x + 2,
+        row: left.y + 3,
+        modifiers: KeyModifiers::NONE,
+    }));
+    let second_again = screen(&mut app, 80, 25);
+    assert!(second_again.contains("second-only") && !second_again.contains("first-only"));
+    assert_eq!(app.help_content().context(), "Branch / Repositories");
+
+    app.global(0); // Roots
+    app.dispatch(&key(KeyCode::Char(' ')));
+    app.dispatch(&key(KeyCode::Enter));
+    assert_eq!(app.ctx.scope, BTreeSet::from([1]));
+    ready(&mut app);
+    let only = screen(&mut app, 120, 36);
+    assert!(only.contains("second-only"));
+    assert!(!only.contains("Repositories") && !only.contains("R tools"));
+    assert!(!only.contains(second.to_str().unwrap()));
+    assert!(app.branch.panes.rect(PaneId::BranchRepos).is_none());
+    assert_eq!(app.help_content().context(), "Branch / Branch Tree");
 }
 
 #[test]
@@ -105,10 +217,10 @@ fn branch_loading_rejects_old_roots_even_if_scope_changes_on_another_tab() {
     release();
     app.poll();
     let pending = screen(&mut app, 120, 36);
-    assert!(pending.contains("Loading branches") && !pending.contains("repo  [main]"));
+    assert!(pending.contains("Loading branches") && !pending.contains("Repositories"));
     ready(&mut app);
     let fresh = screen(&mut app, 120, 36);
-    assert!(fresh.contains("tools  [visible-only]") && !fresh.contains("repo  [main]"));
+    assert!(fresh.contains("visible-only (current)") && !fresh.contains("Repositories"));
 }
 
 #[test]
@@ -124,7 +236,7 @@ fn branch_gg_hint_cancels_on_context_changes_and_completes_without_git_writes() 
     assert_eq!(screen(&mut app, 80, 25), last);
     app.key_picker
         .poll(Instant::now() + Duration::from_millis(200));
-    assert!(screen(&mut app, 80, 25).contains("Go to first branch row"));
+    assert!(screen(&mut app, 80, 25).contains("Go to first row"));
     app.dispatch(&key(KeyCode::Enter));
     assert!(app.key_sequence().is_none());
     assert_ne!(screen(&mut app, 80, 25), last);
@@ -291,7 +403,10 @@ fn branch_review_cancel_and_confirm_refresh_current_branch_without_staging_chang
 #[test]
 fn branch_commands_can_be_remapped_without_leaking_into_name_input_or_roots() {
     let (_temp, fixture) = fixture();
-    let config = AppConfig::from_toml("[keybindings.global]\nfocus-branch=['F8']\n[keybindings.branch]\nrename=['R']\ncreate=['n']").unwrap();
+    let config = AppConfig::from_toml(
+        "[keybindings.global]\nfocus-branch=['F8']\n[keybindings.branch]\nrename=['R']\ncreate=['n']\nview-options=['F9']",
+    )
+    .unwrap();
     let mut app = Shell::with_config(fixture.ctx.clone(), config);
     app.dispatch(&key(KeyCode::Char('4')));
     assert_eq!(app.tab, Commit);
@@ -305,7 +420,22 @@ fn branch_commands_can_be_remapped_without_leaking_into_name_input_or_roots() {
     app.dispatch(&key(KeyCode::Esc));
     let text = screen(&mut app, 120, 36);
     assert!(text.contains("R Rename") && text.contains("n New"));
-    app.go(Commit);
+    app.dispatch(&key(KeyCode::Char('o')));
+    assert!(!app.branch.editing());
+    app.dispatch(&key(KeyCode::F(9)));
+    assert_eq!(app.help_content().context(), "Branch / Group By");
+    app.dispatch(&key(KeyCode::Char('n')));
+    assert_eq!(app.help_content().context(), "Branch / Group By");
+    screen(&mut app, 120, 36);
+    let commit = app.regions.tab(Commit);
+    app.dispatch(&Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: commit.x + 1,
+        row: commit.y,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert_eq!(app.tab, Commit);
+    assert!(!app.branch.editing());
     app.dispatch(&key(KeyCode::Char('r')));
     assert!(matches!(app.pop, Some(Popup::Scope { .. })));
 
@@ -366,7 +496,9 @@ fn branch_refresh_reads_external_refs_without_refreshing_unopened_history() {
     ready(&mut app);
     assert!(screen(&mut app, 120, 36).contains("Remote Branches  1"));
     app.dispatch(&key(KeyCode::Char('j'))); // current branch -> closed remote group
-    app.dispatch(&key(KeyCode::Char('l')));
+    app.dispatch(&key(KeyCode::Char('l'))); // open Remote Branches
+    app.dispatch(&key(KeyCode::Char('l'))); // move to origin
+    app.dispatch(&key(KeyCode::Char('l'))); // open origin
     assert!(screen(&mut app, 120, 36).contains("fetched"));
     assert!(matches!(app.log_load, startup::LogLoad::Dormant));
 }

@@ -8,35 +8,41 @@ use crate::core::{
 struct Loaded {
     repos: Vec<Repository>,
     tree: Tree,
-    upstream_width: Option<usize>,
 }
 
 impl Loaded {
-    fn read(jobs: Vec<(usize, Repo)>, tree: Tree, version: Version) -> Option<Self> {
+    fn read(
+        jobs: Vec<(usize, Repo)>,
+        root: Option<usize>,
+        tree: Tree,
+        version: Version,
+    ) -> Option<Self> {
         let repos = read_repositories(&jobs, &version, |(root, repo)| read_repo(*root, repo));
         if version.cancelled() {
             return None;
         }
-        Some(Self::build(repos, tree))
+        Some(Self::build(repos, root, tree))
     }
 
-    fn build(repos: Vec<Repository>, mut tree: Tree) -> Self {
-        tree.rebuild(&repos);
-        let upstream_width = rows::measure_upstream(&repos);
-        Self {
-            repos,
-            tree,
-            upstream_width,
-        }
+    fn build(repos: Vec<Repository>, root: Option<usize>, mut tree: Tree) -> Self {
+        tree.rebuild(repos.iter().find(|repo| Some(repo.root) == root));
+        Self { repos, tree }
     }
 }
 
 fn read_repo(root: usize, repo: &Repo) -> Repository {
+    let (state, default_branch) = match Snapshot::read_with_default(repo) {
+        Ok((snapshot, default_branch)) => (Ok(snapshot), default_branch),
+        Err(error) => (Err(format!("{error:#}")), None),
+    };
     Repository {
         root,
         name: repo.name.clone(),
         path: repo.path.clone(),
-        state: Snapshot::read(repo).map_err(|error| format!("{error:#}")),
+        submodule: repo.submodule,
+        upstream_widths: state.as_ref().ok().and_then(rows::measure_upstream),
+        default_branch,
+        state,
     }
 }
 
@@ -80,8 +86,13 @@ impl BranchPanel {
         self.loading.error = None;
         self.repos.clear();
         self.tree.clear_rows();
-        self.upstream_width = None;
-        self.top = 0;
+        self.repo_viewport = Viewport::default();
+        self.viewport = Viewport::default();
+        if c.scope.len() <= 1 {
+            self.focus = Focus::Branches;
+        }
+        self.panes.begin();
+        self.panes.cancel_drag();
         self.hits.clear();
         true
     }
@@ -89,6 +100,10 @@ impl BranchPanel {
     pub(super) fn request_load(&mut self, c: &Context) {
         self.clear_outdated_scope(c);
         self.cancel_key_sequence();
+        self.repo_root = self
+            .repo_root
+            .filter(|root| c.scope.contains(root))
+            .or_else(|| c.scope.first().copied());
         if !c.scope.is_empty() {
             self.loading.scope.get_or_insert_with(|| Scope::new(c));
             self.loading.task.request();
@@ -121,9 +136,9 @@ impl BranchPanel {
             match result {
                 Ok(Some(loaded)) => {
                     self.repos = loaded.repos;
-                    self.tree.install(loaded.tree, &self.repos);
-                    self.upstream_width = loaded.upstream_width;
-                    self.keep_cursor_visible();
+                    let repo = self.repository_index().map(|index| &self.repos[index]);
+                    self.tree.install(loaded.tree, repo);
+                    self.keep_branch_visible();
                     self.hits.clear();
                     changed = true;
                 }
@@ -141,8 +156,9 @@ impl BranchPanel {
                 .map(|&root| (root, c.repos[root].clone()))
                 .collect();
             let tree = self.tree.for_refresh();
+            let root = self.repo_root;
             if let Err(error) = self.loading.task.start("igit-branch-read", move |version| {
-                Loaded::read(jobs, tree, version)
+                Loaded::read(jobs, root, tree, version)
             }) {
                 self.loading.error = Some("Unable to load branches; press F5 to retry".into());
                 return Err(error);
@@ -169,7 +185,7 @@ impl BranchPanel {
             .iter()
             .map(|&root| read_repo(root, &c.repos[root]))
             .collect();
-        let loaded = Loaded::build(repos, self.tree.for_refresh());
+        let loaded = Loaded::build(repos, self.repo_root, self.tree.for_refresh());
         let send = self.loading.task.hold();
         move || assert!(send.send(Some(loaded)).is_ok(), "Branch read was abandoned")
     }

@@ -158,6 +158,7 @@ commands! {
         "screen-top" => "H", BRANCH;
         "screen-middle" => "M", BRANCH;
         "screen-bottom" => "L", BRANCH;
+        "view-options" => "o", BRANCH;
         "create" => "a", BRANCH;
         "delete" => "d", BRANCH;
         "checkout" => "Enter", BRANCH;
@@ -182,6 +183,8 @@ commands! {
         "copy-id" => "yy", LOG_GRAPH;
         "copy-message" => "ym", LOG_GRAPH;
         "copy-author" => "ya", LOG_GRAPH;
+        "commit-actions" => "a", LOG_GRAPH;
+        "edit-message" => "F2", LOG_GRAPH;
         "open" => "Enter", LOG;
         "search" => "/", LOG;
         "search-refs" => "S", LOG_REFS;
@@ -299,7 +302,7 @@ pub fn context(title: &str) -> u16 {
         "Log / Commits" => LOG_GRAPH,
         "Log / Branch Tree" => LOG_REFS,
         "Log / File Tree" => LOG_FILES,
-        "Log / Commit Details" => LOG_INFO,
+        "Log / Commit Details" | "Log / File History Diff" => LOG_INFO,
         "Commit / Changes" => CHANGES,
         "Commit / Message" => MESSAGE,
         "Commit / Preview" => PREVIEW,
@@ -308,7 +311,7 @@ pub fn context(title: &str) -> u16 {
         "Push / Diff and Details" => PUSH_DETAILS,
         "Merge / Conflicted Files" => MERGE_FILES,
         "Merge / Left Source" | "Merge / Result" | "Merge / Right Source" => MERGE_DOC,
-        "Branch / Branch Tree" => BRANCH,
+        "Branch / Branch Tree" | "Branch / Repositories" => BRANCH,
         "Stash / Repositories" => STASH_LIST,
         "Stash / File Tree" => STASH_FILES,
         _ => 0,

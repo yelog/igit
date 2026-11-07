@@ -412,7 +412,7 @@ impl Dialog {
             Stage::Results => return hit == Some(CANCEL) || matches!(key, Some(K::Esc | K::Enter)),
             Stage::Review(_) => (),
         }
-        if hit == Some(CANCEL) || matches!(key, Some(K::Esc | K::Char('n'))) {
+        if hit == Some(CANCEL) || key == Some(K::Esc) {
             return true;
         }
         if self.pull_review() {
@@ -423,14 +423,18 @@ impl Dialog {
                 self.strategy = Strategy::Rebase;
             }
         }
-        if self.ready > 0 && matches!(key, Some(K::Tab | K::BackTab | K::Left | K::Right)) {
+        if self.ready > 0
+            && matches!(
+                key,
+                Some(K::Tab | K::BackTab | K::Left | K::Right | K::Char('h' | 'l'))
+            )
+        {
             self.confirm_focused = !self.confirm_focused;
         }
         if key == Some(K::Enter) && !self.confirm_focused {
             return true;
         }
-        if self.ready > 0 && (hit == Some(CONFIRM) || matches!(key, Some(K::Enter | K::Char('y'))))
-        {
+        if self.ready > 0 && (hit == Some(CONFIRM) || key == Some(K::Enter)) {
             let Stage::Review(targets) = &mut self.stage else {
                 unreachable!()
             };
@@ -456,9 +460,10 @@ impl Dialog {
                     ("K", "Scroll details up"),
                     ("PageDown", "Next repository page"),
                     ("PageUp", "Previous repository page"),
+                    ("h", "Switch focused button"),
+                    ("l", "Switch focused button"),
                     ("Tab", "Switch focused button"),
                     ("Enter", "Activate selected button"),
-                    ("y", "Confirm workspace update"),
                     ("Esc", "Cancel workspace update"),
                 ],
             ),

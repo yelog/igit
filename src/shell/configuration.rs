@@ -2,6 +2,7 @@
 use super::*;
 use crate::config::keys::{self, CommandAction, Sequence};
 use crate::ui::key_sequence::PickerEvent;
+use crate::ui::panes::PaneId;
 
 struct Candidate {
     sequence: Sequence,
@@ -299,6 +300,10 @@ impl Shell {
     }
 
     pub(super) fn configured_footer(&self) -> String {
+        if self.tab == Log && self.log.file_history_preview_focused() {
+            return "[/] Revisions  n/p Changes  f Fold  z Zoom  Tab History  Esc Back  F1 Help"
+                .into();
+        }
         if self.tab == Stash {
             return format!(
                 "{} Apply  {} Pop  {} Drop  {} Panes  {} Diff  F1 Help",
@@ -310,8 +315,23 @@ impl Shell {
             );
         }
         if self.tab == Branch {
+            if self.branch.focused_pane() == PaneId::BranchRepos {
+                return format!(
+                    "{}/{} Repos  {} Branches  {} Panes  F1 Help",
+                    self.config.label("branch", "move-down"),
+                    self.config.label("branch", "move-up"),
+                    self.config.label("branch", "checkout"),
+                    self.config.label("panes", "focus-next"),
+                );
+            }
+            let repos = if self.branch.has_repository_pane() {
+                format!("{} Repos  ", self.config.label("panes", "focus-next"))
+            } else {
+                String::new()
+            };
             return format!(
-                "{} New  {} Delete  {} Switch  {} Merge  {} Rename  F1 Help",
+                "{repos}{} Group By  {} New  {} Delete  {} Switch  {} Merge  {} Rename  F1 Help",
+                self.config.label("branch", "view-options"),
                 self.config.label("branch", "create"),
                 self.config.label("branch", "delete"),
                 self.config.label("branch", "checkout"),
@@ -327,6 +347,14 @@ impl Shell {
         } else {
             String::new()
         };
+        if self.tab == Log && self.log.focused_pane() == PaneId::Graph {
+            return format!(
+                "{} Commit actions  {} Edit message  {} Diff{conflicts}  F1 Help",
+                self.config.label("log", "commit-actions"),
+                self.config.label("log", "edit-message"),
+                self.config.label("log", "open"),
+            );
+        }
         format!(
             "{} Pull  {} Fetch  {} Panes  {} Push{conflicts}  {} Actions  F1 Help",
             self.config.label("global", "pull"),

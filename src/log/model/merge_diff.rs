@@ -99,7 +99,7 @@ pub(in crate::log) struct Source {
     pub description: String,
 }
 
-fn source(repo: &Path, oid: &str, raw: &[u8]) -> Result<Source> {
+pub(in crate::log) fn source(repo: &Path, oid: &str, raw: &[u8]) -> Result<Source> {
     let path = path_from_bytes(raw)?;
     let output = crate::core::command(repo)
         .args(["--literal-pathspecs", "ls-tree", "-z", oid, "--"])
@@ -164,7 +164,8 @@ pub(in crate::log) fn sources(repo: &Path, rev: &Rev, file: &File) -> Result<[So
 
 pub(in crate::log) fn pair(repo: &Path, rev: &Rev, file: &File) -> Result<[Source; 2]> {
     let before = if let Some(parent) = rev.parents.first() {
-        source(repo, parent, &file.raw)?
+        let old_path = rev.file.as_ref().and_then(|f| f.before.as_deref());
+        source(repo, parent, old_path.unwrap_or(&file.raw))?
     } else {
         Source {
             text: String::new(),
