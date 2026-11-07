@@ -59,6 +59,8 @@ decimal rollover policy described in [Releasing](docs/releasing.md).
 - [`c186730`](https://github.com/yelog/igit/commit/c1867308a94d15c384ce7503aad51071725dcd0f) feat(workspace): add stash actions and improve branch navigation
 - [`f331685`](https://github.com/yelog/igit/commit/f3316854a5c3f3a0b73cc653d54955c90192cc66) feat: add log actions and file history with richer branch views
 - [`87a59f1`](https://github.com/yelog/igit/commit/87a59f1e5b837417fd40707edd3e53da87b1e4d1) fix(release): include third-party notices in release archives
+- [`553d499`](https://github.com/yelog/igit/commit/553d499479410a85fcf1557fe0adb3ffe69a9f80) chore(release): prepare v0.1.0
+- [`f356f4b`](https://github.com/yelog/igit/commit/f356f4bf141a1c22741c46de1569557617ca3a78) test: normalize submodule fixture URLs on Windows
 
 ## [0.1.0-beta.1] - 2026-11-06
 
