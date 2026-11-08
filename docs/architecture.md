@@ -138,12 +138,18 @@ prepares tree rows and measures the upstream column in its worker. The terminal
 installs current results using the latest cursor and fold choices. It retains
 cached rows within the same Roots; a changed scope clears the old rows.
 Opening/rescanning from the
-Actions menu still synchronously rebuilds context and panels. Subsequent Log
-history refresh and explicit patch opening, Commit snapshot/execution, and Merge
-reads/writes remain synchronous. Log commit details, Branch and Push reads,
-Push/Fetch, and AI requests
-use standard threads and `mpsc` results polled by Shell. There is no general
-asynchronous scheduler; large-repository refreshes and slow hooks may block input.
+Actions menu still synchronously rebuilds context and panels. Runtime Log
+refreshes, Git filters, tab reloads, optional presentation metadata, and graph
+preparation use [loading.rs](../src/log/loading.rs): one generation-based worker
+retains cached browsing and rejects obsolete scope/filter/tab results. Actions
+and new comparisons wait for current history. The initial synchronous Log read
+runs on the startup worker, then enables runtime background loading; direct
+Panel callers keep synchronous refresh semantics. Confirmed Commit batches use
+[execution.rs](../src/commit/execution.rs), reporting repository progress and
+independent outcomes while the terminal remains responsive. Ctrl-X stops only
+repositories that have not started. Explicit patch opening, Commit review
+snapshot preparation, and Merge reads/writes remain synchronous. The panels use
+standard threads and `mpsc`, without a general asynchronous scheduler.
 
 [ui/selection.rs](../src/ui/selection.rs) provides shared text layout/selection for Log details/Diff, Commit message editing/preview, and Push Details / Diff. Each display line retains its original UTF-8 byte range. Cell hit testing, soft wrapping, scrolling, and highlighting share one projection; copy slices original text directly, while decorative rows have no source. Shared mouse handling returns `Action::Copy` on left-button release and collapses selection to its endpoint; the panel forwards the action to Shell. Clicks return no action; repeated releases do not copy again. Panels own selection lifetimes/focus. Log links reuse the same line layout and activate on release only without copying/dragging. `Panel::selected_text` exposes only valid selection in the current context, letting Shell send Ctrl-C to keyboard selection before quit confirmation. Copy still uses `Action::Copy` → [ui/clipboard.rs](../src/ui/clipboard.rs); failures show reasons without logging text. The Commit editor keeps the post-copy caret endpoint and synchronizes source between consecutive events so input before redraw cannot misalign selection. Selection/viewport state stays in memory, outside draft files and Git plans. Shell tests capture copying through a thread-local receiver without modifying the system clipboard.
 
@@ -207,11 +213,11 @@ server, nested editor, staging or application-owned file writer in this path.
 
 ## Repositories, Scope, and Persistence
 
-Workspace Pull and Fetch build a read-only plan from global Roots. Each worktree is checked again before running Git. Pull also revalidates the branch, HEAD, upstream, and resolved remote URL; Fetch revalidates the configured remotes. After confirmation, a worker runs one `git pull` or `git fetch --all` per eligible worktree, with submodule recursion disabled. Pull integrates the reviewed upstream with an explicit Merge or Rebase strategy. The update dialog remains active through completion so another workspace write cannot overlap it. Presentation rows retain the reviewed identity, branch/target labels, and repository tint; structured worker outcomes map back in plan order. Row selection and Details scrolling are view-only state and cannot change the batch. Shell refreshes Log after Fetch and the workspace after Pull. Failures and Git conflict state remain per repository.
+Workspace Pull and Fetch build a read-only plan from global Roots. Each worktree is checked again before running Git. Pull also revalidates the branch, HEAD, upstream, and resolved remote URL; Fetch revalidates the configured remotes. After confirmation, a worker runs one `git pull` or `git fetch --all` per eligible worktree, with submodule recursion disabled. Pull integrates the reviewed upstream with an explicit Merge or Rebase strategy. The update dialog remains active through completion so another workspace write cannot overlap it. Presentation rows retain the reviewed identity, target labels, and repository tint. A separate display comparison reads the live current branch, resolves its configured local upstream ref, and uses `rev-list --left-right --count` for ahead/behind values. This metadata never changes plan equality or performs network access; unavailable comparisons omit counters. Branch and update reviews share arrow/color spans in [ui/idea.rs](../src/ui/idea.rs). The worker rereads comparisons after execution, returning them with structured outcomes in plan order so results show refreshed counts. Row selection and Details scrolling are view-only state and cannot change the batch. Shell refreshes Log after Fetch and the workspace after Pull. Failures and Git conflict state remain per repository.
 
 - **Discovery.** `Context::discover` first finds the working tree containing the startup directory, then traverses below that directory. Git resolves and deduplicates working trees with `.git` files/directories, ignoring bare repositories and common build/dependency directories. `--show-superproject-working-tree` identifies submodules; `Repo.parent` exists only when the parent working tree is also discovered. Ordinary nested repositories have no such dependency. Uninitialized submodules are not usable working trees.
 - **Identity.** `repos: Vec<Repo>` is ordered by canonical path. `scope: BTreeSet<usize>` contains repository indices currently allowed for display/operations, initially all. IDs are valid only for that discovery result; old indices cannot restore identity after a rescan. Display names, abbreviated SHAs, and file row numbers are not persistent keys either. Narrowing Roots must not let hidden repositories silently join the next write.
-- **Local state.** State-directory precedence is `$IGIT_STATE_DIR`, `$XDG_STATE_HOME/igit`, then `$HOME/.local/state/igit`, followed by a hash of the canonical workspace path. Its `commit.json` stores groups, file membership, one shared `message`, retained legacy `drafts`, and workspace AI endpoint/model/prompt, replaced through a temporary file in the same directory. Internal keys encode repository/path bytes. Moving the workspace creates a new state directory; concurrent instances have no draft-merging mechanism. Checkboxes, focus, pending plans, push results, and merge undo stacks are excluded.
+- **Local state.** Nonempty `$IGIT_STATE_DIR` and `$XDG_STATE_HOME/igit` take precedence. Unix then uses `$HOME/.local/state/igit`; Windows uses `LOCALAPPDATA/igit/state`, `APPDATA/igit/state`, `USERPROFILE/AppData/Local/igit/state`, then Unix-style HOME as a compatibility fallback. The pure resolver in [core/state.rs](../src/core/state.rs) accepts injected environment/platform inputs for portable testing. A hash of the canonical workspace path selects the workspace subdirectory. Its `commit.json` stores groups, file membership, one shared `message`, retained legacy `drafts`, and workspace AI endpoint/model/prompt, replaced through a temporary file in the same directory. Internal keys encode repository/path bytes. Moving the workspace creates a new state directory; concurrent instances have no draft-merging mechanism. Checkboxes, focus, pending plans, push results, and merge undo stacks are excluded.
 - **Command environment.** Git processes derived from `core::command` use `git -C <repo>`, clear inherited overrides for working tree, index, object directory, and similar settings, and disable interactive terminal prompts. Callers explicitly inject private indexes. Configured Git identity, hooks, signing, and credential helpers still affect results; interactive credential entry is outside the TUI. Paths are parsed from NUL-delimited bytes; lossy display strings must never be sent back to Git as paths.
 
 ## Core Data Paths
@@ -284,7 +290,7 @@ results. Ref scans first run on entry; F5, reentry, focus return, and completed
 remote operations refresh them while Branch is active. Name drafts and pending
 reviews retain their original source identity across refreshes.
 
-Log's [display menu](../src/log/display.rs) stores session preferences and temporary menu focus without writing project/state files. Filters and selected SHA remain per Log tab. `Rev` retains author email, author date, and commit date; sorting still uses commit time. After refresh/tab changes, [presentation metadata](../src/log/model/presentation.rs) reads per-repository identity. Loaded OIDs are queried in batches for `%G?` only when signatures are visible; `git cherry HEAD <resolved-tip>` runs only when cherry highlighting is enabled and another branch is selected. Queries use the shared Git environment, report failures per repository, and preserve history. Rendering, hover, and row navigation do not run these commands. Signature verification/patch comparison use synchronous refresh and can increase load time for large histories. Shortening long edges recomputes the visible row projection and releases hidden columns; arrow hit areas retain the real visible endpoints without modifying the underlying DAG.
+Log's [display menu](../src/log/display.rs) stores session preferences and temporary menu focus without writing project/state files. Filters and selected SHA remain per Log tab. `Rev` retains author email, author date, and commit date; sorting still uses commit time. After refresh/tab changes, [presentation metadata](../src/log/model/presentation.rs) reads per-repository identity. Loaded OIDs are queried in batches for `%G?` only when signatures are visible; `git cherry HEAD <resolved-tip>` runs only when cherry highlighting is enabled and another branch is selected. Queries use the shared Git environment, report failures per repository, and preserve history. Rendering, hover, and row navigation do not run these commands. Runtime reloads include signature verification and patch comparison in the history worker; direct synchronous Panel callers still wait for them. Shortening long edges recomputes the visible row projection and releases hidden columns; arrow hit areas retain the real visible endpoints without modifying the underlying DAG.
 
 **Log: multiple commit graphs on one screen.** Each repository starts from local branches, remote-tracking branches, tags, and valid HEAD. `git log --date-order` produces a topologically valid sequence; sequences are then merged by their head timestamps. [Graph metadata](../src/log/model/graph/load.rs) reads full object IDs, parents, and branch/tag decorations once per history load, without loading all messages or authors. Its cached permanent ordering keeps fragment colors stable when older commits are outside the display page. [Graph topology](../src/log/model/graph.rs) matches real parents/children by repository ID + object ID. Each parent edge remains independent until its parent commit. [Layout](../src/log/model/graph/layout.rs) orders branch heads by Git reference priority, assigns DFS fragment indices, and sorts each row's node and passing edges using IDEA's endpoint comparator. Removing a node or folding a long edge changes the next row's positions; adjacent half-row segments share one boundary coordinate. The compact projection is prepared with history; the expanded projection is cached lazily. [Character rendering](../src/log/model/graph/render.rs) draws only the viewport with one horizontal origin, separating crossings from commit joins. [Colors](../src/log/model/graph/color.rs) use reference names and fragment indices, independently of screen columns. Text/hash filtering keeps the loaded topology's ordering/colors and includes only real edges with both endpoints visible. The default is 160 commits per repository, capped at 3,200. Text/hash filter changes do not reload all history; `regex-lite` matches in memory. Queries use full ref names across repositories and Git namespaces to distinguish identically named branches, remotes, and tags. Log tabs store only filters/selection; switching reuses the same panel and reloads visible data. Roots applies to all tabs.
 
@@ -383,20 +389,58 @@ The [discard backend](../src/commit/backend/discard.rs) captures eligible visibl
 
 Commit's [Add to Git controller](../src/commit/add.rs) captures only untracked
 members of the highlighted row within Roots, independently of commit checkboxes.
-The [addition backend](../src/commit/backend/add.rs) reuses the commit snapshot
-builder and working-file fingerprints. Review builds a Git-filtered tree in a
-private index; confirmation rechecks branch/HEAD, exact untracked status, raw
+The UI thread captures native path and repository identities without running Git,
+then one worker prepares, stages, and reads statuses for those repositories.
+Phase/completion events are polled by Shell even while Help or another tab is
+active. No confirmation dialog opens, and duplicate jobs/conflicting writes
+cannot start. Add completion applies affected statuses directly rather than
+invoking Shell's synchronous full-workspace refresh. A generation change rejects
+older Commit reads; checks, cursor identity, and message edits are retained.
+The [addition backend](../src/commit/backend/add.rs) reuses snapshot validation
+and [working-file fingerprints](../src/commit/backend/working.rs). Hash reads are
+batched with bounded native argv sizes; private-index additions use one
+NUL-delimited literal pathspec list per snapshot. Preparation builds a Git-filtered
+tree in a private index; execution rechecks branch/HEAD, exact untracked status, raw
 contents, and the rebuilt tree. It locks the real index, copies its current state,
-and reuses `reset_index_paths` to publish only the reviewed leaves, rejecting
+and reuses `reset_index_paths` to publish only the captured leaves, rejecting
 implicit removal of other staged paths. No working file or ref is written.
-Plans are consumed once, repositories report separate results, and the normal
-refresh moves additions into Changes while preserving checks and the message.
+Plans stay on the worker, and repositories report separate results. A failed
+status read keeps cached rows and reports F5 recovery; a disconnected worker
+reports uncertain outcomes and schedules a read without repeating writes.
+
+**Reviewed hunks.** [The controller](../src/commit/staging.rs) owns file-local
+Staged/Unstaged inspection without changing commit checkboxes.
+[The backend](../src/commit/backend/staging.rs) retains HEAD/branch, native path,
+exact selected index entries, working fingerprints, attributes/conversions, and
+the original patch. Plan creation applies one hunk through a private index and
+derives the reviewed result patch. Execution locks the real index, revalidates,
+starts from the current locked index, checks that only the selected path changes,
+then atomically publishes. Reverse application unstages; no working file is
+written. Unsupported modes, flags, content and required conversions are refused.
+
+**First-push tracking.** [push/upstream.rs](../src/push/upstream.rs) snapshots
+effective branch tracking values and their origins. An explicit target-editor
+choice joins the reviewed Job. The immutable OID push and its remote lease run
+first; only a successful push may update the local branch.remote/merge keys.
+Both keys are prepared under a Git config lock and published together, retaining
+unrelated values. Inherited tracking is not silently rewritten. A local config
+failure returns a distinct successful-push warning, keeping it out of Retry.
+
+**Conflict identity and recovery.** Unmerged paths retain native PathBuf identity;
+display conversion never supplies a Git argument. Unsupported filenames stay
+listed individually and cannot suppress ordinary conflicts. Separately reviewed
+Abort/Skip live in [merge/recovery.rs](../src/merge/recovery.rs). The reviewed
+repository, directory identity, operation metadata, HEAD/branch/refs, index,
+working fingerprints, and configuration are revalidated before native Git runs.
+Recovery disables submodule recursion and reports any surviving operation or
+conflicts, including native partial failures. Apply and Continue keep their own
+reviews. Native recovery may discard local state as described in its review.
 
 ## Batch Writes and Failures
 
 | Operation | When a repository fails |
 | --- | --- |
-| Commit | Execute sequentially on the UI thread, deeper child paths first. Retain successful SHAs. If a parent selected a failed child's gitlink, skip that dependent parent commit. If a successful child moves the parent pointer beyond the original preview, require review again. Independent repositories may continue. |
+| Commit | Execute sequentially on a background worker, deeper child paths first. Retain successful SHAs. If a parent selected a failed child's gitlink, skip that dependent parent commit. If a successful child moves the parent pointer beyond the original preview, require review again. Independent repositories may continue. Stopping keeps the current command running and skips unstarted repositories; the UI blocks overlapping writes, Roots changes, workspace replacement, and quit until completion. |
 | Push | One background task executes repositories sequentially. Failure blocks the dependent parent chain, not unrelated repositories. Report per-repository results. Retry builds a new review from current Roots and failure records rather than replaying old remote plans. |
 | Merge | Roots may gather conflicts from several repositories. Apply targets one file; Continue targets one repository. There is no cross-repository apply-all-and-continue transaction. |
 

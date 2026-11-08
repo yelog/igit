@@ -4,6 +4,8 @@ mod keymap;
 mod loading;
 mod preview;
 mod submodules;
+mod target;
+mod upstream;
 mod view;
 #[cfg(test)]
 mod view_tests;
@@ -54,6 +56,7 @@ struct Entry {
     head: String,
     t: Target,
     tracking: Option<String>,
+    config: upstream::Snapshot,
     n: usize,
     logs: Vec<Out>,
     error: String,
@@ -67,6 +70,20 @@ struct Job {
     t: Target,
     tracking: Option<String>,
     url: String,
+    config: upstream::Snapshot,
+    set_upstream: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PushOutcome {
+    Complete,
+    UpstreamNotSet(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TrackingChoice {
+    branch: String,
+    target: Target,
 }
 #[derive(Clone, Default)]
 struct Preview {
@@ -77,7 +94,7 @@ struct Preview {
     is_patch: bool,
 }
 enum Report {
-    Row(usize, Result<(), String>),
+    Row(usize, Result<PushOutcome, String>),
     Done,
 }
 #[derive(Clone, Copy)]
@@ -100,6 +117,11 @@ enum Hit {
     Hooks,
     Tags,
     Fetch,
+    TargetSurface,
+    TargetField,
+    Upstream,
+    SaveTarget,
+    CancelTarget,
 }
 #[derive(Default)]
 pub struct PushPanel {
@@ -115,6 +137,7 @@ pub struct PushPanel {
     checked: BTreeSet<usize>,
     expanded: BTreeSet<usize>,
     targets: BTreeMap<usize, Target>,
+    tracking_choices: BTreeMap<usize, TrackingChoice>,
     init: bool,
     pub(crate) reseed: Option<Vec<usize>>,
     pos: usize,
@@ -126,9 +149,9 @@ pub struct PushPanel {
     show_details: bool,
     detail_off: u16,
     detail_selection: TextSelection,
-    target_edit: Option<(usize, String)>,
+    target_edit: Option<target::Editor>,
     hits: Vec<(Rect, Hit)>,
-    results: BTreeMap<usize, Result<(), String>>,
+    results: BTreeMap<usize, Result<PushOutcome, String>>,
     inflight: Option<Receiver<Report>>,
     busy: String,
     review: Vec<Job>,
@@ -136,6 +159,7 @@ pub struct PushPanel {
     skip_hooks: bool,
     last_fetch: bool,
     pub(crate) progress_seq: u64,
+    writes_blocked: bool,
 }
 fn remote_list(p: &Path) -> Vec<String> {
     git(p, &["remote"])
@@ -144,55 +168,11 @@ fn remote_list(p: &Path) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
+#[cfg(test)]
 fn get_t(r: &Repo, branch: &str) -> Target {
-    // Read the effective config once, including global/conditional includes.
-    // NUL-delimited values preserve spaces and branch subsection case.
-    let values = git_bytes(
-        &r.path,
-        &[
-            "config",
-            "--null",
-            "--get-regexp",
-            r"^(branch\..*\.(remote|pushremote|merge)|remote\.pushdefault)$",
-        ],
-    )
-    .unwrap_or_default();
-    let values: BTreeMap<_, _> = String::from_utf8_lossy(&values)
-        .split('\0')
-        .filter_map(|item| item.split_once('\n'))
-        .map(|(key, value)| {
-            (
-                key.to_owned(),
-                value.trim_end_matches(['\n', '\r']).to_owned(),
-            )
-        })
-        .collect();
-    let cfg = |k: &str| values.get(k).cloned().unwrap_or_default();
-    let upstream = cfg(&format!("branch.{branch}.remote"));
-    let mut remote = cfg(&format!("branch.{branch}.pushremote"));
-    if remote.is_empty() {
-        remote = cfg("remote.pushdefault")
-    }
-    if remote.is_empty() {
-        remote = upstream.clone()
-    }
-    let remotes = remote_list(&r.path);
-    if remote.is_empty() {
-        remote = if remotes.iter().any(|s| s == "origin") {
-            "origin".into()
-        } else {
-            remotes.first().cloned().unwrap_or_default()
-        }
-    }
-    let dst = if upstream == remote {
-        cfg(&format!("branch.{branch}.merge"))
-            .strip_prefix("refs/heads/")
-            .unwrap_or(branch)
-            .to_owned()
-    } else {
-        branch.into()
-    };
-    Target { remote, dst }
+    upstream::Snapshot::read(&r.path, branch)
+        .unwrap_or_default()
+        .target(r, branch)
 }
 fn remote_head(p: &Path, t: &Target) -> Option<String> {
     git(
@@ -215,7 +195,8 @@ fn entry(i: usize, r: &Repo, t: Option<&Target>) -> Entry {
             .map_err(|_| anyhow::anyhow!("detached HEAD: switch to a branch"))?;
         let head = git(&r.path, &["rev-parse", "--verify", "HEAD"])
             .map_err(|_| anyhow::anyhow!("no commits yet"))?;
-        let t = t.cloned().unwrap_or_else(|| get_t(r, &source));
+        let config = upstream::Snapshot::read(&r.path, &source)?;
+        let t = t.cloned().unwrap_or_else(|| config.target(r, &source));
         if t.remote.is_empty() {
             bail!("no remote configured")
         }
@@ -246,6 +227,7 @@ fn entry(i: usize, r: &Repo, t: Option<&Target>) -> Entry {
             head,
             t,
             tracking,
+            config,
             n,
             logs,
             error: String::new(),
@@ -287,7 +269,7 @@ fn job(repo: &Repo, x: &Entry) -> Result<Job> {
     {
         bail!("mirror remote requires a separate manual review")
     }
-    Ok(Job {
+    let j = Job {
         idx: x.idx,
         path: repo.path.clone(),
         branch: x.source.clone(),
@@ -295,7 +277,38 @@ fn job(repo: &Repo, x: &Entry) -> Result<Job> {
         url: url(&repo.path, &x.t.remote)?,
         t: x.t.clone(),
         tracking: x.tracking.clone(),
-    })
+        config: x.config.clone(),
+        set_upstream: false,
+    };
+    j.revalidate()?;
+    Ok(j)
+}
+
+impl Job {
+    fn revalidate(&self) -> Result<()> {
+        if git(&self.path, &["symbolic-ref", "--short", "-q", "HEAD"])? != self.branch
+            || git(&self.path, &["rev-parse", "HEAD"])? != self.head
+            || url(&self.path, &self.t.remote)? != self.url
+            || upstream::Snapshot::read(&self.path, &self.branch)? != self.config
+        {
+            bail!("branch, HEAD, remote or upstream config changed; refresh and review");
+        }
+        if git(
+            &self.path,
+            &[
+                "config",
+                "--bool",
+                &format!("remote.{}.mirror", self.t.remote),
+            ],
+        )
+        .as_deref()
+        .ok()
+            == Some("true")
+        {
+            bail!("mirror remote requires a separate manual review");
+        }
+        Ok(())
+    }
 }
 
 // Replacement refs and legacy grafts can invent parents that the remote will
@@ -307,13 +320,11 @@ fn published_graph(repo: &Path) -> std::process::Command {
     cmd
 }
 
-fn push_one(j: &Job, tags: bool, nohooks: bool) -> Result<()> {
+fn push_one(j: &Job, tags: bool, nohooks: bool) -> Result<PushOutcome> {
     let p = &j.path;
-    if git(p, &["symbolic-ref", "--short", "-q", "HEAD"])? != j.branch
-        || git(p, &["rev-parse", "HEAD"])? != j.head
-        || url(p, &j.t.remote)? != j.url
-    {
-        bail!("branch, HEAD or remote changed; refresh and review")
+    j.revalidate()?;
+    if j.set_upstream {
+        j.config.writable_path(p, &j.branch)?;
     }
     let dst = format!("refs/heads/{}", j.t.dst);
     // Query the *push* endpoint, which may differ from the fetch endpoint.
@@ -335,6 +346,7 @@ fn push_one(j: &Job, tags: bool, nohooks: bool) -> Result<()> {
         }
     }
     submodules::verify_for_remote(p, &j.head, j.tracking.as_deref(), Some(&j.url))?;
+    j.revalidate()?;
     let spec = format!("{}:{}", j.head, dst);
     // A lease performs a compare-and-swap on the reviewed target. The ancestry check above still forbids rewritten history.
     let lease = format!(
@@ -359,7 +371,17 @@ fn push_one(j: &Job, tags: bool, nohooks: bool) -> Result<()> {
     }
     args.extend([lease.as_str(), "--", &j.t.remote, &spec]);
     git(p, &args).map_err(|e| anyhow::anyhow!(redact_remote_error(&e.to_string(), &j.url)))?;
-    Ok(())
+    if j.set_upstream {
+        // Git's --set-upstream does not configure a source branch for an OID
+        // refspec. Keep the immutable push and publish tracking separately.
+        if let Err(error) = upstream::set(j) {
+            return Ok(PushOutcome::UpstreamNotSet(format!(
+                "Pushed {} @ {:.10} to {}:{}; upstream not set: {}. Configure upstream with Git; Retry will not repeat this push.",
+                j.branch, j.head, j.t.remote, j.t.dst, redact_remote_error(&error.to_string(), &j.url)
+            )));
+        }
+    }
+    Ok(PushOutcome::Complete)
 }
 fn label(p: &Path) -> String {
     p.to_string_lossy()
@@ -392,6 +414,9 @@ impl PushPanel {
 
     pub(crate) fn busy(&self) -> bool {
         self.inflight.is_some()
+    }
+    pub(crate) fn block_writes(&mut self, blocked: bool) {
+        self.writes_blocked = blocked;
     }
     fn rows(&self) -> Vec<(usize, Option<usize>)> {
         let mut rows = vec![];
@@ -475,7 +500,12 @@ impl PushPanel {
             .iter()
             .find(|e| e.idx == i && e.error.is_empty())
         {
-            self.target_edit = Some((i, format!("{}:{}", e.t.remote, e.t.dst)))
+            self.target_edit = Some(target::Editor {
+                idx: i,
+                text: format!("{}:{}", e.t.remote, e.t.dst),
+                set_upstream: self.sets_upstream(e),
+            });
+            self.review.clear();
         }
     }
     fn review(&mut self, c: &Context, retry: bool) -> Action {
@@ -497,6 +527,7 @@ impl PushPanel {
         }
         let mut js = vec![];
         let mut lines = vec![];
+        self.review.clear();
         for e in &self.entries {
             if !c.scope.contains(&e.idx)
                 || e.n == 0
@@ -510,7 +541,13 @@ impl PushPanel {
                 continue;
             }
             match job(&c.repos[e.idx], e) {
-                Ok(j) => {
+                Ok(mut j) => {
+                    j.set_upstream = self.sets_upstream(e);
+                    if j.set_upstream {
+                        if let Err(error) = j.config.writable_path(&j.path, &j.branch) {
+                            return Action::Notice(error.to_string());
+                        }
+                    }
                     lines.push(format!(
                         "{}: {} @ {:.8} {} {}:{}  ({} commits)",
                         c.repos[e.idx].name,
@@ -521,6 +558,16 @@ impl PushPanel {
                         e.t.dst,
                         e.n
                     ));
+                    lines.push(format!(
+                        "  Upstream: {} {} {}",
+                        e.config.description(&e.source),
+                        self.icons.glyph(Icon::Right),
+                        if j.set_upstream {
+                            format!("{}:{} after push succeeds", e.t.remote, e.t.dst)
+                        } else {
+                            "keep unchanged".into()
+                        }
+                    ));
                     js.push(j)
                 }
                 Err(err) => return Action::Notice(err.to_string()),
@@ -530,10 +577,16 @@ impl PushPanel {
             return Action::Notice("No outgoing repository selected".into());
         }
         js.sort_by_key(|j| std::cmp::Reverse(j.path.components().count()));
+        let count = js.len();
         self.review = js;
-        Action::Confirm{title:format!("Push {} repositories?",lines.len()),body:format!("{}\n\nHooks: {}   Follow annotated tags: {}\nEach repository is pushed separately; no force push.",lines.join("\n"),!self.skip_hooks,self.follow_tags),token:"push".into()}
+        Action::Confirm{title:format!("Push {count} repositories?"),body:format!("{}\n\nHooks: {}   Follow annotated tags: {}\nEach repository is pushed separately; no force push.",lines.join("\n"),!self.skip_hooks,self.follow_tags),token:"push".into()}
     }
     fn start(&mut self, c: &Context, fetch: bool) -> Action {
+        if self.writes_blocked {
+            return Action::Notice(
+                "Wait for the current Git write before starting Push or Fetch".into(),
+            );
+        }
         if self.busy() {
             return Action::Notice(self.busy.clone());
         }
@@ -548,6 +601,37 @@ impl PushPanel {
             return Action::Notice(
                 "Roots changed; refresh before starting a remote operation".into(),
             );
+        }
+        if !fetch {
+            if self.review.is_empty() {
+                return Action::Notice(
+                    "No reviewed push; select repositories and review again".into(),
+                );
+            }
+            if self.review.iter().any(|j| {
+                !c.scope.contains(&j.idx)
+                    || c.repos.get(j.idx).is_none_or(|repo| repo.path != j.path)
+                    || !self.entries.iter().any(|e| {
+                        e.idx == j.idx
+                            && e.source == j.branch
+                            && e.head == j.head
+                            && e.t == j.t
+                            && e.tracking == j.tracking
+                            && e.config == j.config
+                            && self.sets_upstream(e) == j.set_upstream
+                            && self
+                                .targets
+                                .get(&e.idx)
+                                .cloned()
+                                .unwrap_or_else(|| e.config.target(&c.repos[e.idx], &e.source))
+                                == j.t
+                    })
+            }) {
+                self.review.clear();
+                return Action::Notice(
+                    "Push target or tracking choice changed; review again".into(),
+                );
+            }
         }
         let (tx, rx) = mpsc::channel();
         let js = std::mem::take(&mut self.review);
@@ -576,7 +660,7 @@ impl PushPanel {
                         continue;
                     }
                     let res = git(&p, &["fetch", "--no-recurse-submodules", "--", &r])
-                        .map(|_| ())
+                        .map(|_| PushOutcome::Complete)
                         .map_err(|e| {
                             let u = url(&p, &r).unwrap_or_else(|_| "<remote>".into());
                             redact_remote_error(&e.to_string(), &u)
@@ -611,6 +695,9 @@ impl PushPanel {
         while let Ok(m) = rx.try_recv() {
             match m {
                 Report::Row(i, r) => {
+                    if r.is_ok() && !self.last_fetch {
+                        self.tracking_choices.remove(&i);
+                    }
                     self.results.insert(i, r);
                     self.progress_seq = self.progress_seq.wrapping_add(1);
                 }
@@ -622,7 +709,20 @@ impl PushPanel {
         }
         self.inflight = None;
         let n = self.results.values().filter(|r| r.is_err()).count();
-        let msg = if n == 0 {
+        let upstream_failures = self
+            .results
+            .values()
+            .filter(|r| matches!(r, Ok(PushOutcome::UpstreamNotSet(_))))
+            .count();
+        let msg = if upstream_failures > 0 {
+            if n == 0 {
+                format!("Pushed · {upstream_failures} upstream setup failed · d details")
+            } else {
+                format!(
+                    "{n} failed · {upstream_failures} pushed, upstream setup failed · d details"
+                )
+            }
+        } else if n == 0 {
             format!("{} complete", self.busy.trim_end_matches('…'))
         } else {
             format!("{n} failed / not executed · select row for details")
@@ -634,7 +734,9 @@ impl PushPanel {
 }
 impl Panel for PushPanel {
     fn help(&self) -> &'static str {
-        if self.group_menu.is_some() {
+        if self.target_edit.is_some() {
+            "Type remote:branch · Tab tracking · Enter save · Esc cancel"
+        } else if self.group_menu.is_some() {
             "Group By · j/k select · Space/Enter toggle · Esc close"
         } else {
             "j/k move · h/l fold · o group by · Enter diff · d details · [/] fold all · Space check root · t target · P push · F fetch · Tab/F6 pane"
@@ -683,48 +785,8 @@ impl Panel for PushPanel {
         if self.group_menu_event(e, c) {
             return Action::None;
         }
-        if let Some((id, t)) = &mut self.target_edit {
-            let id = *id;
-            match e {
-                Event::Paste(s) => t.push_str(&s.replace(['\r', '\n'], "")),
-                Event::Key(k) => match k.code {
-                    KeyCode::Esc => self.target_edit = None,
-                    KeyCode::Backspace => {
-                        t.pop();
-                    }
-                    KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => t.clear(),
-                    KeyCode::Char(ch) => t.push(ch),
-                    KeyCode::Enter => {
-                        if let Some((r, b)) = t.split_once(':') {
-                            if !r.starts_with('-')
-                                && remote_list(&c.repos[id].path).contains(&r.to_string())
-                                && git(
-                                    &c.repos[id].path,
-                                    &["check-ref-format", &format!("refs/heads/{b}")],
-                                )
-                                .is_ok()
-                            {
-                                self.targets.insert(
-                                    id,
-                                    Target {
-                                        remote: r.into(),
-                                        dst: b.into(),
-                                    },
-                                );
-                                self.target_edit = None;
-                                let _ = self.refresh(c);
-                                return Action::Notice("Push target updated".into());
-                            }
-                        }
-                        return Action::Notice(
-                            "Use a configured remote and valid remote:branch".into(),
-                        );
-                    }
-                    _ => (),
-                },
-                _ => (),
-            }
-            return Action::None;
+        if let Some(action) = self.target_event(e, c) {
+            return action;
         }
         if self.show_details && self.focus == 2 {
             if let Some(action) = self.detail_selection.key(e, true) {
@@ -803,6 +865,11 @@ impl Panel for PushPanel {
                 Hit::Cancel => return Action::CloseDialog,
                 Hit::GroupBy => self.group_menu = Some(Group::Directory),
                 Hit::MenuSurface | Hit::Group(_) => (),
+                Hit::TargetSurface
+                | Hit::TargetField
+                | Hit::Upstream
+                | Hit::SaveTarget
+                | Hit::CancelTarget => (),
                 Hit::Check(i) => self.toggle(i),
                 Hit::Fold(i) => {
                     if !self.expanded.remove(&i) {
@@ -1041,7 +1108,7 @@ mod tests {
             assert!(p.expanded.contains(&1));
             assert_eq!(p.checked, BTreeSet::from([0]));
 
-            p.results.insert(0, Ok(()));
+            p.results.insert(0, Ok(PushOutcome::Complete));
             p.results.insert(1, Err("offline".into()));
             draw(&mut p, &mut term);
             assert!(text(&term, other).contains(&format!("tools {}", icons.glyph(Icon::Error))));

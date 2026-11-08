@@ -3,6 +3,8 @@ use crate::log::tests::{commit, git, init};
 use std::fs;
 use tempfile::TempDir;
 
+mod cherry_pick;
+
 fn history() -> (TempDir, Context, [String; 3]) {
     let dir = init();
     let repo = dir.path();

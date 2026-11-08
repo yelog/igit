@@ -113,3 +113,113 @@ fn message_editor_owns_input_and_previews_multiline_unicode_before_writing() {
         "Original title\n\nOriginal body"
     );
 }
+
+fn cherry_pick_panel(conflict: bool) -> (tempfile::TempDir, Context, LogPanel, String, String) {
+    let dir = init();
+    let repo = dir.path();
+    git(repo, &["config", "commit.gpgsign", "false"]);
+    git(repo, &["config", "rerere.enabled", "false"]);
+    commit(repo, "base", "Base");
+    git(repo, &["switch", "-c", "source"]);
+    commit(repo, "picked", "Selected source change");
+    let picked = git(repo, &["rev-parse", "HEAD"]);
+    git(repo, &["switch", "main"]);
+    commit(
+        repo,
+        if conflict { "picked" } else { "destination" },
+        "Destination change",
+    );
+    let head = git(repo, &["rev-parse", "HEAD"]);
+    let c = Context::discover(repo).unwrap();
+    let mut panel = LogPanel::default();
+    panel.refresh(&c).unwrap();
+    let selected = panel
+        .visible
+        .iter()
+        .position(|&i| panel.hist.revs[i].oid == picked)
+        .unwrap();
+    panel.select_row(selected);
+    (dir, c, panel, picked, head)
+}
+
+#[test]
+fn cherry_pick_keyboard_menu_reviews_at_narrow_and_wide_sizes_without_writing() {
+    let (dir, c, mut panel, picked, head) = cherry_pick_panel(false);
+    let before = std::fs::read(dir.path().join(".git/index")).unwrap();
+    for (width, height) in [(44, 12), (80, 24)] {
+        let mut t = Terminal::new(TestBackend::new(width, height)).unwrap();
+        key(&mut panel, K::Char('a'), Mods::NONE, &c);
+        let row = operations::Kind::ALL
+            .iter()
+            .position(|kind| *kind == operations::Kind::CherryPick)
+            .unwrap();
+        for _ in 0..row {
+            key(&mut panel, K::Char('j'), Mods::NONE, &c);
+        }
+        render(&mut panel, &mut t, &c);
+        label_at(&t, "Cherry-pick Commit");
+        let Action::Confirm { title, body, token } = key(&mut panel, K::Enter, Mods::NONE, &c)
+        else {
+            panic!("Cherry-pick should open a write review");
+        };
+        assert_eq!(title, "Cherry-pick Commit");
+        assert!(body.contains(&picked) && body.contains(&head));
+        assert!(body.contains("new commit on main"));
+        assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]), head);
+        assert_eq!(
+            std::fs::read(dir.path().join(".git/index")).unwrap(),
+            before
+        );
+        assert!(!dir.path().join("picked").exists());
+        // Canceling Shell's review never calls confirm. Opening a new menu replaces its plan.
+        key(&mut panel, K::Char('a'), Mods::NONE, &c);
+        key(&mut panel, K::Esc, Mods::NONE, &c);
+        assert!(matches!(panel.confirm(&token, &c), Action::None));
+    }
+    assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        std::fs::read(dir.path().join(".git/index")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn cherry_pick_mouse_confirmation_refreshes_after_success_or_native_conflict() {
+    for conflict in [false, true] {
+        let (dir, c, mut panel, picked, head) = cherry_pick_panel(conflict);
+        let mut t = Terminal::new(TestBackend::new(44, 12)).unwrap();
+        render(&mut panel, &mut t, &c);
+        let row = target(
+            &panel,
+            |hit| matches!(hit, Hit::Commit(i) if *i == panel.cursor),
+        );
+        mouse(&mut panel, MouseButton::Right, row.x, row.y, &c);
+        render(&mut panel, &mut t, &c);
+        let (x, y) = label_at(&t, "Cherry-pick Commit");
+        let Action::Confirm { title, body, token } = mouse(&mut panel, MouseButton::Left, x, y, &c)
+        else {
+            panic!("Cherry-pick should open a write review");
+        };
+        assert_eq!(title, "Cherry-pick Commit");
+        assert!(body.contains(&picked));
+        assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]), head);
+        let Action::Refresh(message) = panel.confirm(&token, &c) else {
+            panic!("Every attempted cherry-pick must refresh workspace and Conflicts");
+        };
+        assert!(matches!(panel.confirm(&token, &c), Action::None));
+        if conflict {
+            assert!(message.contains("Cherry-pick Commit failed"));
+            assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]), head);
+            assert_eq!(git(dir.path(), &["rev-parse", "CHERRY_PICK_HEAD"]), picked);
+            assert!(!git(dir.path(), &["ls-files", "--unmerged"]).is_empty());
+            git(dir.path(), &["cherry-pick", "--abort"]);
+        } else {
+            assert!(message.contains("Cherry-pick Commit completed"));
+            assert_eq!(git(dir.path(), &["rev-parse", "HEAD^"]), head);
+            assert_eq!(
+                git(dir.path(), &["show", "HEAD:picked"]),
+                "Selected source change"
+            );
+        }
+    }
+}

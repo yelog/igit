@@ -62,6 +62,11 @@ impl MergePanel {
                         ("Space", "Fold or expand the Unresolved group"),
                         ("o", "Toggle full file paths"),
                         ("C", "Review Continue for the selected repository"),
+                        ("B", "Review Abort for the selected repository operation"),
+                        (
+                            "N",
+                            "Review Skip for a stopped rebase, cherry-pick, or revert",
+                        ),
                     ],
                 ),
                 vec![],

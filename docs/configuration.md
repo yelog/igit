@@ -58,8 +58,11 @@ update = ["F9"]
 Startup checks begin 1.5 seconds after the first workspace frame and never
 install automatically. `check_interval_hours` must be at least 1. Successful
 checks, including available versions, are cached in `update-check.json` under
-the global state directory (`IGIT_STATE_DIR`, `$XDG_STATE_HOME/igit`, or
-`~/.local/state/igit`). The cache identifies the running executable and native
+the global state directory. Nonempty `IGIT_STATE_DIR` and `$XDG_STATE_HOME/igit`
+take precedence. The default is `~/.local/state/igit` on macOS/Linux. Windows
+uses `%LOCALAPPDATA%\igit\state`, then `%APPDATA%\igit\state`,
+`%USERPROFILE%\AppData\Local\igit\state`, and Unix-style HOME as fallbacks.
+The cache identifies the running executable and native
 ownership record; invalid, stale, future-dated, and mismatched entries are ignored.
 Automatic failures do not interrupt work.
 
@@ -139,6 +142,16 @@ These settings do not store repository selections, message drafts, pane sizes,
 or display-menu choices. Existing workspace state remains
 under `IGIT_STATE_DIR` / `XDG_STATE_HOME/igit`; see [README](../README.md#ai-commit-messages-optional).
 API keys come only from the configured environmtent variable.
+
+`keybindings.commit.stage-hunks` defaults to `["Ctrl-g"]` in Changes/Preview.
+It opens the highlighted tracked file's Staged/Unstaged hunk view. That view's
+Tab, `u/s`, `n/p`, Space/Enter, reload, and close controls are context-owned like
+other editors/reviews. While a commit batch runs, Ctrl-X stops remaining
+repositories after the current repository completes.
+
+`keybindings.merge.abort` defaults to `["B"]` and `keybindings.merge.skip` to
+`["N"]` in the conflict list. Availability follows the selected repository's
+native operation; each action opens its own review.
 
 ## AI commit messages
 
@@ -238,11 +251,12 @@ Branch navigation commands include `first-item` (`g g`, Home), `last-item`
 `half-page-down` / `half-page-up` (Ctrl-D / Ctrl-U). Remapping `first-item`
 replaces the complete `g g` sequence.
 
-`commit.add-to-git` defaults to `a` and `Insert` in Changes. It reviews the
+`commit.add-to-git` defaults to `a` and `Insert` in Changes. It immediately starts adding the
 highlighted untracked file or the untracked members of the highlighted container
-before staging them. Commit checkbox choices do not set this scope. Amend now
+in the background without confirmation, with inline progress. Repeated presses
+show the existing operation. Commit checkbox choices do not set this scope. Amend now
 uses `M` (`commit.amend`). Both commands can be remapped under
-`[keybindings.commit]`, for example `add-to-git = ["Ctrl-g"]`. An existing custom
+`[keybindings.commit]`, for example `add-to-git = ["Alt-a"]`. An existing custom
 `amend = ["a"]` must be changed or unbound to use the new default without a
 binding conflict. Message editing retains ordinary text input.
 

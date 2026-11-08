@@ -3,6 +3,26 @@ use crate::ui::help::{HelpContent, HelpSection as Section};
 
 impl CommitPanel {
     pub(crate) fn keymap(&self) -> HelpContent {
+        if self.staging.is_some() {
+            return self.staging_help();
+        }
+        if self.execution_running() {
+            return HelpContent::new(
+                Section::new(
+                    "Commit / Running",
+                    &[
+                        ("j", "Browse next change"),
+                        ("k", "Browse previous change"),
+                        ("v", "Toggle preview"),
+                        (
+                            "Ctrl-x",
+                            "Stop remaining repositories after the current commit",
+                        ),
+                    ],
+                ),
+                vec![],
+            );
+        }
         if self.view_menu.is_some() {
             return HelpContent::new(
                 Section::new(
@@ -118,6 +138,40 @@ impl CommitPanel {
             return HelpContent::new(section, extra)
                 .with_selection(self.selected_text().is_some(), false);
         }
+        if self.add_running() {
+            let current = match self.focus {
+                Focus::Tree => Section::new(
+                    "Commit / Changes",
+                    &[
+                        ("j", "Browse next change"),
+                        ("k", "Browse previous change"),
+                        ("h", "Collapse container or move to parent"),
+                        ("l", "Expand container or move to child"),
+                        ("Space", "Toggle commit checkbox"),
+                        ("Enter", "Open Diff or toggle container"),
+                        ("v", "Toggle preview"),
+                        ("i", "Edit shared commit message"),
+                    ],
+                ),
+                Focus::Diff => Section::new(
+                    "Commit / Preview",
+                    &[
+                        ("j", "Scroll preview down"),
+                        ("k", "Scroll preview up"),
+                        ("Esc", "Return to changes"),
+                        ("v", "Toggle preview"),
+                    ],
+                ),
+                Focus::Message => Section::new(
+                    "Commit / Message",
+                    &[
+                        ("i", "Edit shared commit message"),
+                        ("Enter", "Edit shared commit message"),
+                    ],
+                ),
+            };
+            return HelpContent::new(current, vec![]);
+        }
         let current = match self.focus {
             Focus::Tree => Section::new(
                 "Commit / Changes",
@@ -127,6 +181,10 @@ impl CommitPanel {
                     ("Space", "Toggle file, repo or changelist checkbox"),
                     ("Enter", "Open Diff, Resolve conflicts, or toggle container"),
                     ("e", "Edit highlighted working file"),
+                    (
+                        "Ctrl-g",
+                        "Inspect staged / unstaged hunks and review Stage / Unstage",
+                    ),
                     ("h", "Collapse container or move to parent"),
                     ("l", "Expand container or move to child"),
                     ("g", "Select first change"),
@@ -134,13 +192,10 @@ impl CommitPanel {
                     ("PgDn", "Page down"),
                     ("PgUp", "Page up"),
                     ("m", "Move current scope to another changelist"),
-                    (
-                        "a",
-                        "Review adding untracked files in the highlighted scope to Git",
-                    ),
+                    ("a", "Add untracked files in the highlighted scope to Git"),
                     (
                         "Insert",
-                        "Review adding untracked files in the highlighted scope to Git",
+                        "Add untracked files in the highlighted scope to Git",
                     ),
                     ("d", "Review rollback for the highlighted scope"),
                 ],
@@ -148,6 +203,10 @@ impl CommitPanel {
             Focus::Diff => Section::new(
                 "Commit / Preview",
                 &[
+                    (
+                        "Ctrl-g",
+                        "Inspect staged / unstaged hunks and review Stage / Unstage",
+                    ),
                     ("Ctrl-a", "Select all preview text"),
                     ("Esc", "Clear selection; otherwise return to changes"),
                     ("j", "Scroll diff or scope summary down"),

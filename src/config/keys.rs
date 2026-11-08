@@ -220,6 +220,7 @@ commands! {
         "discard" => "d", CHANGES;
         "add-to-git" => "a", CHANGES;
         "edit-file" => "e", CHANGES;
+        "stage-hunks" => "Ctrl-g", CHANGES | PREVIEW;
         "open" => "Enter", COMMIT;
         "move-to-group" => "m", COMMIT;
         "preview" => "v", COMMIT;
@@ -265,6 +266,8 @@ commands! {
         "last-item" => "G", MERGE_FILES;
         "open" => "Enter", MERGE_FILES;
         "continue" => "C", MERGE_FILES;
+        "abort" => "B", MERGE_FILES;
+        "skip" => "N", MERGE_FILES;
         "accept-current" => "Y", MERGE;
         "accept-incoming" => "T", MERGE;
         "prepare-simple" => "S", MERGE_FILES;

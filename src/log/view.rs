@@ -688,17 +688,23 @@ impl LogPanel {
             .errors
             .iter()
             .find_map(|(id, e)| self.filter.includes_root(*id).then_some(e.as_str()));
-        let warning = u16::from(errors.is_some() && area.height > tools + 1);
+        let status = self.history_status().or(errors).map(str::to_owned);
+        let warning = u16::from(status.is_some() && area.height > tools + 1);
         let avail = area.height.saturating_sub(tools + warning) as usize;
         self.graph_height = avail;
         if avail == 0 {
             return;
         }
-        if let Some(e) = errors {
+        if let Some(e) = status.as_deref() {
             if warning != 0 {
-                let message = format!("{} {e}", self.icons.glyph(Icon::Warning));
+                let (icon, tint) = if self.history_pending() {
+                    (Icon::Refresh, DIM)
+                } else {
+                    (Icon::Warning, GOLD)
+                };
+                let message = format!("{} {e}", self.icons.glyph(icon));
                 f.render_widget(
-                    Paragraph::new(clipped(&message, area.width as usize)).style(fg(GOLD)),
+                    Paragraph::new(clipped(&message, area.width as usize)).style(fg(tint)),
                     one(area.x, area.bottom() - 1, area.width),
                 );
             }
@@ -707,6 +713,15 @@ impl LogPanel {
         let start = self.graph_top;
         let end = (start + avail).min(self.visible.len());
         if self.visible.is_empty() {
+            if let Some(status) = self.history_status() {
+                if warning == 0 {
+                    f.render_widget(
+                        Paragraph::new(status).style(fg(DIM)),
+                        one(area.x, area.y + tools, area.width),
+                    );
+                }
+                return;
+            }
             if let Some(file) = &self.filter.file_history {
                 let message = if c.scope.contains(&file.root) {
                     "No commits for this file with the current filters"

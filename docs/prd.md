@@ -12,6 +12,26 @@ Product-owned interface text, help, errors, examples, and documentation use Engl
 
 ## Requirements and Delivery Status
 
+**Workflow completeness (R1/R2/R3/R7/R8 extension, 2026-11-08).** Commit offers
+reviewed Stage/Unstage for one tracked text hunk from its Staged/Unstaged view
+(`Ctrl-G` / Hunks), preserving working bytes, unrelated staging, checkboxes,
+and the shared draft. Confirmed commit batches execute on a background worker;
+`Ctrl-X` stops remaining repositories after the current repository completes.
+Log runtime refreshes, Git-filter changes, and tab reloads also run in the
+background with generation/scope checks and cached browsing. Loaded-page search
+and the 3,200-commit limit remain unchanged.
+
+Log adds a reviewed single-commit Cherry-pick to the selected repository.
+Conflicts offers separately reviewed native Abort (`B`) and supported Skip
+(`N`) without changing Apply/Continue boundaries. Native conflict paths retain
+their byte identity; unsupported names remain visible individually. Push target
+editing offers an explicit Set upstream after push choice, retaining published
+success if the subsequent local configuration update fails. Windows state
+resolution no longer depends on HOME, and bounded untracked previews announce
+truncation. Individual-line staging, advanced rebase editing, universal command
+cancellation, persistent merge drafts, and a workspace dashboard remain follow-up
+scope. Tests use disposable repositories and local remotes.
+
 **Edit working files (R1/R7/R8 extension).** `e` / `E` in Commit Changes edits
 the highlighted file independently of checked commit candidates. Standalone
 execution uses Git's configured editor and restores the TUI after exit/errors.
@@ -107,28 +127,39 @@ The table records the 0.1.0 delivery baseline. Items marked partial or next step
 
 Commit rollback: `d` in Changes opens the full tree for the current Roots and prechecks only the highlighted file, directory, repository, or changelist. Other eligible rows can be checked before confirming. Parent checks and footer counts reflect selection, while the tree lists all visible changes. Rollback restores checked tracked paths to HEAD, deletes checked untracked paths, and unstages additions with optional deletion of their local copies. Close is focused initially; there is no undo. Hidden roots, read-only rows, and unchecked paths are preserved. See [interaction design](design.md) and `cargo test --locked discard`.
 
-Commit Add to Git: `a` or `Insert` in Changes reviews the highlighted untracked
+Commit Add to Git: `a` or `Insert` in Changes immediately starts adding the highlighted untracked
 file or the untracked files under its group, directory, or repository, including
 folded children. The action uses only that row's scope within Roots and is
-independent of commit checkboxes. Confirmation stages exactly the reviewed
-contents; refresh moves additions into Changes while retaining checkboxes and
-the shared message. Other index entries, working files, and HEAD remain intact.
-Changed content, staging, branch, or Git conversion requires another review;
+independent of commit checkboxes. No confirmation dialog opens. Feedback appears
+before background Git work. Inline progress shows the file count, repository,
+phase, and actual completed repository count without estimated percentages.
+Browsing, Help, tab switching, and message editing remain usable; duplicate
+additions and conflicting writes cannot overlap. The worker stages the captured
+contents and reads affected repository statuses. Completion updates only those
+Changes rows, retaining checkboxes and the shared message, and reports
+added/failed counts. Other index entries, working files, and HEAD remain intact.
+Changed content, staging, branch, or Git conversion stops the affected addition;
 repositories report separate results. Amend uses `M`. Acceptance:
-`cargo test --locked add_to_git` covers scope, cancellation, stale reviews,
-partial failures, mixed staging, literal paths, and shortcut remapping.
+`cargo test --locked add_to_git` covers prompt feedback under a delayed filter,
+scope, stale snapshots, partial failures and retry, mixed staging, literal paths,
+shortcut remapping, and narrow layouts in all icon modes.
 
 ## Required Operation Semantics
 
 **Log commit actions (R1/R3/R7/R8).** The Log list supports reviewed local branch
 and lightweight tag creation, detached checkout, Undo of the checked-out tip,
-Revert as a new inverse commit, Drop from a linear range, and editing the full
+Revert as a new inverse commit, a single non-merge Cherry-pick, Drop from a linear range, and editing the full
 message of an unpublished commit. Actions address only the selected commit's
 repository. Undo and tip message edits preserve staged and unstaged work.
 Drop and earlier message edits replay descendants only on the current branch.
 Pending operations block checkout and history changes. Stale reviews and local
 file collisions prevent the affected write.
 Git conflicts stay available in Conflicts. See A17.
+
+Cherry-pick validates the selected immutable commit, current local branch/HEAD,
+clean tracked index/worktree, pending operations, Roots, and untracked/ignored
+collisions before execution. It leaves native conflict state for a separate
+Continue/Abort/Skip review. No batch selection across repositories is implied.
 
 **Stash browsing (R1/R3/R7/R8 extension).** The Stash tab (`5`) lists all
 repositories in Roots, including empty repositories, with newest-first stash
@@ -242,7 +273,7 @@ only panes within the active tab can be resized. Defaults remain unbound.
 
 - **Scope, preview, selection, and execution are separate.** Roots changes only visible/executable scope; filtered-out repositories cannot join the current commit/push. The row cursor identifies what is being viewed; checkboxes identify candidates. Review shows actual repositories, files, or targets. Hiding and restoring a selected repository preserves its session selection.
 - **The committed version must be explainable.** A selected file with staged changes commits its index version; only files without a staged version use working-tree changes. Changes to files, staging, or HEAD that affect a reviewed plan require review again. Unchecked staged items remain untouched. Partial success must not be reported as total failure or automatically rolled back. Real hooks may rewrite content; report actual results.
-- **Pull and Fetch review all repositories in global Roots.** `p` opens Pull with Merge or Rebase; `f` opens Fetch, which refreshes remote refs without integrating changes. Both use Push-style title bars, colored repository icons, aligned target/status columns, and a separated action footer. Highlighting a row only selects its wrapped Details; it never changes the batch. Log tab filters and Push checkboxes do not affect the batch. Repositories with unavailable targets are shown as skipped. Cancel performs no Git operation; confirmation runs eligible repositories independently and reports each result in the same list. Pull conflicts appear in the highlighted Conflicts tab.
+- **Pull and Fetch review all repositories in global Roots.** `p` opens Pull with Merge or Rebase; `f` opens Fetch, which refreshes remote refs without integrating changes. Both use Push-style title bars, colored repository icons, aligned target/status columns, and a separated action footer. Current branches show Branch's ahead/behind counters against their configured upstream, using local refs without fetching on review. Counts survive branch-name clipping, omit zero/unavailable values, and refresh after execution. Details retains the complete comparison. Highlighting a row only selects its wrapped Details; it never changes the batch. Log tab filters and Push checkboxes do not affect the batch. Repositories with unavailable targets are shown as skipped. Pull / Fetch starts focused when available, with Cancel focused otherwise; a blue background marks only the focused button. Tab/Shift-Tab switch between Cancel and Pull / Fetch, and Enter activates only the focused button. Action labels omit repository counts. Cancel performs no Git operation; confirmation runs eligible repositories independently and reports each result in the same list. Pull conflicts appear in the highlighted Conflicts tab.
 - **Push checks availability.** Repositories are execution units; previewing a commit does not allow skipping its ancestors. A remote target changed after review stops execution; no history-overwriting force push is offered. Added/changed gitlinks, or changes only to their declared sources, require verification that each child commit is available from the source in that version. If verification fails, identify the missing repository/commit without silently expanding selection.
 - **Merge does not guess content.** Side labels identify the actual versions for the Git operation, especially during rebase, where fixed local/remote labels are misleading. Automatically apply only definite non-conflicting changes. The center supports undo. A working file that exactly matches the common ancestor opens with decisions still pending; other external edits are preserved. Supported input is ordinary UTF-8 text up to 2 MiB per file, including standard EOL attributes when checkout preserves all three source versions. Stash apply/pop conflicts follow the same reviewed Apply flow, direct users to Commit without Continue, and retain the stash. Binary files, delete/modify conflicts, special modes, actual checkout conversions, and similar cases require external tools.
  - **AI generates an editable message.** Generate message / `A` immediately sends one request containing checked files in the current Roots, without hidden roots or unselected files. Animate progress and fill the shared message directly on success. Errors open a dismissible dialog and preserve the existing draft; edits made during generation are kept. Settings are opened explicitly with `S`. Keys come from environment variables and must not appear in documentation examples, project configuration, or logs. Model responses must not trigger commit/push.
@@ -280,7 +311,7 @@ ws="$(sh examples/demo-workspace.sh)"
 | A1 Startup and history (R1, R3, R7) | Enter Log through either command. Hide sdk-core in Roots, browse/open a commit Diff, then restore scope. | Three working trees appear; bare remotes do not become a fourth. Filtered repositories disappear from history. Details follow the current commit, with no parent/child edges across repositories. |
 | A2 Groups and batch commits (R3, R5, R7, R8) | Create Review in Commit. Move only one ordinary repository's `src/config.txt`; write one shared message for both. Hide the other ordinary repository in Roots, enter review, cancel, and restore it. Choose Commit and Push, review both repositories, and confirm. | Untracked `notes.txt` starts unchecked; regrouping preserves its prior selection state. Hidden repositories do not appear in review. After restoration, each repository gets one local commit with the same message, then the app stops at Push preview. Verify with commands such as `git -C "$ws/atlas-web" show --name-only -1`. |
 | A3 Push results and rejection (R3) | Continue A2: check each target and confirm, then compare local HEAD with each bare remote's main. Run `cargo test --locked two_remotes_partial_failure_and_retry_scope` for an invalidated plan. | Successful repositories match their remote branches. In the failure case, success remains recorded and retry includes only failed repositories in visible scope. |
-| Workspace updates (R3, R7, R8) | Run `cargo test --locked shell::update` and `cargo test --locked log_space_filters`. Inspect 44×12, 80×24, 120×36, and 180×36 in all icon modes, including long names/errors, skipped repositories, and empty scope. Browse rows and Details, select Merge/Rebase, cancel, then confirm against local bare remotes. Press `Space b/u/d/p` and `/` from Log. | Columns and controls do not overlap; clipped targets/errors remain readable in Details. Browsing does not change scope, Cancel starts focused, and empty/busy actions cannot run. Cancel leaves refs and working trees unchanged. Fetch updates refs only in Roots; Pull uses the selected strategy. Changed targets fail safely, conflicts remain available in Merge, and other repositories still complete. `Space p` opens Paths; standalone `p` opens Pull. |
+| Workspace updates (R3, R7, R8) | Run `cargo test --locked shell::update` and `cargo test --locked log_space_filters`. Inspect 44×12, 80×24, 120×36, and 180×36 in all icon modes, including long names/errors, skipped repositories, and empty scope. Compare ahead-only, behind-only, diverged, synchronized, missing, and differently named upstreams. Browse rows and Details, select Merge/Rebase, switch to Cancel with Tab, then reopen and confirm against local bare remotes with Enter. Press `Space b/u/d/p` and `/` from Log. | Columns and controls do not overlap; clipped targets/errors remain readable in Details. Branch counters retain their colors and survive clipped names; review does not fetch and results refresh the counts. Browsing does not change scope, Pull / Fetch starts focused when available, Tab/Shift-Tab move the blue background between buttons without underlines, and Enter activates the focused button. Pull / Fetch labels have no count; empty/busy actions cannot run. Cancel leaves refs, the real index, and working trees unchanged. Fetch updates refs only in Roots; Pull uses the selected strategy. Changed targets fail safely, conflicts remain available in Merge, and other repositories still complete. `Space p` opens Paths; standalone `p` opens Pull. |
 | A4 Submodules and index isolation (R3, R5) | Run `cargo test --locked mixed_and_unrelated_index_survive` and `cargo test --locked unpublished_intermediate_child_and_absent_remote_stop_parent`. | A selected file with staged/unstaged changes commits only its staged version; unselected staged entries remain. An unavailable child commit in history prevents the parent push from publishing that pointer. |
 | A5 Merge, undo, and Continue (R2, R7, R8) | Open sdk-core's `transport.conf`. Apply non-conflicting changes, accept one source in the gutter, and ignore the other. Undo, check the restored result, and resolve transport. Save and reopen the draft. Use Apply Changes, then review Continue separately. | The path and retries merge automatically; transport requires a decision. Drafting preserves the working file and index. After confirmed Apply Changes, `git -C "$ws/atlas-web/deps/sdk-core" ls-files -u` is empty, but MERGE_HEAD remains. Only Continue creates the merge commit. |
 | A6 AI boundaries (R6) | Configure `[ai]` with a custom endpoint, model and prompt. Select files in two repositories and put a recognizable unselected marker in another. Keep a handwritten draft. Run `cargo test --locked commit::ai::tests` against local mock endpoints. Generate once, click again while pending, simulate success and failure, and edit the message while waiting. | One action starts one request with animated progress; duplicate clicks do not send again. The request includes the model, custom prompt, and both selected patches, excluding the unselected marker and hidden roots. Success fills and persists the shared message directly without opening settings or a candidate dialog. Missing configuration, invalid/empty/truncated replies, HTTP failures, and save failures show an error dialog and preserve the existing draft. Newer edits are kept. HEAD, index, and working tree remain unchanged. The local mock tests exercise curl transport and direct generation; they do not establish external-model validation. |

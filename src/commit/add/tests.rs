@@ -60,6 +60,29 @@ fn press(panel: &mut CommitPanel, ctx: &Context, code: K) -> Action {
     panel.event(&Event::Key(KeyEvent::new(code, Mod::NONE)), ctx)
 }
 
+fn finish(panel: &mut CommitPanel, ctx: &Context) -> String {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let action = panel.poll_add(ctx);
+        if !panel.add_running() {
+            let Action::Notice(results) = action else {
+                panic!("Addition must report its result")
+            };
+            return results;
+        }
+        assert!(Instant::now() < deadline, "Addition did not finish");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn add_files(panel: &mut CommitPanel, ctx: &Context, code: K) -> String {
+    assert!(
+        matches!(press(panel, ctx, code), Action::Notice(message) if message.contains("Adding"))
+    );
+    assert!(panel.add_running());
+    finish(panel, ctx)
+}
+
 fn select_file(panel: &mut CommitPanel, root: usize, path: &str) {
     panel.cursor = panel
         .view
@@ -95,24 +118,16 @@ fn snapshot(repo: &Path) -> Snapshot {
 }
 
 #[test]
-fn add_to_git_shortcut_reviews_only_the_highlighted_untracked_file() {
+fn add_to_git_shortcut_immediately_adds_only_the_highlighted_untracked_file() {
     let (_dir, ctx, mut panel) = fixture();
     select_file(&mut panel, 0, "src/new 中文.txt");
     let before: Vec<_> = ctx.repos.iter().map(|repo| snapshot(&repo.path)).collect();
     let checks = panel.checks.clone();
     let message = panel.saved.message.clone();
-    let Action::Confirm { title, body, token } = press(&mut panel, &ctx, K::Char('a')) else {
-        panic!("a must open Add to Git review");
-    };
-    assert!(title.contains("Add to Git"));
-    assert!(body.contains("src/new 中文.txt"));
-    assert!(!body.contains("another[1].txt") && !body.contains("other staged"));
-    for (repo, before) in ctx.repos.iter().zip(&before) {
-        assert_eq!(&snapshot(&repo.path), before);
-    }
+    let results = add_files(&mut panel, &ctx, K::Char('a'));
+    assert!(results.contains("ADDED · app · 1 files"), "{results}");
     assert_eq!(panel.checks, checks);
     assert_eq!(panel.saved.message, message);
-    assert!(matches!(panel.confirm(&token, &ctx), Action::Refresh(_)));
     let repo = &ctx.repos[0].path;
     assert_eq!(
         git(repo, &["show", ":src/new 中文.txt"]).unwrap(),
@@ -120,11 +135,16 @@ fn add_to_git_shortcut_reviews_only_the_highlighted_untracked_file() {
     );
     assert_eq!(git(repo, &["show", ":mixed"]).unwrap(), "staged");
     assert_eq!(git(repo, &["show", ":other"]).unwrap(), "other staged");
+    for path in ["src/another[1].txt", "outside"] {
+        assert!(backend::status(repo)
+            .unwrap()
+            .iter()
+            .any(|file| file.path == Path::new(path) && file.xy == *b"??"));
+    }
     let after = snapshot(repo);
     assert_eq!(after.head, before[0].head);
     assert_eq!(after.working, before[0].working);
     assert_eq!(snapshot(&ctx.repos[1].path), before[1]);
-    panel.refresh(&ctx).unwrap();
     let file = panel
         .files
         .iter()
@@ -134,7 +154,7 @@ fn add_to_git_shortcut_reviews_only_the_highlighted_untracked_file() {
     assert_eq!(file.change.xy, *b"A ");
     assert_eq!(panel.checks, checks);
     assert_eq!(panel.saved.message, message);
-    assert!(matches!(panel.confirm(&token, &ctx), Action::None));
+    assert!(matches!(panel.confirm("commit-add", &ctx), Action::None));
 }
 
 #[test]
@@ -157,17 +177,13 @@ fn add_to_git_folded_directory_keeps_exact_members_in_each_layout() {
         press(&mut panel, &ctx, K::Char('h'));
         assert!(panel.fold.contains(&panel.active().unwrap().id));
         let before = snapshot(&ctx.repos[1].path);
-        let Action::Confirm { body, token, .. } = press(&mut panel, &ctx, K::Insert) else {
-            panic!("Insert must review collapsed members");
-        };
-        assert!(body.contains("new 中文.txt") && body.contains("another[1].txt"));
-        assert!(!body.contains("outside") && !body.contains("ignored"));
+        let results = add_files(&mut panel, &ctx, K::Insert);
+        assert!(results.contains("ADDED · app · 2 files"), "{results}");
         fs::write(
             ctx.repos[0].path.join("src/late.txt"),
-            "created after review\n",
+            "created after adding\n",
         )
         .unwrap();
-        panel.confirm(&token, &ctx);
         let changes = backend::status(&ctx.repos[0].path).unwrap();
         for path in ["src/new 中文.txt", "src/another[1].txt"] {
             assert_eq!(
@@ -202,37 +218,28 @@ fn add_to_git_group_uses_roots_and_reports_partial_failure_without_repeating_suc
         .iter()
         .position(|row| row.kind == Kind::Group && row.label == NEW)
         .unwrap();
-    let Action::Confirm { token, .. } = press(&mut panel, &ctx, K::Char('a')) else {
-        panic!("group review");
-    };
-    fs::write(ctx.repos[1].path.join("outside"), "changed after review\n").unwrap();
-    let Action::Refresh(results) = panel.confirm(&token, &ctx) else {
-        panic!("results");
-    };
+    let pending = snapshot(&ctx.repos[1].path);
+    let lock = ctx.repos[1].path.join(".git/index.lock");
+    fs::write(&lock, "another index writer\n").unwrap();
+    let results = add_files(&mut panel, &ctx, K::Char('a'));
     assert!(
         results.contains("ADDED · app") && results.contains("FAILED · api"),
         "{results}"
     );
+    assert_eq!(snapshot(&ctx.repos[1].path), pending);
     let completed = snapshot(&ctx.repos[0].path);
-    panel.refresh(&ctx).unwrap();
     panel.cursor = panel
         .view
         .iter()
         .position(|row| row.kind == Kind::Group && row.label == NEW)
         .unwrap();
-    let Action::Confirm { body, token, .. } = press(&mut panel, &ctx, K::Char('a')) else {
-        panic!("retry review");
-    };
-    assert_eq!(panel.add_plans.len(), 1);
-    assert!(body.contains("api · 3 files"));
-    // A Roots change after review must leave the reviewed repository untouched.
-    let pending = snapshot(&ctx.repos[1].path);
-    ctx.scope = [0].into();
-    let Action::Refresh(results) = panel.confirm(&token, &ctx) else {
-        panic!("scope result");
-    };
-    assert!(results.contains("outside Roots"));
-    assert_eq!(snapshot(&ctx.repos[1].path), pending);
+    assert!(panel
+        .active()
+        .unwrap()
+        .files
+        .iter()
+        .all(|&i| panel.files[i].root == 1));
+    fs::remove_file(lock).unwrap();
     ctx.scope = [1].into();
     panel.refresh(&ctx).unwrap();
     panel.cursor = panel
@@ -240,8 +247,11 @@ fn add_to_git_group_uses_roots_and_reports_partial_failure_without_repeating_suc
         .iter()
         .position(|row| row.kind == Kind::Group && row.label == NEW)
         .unwrap();
-    press(&mut panel, &ctx, K::Char('a'));
-    panel.confirm("commit-add", &ctx);
+    let results = add_files(&mut panel, &ctx, K::Char('a'));
+    assert!(
+        results.contains("ADDED · api · 3 files") && !results.contains("ADDED · app"),
+        "{results}"
+    );
     assert_eq!(snapshot(&ctx.repos[0].path), completed);
     assert!(backend::status(&ctx.repos[1].path)
         .unwrap()
@@ -252,6 +262,7 @@ fn add_to_git_group_uses_roots_and_reports_partial_failure_without_repeating_suc
 #[test]
 fn add_to_git_rejects_tracked_rows_and_preserves_preview_and_message_input() {
     let (_dir, ctx, mut panel) = fixture();
+    let before: Vec<_> = ctx.repos.iter().map(|repo| snapshot(&repo.path)).collect();
     select_file(&mut panel, 0, "mixed");
     assert!(
         matches!(press(&mut panel, &ctx, K::Char('a')), Action::Notice(message) if message.contains("No untracked files"))
@@ -263,13 +274,15 @@ fn add_to_git_rejects_tracked_rows_and_preserves_preview_and_message_input() {
         Action::None
     ));
     panel.edit_message(&ctx);
-    let before = panel.buf.clone();
+    let message_before = panel.buf.clone();
     assert!(matches!(
         press(&mut panel, &ctx, K::Char('a')),
         Action::None
     ));
-    assert_eq!(panel.buf, format!("{before}a"));
-    assert!(panel.add_plans.is_empty());
+    assert_eq!(panel.buf, format!("{message_before}a"));
+    for (repo, before) in ctx.repos.iter().zip(&before) {
+        assert_eq!(&snapshot(&repo.path), before);
+    }
 }
 
 #[test]
@@ -294,15 +307,168 @@ fn add_to_git_repository_scope_excludes_hidden_roots_and_amend_uses_m() {
         press(&mut panel, &ctx, K::Char('I')),
         Action::None
     ));
-    let Action::Confirm { body, token, .. } = press(&mut panel, &ctx, K::Char('a')) else {
-        panic!("a must review the repository's untracked members");
-    };
-    assert!(body.contains("app · 3 files") && !body.contains("api ·"));
+    let results = add_files(&mut panel, &ctx, K::Char('a'));
+    assert!(
+        results.contains("ADDED · app · 3 files") && !results.contains("api ·"),
+        "{results}"
+    );
     assert!(panel.amend.is_empty(), "Add to Git must never toggle Amend");
-    panel.confirm(&token, &ctx);
     assert_eq!(snapshot(&ctx.repos[1].path), hidden);
     assert!(backend::status(&ctx.repos[0].path)
         .unwrap()
         .iter()
         .all(|f| f.xy != *b"??"));
+}
+
+#[cfg(unix)]
+#[test]
+fn add_to_git_slow_filter_keeps_first_frame_browsing_and_draft_editing_responsive() {
+    use crate::ui::icons::IconMode;
+    use ratatui::{backend::TestBackend, Terminal};
+    let (_dir, mut ctx, mut panel) = fixture();
+    let repo = ctx.repos[0].path.clone();
+    let ready = repo.join(".git/add-ready");
+    let release = repo.join(".git/add-release");
+    struct Release(PathBuf);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            let _ = fs::write(&self.0, "release");
+        }
+    }
+    let _release = Release(release.clone());
+    let script = repo.join(".git/add-filter.sh");
+    fs::write(
+        &script,
+        "printf ready > \"$1\"\ni=0\nwhile [ ! -f \"$2\" ] && [ -f \"$0\" ] && [ \"$i\" -lt 1000 ]; do sleep 0.01; i=$((i+1)); done\n[ -f \"$2\" ] || exit 1\ncat\n",
+    )
+    .unwrap();
+    let quote = |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
+    git(
+        &repo,
+        &[
+            "config",
+            "filter.wait.clean",
+            &format!(
+                "sh {} {} {}",
+                quote(&script),
+                quote(&ready),
+                quote(&release)
+            ),
+        ],
+    )
+    .unwrap();
+    fs::write(repo.join(".gitattributes"), "*.txt filter=wait\n").unwrap();
+    select_file(&mut panel, 0, "src/new 中文.txt");
+    let head = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+    let index = fs::read(repo.join(".git/index")).unwrap();
+    panel.request_refresh();
+    panel.poll_refresh(&mut ctx).unwrap();
+    let started = Instant::now();
+    assert!(matches!(
+        press(&mut panel, &ctx, K::Char('a')),
+        Action::Notice(_)
+    ));
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "Adding must acknowledge input before starting Git"
+    );
+    assert!(panel.add_running());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ready.exists() {
+        panel.poll_add(&ctx);
+        assert!(Instant::now() < deadline, "Filter did not start");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    for icons in [IconMode::Ascii, IconMode::Unicode, IconMode::NerdFont] {
+        panel.icons = icons;
+        for (width, height) in [(44, 12), (80, 24), (120, 36)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| panel.draw(frame, frame.area(), &ctx))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let text = (0..height)
+                .map(|y| {
+                    (0..width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains("Adding 1 file"), "{text}");
+            assert!(
+                !text.contains("%"),
+                "Progress must not invent a percentage: {text}"
+            );
+            assert!(!panel
+                .hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::Submit(_) | Hit::Ai | Hit::StageHunks)));
+        }
+    }
+    let cursor = panel.cursor;
+    press(&mut panel, &ctx, K::Up);
+    assert_ne!(panel.cursor, cursor);
+    select_file(&mut panel, 0, "outside");
+    assert!(matches!(
+        press(&mut panel, &ctx, K::Char('a')),
+        Action::Notice(_)
+    ));
+    assert!(panel
+        .review(&ctx, false)
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("Adding files"));
+    assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index);
+    panel.edit_message(&ctx);
+    panel.event(&Event::Paste(" edited while adding".into()), &ctx);
+    press(&mut panel, &ctx, K::F(2));
+    let message = panel.saved.message.clone();
+    fs::write(release, "release").unwrap();
+    let results = finish(&mut panel, &ctx);
+    assert!(results.contains("1 added · 0 failed"), "{results}");
+    assert_eq!(panel.saved.message, message);
+    assert_eq!(git(&repo, &["rev-parse", "HEAD"]).unwrap(), head);
+    assert_eq!(git(&repo, &["show", ":mixed"]).unwrap(), "staged");
+    assert_eq!(git(&repo, &["show", ":other"]).unwrap(), "other staged");
+    assert_eq!(fs::read_to_string(repo.join("mixed")).unwrap(), "working\n");
+    assert!(backend::status(&repo)
+        .unwrap()
+        .iter()
+        .any(|file| file.path == Path::new("outside") && file.xy == *b"??"));
+    for _ in 0..5 {
+        panel.poll_refresh(&mut ctx).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(panel.files.iter().any(|file| file.root == 0
+        && file.change.path == Path::new("src/new 中文.txt")
+        && file.change.xy == *b"A "));
+}
+
+#[test]
+fn add_to_git_disconnected_worker_reports_unknown_outcomes_without_repeating_writes() {
+    let (_dir, ctx, mut panel) = fixture();
+    let before: Vec<_> = ctx.repos.iter().map(|repo| snapshot(&repo.path)).collect();
+    let (sender, receiver) = mpsc::channel();
+    drop(sender);
+    panel.add.pending = Some(Pending {
+        receiver,
+        started: Instant::now(),
+        total: 1,
+        repositories: 1,
+        phase: "Checking app".into(),
+        completed: Vec::new(),
+    });
+    let Action::Notice(message) = panel.poll_add(&ctx) else {
+        panic!("A stopped worker must report an error")
+    };
+    assert!(!panel.add_running());
+    assert!(
+        message.contains("0 added · 1 failed") && message.contains("Inspect Git status"),
+        "{message}"
+    );
+    for (repo, before) in ctx.repos.iter().zip(&before) {
+        assert_eq!(&snapshot(&repo.path), before);
+    }
 }

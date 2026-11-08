@@ -85,7 +85,14 @@ fn click(app: &mut Shell, screen: &str, label: &str) {
     let (row, column) = screen
         .lines()
         .enumerate()
-        .find_map(|(i, line)| line.find(label).map(|byte| (i, line[..byte].width())))
+        .find_map(|(i, line)| {
+            let byte = line.find(label)?;
+            let column = line[..byte].width();
+            app.pop_hits
+                .iter()
+                .any(|(rect, _)| inside(*rect, column as u16, i as u16))
+                .then_some((i, column))
+        })
         .unwrap_or_else(|| panic!("missing {label:?} in {screen}"));
     app.dispatch(&Event::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -130,20 +137,22 @@ fn workspace_fetch_reviews_scope_and_updates_refs_only_after_confirmation() {
         press(&mut app, ch);
         assert_eq!(app.help_content().context(), "Update / Review");
     }
-    app.dispatch(&key(KeyCode::Enter)); // Cancel is initially focused.
+    app.dispatch(&key(KeyCode::Tab)); // Move from Fetch to Cancel.
+    app.dispatch(&key(KeyCode::Enter));
     assert!(app.pop.is_none());
     assert_eq!(tracking(&active), old_tracking);
 
     press(&mut app, 'f');
     press(&mut app, 'l');
     press(&mut app, 'h');
+    press(&mut app, 'l');
     app.dispatch(&key(KeyCode::Enter));
     assert!(app.pop.is_none());
     assert_eq!(tracking(&active), old_tracking);
 
     press(&mut app, 'f');
     let text = screen(&mut app, 44, 12);
-    click(&mut app, &text, "Fetch 1");
+    click(&mut app, &text, " Fetch ");
     assert!(finish(&mut app).contains("active: OK"));
     assert_eq!(tracking(&active), next);
     assert_eq!(snapshot(&active), before);
@@ -167,15 +176,12 @@ fn workspace_pull_integrates_diverged_branches_with_the_reviewed_strategy() {
         }
         press(&mut app, 'p');
         let text = screen(&mut app, 44, 12);
-        assert!(text.contains("Update Project") && text.contains("main <- origin:main"));
+        assert!(text.contains("Update Project") && text.contains("origin:main"));
         assert!(text.contains("(o) m Merge"));
         assert_eq!(head(&local), local_head);
         if rebase {
             click(&mut app, &text, "r Rebase");
             assert!(screen(&mut app, 44, 12).contains("(o) r Rebase"));
-            app.dispatch(&key(KeyCode::Tab));
-        } else {
-            press(&mut app, 'l');
         }
         app.dispatch(&key(KeyCode::Enter));
         assert!(finish(&mut app).contains("project: OK"));
@@ -220,7 +226,6 @@ fn workspace_pull_keeps_conflicts_and_refuses_a_branch_switched_after_review() {
         && line.contains("Detached HEAD")));
     g(&stale, &["switch", "-c", "same-head"]);
     g(&stale, &["branch", "--set-upstream-to=origin/main"]);
-    app.dispatch(&key(KeyCode::Tab));
     app.dispatch(&key(KeyCode::Enter));
     let text = finish(&mut app);
     assert!(text.contains("1 succeeded · 2 failed · 1 skipped"));
@@ -278,4 +283,113 @@ fn workspace_pull_keeps_conflicts_and_refuses_a_branch_switched_after_review() {
     screen(&mut app, 120, 30);
     assert!(!app.regions.tab(Conflicts).is_empty());
     assert!(!g(&conflict, &["ls-files", "--unmerged"]).is_empty());
+}
+
+#[test]
+fn workspace_update_previews_the_configured_upstream_without_git_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (local, _) = pair(dir.path(), "project");
+    let base = head(&local);
+    let make_commit = |parent: &str, message: &str| {
+        g(
+            &local,
+            &["commit-tree", "HEAD^{tree}", "-p", parent, "-m", message],
+        )
+    };
+    let local_one = make_commit(&base, "local one");
+    let local_two = make_commit(&local_one, "local two");
+    let remote_one = make_commit(&base, "remote one");
+    let remote_two = make_commit(&remote_one, "remote two");
+    let remote_three = make_commit(&remote_two, "remote three");
+    g(
+        &local,
+        &["config", "branch.main.merge", "refs/heads/release"],
+    );
+    fs::write(local.join("base.txt"), "staged\n").unwrap();
+    fs::write(local.join("other.txt"), "unselected staged\n").unwrap();
+    g(&local, &["add", "."]);
+    fs::write(local.join("base.txt"), "unstaged\n").unwrap();
+
+    for (local_tip, remote_tip, expected) in [
+        (&local_two, &base, vec!["^2"]),
+        (&base, &remote_three, vec!["v3"]),
+        (&local_two, &remote_three, vec!["^2", "v3"]),
+        (&local_two, &local_two, vec![]),
+    ] {
+        g(&local, &["update-ref", "refs/heads/main", local_tip]);
+        // A same-name remote branch must never replace the configured upstream.
+        g(
+            &local,
+            &["update-ref", "refs/remotes/origin/main", local_tip],
+        );
+        g(
+            &local,
+            &["update-ref", "refs/remotes/origin/release", remote_tip],
+        );
+        let before = snapshot(&local);
+        let refs = g(&local, &["show-ref"]);
+        let mut app = Shell::new(workspace(dir.path()), IconMode::Ascii);
+        for ch in ['p', 'f'] {
+            press(&mut app, ch);
+            let text = screen(&mut app, 120, 36);
+            for count in ["^2", "v3"] {
+                assert_eq!(text.contains(count), expected.contains(&count), "{text}");
+            }
+            assert!(text.contains("origin/release"), "{text}");
+            assert!(!text.contains(" ^0") && !text.contains(" v0 "), "{text}");
+            app.dispatch(&key(KeyCode::Tab));
+            app.dispatch(&Event::Key(KeyEvent::new(
+                KeyCode::BackTab,
+                KeyModifiers::SHIFT,
+            )));
+            app.dispatch(&key(KeyCode::Tab));
+            app.dispatch(&key(KeyCode::Enter));
+            assert!(app.pop.is_none());
+            assert_eq!(snapshot(&local), before);
+            assert_eq!(g(&local, &["show-ref"]), refs);
+        }
+    }
+
+    for missing in [true, false] {
+        if missing {
+            g(&local, &["update-ref", "-d", "refs/remotes/origin/release"]);
+        } else {
+            g(&local, &["config", "--unset", "branch.main.merge"]);
+        }
+        let mut app = Shell::new(workspace(dir.path()), IconMode::Ascii);
+        for ch in ['p', 'f'] {
+            press(&mut app, ch);
+            let text = screen(&mut app, 80, 24);
+            assert!(!text.contains("^2") && !text.contains("v3"), "{text}");
+            app.dispatch(&key(KeyCode::Esc));
+        }
+    }
+}
+
+#[test]
+fn workspace_update_enter_runs_the_default_action_and_refreshes_upstream_counts_in_results() {
+    let dir = tempfile::tempdir().unwrap();
+    let (local, writer) = pair(dir.path(), "project");
+    incoming(&writer, "remote.txt");
+    let before = snapshot(&local);
+    let mut app = Shell::new(workspace(dir.path()), IconMode::Ascii);
+    press(&mut app, 'f');
+    let text = screen(&mut app, 120, 36);
+    assert!(!text.contains("v1"), "{text}"); // Opening review does not fetch.
+    app.dispatch(&key(KeyCode::Enter));
+    let text = finish(&mut app);
+    assert!(
+        text.contains("project: OK") && text.contains("v1"),
+        "{text}"
+    );
+    assert_eq!(snapshot(&local), before);
+    app.dispatch(&key(KeyCode::Enter));
+    press(&mut app, 'p');
+    assert!(screen(&mut app, 120, 36).contains("v1"));
+    app.dispatch(&key(KeyCode::Enter));
+    let text = finish(&mut app);
+    assert!(
+        text.contains("project: OK") && !text.contains("v1"),
+        "{text}"
+    );
 }

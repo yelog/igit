@@ -523,6 +523,15 @@ fn reachable(
 }
 
 pub(super) fn load(c: &Context, f: &Filter, limit: usize) -> History {
+    load_with_cancel(c, f, limit, &|| false)
+}
+
+pub(super) fn load_with_cancel(
+    c: &Context,
+    f: &Filter,
+    limit: usize,
+    cancelled: &impl Fn() -> bool,
+) -> History {
     let mut file_context;
     let c = if let Some(file) = &f.file_history {
         file_context = c.clone();
@@ -531,18 +540,24 @@ pub(super) fn load(c: &Context, f: &Filter, limit: usize) -> History {
     } else {
         c
     };
-    let (graph_layout, errors) = graph::PermanentLayout::load(c);
+    let (graph_layout, errors) = graph::PermanentLayout::load(c, cancelled);
     let mut h = History {
         graph_layout,
         errors,
         ..Default::default()
     };
     let mut streams = Vec::new();
+    if cancelled() {
+        return h;
+    }
     // Load a page for each global root; the tab can toggle these cached streams independently.
     if let Some(r) = c.scope.iter().find_map(|&i| c.repos.get(i)) {
         h.dates = local_dates(&r.path);
     }
     for &i in &c.scope {
+        if cancelled() {
+            return h;
+        }
         if f.file_history.as_ref().is_some_and(|file| file.root != i) {
             continue;
         }
@@ -550,6 +565,9 @@ pub(super) fn load(c: &Context, f: &Filter, limit: usize) -> History {
         let start = h.branches.len();
         if let Err(e) = read_refs(&r.path, i, &mut h) {
             h.errors.push((i, format!("{}: {e}", r.name)));
+        }
+        if cancelled() {
+            return h;
         }
         let tips = match &f.branch {
             Some(b) => match b.tips(&h.branches[start..]) {
@@ -560,6 +578,9 @@ pub(super) fn load(c: &Context, f: &Filter, limit: usize) -> History {
         };
         match revisions(&r.path, i, f, &tips, limit.saturating_add(1)) {
             Ok(mut v) => {
+                if cancelled() {
+                    return h;
+                }
                 if v.len() > limit {
                     h.more.insert(i);
                 }

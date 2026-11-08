@@ -216,6 +216,12 @@ impl Shell {
 
         let (hint, color) = if self.maximize_pending {
             ("Synchronizing Kitty layout…".into(), ACCENT)
+        } else if self.commit.add_running() {
+            (
+                self.commit
+                    .add_progress(usize::from(foot.width.saturating_sub(18))),
+                ACCENT,
+            )
         } else if !self.msg.is_empty() {
             (self.msg.clone(), ACCENT)
         } else if self.pop.is_some() {

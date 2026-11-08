@@ -1,6 +1,7 @@
 pub(crate) mod loading;
+mod state;
 
-use anyhow::{anyhow, bail, Context as _, Result};
+use anyhow::{bail, Context as _, Result};
 use std::{
     collections::{BTreeSet, HashMap},
     ffi::{OsStr, OsString},
@@ -228,13 +229,7 @@ impl Context {
                 }
             })
             .collect::<Vec<_>>();
-        let state_base = std::env::var_os("IGIT_STATE_DIR")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("XDG_STATE_HOME").map(|v| PathBuf::from(v).join("igit")))
-            .or_else(|| {
-                std::env::var_os("HOME").map(|v| PathBuf::from(v).join(".local/state/igit"))
-            })
-            .ok_or_else(|| anyhow!("Set IGIT_STATE_DIR to a private writable directory"))?;
+        let state_base = state::directory()?;
         // Hash canonical workspace path using deterministic FNV-1a for file-system-safe names.
         let id = workspace
             .as_os_str()

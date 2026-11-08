@@ -2,7 +2,7 @@
 use super::*;
 use crate::ui::{
     icons::{Icon, IconMode},
-    idea::{button_style, clipped, repo_tint, CONFLICT, GREEN, RED, TAG},
+    idea::{button_style, clipped, repo_tint, tracking_spans, CONFLICT, GREEN, RED, TAG},
     pane,
     selection::{TextLayout, Wrap},
     ACCENT, BG, FG, LINE, MUTED, SEL,
@@ -36,17 +36,32 @@ impl Columns {
         let width = usize::from(width);
         let prefix = 2 + icons.repo(false).width().max(icons.repo(true).width());
         let targets = width >= 32;
-        let branches = dialog.kind == Kind::Pull && width >= 70;
+        let branches = width >= 70;
         let modules = width >= 100 && dialog.rows.iter().any(|row| row.submodule);
+        let tracking_width = dialog
+            .rows
+            .iter()
+            .map(|row| dialog.tracking(row, icons).width())
+            .max()
+            .unwrap_or(0);
         let max = |values: Vec<usize>, min| values.into_iter().max().unwrap_or(min).max(min);
         let mut sizes = [
             prefix + max(dialog.rows.iter().map(|row| row.name.width()).collect(), 8),
             if branches {
                 max(
-                    dialog.rows.iter().map(|row| row.branch.width()).collect(),
+                    dialog
+                        .rows
+                        .iter()
+                        .map(|row| {
+                            row.comparison.branch.width() + dialog.tracking(row, icons).width()
+                        })
+                        .collect(),
                     6,
-                ) + icons.glyph(Icon::Left).width()
-                    + 1
+                ) + if dialog.kind == Kind::Pull {
+                    icons.glyph(Icon::Left).width() + 1
+                } else {
+                    0
+                }
             } else {
                 0
             },
@@ -57,7 +72,14 @@ impl Columns {
                         .iter()
                         .map(|row| match &row.outcome {
                             Outcome::Skipped(reason) => reason.width().min(48),
-                            _ => dialog.target(row, icons, branches).width(),
+                            _ => {
+                                dialog.target(row, icons, branches).width()
+                                    + if branches {
+                                        0
+                                    } else {
+                                        dialog.tracking(row, icons).width()
+                                    }
+                            }
                         })
                         .collect(),
                     10,
@@ -70,8 +92,12 @@ impl Columns {
         ];
         let minimum = [
             prefix + 6,
-            if branches { 8 } else { 0 },
-            if targets { 8 } else { 0 },
+            if branches { 8 + tracking_width } else { 0 },
+            if targets {
+                8 + if branches { 0 } else { tracking_width }
+            } else {
+                0
+            },
             sizes[3],
             sizes[4],
         ];
@@ -142,16 +168,49 @@ impl Dialog {
         if row.destination.is_empty() {
             return String::new();
         }
-        if self.kind == Kind::Pull && !separate_branch {
+        if !separate_branch {
             format!(
                 "{} {} {}",
-                row.branch,
-                icons.glyph(Icon::Left),
+                row.comparison.branch,
+                if self.kind == Kind::Pull {
+                    icons.glyph(Icon::Left)
+                } else {
+                    "·"
+                },
                 row.destination
             )
         } else {
             row.destination.clone()
         }
+    }
+
+    fn tracking(&self, row: &RepositoryRow, icons: IconMode) -> Line<'static> {
+        Line::from(tracking_spans(
+            icons,
+            row.comparison.tracking.unwrap_or_default(),
+        ))
+    }
+
+    fn comparison_line(
+        &self,
+        row: &RepositoryRow,
+        icons: IconMode,
+        width: usize,
+        suffix: &str,
+    ) -> Line<'static> {
+        let tracking = self.tracking(row, icons);
+        let available = width.saturating_sub(tracking.width());
+        let suffix = clipped(suffix, available.saturating_sub(4));
+        let mut line = Line::styled(
+            clipped(
+                &row.comparison.branch,
+                available.saturating_sub(suffix.width()),
+            ),
+            Style::new().fg(MUTED),
+        );
+        line.spans.extend(tracking.spans);
+        line.push_span(Span::styled(suffix, Style::new().fg(ACCENT)));
+        line
     }
 
     fn counts(&self) -> Line<'static> {
@@ -432,28 +491,41 @@ impl Dialog {
                     .add_modifier(Modifier::BOLD),
             );
             if columns.branch.width > 0 {
-                let arrow = icons.glyph(Icon::Left);
-                let branch = clipped(
-                    &repo.branch,
-                    columns.branch.width.saturating_sub(arrow.width() + 1),
-                );
-                put(
-                    &mut line,
-                    columns.branch,
-                    &format!("{branch} {arrow}"),
-                    muted,
-                );
+                let suffix = if self.kind == Kind::Pull {
+                    format!(" {}", icons.glyph(Icon::Left))
+                } else {
+                    String::new()
+                };
+                let branch = self.comparison_line(repo, icons, columns.branch.width, &suffix);
+                line.push_span(" ".repeat(columns.branch.x.saturating_sub(line.width())));
+                line.spans.extend(branch.spans);
             }
             match &repo.outcome {
                 Outcome::Skipped(reason) => {
                     put(&mut line, columns.target, reason, Style::new().fg(CONFLICT))
                 }
-                _ => put(
+                _ if columns.branch.width > 0 => put(
                     &mut line,
                     columns.target,
-                    &self.target(repo, icons, columns.branch.width > 0),
+                    &repo.destination,
                     Style::new().fg(ACCENT),
                 ),
+                _ if columns.target.width > 0 => {
+                    let separator = if self.kind == Kind::Pull {
+                        icons.glyph(Icon::Left)
+                    } else {
+                        "·"
+                    };
+                    let target = self.comparison_line(
+                        repo,
+                        icons,
+                        columns.target.width,
+                        &format!(" {separator} {}", repo.destination),
+                    );
+                    line.push_span(" ".repeat(columns.target.x.saturating_sub(line.width())));
+                    line.spans.extend(target.spans);
+                }
+                _ => (),
             }
             let (status, color) = self.status(repo);
             put(&mut line, columns.status, status, Style::new().fg(color));
@@ -509,7 +581,38 @@ impl Dialog {
             );
             if !row.destination.is_empty() {
                 layout.push(
-                    Line::styled(self.target(row, icons, false), Style::new().fg(ACCENT)),
+                    if self.kind == Kind::Pull {
+                        self.comparison_line(
+                            row,
+                            icons,
+                            usize::MAX,
+                            &format!(" {} {}", icons.glyph(Icon::Left), row.destination),
+                        )
+                    } else {
+                        Line::styled(
+                            format!("Remotes: {}", row.destination),
+                            Style::new().fg(ACCENT),
+                        )
+                    },
+                    inner.width,
+                    Wrap::Word,
+                );
+            }
+            if !row.comparison.upstream.is_empty() {
+                layout.push(
+                    if self.kind == Kind::Fetch {
+                        self.comparison_line(
+                            row,
+                            icons,
+                            usize::MAX,
+                            &format!(" {} {}", icons.glyph(Icon::Right), row.comparison.upstream),
+                        )
+                    } else {
+                        Line::styled(
+                            format!("Upstream: {}", row.comparison.upstream),
+                            Style::new().fg(MUTED),
+                        )
+                    },
                     inner.width,
                     Wrap::Word,
                 );
@@ -605,7 +708,7 @@ impl Dialog {
         } else {
             vec![
                 (
-                    format!(" {} {} ", self.kind.label(), self.ready),
+                    format!(" {} ", self.kind.label()),
                     CONFIRM,
                     self.confirm_focused,
                     self.ready > 0,
@@ -616,12 +719,9 @@ impl Dialog {
         for (label, id, focused, enabled) in actions {
             let width = (label.width() as u16).min(right.saturating_sub(row.x));
             let rect = Rect::new(right - width, row.y, width, 1);
-            let mut style = button_style(id == CONFIRM && enabled);
+            let mut style = button_style(focused && enabled);
             if !enabled {
                 style = style.fg(MUTED);
-            }
-            if focused {
-                style = style.add_modifier(Modifier::UNDERLINED);
             }
             f.render_widget(Paragraph::new(label).style(style), rect);
             if enabled && !rect.is_empty() {
@@ -629,7 +729,18 @@ impl Dialog {
             }
             right = rect.x.saturating_sub(1).max(row.x);
         }
-        let hint = format!(" {} in Roots", self.rows.len());
+        let controls = if matches!(self.stage, Stage::Results) {
+            "Enter Close"
+        } else {
+            "Tab Buttons · Enter Activate"
+        };
+        let hint = [
+            format!(" {} in Roots · {controls}", self.rows.len()),
+            format!(" {} in Roots", self.rows.len()),
+        ]
+        .into_iter()
+        .find(|hint| hint.width() < usize::from(right.saturating_sub(row.x)))
+        .unwrap_or_default();
         if hint.width() < usize::from(right.saturating_sub(row.x)) {
             f.render_widget(
                 Paragraph::new(hint).style(Style::new().fg(MUTED)),

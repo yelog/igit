@@ -23,7 +23,11 @@ fn fixture(kind: Kind, count: usize) -> Dialog {
                     format!("service-{i:02}")
                 },
                 submodule: i > 0,
-                branch: "main".into(),
+                comparison: Comparison {
+                    branch: "main".into(),
+                    upstream: "origin/main".into(),
+                    tracking: Some((2, 3)),
+                },
                 destination: if kind == Kind::Pull {
                     "origin:main".into()
                 } else {
@@ -38,7 +42,7 @@ fn fixture(kind: Kind, count: usize) -> Dialog {
         detail_area: Rect::default(),
         detail_scroll: 0,
         detail_max_scroll: 0,
-        confirm_focused: false,
+        confirm_focused: count > 0,
     }
 }
 
@@ -99,8 +103,8 @@ fn update_panels_fit_controls_columns_and_repository_icons_in_all_modes() {
                     "{text}"
                 );
                 assert!(
-                    text.contains(&format!("{} 11", kind.label()))
-                        && !text.contains(&format!("y {} 11", kind.label()))
+                    text.contains(&format!(" {} ", kind.label()))
+                        && !text.contains(&format!("{} 11", kind.label()))
                         && text.contains("Cancel")
                         && !text.contains("n Cancel")
                         && text.contains("Details"),
@@ -117,9 +121,11 @@ fn update_panels_fit_controls_columns_and_repository_icons_in_all_modes() {
                 let cancel = hits.iter().find(|(_, id)| *id == CANCEL).unwrap().0;
                 assert_eq!(buffer[(action.x, action.y)].bg, SEL);
                 assert_eq!(buffer[(cancel.x, cancel.y)].bg, TAG);
-                assert!(buffer[(cancel.x, cancel.y)]
-                    .modifier
-                    .contains(Modifier::UNDERLINED));
+                for rect in [action, cancel] {
+                    assert!(!buffer[(rect.x, rect.y)]
+                        .modifier
+                        .contains(Modifier::UNDERLINED));
+                }
                 for (i, (rect, _)) in hits.iter().enumerate() {
                     assert!(buffer.area.contains((rect.x, rect.y).into()));
                     assert!(rect.right() <= width && rect.bottom() <= height && !rect.is_empty());
@@ -135,13 +141,7 @@ fn update_panels_fit_controls_columns_and_repository_icons_in_all_modes() {
                         text.contains("m Merge") && text.contains("r Rebase"),
                         "{text}"
                     );
-                    assert!(
-                        text.contains(&format!(
-                            "main {} origin:main",
-                            icons.glyph(crate::ui::icons::Icon::Left)
-                        )),
-                        "{text}"
-                    );
+                    assert!(text.contains("origin:main"), "{text}");
                     assert!(!click(&mut dialog, &hits, REBASE));
                     assert!(dialog.strategy == Strategy::Rebase);
                 } else {
@@ -149,7 +149,8 @@ fn update_panels_fit_controls_columns_and_repository_icons_in_all_modes() {
                     assert!(!hits.iter().any(|(_, id)| *id == MERGE || *id == REBASE));
                 }
                 assert!(matches!(dialog.stage, Stage::Review(_)));
-                assert!(dialog.event(&key(K::Enter), None)); // The primary color never changes initial Cancel focus.
+                assert!(!dialog.event(&key(K::Tab), None));
+                assert!(dialog.event(&key(K::Enter), None));
             }
         }
     }
@@ -174,7 +175,7 @@ fn update_browsing_and_resizing_keeps_the_current_repository_visible_without_cha
     assert_eq!(dialog.pos, 1);
     assert_eq!(dialog.ready, 30);
     assert_eq!(dialog.rows.len(), 30);
-    assert!(!dialog.confirm_focused);
+    assert!(dialog.confirm_focused);
     assert!(dialog.strategy == Strategy::Merge);
     assert!(matches!(dialog.stage, Stage::Review(_)));
 }
@@ -183,7 +184,7 @@ fn update_browsing_and_resizing_keeps_the_current_repository_visible_without_cha
 fn update_long_unicode_targets_and_errors_are_available_in_scrollable_details() {
     let mut dialog = fixture(Kind::Pull, 3);
     dialog.rows[0].name = "共享模块-界面-e\u{301}-🚀-very-long-repository-name".into();
-    dialog.rows[0].branch = "feature/long-unicode-修复".into();
+    dialog.rows[0].comparison.branch = "feature/long-unicode-修复".into();
     dialog.rows[0].destination = "upstream:feature/remote-修复-long-branch".into();
     dialog.rows[0].outcome = Outcome::Failed(format!(
         "{}\nLAST ERROR LINE",
@@ -215,6 +216,7 @@ fn update_empty_and_unavailable_repositories_disable_confirmation() {
     for count in [0, 2] {
         let mut dialog = fixture(Kind::Fetch, count);
         dialog.ready = 0;
+        dialog.confirm_focused = false;
         for row in &mut dialog.rows {
             row.outcome = Outcome::Skipped("No remotes configured".into());
             row.destination.clear();
@@ -245,6 +247,7 @@ fn update_running_and_results_keep_repository_rows_and_color_outcomes() {
     assert!(!dialog.event(&key(K::Esc), None));
     tx.send(Report {
         summary: "Pull: 1 succeeded · 1 failed · 1 skipped".into(),
+        comparisons: vec![],
         outcomes: vec![
             Outcome::Succeeded,
             Outcome::Failed("Remote changed; review again".into()),
@@ -269,4 +272,77 @@ fn update_running_and_results_keep_repository_rows_and_color_outcomes() {
     }
     assert!(buffer.content.iter().any(|cell| cell.fg == ACCENT));
     assert!(dialog.event(&key(K::Enter), None));
+}
+
+#[test]
+fn update_tracking_counts_keep_branch_colors_and_survive_clipped_names() {
+    use crate::ui::{icons::Icon, idea::LOCAL_REF};
+    for kind in [Kind::Fetch, Kind::Pull] {
+        for icons in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
+            for (width, height) in [(44, 12), (80, 24), (120, 36), (180, 36)] {
+                let mut dialog = fixture(kind, 2);
+                dialog.rows[0].comparison.branch =
+                    "feature/中文分支-long-long-long-long-long-long-long".repeat(4);
+                let (buffer, hits, text) = draw(&mut dialog, width, height, icons);
+                let rect = hits.iter().find(|(_, id)| *id == ROW).unwrap().0;
+                let row = text.lines().nth(usize::from(rect.y)).unwrap();
+                for (icon, count, color) in
+                    [(Icon::Ahead, "2", LOCAL_REF), (Icon::Behind, "3", ACCENT)]
+                {
+                    let glyph = icons.glyph(icon);
+                    assert!(row.contains(&format!("{glyph}{count}")), "{row}");
+                    let x = (rect.x..rect.right())
+                        .find(|&x| buffer[(x, rect.y)].symbol() == glyph)
+                        .unwrap();
+                    assert_eq!(buffer[(x, rect.y)].fg, color);
+                    assert_eq!(buffer[(x, rect.y)].bg, SEL);
+                }
+                assert!(row.contains('…'), "{row}");
+            }
+        }
+    }
+}
+
+#[test]
+fn update_tab_and_shift_tab_move_the_visible_button_focus() {
+    for kind in [Kind::Fetch, Kind::Pull] {
+        let mut dialog = fixture(kind, 1);
+        for (event, confirm_focused) in [
+            (None, true),
+            (Some(key(K::Tab)), false),
+            (Some(Event::Key(KeyEvent::new(K::BackTab, M::SHIFT))), true),
+        ] {
+            if let Some(event) = event {
+                assert!(!dialog.event(&event, None));
+            }
+            assert_eq!(dialog.confirm_focused, confirm_focused);
+            let (buffer, hits, text) = draw(&mut dialog, 120, 36, IconMode::Ascii);
+            for id in [CANCEL, CONFIRM] {
+                let rect = hits.iter().find(|(_, hit)| *hit == id).unwrap().0;
+                for x in rect.x..rect.right() {
+                    assert_eq!(
+                        buffer[(x, rect.y)].bg,
+                        if (id == CONFIRM) == confirm_focused {
+                            SEL
+                        } else {
+                            TAG
+                        },
+                        "{text}"
+                    );
+                    assert!(!buffer[(x, rect.y)].modifier.contains(Modifier::UNDERLINED));
+                }
+                let label: String = (rect.x..rect.right())
+                    .map(|x| buffer[(x, rect.y)].symbol())
+                    .collect();
+                assert_eq!(
+                    label.trim(),
+                    if id == CANCEL { "Cancel" } else { kind.label() }
+                );
+            }
+            assert!(text.contains("Tab") && text.contains("Enter"), "{text}");
+        }
+        assert!(!dialog.event(&key(K::Tab), None));
+        assert!(dialog.event(&key(K::Enter), None));
+        assert!(matches!(dialog.stage, Stage::Review(_)));
+    }
 }

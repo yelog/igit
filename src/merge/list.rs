@@ -52,7 +52,7 @@ impl Entry {
         }
     }
 
-    fn path(&self) -> Option<&str> {
+    fn path(&self) -> Option<&Path> {
         match self {
             Self::File(file) => Some(&file.path),
             Self::Ready(_) => None,
@@ -62,6 +62,7 @@ impl Entry {
 
 struct Sources {
     operation: Option<&'static str>,
+    can_skip: bool,
     current: String,
     incoming: String,
 }
@@ -86,6 +87,7 @@ impl Sources {
             .unwrap_or_default();
         Self {
             operation,
+            can_skip: op.is_some_and(|op| super::RecoveryAction::Skip.available(op)),
             current,
             incoming,
         }
@@ -213,11 +215,9 @@ impl ConflictList {
     }
 
     pub(super) fn select_file(&mut self, file: &Conflict) {
-        if let Some(index) = self
-            .items
-            .iter()
-            .position(|entry| entry.root() == file.root && entry.path() == Some(file.path.as_str()))
-        {
+        if let Some(index) = self.items.iter().position(|entry| {
+            entry.root() == file.root && entry.path() == Some(file.path.as_path())
+        }) {
             self.focus = Some(Row::Item(index));
         }
     }
@@ -356,7 +356,7 @@ impl MergePanel {
             let mut document = match self.open_document(c, file.clone()) {
                 Ok(doc) => doc,
                 Err(error) => {
-                    first_error.get_or_insert_with(|| format!("{}: {error:#}", file.path));
+                    first_error.get_or_insert_with(|| format!("{}: {error:#}", file.label()));
                     skipped += 1;
                     continue;
                 }
@@ -397,7 +397,7 @@ impl MergePanel {
     pub(super) fn draw_list(&mut self, f: &mut Frame, area: Rect, c: &Context) {
         self.panes.add(PaneId::Conflicts, area);
         let [tools, table, footer] =
-            Layout::vertical([C::Length(1), C::Min(3), C::Length(1)]).areas(area);
+            Layout::vertical([C::Length(1), C::Min(3), C::Length(2)]).areas(area);
         let root = self.list.selected_root();
 
         let can_prepare = root.is_some_and(|r| {
@@ -554,9 +554,16 @@ impl MergePanel {
                             for (col, side) in
                                 [(current, FileSide::Current), (incoming, FileSide::Incoming)]
                             {
-                                if let Some(button) =
-                                    draw_side(f, col, side.status(&file.stages), accept)
-                                {
+                                if let Some(button) = draw_side(
+                                    f,
+                                    col,
+                                    if file.path.to_str().is_none() {
+                                        ("External", "Ext", RED)
+                                    } else {
+                                        side.status(&file.stages)
+                                    },
+                                    accept,
+                                ) {
                                     self.hits.push((button, Hit::AcceptFile(i, side)));
                                 }
                             }
@@ -573,11 +580,12 @@ impl MergePanel {
     }
 
     fn draw_conflict_name(&self, f: &mut Frame, area: Rect, file: &Conflict, repo: &Repo) {
-        let (icon, tint) = self.icons.file(Path::new(&file.path));
-        let (parent, basename) = file.path.rsplit_once('/').unwrap_or(("", &file.path));
+        let (icon, tint) = self.icons.file(&file.path);
+        let label = file.label();
+        let (parent, basename) = label.rsplit_once('/').unwrap_or(("", &label));
         let width = usize::from(area.width).saturating_sub(icon.width() + 4);
         let name = if self.list.full_paths {
-            clipped_path(file.path.clone(), width)
+            clipped_path(label.clone(), width)
         } else {
             clipped(basename, width)
         };
@@ -592,6 +600,10 @@ impl MergePanel {
             Span::styled(format!(" {name}"), style(FG)),
         ];
         let mut left = width.saturating_sub(name.width());
+        if file.path.to_str().is_none() && left >= 11 {
+            spans.push(Span::styled("  External", style(RED)));
+            left -= 10;
+        }
         if left >= 7
             && self
                 .drafts
@@ -608,22 +620,53 @@ impl MergePanel {
     fn draw_list_footer(&mut self, f: &mut Frame, bar: Rect) {
         let ready = self.list.ready();
         let manual = self.list.selected_file().is_some();
-        let continue_label = if bar.width >= 64 {
-            format!(" Continue [{}] ", self.key_label("C"))
-        } else {
-            " Continue ".into()
-        };
+        let sources = self
+            .list
+            .selected_root()
+            .and_then(|root| self.list.sources.get(&root));
+        let abort = sources.is_some_and(|s| s.operation.is_some());
+        let skip = sources.is_some_and(|s| s.can_skip);
+        let operations = rect(bar.x, bar.y, bar.width, u16::from(bar.height > 0));
+        let compact = bar.width < 64;
+        let labels = [("Continue", "C"), ("Abort", "B"), ("Skip", "N")].map(|(label, key)| {
+            if compact {
+                format!(" {label} ")
+            } else {
+                format!(" {label} [{}] ", self.key_label(key))
+            }
+        });
+        let mut x = operations.x;
+        for ((hit, on), label) in [
+            (Hit::Continue, ready),
+            (Hit::Abort, abort),
+            (Hit::Skip, skip),
+        ]
+        .into_iter()
+        .zip(&labels)
+        {
+            let w = label.width() as u16;
+            if operations.height > 0 && operations.right().saturating_sub(x) >= w {
+                let cell = rect(x, operations.y, w, 1);
+                list_control(f, cell, label, on, ready && matches!(hit, Hit::Continue));
+                if on {
+                    self.hits.push((cell, hit));
+                }
+                x += w + 1;
+            }
+        }
+        if bar.height < 2 {
+            return;
+        }
         let mut right = bar.right().saturating_sub(1);
         for (label, hit, on, primary) in [
             (" Resolve Manually ", Hit::Open, manual, manual),
-            (&continue_label, Hit::Continue, ready, ready),
             (" Close ", Hit::Close, true, false),
         ] {
             let w = label.width() as u16;
             if right.saturating_sub(bar.x) < w {
                 continue;
             }
-            let cell = rect(right - w, bar.y, w, 1);
+            let cell = rect(right - w, bar.y + 1, w, 1);
             list_control(f, cell, label, on, primary);
             if on {
                 self.hits.push((cell, hit));

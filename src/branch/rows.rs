@@ -2,7 +2,7 @@
 use super::*;
 use crate::ui::{
     icons::Icon,
-    idea::{clipped, repo_tint, BLUE, CONFLICT, LOCAL_REF, REMOTE_REF, TAG},
+    idea::{clipped, repo_tint, tracking_spans, CONFLICT, LOCAL_REF, REMOTE_REF, TAG},
 };
 use ratatui::{
     style::{Style, Stylize},
@@ -23,22 +23,6 @@ fn status(branch: &Branch) -> &'static str {
     } else {
         ""
     }
-}
-
-fn tracking_spans(icons: IconMode, (ahead, behind): (usize, usize)) -> Vec<Span<'static>> {
-    [
-        (Icon::Ahead, ahead, LOCAL_REF),
-        (Icon::Behind, behind, BLUE),
-    ]
-    .into_iter()
-    .filter(|(_, count, _)| *count > 0)
-    .map(|(icon, count, color)| {
-        Span::styled(
-            format!(" {}{count}", icons.glyph(icon)),
-            Style::new().fg(color),
-        )
-    })
-    .collect()
 }
 
 pub(super) fn measure_upstream(

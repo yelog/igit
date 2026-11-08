@@ -50,6 +50,13 @@ impl PushPanel {
             .cloned();
         let reseed = self.reseed.take();
         self.entries = entries;
+        self.tracking_choices.retain(|idx, choice| {
+            !c.scope.contains(idx)
+                || self
+                    .entries
+                    .iter()
+                    .any(|e| e.idx == *idx && e.source == choice.branch && e.t == choice.target)
+        });
         if let Some(roots) = &reseed {
             self.checked = roots.iter().copied().collect();
             self.expanded = self.checked.clone();

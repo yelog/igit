@@ -803,7 +803,7 @@ impl MergePanel {
             Rows {
                 chunks: &d.chunks,
                 read_only: false,
-                file: &d.file.path,
+                file: &d.file.label(),
                 view: &self.view,
                 map: &map,
                 selected: self.idx,
@@ -1078,7 +1078,13 @@ fn draw_heading(
         };
         put(f, row, clipped(&label, row.width as usize), s);
     } else {
-        let file = clean(doc.file.path.rsplit('/').next().unwrap_or(&doc.file.path));
+        let file = clean(&path_label(
+            doc.file
+                .path
+                .file_name()
+                .map(std::path::Path::new)
+                .unwrap_or(&doc.file.path),
+        ));
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(" Result ", s),

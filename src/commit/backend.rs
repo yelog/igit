@@ -11,6 +11,7 @@ use tempfile::TempDir;
 
 pub(super) mod add;
 pub(super) mod discard;
+pub(super) mod staging;
 pub(super) mod stash;
 mod working;
 
@@ -722,14 +723,23 @@ pub fn diff(repo: &Path, f: &Change) -> Result<String> {
         let path = repo.join(&f.path);
         if path.is_file() && !path.is_symlink() {
             use std::io::Read;
+            const LIMIT: usize = 96 * 1024;
             let mut content = Vec::new();
             fs::File::open(&path)?
-                .take(96 * 1024)
+                .take((LIMIT + 1) as u64)
                 .read_to_end(&mut content)?;
             if content.contains(&0) {
                 return Ok("Binary new file".into());
             }
-            return Ok(format!(
+            let truncated = content.len() > LIMIT;
+            if truncated {
+                let mut end = LIMIT;
+                while end > 0 && content[end] & 0xc0 == 0x80 {
+                    end -= 1;
+                }
+                content.truncate(end);
+            }
+            let mut preview = format!(
                 "+++ {} (untracked)\n{}",
                 f.label(),
                 String::from_utf8_lossy(&content)
@@ -737,7 +747,11 @@ pub fn diff(repo: &Path, f: &Change) -> Result<String> {
                     .map(|x| format!("+{x}"))
                     .collect::<Vec<_>>()
                     .join("\n")
-            ));
+            );
+            if truncated {
+                preview.push_str("\n\n… Preview truncated at 96 KiB. Open the file to inspect the rest; committing includes the full selected file.");
+            }
+            return Ok(preview);
         }
         return Ok(format!("New path: {}", f.label()));
     }
@@ -809,6 +823,42 @@ mod tests {
     pub(super) fn get(r: &Path, args: &[&str]) -> String {
         txt(g(r, None, args).unwrap())
     }
+
+    #[test]
+    fn untracked_preview_announces_truncation_and_keeps_unicode_whole() {
+        let dir = setup();
+        let repo = dir.path();
+        const LIMIT: usize = 96 * 1024;
+        for length in [LIMIT - 1, LIMIT, LIMIT + 1] {
+            let bytes = vec![b'a'; length];
+            fs::write(repo.join("new.txt"), &bytes).unwrap();
+            let file = status(repo)
+                .unwrap()
+                .into_iter()
+                .find(|change| change.path == Path::new("new.txt"))
+                .unwrap();
+            let preview = diff(repo, &file).unwrap();
+            assert_eq!(preview.contains("Preview truncated"), length > LIMIT);
+            assert_eq!(fs::read(repo.join("new.txt")).unwrap(), bytes);
+        }
+        let text = format!("{}中文 tail", "a".repeat(LIMIT - 1));
+        fs::write(repo.join("new.txt"), &text).unwrap();
+        let file = status(repo)
+            .unwrap()
+            .into_iter()
+            .find(|change| change.path == Path::new("new.txt"))
+            .unwrap();
+        let preview = diff(repo, &file).unwrap();
+        assert!(preview.contains("Preview truncated at 96 KiB"));
+        assert!(!preview.contains('\u{fffd}'));
+        assert!(!preview.contains("tail"));
+        assert!(get(repo, &["ls-files", "--stage"]).is_empty());
+        assert_eq!(fs::read_to_string(repo.join("new.txt")).unwrap(), text);
+
+        fs::write(repo.join("new.txt"), b"binary\0content").unwrap();
+        assert_eq!(diff(repo, &file).unwrap(), "Binary new file");
+    }
+
     #[test]
     fn ignored_paths_are_collapsed_read_only_and_excluded_from_plans() {
         let d = setup();

@@ -284,25 +284,7 @@ impl PushPanel {
         }
         self.draw_controls(f, controls, c);
         self.draw_group_menu(f, area);
-        if let Some((i, target)) = &self.target_edit {
-            let pop = Rect::new(
-                area.x + 2,
-                area.y + area.height / 2,
-                area.width.saturating_sub(4),
-                3.min(area.height),
-            );
-            f.render_widget(Clear, pop);
-            f.render_widget(
-                Paragraph::new(format!("{target}{}", self.icons.glyph(Icon::Cursor))).block(pane(
-                    format!(
-                        "{} · remote:branch · Enter save / Esc cancel",
-                        c.repos[*i].name
-                    ),
-                    self.panes.active,
-                )),
-                pop,
-            );
-        }
+        self.draw_target_editor(f, area, c);
     }
 
     fn draw_repositories(&mut self, f: &mut Frame, area: Rect, c: &Context) {
@@ -390,13 +372,20 @@ impl PushPanel {
                     Style::new().fg(repo_tint(id)),
                 ));
                 let result = self.results.get(&id).map(|r| {
+                    let partial = matches!(r, Ok(PushOutcome::UpstreamNotSet(_)));
                     (
-                        if r.is_ok() {
+                        if r.is_ok() && !partial {
                             Icon::Success
                         } else {
                             Icon::Error
                         },
-                        if r.is_ok() { GREEN } else { RED },
+                        if partial {
+                            CONFLICT
+                        } else if r.is_ok() {
+                            GREEN
+                        } else {
+                            RED
+                        },
                     )
                 });
                 let result_width = result

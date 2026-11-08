@@ -16,6 +16,66 @@ fn ai_settings_reach_commit_from_application_configuration() {
     send(&mut app, "Esc");
 }
 
+#[test]
+fn configuration_hunk_view_remaps_and_help_review_keeps_git_unchanged_on_cancel() {
+    let (_dir, mut app) = fixture();
+    let repo = app.ctx.repos[0].path.clone();
+    crate::core::git(&repo, &["config", "core.autocrlf", "false"]).unwrap();
+    configure(&mut app, "[keybindings.commit]\nstage-hunks=['Ctrl-y']");
+    screen(&mut app, 120, 36);
+    send(&mut app, "Home Down");
+    let before = snapshot(&repo);
+    send(&mut app, "Ctrl-g");
+    assert_ne!(app.help_content().context(), "Commit / Stage Hunks");
+    send(&mut app, "Ctrl-y");
+    assert_eq!(app.help_content().context(), "Commit / Stage Hunks");
+    send(&mut app, "F1");
+    app.dispatch(&Event::Paste("Review selected hunk".into()));
+    send(&mut app, "Enter");
+    assert!(
+        matches!(&app.pop, Some(Popup::Confirm { token, yes: false, .. }) if token == "commit-hunk")
+    );
+    send(&mut app, "Esc Esc");
+    assert!(!app.commit.editing());
+    assert_eq!(snapshot(&repo), before);
+}
+
+#[test]
+fn running_commit_blocks_push_fetch_roots_workspace_replacement_and_quit() {
+    let (_dir, mut app) = fixture();
+    let before = snapshot(&app.ctx.repos[0].path);
+    let complete = app.commit.hold_execution();
+    app.go(Push);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.push.reads_pending() {
+        app.poll();
+        assert!(Instant::now() < deadline, "Push reads did not finish");
+        std::thread::yield_now();
+    }
+    screen(&mut app, 120, 36);
+    send(&mut app, "F");
+    assert!(!app.push.busy());
+    assert!(app.msg.contains("Git write"), "{}", app.msg);
+    for command in ["r", "f", "p", "q"] {
+        send(&mut app, command);
+        assert!(
+            app.pop.is_none(),
+            "{command} bypassed the running commit guard"
+        );
+        assert!(!app.quit);
+    }
+    let open = app
+        .menu_actions()
+        .position(|action| matches!(action, MenuAction::Open))
+        .unwrap();
+    app.menu_action(open);
+    assert!(app.pop.is_none());
+    assert_eq!(snapshot(&app.ctx.repos[0].path), before);
+    complete();
+    app.poll();
+    assert!(!app.commit.execution_running());
+}
+
 fn configure(app: &mut Shell, text: &str) {
     app.config = AppConfig::from_toml(&format!("[ui]\nicons='ascii'\n{text}")).unwrap();
     app.merge.shortcut_labels = app.config.shortcut_labels("merge");
@@ -374,50 +434,190 @@ fn configuration_remapped_review_and_help_keep_git_and_index_unchanged() {
 }
 
 #[test]
-fn configuration_add_to_git_defaults_remapping_help_and_cancel() {
+fn configuration_add_to_git_defaults_remapping_and_help_execute_without_confirmation() {
     use crate::core::git;
     use std::fs;
 
+    fn finish_add(app: &mut Shell) {
+        assert!(app.commit.add_running());
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while app.commit.add_running() {
+            app.poll();
+            assert!(Instant::now() < deadline, "Addition did not finish");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.pop.is_none());
+    }
+
     let (_dir, mut app) = fixture();
     let repo = app.ctx.repos[0].path.clone();
-    fs::write(repo.join("new 中文.txt"), "new file\n").unwrap();
+    let original = snapshot(&repo);
+    for (shortcut, path) in [("a", "new 中文.txt"), ("Insert", "insert.txt")] {
+        fs::write(repo.join(path), "new file\n").unwrap();
+        app.refresh();
+        send(&mut app, "G");
+        send(&mut app, shortcut);
+        assert!(app.pop.is_none());
+        finish_add(&mut app);
+        assert_eq!(
+            git(&repo, &["show", &format!(":{path}")]).unwrap(),
+            "new file"
+        );
+        for (width, height) in [(120, 36), (80, 24), (44, 12)] {
+            screen(&mut app, width, height);
+        }
+    }
+    fs::write(repo.join("remapped.txt"), "remapped file\n").unwrap();
     app.refresh();
     send(&mut app, "G");
     let before = snapshot(&repo);
-    for shortcut in ["a", "Insert"] {
-        send(&mut app, shortcut);
-        assert!(
-            matches!(&app.pop, Some(Popup::Confirm { title, token, yes: false, .. })
-            if title.contains("Add to Git") && token == "commit-add")
-        );
-        for (width, height) in [(120, 36), (80, 24), (44, 12)] {
-            assert!(screen(&mut app, width, height).contains("Add to Git"));
-        }
-        send(&mut app, "Esc");
-        assert_eq!(snapshot(&repo), before);
-    }
-    configure(&mut app, "[keybindings.commit]\nadd-to-git=['Ctrl-g']");
+    configure(&mut app, "[keybindings.commit]\nadd-to-git=['Alt-a']");
     send(&mut app, "a Insert I");
     assert!(app.pop.is_none());
-    send(&mut app, "F1");
-    app.dispatch(&Event::Paste("Review adding untracked".into()));
-    let help = screen(&mut app, 120, 36);
-    assert!(help.contains("Ctrl-g"), "{help}");
-    send(&mut app, "Enter");
-    assert!(matches!(&app.pop, Some(Popup::Confirm { token, .. }) if token == "commit-add"));
-    send(&mut app, "Esc");
     assert_eq!(snapshot(&repo), before);
-    send(&mut app, "Ctrl-g y");
+    send(&mut app, "F1");
+    app.dispatch(&Event::Paste("Add untracked".into()));
+    let help = screen(&mut app, 120, 36);
+    assert!(help.contains("Alt-a"), "{help}");
+    send(&mut app, "Enter");
     assert!(app.pop.is_none());
-    assert_eq!(git(&repo, &["show", ":new 中文.txt"]).unwrap(), "new file");
+    finish_add(&mut app);
+    assert_eq!(
+        git(&repo, &["show", ":remapped.txt"]).unwrap(),
+        "remapped file"
+    );
+    fs::write(repo.join("direct.txt"), "direct remapped file\n").unwrap();
+    app.refresh();
+    send(&mut app, "G Alt-a");
+    assert!(app.pop.is_none());
+    finish_add(&mut app);
+    assert_eq!(
+        git(&repo, &["show", ":direct.txt"]).unwrap(),
+        "direct remapped file"
+    );
+    assert_eq!(git(&repo, &["show", ":mixed.txt"]).unwrap(), "staged");
+    assert_eq!(
+        git(&repo, &["show", ":other.txt"]).unwrap(),
+        "unselected staged"
+    );
+    assert_eq!(git(&repo, &["rev-parse", "HEAD"]).unwrap(), original[0]);
+    assert_eq!(fs::read(repo.join("mixed.txt")).unwrap(), b"working tree\n");
+    assert_eq!(fs::read(repo.join("new 中文.txt")).unwrap(), b"new file\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn add_to_git_slow_shell_operation_keeps_feedback_help_tabs_and_write_guards_available() {
+    use crate::core::git;
+    use std::fs;
+    let (_dir, mut app) = fixture();
+    let repo = app.ctx.repos[0].path.clone();
+    let ready = repo.join(".git/add-shell-ready");
+    let release = repo.join(".git/add-shell-release");
+    struct Release(PathBuf);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            let _ = fs::write(&self.0, "release");
+        }
+    }
+    let _release = Release(release.clone());
+    let script = repo.join(".git/add-shell-filter.sh");
+    fs::write(
+        &script,
+        "printf ready > \"$1\"\ni=0\nwhile [ ! -f \"$2\" ] && [ -f \"$0\" ] && [ \"$i\" -lt 1000 ]; do sleep 0.01; i=$((i+1)); done\n[ -f \"$2\" ] || exit 1\ncat\n",
+    )
+    .unwrap();
+    let quote =
+        |path: &std::path::Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
+    git(
+        &repo,
+        &[
+            "config",
+            "filter.hold.clean",
+            &format!(
+                "sh {} {} {}",
+                quote(&script),
+                quote(&ready),
+                quote(&release)
+            ),
+        ],
+    )
+    .unwrap();
+    fs::write(repo.join(".gitattributes"), "zz-*.txt filter=hold\n").unwrap();
+    fs::write(repo.join("zz-new-file.txt"), "new file\n").unwrap();
+    app.refresh();
+    send(&mut app, "G");
+    let before = snapshot(&repo);
+    let started = Instant::now();
+    send(&mut app, "a");
+    let first_frame = screen(&mut app, 120, 36);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(250),
+        "First feedback took {elapsed:?}"
+    );
+    eprintln!("ADD_UI_FEEDBACK first_frame_us={}", elapsed.as_micros());
+    assert!(first_frame.contains("Adding 1 file"), "{first_frame}");
+    assert!(app.pop.is_none() && app.git_busy());
+    assert!(app.poll_timeout() <= Duration::from_millis(100));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ready.exists() {
+        app.poll();
+        assert!(Instant::now() < deadline, "Filter did not start");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    for (width, height) in [(44, 12), (80, 24), (120, 36)] {
+        let text = screen(&mut app, width, height);
+        assert!(text.contains("Adding 1 file"), "{text}");
+    }
+    send(&mut app, "F1");
+    assert!(matches!(app.pop, Some(Popup::Help { .. })));
+    assert!(screen(&mut app, 120, 36).contains("Adding 1 file"));
+    send(&mut app, "Esc r p f");
+    send(&mut app, "c");
+    assert!(app.pop.is_none());
+    send(&mut app, "i");
+    app.dispatch(&Event::Paste("Draft while adding".into()));
+    send(&mut app, "F2 2");
+    assert_eq!(app.tab, Log);
+    send(&mut app, "p f 3 F");
+    assert_eq!(app.tab, Push);
+    assert!(!app.push.busy());
+    send(&mut app, "1 q Esc");
+    assert!(!app.quit && app.pop.is_none() && app.commit.add_running());
+    app.commit.focus_pane(crate::ui::panes::PaneId::Changes);
+    send(&mut app, "F1");
+    app.dispatch(&Event::Paste("Add to Git progress".into()));
+    fs::write(release, "release").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while app.commit.add_running() {
+        app.poll();
+        assert!(Instant::now() < deadline, "Addition did not finish");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // Busy help must not turn a former progress action into a new Add after completion.
+    send(&mut app, "Enter");
+    assert!(matches!(app.pop, Some(Popup::Help { .. })) && !app.commit.add_running());
+    send(&mut app, "Esc");
+    assert!(app.pop.is_none());
+    assert!(app.msg.contains("1 added · 0 failed"), "{}", app.msg);
+    assert_eq!(
+        git(&repo, &["show", ":zz-new-file.txt"]).unwrap(),
+        "new file"
+    );
     assert_eq!(git(&repo, &["show", ":mixed.txt"]).unwrap(), "staged");
     assert_eq!(
         git(&repo, &["show", ":other.txt"]).unwrap(),
         "unselected staged"
     );
     assert_eq!(git(&repo, &["rev-parse", "HEAD"]).unwrap(), before[0]);
-    assert_eq!(fs::read(repo.join("mixed.txt")).unwrap(), b"working tree\n");
-    assert_eq!(fs::read(repo.join("new 中文.txt")).unwrap(), b"new file\n");
+    assert!(git(
+        &repo,
+        &["ls-files", "--error-unmatch", "--", ".gitattributes"]
+    )
+    .is_err());
+    assert_eq!(git(&repo, &["diff", "--binary"]).unwrap(), before[2]);
+    assert!(screen(&mut app, 120, 36).contains("Draft while adding"));
 }
 
 #[test]

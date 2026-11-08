@@ -200,11 +200,54 @@ enum Outcome {
     Skipped(String),
 }
 
+struct Comparison {
+    branch: String,
+    upstream: String,
+    tracking: Option<(usize, usize)>,
+}
+
+impl Comparison {
+    fn read(repo: &Path) -> Self {
+        let branch = crate::core::branch(repo);
+        let upstream =
+            git(repo, &["rev-parse", "--symbolic-full-name", "@{upstream}"]).unwrap_or_default();
+        let tracking = if upstream.is_empty() {
+            None
+        } else {
+            git(
+                repo,
+                &[
+                    "rev-list",
+                    "--left-right",
+                    "--count",
+                    &format!("HEAD...{upstream}"),
+                    "--",
+                ],
+            )
+            .ok()
+            .and_then(|output| {
+                let mut counts = output.split_whitespace();
+                Some((counts.next()?.parse().ok()?, counts.next()?.parse().ok()?))
+            })
+        };
+        let upstream = upstream
+            .strip_prefix("refs/remotes/")
+            .or_else(|| upstream.strip_prefix("refs/heads/"))
+            .unwrap_or(&upstream)
+            .to_owned();
+        Self {
+            branch,
+            upstream,
+            tracking,
+        }
+    }
+}
+
 struct RepositoryRow {
     root: usize,
     name: String,
     submodule: bool,
-    branch: String,
+    comparison: Comparison,
     destination: String,
     outcome: Outcome,
 }
@@ -212,11 +255,13 @@ struct RepositoryRow {
 struct Report {
     summary: String,
     outcomes: Vec<Outcome>,
+    comparisons: Vec<Comparison>,
 }
 
 fn execute(kind: Kind, strategy: Strategy, targets: Vec<Target>) -> Report {
     let (mut succeeded, mut failed, mut skipped) = (0, 0, 0);
     let mut outcomes = Vec::with_capacity(targets.len());
+    let mut comparisons = Vec::with_capacity(targets.len());
     for Target { path, plan } in targets {
         let result = match plan {
             Ok(plan) => match plan.execute(&path, kind, strategy) {
@@ -235,10 +280,12 @@ fn execute(kind: Kind, strategy: Strategy, targets: Vec<Target>) -> Report {
             }
         };
         outcomes.push(result);
+        comparisons.push(Comparison::read(&path));
     }
     let counts = format!("{succeeded} succeeded · {failed} failed · {skipped} skipped");
     Report {
         outcomes,
+        comparisons,
         summary: format!("{}: {counts}", kind.label()),
     }
 }
@@ -279,15 +326,11 @@ impl Dialog {
             .map(|&index| {
                 let repo = &ctx.repos[index];
                 let plan = Plan::read(&repo.path, kind).map_err(|error| error.to_string());
-                let branch = match &plan {
-                    Ok(Plan::Pull { branch, .. }) => branch.clone(),
-                    _ => repo.branch.clone(),
-                };
                 rows.push(RepositoryRow {
                     root: index,
                     name: repo.name.clone(),
                     submodule: repo.submodule,
-                    branch,
+                    comparison: Comparison::read(&repo.path),
                     destination: plan.as_ref().map(Plan::destination).unwrap_or_default(),
                     outcome: match &plan {
                         Ok(_) => Outcome::Ready,
@@ -313,7 +356,7 @@ impl Dialog {
             detail_area: Rect::default(),
             detail_scroll: 0,
             detail_max_scroll: 0,
-            confirm_focused: false,
+            confirm_focused: ready > 0,
         }
     }
 
@@ -326,6 +369,7 @@ impl Dialog {
             Err(TryRecvError::Empty) => return None,
             Err(TryRecvError::Disconnected) => Report {
                 summary: format!("{} worker stopped before reporting results", self.kind.label()),
+                comparisons: vec![],
                 outcomes: self.rows.iter().map(|row| match &row.outcome {
                     Outcome::Skipped(reason) => Outcome::Skipped(reason.clone()),
                     _ => Outcome::Failed("Update worker stopped before reporting results. Inspect the repository before retrying.".into()),
@@ -335,6 +379,9 @@ impl Dialog {
         self.stage = Stage::Results;
         for (row, outcome) in self.rows.iter_mut().zip(report.outcomes) {
             row.outcome = outcome;
+        }
+        for (row, comparison) in self.rows.iter_mut().zip(report.comparisons) {
+            row.comparison = comparison;
         }
         self.select(
             self.rows

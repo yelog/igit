@@ -66,6 +66,7 @@ fn load_workspace(
     if let Err(error) = app.commit.refresh(&app.ctx) {
         app.notice(format!("Commit: {error:#}"));
     }
+    app.commit.enable_background_execution();
     sender
         .send(Message::Stage("Checking conflicts..."))
         .map_err(|_| anyhow::anyhow!("Workspace loading cancelled"))?;
@@ -163,6 +164,7 @@ impl Shell {
             .name("igit-initial-log".into())
             .spawn(move || {
                 let result = log.refresh(&ctx);
+                log.enable_background_loading();
                 let _ = sender.send((log, result));
             }) {
             Ok(_) => self.log_load = LogLoad::Pending(receiver),

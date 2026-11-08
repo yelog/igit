@@ -125,7 +125,10 @@ fn conflict_list_shows_git_sides_and_keeps_controls_available_in_small_terminals
     assert!(text.contains("tools/README.md"), "{text}");
     key(&mut panel, &ctx, K::Char('j')); // A delete/modify conflict.
     panel.refresh(&ctx).unwrap();
-    assert_eq!(panel.list.selected_file().unwrap().path, "tools/README.md");
+    assert_eq!(
+        panel.list.selected_file().unwrap().path,
+        Path::new("tools/README.md")
+    );
     let text = screen(&render(&mut panel, &ctx, 44, 9));
     assert!(text.contains("Yours") && text.contains("Theirs"), "{text}");
     assert!(
@@ -189,7 +192,7 @@ fn conflict_list_enter_toggles_the_focused_unresolved_group() {
 
     key(&mut panel, &ctx, K::Char('j'));
     key(&mut panel, &ctx, K::Enter);
-    assert_eq!(panel.doc.as_ref().unwrap().file.path, FILE);
+    assert_eq!(panel.doc.as_ref().unwrap().file.path, Path::new(FILE));
 }
 
 #[test]

@@ -20,10 +20,11 @@ pub(super) enum Kind {
     Revert,
     Drop,
     Edit,
+    CherryPick,
 }
 
 impl Kind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Branch,
         Self::Tag,
         Self::Checkout,
@@ -31,6 +32,7 @@ impl Kind {
         Self::Revert,
         Self::Drop,
         Self::Edit,
+        Self::CherryPick,
     ];
 
     pub fn title(self) -> &'static str {
@@ -38,6 +40,7 @@ impl Kind {
             Self::Branch => "New Branch",
             Self::Tag => "New Tag",
             Self::Checkout => "Checkout Revision",
+            Self::CherryPick => "Cherry-pick Commit",
             Self::Undo => "Undo Commit",
             Self::Revert => "Revert Commit",
             Self::Drop => "Drop Commit",
@@ -154,6 +157,7 @@ impl Head {
 enum Plan {
     Ref,
     Checkout(Head),
+    CherryPick(Head),
     Undo {
         head: Head,
         parent: String,
@@ -236,7 +240,7 @@ fn overlaps(paths: &BTreeSet<Vec<u8>>, path: &[u8]) -> bool {
         .is_some_and(|name| name.starts_with(&prefix))
 }
 
-// Revert and rebase do not offer switch's --no-overwrite-ignore option.
+// Cherry-pick, revert and rebase do not offer switch's --no-overwrite-ignore option.
 fn protect_paths(repo: &Path, span: &str, single: bool) -> Result<()> {
     let others = git_bytes(
         repo,
@@ -342,14 +346,23 @@ impl Plan {
             !parents.is_empty() || git(repo, &["rev-parse", "--is-shallow-repository"])? == "false",
             "Cannot change history at a shallow clone boundary"
         );
-        if kind == Kind::Revert {
+        if matches!(kind, Kind::CherryPick | Kind::Revert) {
             ensure!(
                 parents.len() <= 1,
-                "Reverting a merge requires choosing a mainline parent"
+                "{} a merge requires choosing a mainline parent",
+                if kind == Kind::CherryPick {
+                    "Cherry-picking"
+                } else {
+                    "Reverting"
+                }
             );
             clean(repo)?;
             protect_paths(repo, oid, true)?;
-            return Ok(Self::Revert(head));
+            return Ok(if kind == Kind::CherryPick {
+                Self::CherryPick(head)
+            } else {
+                Self::Revert(head)
+            });
         }
         if kind == Kind::Undo {
             ensure!(
@@ -472,6 +485,12 @@ impl Review {
                 "From: {}\nCheck out the selected commit in detached HEAD.",
                 head.label(),
             ),
+            Plan::CherryPick(head) => format!(
+                "Apply the selected commit as a new commit on {}.\nCurrent HEAD: {}\nSource commit: {}\nIf Git stops, review Continue or Abort separately in Conflicts.",
+                head.label(),
+                head.oid,
+                target.oid,
+            ),
             Plan::Undo { head, parent, .. } => format!(
                 "Undo the tip of {} and keep its changes.\nIndex and working files stay intact.\nNew tip: {parent}",
                 head.label()
@@ -571,6 +590,19 @@ impl Review {
                     "--detach",
                     "--no-overwrite-ignore",
                     "--no-recurse-submodules",
+                    "--",
+                    oid,
+                ]);
+            }
+            Plan::CherryPick(_) => {
+                cmd.args([
+                    "-c",
+                    "merge.autoStash=false",
+                    "-c",
+                    "rebase.autoStash=false",
+                    "cherry-pick",
+                    "--no-edit",
+                    "--no-rerere-autoupdate",
                     "--",
                     oid,
                 ]);

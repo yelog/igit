@@ -291,6 +291,22 @@ impl Shell {
         self.key_picker = KeySequencePicker::default();
     }
     fn panel_event(&mut self, ev: &Event) {
+        if self.commit.add_running()
+            && self.tab == Push
+            && matches!(ev, Event::Key(key) if key.code == KeyCode::Char('F'))
+        {
+            self.notice("Adding files to Git; wait before fetching".into());
+            return;
+        }
+        if self.push.busy()
+            && self.tab == Commit
+            && matches!(ev, Event::Key(key) if matches!(key.code, KeyCode::Char('a') | KeyCode::Insert) && key.modifiers.is_empty())
+        {
+            self.notice("Wait for the remote operation before adding files".into());
+            return;
+        }
+        self.push
+            .block_writes(self.commit.execution_running() || self.commit.add_running());
         if self.tab == Log && !self.log_load.ready() {
             return;
         }
@@ -433,10 +449,20 @@ impl Shell {
         }
     }
     fn action(&mut self, a: Action) {
+        if self.commit.add_running()
+            && matches!(&a, Action::Confirm { .. } | Action::ReviewRollback)
+        {
+            self.notice("Adding files to Git; wait before starting another Git operation".into());
+            return;
+        }
         match a {
             Action::None => (),
             Action::Notice(s) => self.notice(s),
             Action::EditFile { repo, path } => {
+                if self.commit.execution_running() || self.commit.add_running() {
+                    self.notice("Wait for the Git operation before opening an editor".into());
+                    return;
+                }
                 self.cancel_key_sequences();
                 self.pending_edit = Some(editor::Request { repo, path });
             }
@@ -488,12 +514,14 @@ impl Shell {
         }
     }
     fn confirm(&mut self, owner: Tab, token: &str) {
+        self.push
+            .block_writes(self.commit.execution_running() || self.commit.add_running());
         if token == "__quit" {
             self.quit = true;
             return;
         }
-        if self.push.busy() {
-            self.notice("Wait for the remote operation to finish".into());
+        if self.git_busy() {
+            self.notice("Wait for the Git operation to finish".into());
             return;
         }
         let a = match owner {
@@ -512,10 +540,8 @@ impl Shell {
             self.notice("Wait for the software update to finish before quitting".into());
             return;
         }
-        if self.push.busy() {
-            self.notice(
-                "A remote operation is running. Wait for it to finish before quitting".into(),
-            );
+        if self.git_busy() {
+            self.notice("A Git operation is running. Wait for it to finish before quitting".into());
             return;
         }
         self.pop = Some(Popup::Confirm {
@@ -530,8 +556,8 @@ impl Shell {
     fn review_update(&mut self, kind: update::Kind) {
         self.cancel_key_sequences();
         self.cancel_drags();
-        if self.push.busy() {
-            self.notice("Wait for the remote operation to finish".into());
+        if self.git_busy() {
+            self.notice("Wait for the Git operation to finish".into());
         } else if self.ctx.scope.is_empty() {
             self.notice("No Git repositories in Roots".into());
         } else {
@@ -540,6 +566,16 @@ impl Shell {
     }
     fn global(&mut self, n: u8) {
         self.cancel_key_sequences();
+        if n == 5 && self.commit.add_running() {
+            self.notice(
+                "Adding files to Git; Changes will refresh automatically when finished".into(),
+            );
+            return;
+        }
+        if n == 0 && (self.commit.execution_running() || self.commit.add_running()) {
+            self.notice("Wait for the Git operation before changing Roots".into());
+            return;
+        }
         match n {
             0 => {
                 self.ctx.repos.iter_mut().for_each(Repo::refresh_branch);
@@ -697,6 +733,10 @@ impl Shell {
             Some(MenuAction::Update(kind)) => self.review_update(kind),
             Some(MenuAction::Refresh) => self.global(5),
             Some(MenuAction::Open) => {
+                if self.git_busy() {
+                    self.notice("Wait for the Git operation before opening a workspace".into());
+                    return;
+                }
                 self.pop = Some(Popup::Open {
                     path: self.ctx.workspace.display().to_string(),
                 })
@@ -745,8 +785,8 @@ impl Shell {
                 RollbackEvent::Keep => (),
                 RollbackEvent::Close => self.pop = None,
                 RollbackEvent::Help => self.open_help(),
-                RollbackEvent::Apply if self.push.busy() => {
-                    self.notice("Wait for the remote operation to finish".into())
+                RollbackEvent::Apply if self.git_busy() => {
+                    self.notice("Wait for the Git operation to finish".into())
                 }
                 RollbackEvent::Apply => {
                     let Some(Popup::Rollback(dialog)) = self.pop.take() else {
@@ -910,7 +950,7 @@ impl Shell {
                     _ => (),
                 }
                 if key == Some(KeyCode::Enter) || hit == Some(1) {
-                    if self.push.busy() {
+                    if self.git_busy() {
                         self.notice("Wait for current push/fetch".into());
                         return;
                     }
@@ -918,7 +958,12 @@ impl Shell {
                         Ok(c) => {
                             let kitty = std::mem::take(&mut self.kitty);
                             let software_update = std::mem::take(&mut self.software_update);
+                            let background = self.commit.background_execution_enabled();
                             *self = Self::with_config(c, self.config.clone());
+                            if background {
+                                self.commit.enable_background_execution();
+                                self.log.enable_background_loading();
+                            }
                             self.kitty = kitty;
                             self.software_update = software_update;
                             return;
@@ -1160,6 +1205,17 @@ impl Shell {
     }
     fn poll(&mut self) -> bool {
         let mut change = self.poll_log_load();
+        let action = self.commit.poll_add(&self.ctx);
+        if !matches!(action, Action::None) {
+            self.action(action);
+            change = true;
+        }
+        change |= self.commit.add_running();
+        let action = self.commit.poll_execution(&self.ctx);
+        if !matches!(action, Action::None) {
+            self.action(action);
+            change = true;
+        }
         change |= self.software_update.poll();
         change |= self.stash.poll_preview(&self.ctx);
         if self.tab == Commit && self.pop.is_none() {
@@ -1200,6 +1256,13 @@ impl Shell {
                 Err(error) => self.notice(error),
             }
             change = true;
+        }
+        match self.log.poll_history(&self.ctx) {
+            Ok(redraw) => change |= redraw,
+            Err(error) => {
+                self.notice(format!("Log: {error:#}"));
+                change = true;
+            }
         }
         match self.log.poll_preview(&self.ctx) {
             Ok(redraw) => change |= redraw,
@@ -1260,10 +1323,14 @@ impl Shell {
     fn poll_timeout(&self) -> Duration {
         const IDLE: Duration = Duration::from_millis(150);
         let idle = if self.log_load.pending()
+            || self.log.history_pending()
+            || self.commit.execution_running()
             || self.push.reads_pending()
             || self.tab == Branch && self.branch.reads_pending()
         {
             Duration::from_millis(16)
+        } else if self.commit.add_running() {
+            Duration::from_millis(100)
         } else {
             IDLE
         };
@@ -1276,6 +1343,10 @@ impl Shell {
         self.key_picker
             .wakeup(Instant::now())
             .map_or(timeout, |remaining| remaining.min(timeout))
+    }
+
+    fn git_busy(&self) -> bool {
+        self.push.busy() || self.commit.execution_running() || self.commit.add_running()
     }
     fn draw_popup(&mut self, f: &mut Frame, a: Rect) {
         if matches!(self.pop, Some(Popup::SoftwareUpdate)) {

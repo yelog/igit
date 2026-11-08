@@ -8,7 +8,8 @@ pub(super) struct Request {
     pub commit: Option<Out>,
     pub file: Option<Change>,
     pub icons: IconMode,
-    pub failure: Option<String>,
+    pub result: Option<Result<PushOutcome, String>>,
+    pub set_upstream: bool,
 }
 
 pub(super) enum Loaded {
@@ -72,7 +73,7 @@ pub(super) fn read(request: Request) -> Loaded {
         (
             paths,
             format!(
-                "{} {} {}:{}\n\n{} outgoing commits.\n{}\n\n{}",
+                "{} {} {}:{}\n\n{} outgoing commits.\n{}\n\nUpstream: {}\n{}\n\n{}",
                 e.source,
                 request.icons.glyph(Icon::Right),
                 e.t.remote,
@@ -82,6 +83,15 @@ pub(super) fn read(request: Request) -> Loaded {
                     .as_ref()
                     .map(|h| format!("Last fetched tip: {:.10}", h))
                     .unwrap_or_else(|| "New target (no tracking ref)".into()),
+                e.config.description(&e.source),
+                if request.set_upstream {
+                    format!(
+                        "Set upstream to {}:{} after push succeeds.",
+                        e.t.remote, e.t.dst
+                    )
+                } else {
+                    "Keep upstream unchanged. Target (t) edits tracking choice.".into()
+                },
                 if e.n > 60 {
                     "List displays newest 60; the complete branch will be pushed."
                 } else {
@@ -90,20 +100,26 @@ pub(super) fn read(request: Request) -> Loaded {
             ),
         )
     };
+    let desc = with_result(&desc, request.result.as_ref());
     let (files, summary) = match files {
-        Ok(files) => (
-            files,
-            match request.failure {
-                Some(error) => format!("FAILED: {error}\n\n{desc}"),
-                None => desc,
-            },
-        ),
+        Ok(files) => (files, desc),
         Err(error) => (
             Vec::new(),
             format!("Unable to load changed files: {error}\n\n{desc}"),
         ),
     };
     Loaded::Files { files, summary }
+}
+
+fn with_result(desc: &str, result: Option<&Result<PushOutcome, String>>) -> String {
+    match result {
+        Some(Err(error)) => format!("FAILED: {error}\n\n{desc}"),
+        Some(Ok(PushOutcome::UpstreamNotSet(warning))) => {
+            format!("PUSH SUCCEEDED; UPSTREAM NOT SET\n{warning}\n\n{desc}")
+        }
+        Some(Ok(PushOutcome::Complete)) => format!("Operation completed successfully.\n\n{desc}"),
+        None => desc.into(),
+    }
 }
 
 fn patch(p: &Path, x: &Entry, commit: Option<&Out>, file: &Change) -> Loaded {
@@ -191,10 +207,11 @@ impl PushPanel {
         Some(Request {
             path: c.repos[i].path.clone(),
             commit: sub.and_then(|k| entry.logs.get(k)).cloned(),
+            set_upstream: self.sets_upstream(&entry),
             entry,
             file,
             icons: self.icons,
-            failure: self.results.get(&i).and_then(|r| r.as_ref().err()).cloned(),
+            result: self.results.get(&i).cloned(),
         })
     }
 
@@ -208,9 +225,9 @@ impl PushPanel {
             return;
         };
         if !request.entry.error.is_empty() {
-            self.preview.body = request.entry.error.clone();
-            self.preview.summary = request.entry.error;
-        } else if request.commit.is_some() || request.entry.n > 0 {
+            self.preview.summary = with_result(&request.entry.error, request.result.as_ref());
+            self.preview.body = self.preview.summary.clone();
+        } else if request.commit.is_some() || request.entry.n > 0 || request.result.is_some() {
             self.preview.body = "Loading changed files…".into();
             self.preview_request = Some(request);
             self.preview_load.request();

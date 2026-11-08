@@ -8,6 +8,27 @@ pub(super) enum Needle {
     Regex(Regex),
     Literal(String, bool),
 }
+pub(super) fn matcher(q: &str, regex: bool, case_sensitive: bool) -> Result<Option<Needle>> {
+    Ok(if q.is_empty() {
+        None
+    } else if regex {
+        Some(Needle::Regex(
+            RegexBuilder::new(q)
+                .case_insensitive(!case_sensitive)
+                .build()
+                .context("Invalid regular expression")?,
+        ))
+    } else {
+        Some(Needle::Literal(
+            if case_sensitive {
+                q.to_owned()
+            } else {
+                q.to_lowercase()
+            },
+            case_sensitive,
+        ))
+    })
+}
 impl Needle {
     pub(super) fn is_match(&self, text: &str) -> bool {
         match self {
@@ -40,25 +61,7 @@ impl Field {
 }
 impl LogPanel {
     pub(super) fn matcher(&self, q: &str) -> Result<Option<Needle>> {
-        Ok(if q.is_empty() {
-            None
-        } else if self.regex {
-            Some(Needle::Regex(
-                RegexBuilder::new(q)
-                    .case_insensitive(!self.case_sensitive)
-                    .build()
-                    .context("Invalid regular expression")?,
-            ))
-        } else {
-            Some(Needle::Literal(
-                if self.case_sensitive {
-                    q.to_owned()
-                } else {
-                    q.to_lowercase()
-                },
-                self.case_sensitive,
-            ))
-        })
+        matcher(q, self.regex, self.case_sensitive)
     }
     pub(super) fn toggle_match_mode(&mut self, h: Hit) -> Result<()> {
         let old = (self.regex, self.case_sensitive);
@@ -413,7 +416,7 @@ impl LogPanel {
             ref_query: self.ref_query.clone(),
             regex: self.regex,
             case_sensitive: self.case_sensitive,
-            selected: self.rev().map(|r| (r.root, r.oid.clone())),
+            selected: self.history_selection(),
         }
     }
     fn restore(&mut self, c: &Context) -> Result<()> {
@@ -425,10 +428,7 @@ impl LogPanel {
         self.discard_editor();
         self.last = None;
         self.focus = Pane::Graph;
-        self.hist = model::load(c, &self.filter, self.limit);
-        self.read_presentation(c);
-        self.rebuild_refs(c);
-        self.rebuild_visible(s.selected)
+        self.reload_history(c, s.selected)
     }
     pub(super) fn new_tab(&mut self, c: &Context) -> Result<()> {
         self.views[self.view_index] = self.snapshot();

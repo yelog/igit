@@ -7,6 +7,7 @@ mod filters;
 mod input;
 mod inspector;
 mod keymap;
+mod loading;
 mod model;
 mod navigation;
 mod operations;
@@ -145,6 +146,7 @@ pub struct LogPanel {
     pub(crate) icons: IconMode,
     pub(crate) panes: PaneLayout,
     hist: History,
+    history_load: loading::Loading,
     filter: Filter,
     visible: Vec<usize>,
     graph: Graph,
@@ -194,6 +196,7 @@ impl Default for LogPanel {
             icons: IconMode::default(),
             panes: PaneLayout::default(),
             hist: History::default(),
+            history_load: Default::default(),
             filter: Filter::default(),
             visible: vec![],
             graph: Graph::default(),
@@ -274,39 +277,38 @@ impl LogPanel {
         let row = row.min(self.visible.len().saturating_sub(1));
         if self.cursor != row {
             self.cursor = row;
-            self.request_preview(preview::NAV_SETTLE);
+            if self.history_load.stale() {
+                self.history_load.selected = self.rev().map(|r| (r.root, r.oid.clone()));
+            } else {
+                self.request_preview(preview::NAV_SETTLE);
+            }
         }
         self.keep_graph_cursor_visible();
     }
     fn reload(&mut self, c: &Context, keep: bool) -> Result<()> {
-        let prev = if keep {
-            self.rev().map(|r| (r.root, r.oid.clone()))
-        } else {
-            None
-        };
-        self.hist = model::load(c, &self.filter, self.limit);
-        self.read_presentation(c);
-        self.rebuild_refs(c);
-        self.rebuild_visible(prev)
+        let prev = keep.then(|| self.history_selection()).flatten();
+        self.reload_history(c, prev)
     }
     fn rebuild_visible(&mut self, prev: Option<(usize, String)>) -> Result<()> {
-        let matcher = self.matcher(&self.filter.query)?;
-        self.visible = self
-            .hist
-            .revs
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| {
-                self.filter.includes_root(r.root)
-                    && matcher.as_ref().is_none_or(|m| {
-                        [&r.oid, &r.subject, &r.refs]
-                            .into_iter()
-                            .any(|v| m.is_match(v))
-                    })
-            })
-            .map(|(i, _)| i)
-            .collect();
-        self.graph = Graph::using_layout(&self.hist.revs, &self.visible, &self.hist.graph_layout);
+        let prev = if self.history_load.stale()
+            && prev.is_some()
+            && prev == self.rev().map(|r| (r.root, r.oid.clone()))
+        {
+            self.history_selection()
+        } else {
+            prev
+        };
+        let (visible, graph) = loading::Projection::new(self).build(&self.hist)?;
+        self.visible = visible;
+        self.graph = graph;
+        if self.history_load.stale() {
+            self.history_load.selected = prev.clone();
+        }
+        self.restore_history_cursor(prev);
+        self.refresh_history_preview();
+        Ok(())
+    }
+    fn restore_history_cursor(&mut self, prev: Option<(usize, String)>) {
         self.graph_origin = 0;
         self.graph_top = 0;
         self.cancel_key_sequence();
@@ -317,10 +319,9 @@ impl LogPanel {
                     .position(|&i| self.hist.revs[i].root == root && self.hist.revs[i].oid == oid)
             })
             .unwrap_or(0);
-        self.request_preview(Duration::ZERO);
-        Ok(())
     }
     fn open_diff(&mut self, c: &Context) -> Result<()> {
+        self.require_current_history(c)?;
         if self.filter.file_history.is_some() {
             self.focus = Pane::Info;
             self.preview.expedite();
@@ -401,6 +402,7 @@ impl LogPanel {
             if let Some(row) = row {
                 self.focus = Pane::Graph;
                 self.select_row(row);
+                self.require_current_history(c)?;
                 self.open_commit_actions(c, Some((x, y)))?;
             }
             return Ok(());
@@ -497,6 +499,7 @@ impl LogPanel {
             }
             Hit::CommitActions => {
                 self.focus = Pane::Graph;
+                self.require_current_history(c)?;
                 self.open_commit_actions(c, None)?;
             }
             Hit::File(n) => {
@@ -727,9 +730,16 @@ impl Panel for LogPanel {
         self.draw_overlays(f, a, c);
     }
     fn confirm(&mut self, token: &str, c: &Context) -> Action {
+        if token == REVIEW_TOKEN {
+            if let Err(error) = self.require_current_history(c) {
+                self.commit_review = None;
+                return Action::Notice(format!("Log: {error:#}"));
+            }
+        }
         self.confirm_commit_action(token, c)
     }
     fn event(&mut self, e: &Event, c: &Context) -> Action {
+        self.check_history_context(c);
         if let Some(action) = self.history_event(e) {
             return action;
         }
@@ -948,9 +958,11 @@ impl Panel for LogPanel {
                 K::Char('L') => self.toggle_view_item(Item::ReferenceLabels, c)?,
                 K::Char('o') => self.toggle_view_menu(),
                 K::Char('a') if self.focus == Pane::Graph && k.modifiers.is_empty() => {
+                    self.require_current_history(c)?;
                     self.open_commit_actions(c, None)?
                 }
                 K::F(2) if self.focus == Pane::Graph && k.modifiers.is_empty() => {
+                    self.require_current_history(c)?;
                     self.edit_commit_message(c)?
                 }
                 K::Char('z' | 'Z') if self.focus == Pane::Files => {

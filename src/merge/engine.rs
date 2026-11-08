@@ -15,12 +15,19 @@ pub(super) struct Stages(pub [Option<(String, String)>; 3]);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Conflict {
     pub root: usize,
-    pub path: String,
+    pub path: PathBuf,
     pub stages: Stages,
 }
 
 impl Conflict {
+    pub(super) fn label(&self) -> String {
+        path_label(&self.path)
+    }
+
     pub(super) fn stage_error(&self) -> Option<&'static str> {
+        if self.path.to_str().is_none() {
+            return Some("Non-UTF-8 path: resolve this file with an external Git tool; its index stages were preserved");
+        }
         let [Some((base, _)), Some((current, _)), Some((incoming, _))] = &self.stages.0 else {
             return Some("Added/deleted/renamed conflict: resolve this path explicitly outside the text editor; nothing was modified");
         };
@@ -36,14 +43,39 @@ impl Conflict {
     }
 }
 
-fn run(repo: &Path, args: &[&str]) -> Result<Output> {
+pub(super) fn path_label(path: &Path) -> String {
+    path.to_string_lossy()
+        .chars()
+        .flat_map(|ch| {
+            if ch.is_control() {
+                ch.escape_default().collect::<Vec<_>>()
+            } else {
+                vec![ch]
+            }
+        })
+        .collect()
+}
+
+pub(super) fn native_path(bytes: &[u8]) -> Result<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+        Ok(PathBuf::from(OsString::from_vec(bytes.to_vec())))
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(PathBuf::from(std::str::from_utf8(bytes)?))
+    }
+}
+
+pub(super) fn run(repo: &Path, args: &[&str]) -> Result<Output> {
     crate::core::command(repo)
         .arg("--literal-pathspecs")
         .args(args)
         .output()
         .context("run git")
 }
-fn checked(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
+pub(super) fn checked(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let o = run(repo, args)?;
     ensure!(
         o.status.success(),
@@ -54,22 +86,20 @@ fn checked(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
 }
 pub(super) fn conflicts(id: usize, repo: &Path) -> Result<Vec<Conflict>> {
     let raw = checked(repo, &["ls-files", "-u", "-z"])?;
-    let mut result = BTreeMap::<String, Stages>::new();
+    let mut result = BTreeMap::<PathBuf, Stages>::new();
     for rec in raw.split(|v| *v == 0).filter(|a| !a.is_empty()) {
         let pos = rec
             .iter()
             .position(|x| *x == b'\t')
             .context("invalid index record")?;
-        let name = std::str::from_utf8(&rec[pos + 1..])
-            .context("non-UTF-8 conflict path; resolve with git mergetool")?;
+        let name = native_path(&rec[pos + 1..])?;
         let fields: Vec<_> = std::str::from_utf8(&rec[..pos])?
             .split_ascii_whitespace()
             .collect();
         ensure!(fields.len() == 3, "invalid index metadata");
         let slot = fields[2].parse::<usize>()?;
         ensure!((1..=3).contains(&slot), "unexpected index stage");
-        result.entry(name.into()).or_default().0[slot - 1] =
-            Some((fields[0].into(), fields[1].into()));
+        result.entry(name).or_default().0[slot - 1] = Some((fields[0].into(), fields[1].into()));
     }
     Ok(result
         .into_iter()
@@ -368,9 +398,16 @@ fn append_lines(result: &mut String, next: &str) {
     result.push_str(next);
 }
 
-fn git_path(repo: &Path, name: &str) -> Result<PathBuf> {
-    let s = checked(repo, &["rev-parse", "--git-path", name])?;
-    Ok(repo.join(std::str::from_utf8(&s)?.trim_end_matches(['\r', '\n'])))
+pub(super) fn git_path(repo: &Path, name: &str) -> Result<PathBuf> {
+    let mut bytes = checked(repo, &["rev-parse", "--git-path", name])?;
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+        #[cfg(windows)]
+        if bytes.last() == Some(&b'\r') {
+            bytes.pop();
+        }
+    }
+    Ok(repo.join(native_path(&bytes)?))
 }
 fn rev(repo: &Path, name: &str) -> String {
     run(repo, &["rev-parse", "--verify", name])
@@ -472,8 +509,7 @@ pub(super) fn continue_op(repo: &Path, op: &Operation, tree: &str) -> Result<Str
     );
     Ok(format!("{} continued", op.name))
 }
-fn validate_path(repo: &Path, path: &str) -> Result<PathBuf> {
-    let p = Path::new(path);
+fn validate_path(repo: &Path, p: &Path) -> Result<PathBuf> {
     ensure!(
         !p.is_absolute() && p.components().all(|c| matches!(c, Component::Normal(_))),
         "Unsafe path component"
@@ -491,7 +527,7 @@ fn validate_path(repo: &Path, path: &str) -> Result<PathBuf> {
     Ok(cur)
 }
 const LIMIT: usize = 2 * 1024 * 1024;
-fn regular(repo: &Path, path: &str) -> Result<(PathBuf, Vec<u8>)> {
+fn regular(repo: &Path, path: &Path) -> Result<(PathBuf, Vec<u8>)> {
     let file = validate_path(repo, path)?;
     ensure!(
         fs::metadata(&file)?.len() <= LIMIT as u64,
@@ -606,9 +642,13 @@ impl Document {
         if let Some(error) = file.stage_error() {
             anyhow::bail!("{error}");
         }
+        let path = file
+            .path
+            .to_str()
+            .context("Non-UTF-8 path: use an external Git tool")?;
         let st = &file.stages.0;
-        let attrs = attributes(repo, &file.path)?;
-        let conversion_state = conversion_state(repo, &file.path)?;
+        let attrs = attributes(repo, path)?;
+        let conversion_state = conversion_state(repo, path)?;
         for a in attrs.split(|&x| x == 0).collect::<Vec<_>>().chunks_exact(3) {
             let key = std::str::from_utf8(a[1])?;
             let v = std::str::from_utf8(a[2])?;
@@ -642,12 +682,7 @@ impl Document {
             // conversions must not be silently undone when building the preview.
             let converted = checked(
                 repo,
-                &[
-                    "cat-file",
-                    "--filters",
-                    &format!("--path={}", file.path),
-                    &v.1,
-                ],
+                &["cat-file", "--filters", &format!("--path={path}"), &v.1],
             )?;
             ensure!(bytes==converted,"Git checkout filters or line endings transform this file. Resolve externally; working-tree bytes have been preserved");
             let s =
@@ -663,7 +698,7 @@ impl Document {
         // keeps the working file intact and leaves all choices pending.
         ensure!(
             w.as_slice() == base.as_bytes()
-                || generated(repo, &w, &file.path, base, &versions[1], &versions[2])?,
+                || generated(repo, &w, path, base, &versions[1], &versions[2])?,
             "Working file differs from Git's original conflict output; existing edits were preserved. Finish editing externally and git add this path"
         );
         let op = operation(repo)?;
@@ -740,7 +775,7 @@ impl Document {
             FileSide::Incoming => self.op.as_ref().map(|o| o.other.as_str()),
         };
         let mut lines = vec![
-            self.file.path.clone(),
+            self.file.label(),
             format!("Stage {} blob {blob}", side.slot()),
         ];
         if let Some(rev) = rev.filter(|id| !id.is_empty()) {
@@ -761,6 +796,11 @@ impl Document {
         lines
     }
     pub fn apply(&self) -> Result<()> {
+        let path = self
+            .file
+            .path
+            .to_str()
+            .context("Non-UTF-8 path: use an external Git tool")?;
         ensure!(
             self.pending() == 0,
             "Resolve every conflict and non-conflicting change first"
@@ -770,7 +810,7 @@ impl Document {
             "Operation or HEAD changed; reopen the conflict"
         );
         ensure!(
-            self.conversion_state == conversion_state(&self.repo, &self.file.path)?,
+            self.conversion_state == conversion_state(&self.repo, path)?,
             "Git attributes/config changed; reopen before applying"
         );
         let current = conflicts(self.file.root, &self.repo)?;
@@ -808,7 +848,7 @@ impl Document {
             "File changed before application; no changes were written"
         );
         tmp.persist(&p).map_err(|e| e.error)?;
-        if let Err(e) = checked(&self.repo, &["add", "--", &self.file.path]) {
+        if let Err(e) = checked(&self.repo, &["add", "--", path]) {
             if fs::read(&p).ok().as_deref() == Some(text.as_bytes()) {
                 let mut back = NamedTempFile::new_in(p.parent().unwrap())?;
                 back.write_all(&bytes)?;
@@ -825,6 +865,8 @@ impl Document {
 mod tests {
     mod automatic;
     mod conversion;
+    #[cfg(unix)]
+    mod paths;
 
     use super::*;
     fn g(p: &Path, args: &[&str]) -> String {

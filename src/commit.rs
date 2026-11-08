@@ -5,12 +5,14 @@ mod discard;
 #[cfg(test)]
 mod discard_tests;
 mod display;
+mod execution;
 mod keymap;
 #[cfg(test)]
 mod message_tests;
 mod refresh;
 mod rollback;
 mod rows;
+mod staging;
 mod stash;
 mod tree;
 mod view;
@@ -107,6 +109,7 @@ enum Hit {
     Move,
     Msg,
     Submit(bool),
+    StageHunks,
     Amend,
     Ai,
     Settings,
@@ -131,6 +134,7 @@ impl Hit {
             Self::Amend => "Amend the highlighted repository's last commit  M",
             Self::Ai => "Generate an AI commit message  A",
             Self::Settings => "AI settings  S",
+            Self::StageHunks => "Stage or unstage individual hunks  Ctrl-G",
             _ => return None,
         })
     }
@@ -172,7 +176,7 @@ pub struct CommitPanel {
     diff_selection: TextSelection,
     message_selection: TextSelection,
     plans: Vec<Plan>,
-    add_plans: Vec<backend::add::Plan>,
+    add: add::State,
     stash: stash::State,
     rollback: Option<Box<Rollback>>,
     push: bool,
@@ -183,6 +187,9 @@ pub struct CommitPanel {
     ai_pending: Option<ai::Pending>,
     ai_error: String,
     refresh: refresh::Refresh,
+    execution: execution::Execution,
+    staging: Option<staging::Staging>,
+    staging_plan: Option<backend::staging::Plan>,
 }
 
 impl Default for CommitPanel {
@@ -223,7 +230,7 @@ impl Default for CommitPanel {
             diff_selection: Default::default(),
             message_selection: Default::default(),
             plans: Default::default(),
-            add_plans: Default::default(),
+            add: Default::default(),
             stash: Default::default(),
             rollback: Default::default(),
             push: Default::default(),
@@ -234,6 +241,9 @@ impl Default for CommitPanel {
             ai_settings: Default::default(),
             ai_error: Default::default(),
             refresh: Default::default(),
+            execution: Default::default(),
+            staging: None,
+            staging_plan: None,
         }
     }
 }
@@ -387,6 +397,9 @@ impl CommitPanel {
         }
     }
     fn toggle(&mut self, index: usize) {
+        if self.execution_running() {
+            return;
+        }
         let Some(row) = self.view.get(index) else {
             return;
         };
@@ -519,6 +532,12 @@ impl CommitPanel {
         Ok(())
     }
     fn review(&mut self, c: &Context, push: bool) -> Result<Action> {
+        if self.add_running() {
+            bail!("Adding files to Git; wait before committing");
+        }
+        if self.execution_running() {
+            bail!("Wait for the current commit batch to finish");
+        }
         let mut plans = vec![];
         let rs = self.checked_repos(c);
         if rs.is_empty() {
@@ -585,78 +604,7 @@ impl CommitPanel {
         })
     }
     fn submit(&mut self, c: &Context) -> Action {
-        let mut success = vec![];
-        let mut out = vec![];
-        let mut failed: BTreeSet<usize> = BTreeSet::new();
-        for p in std::mem::take(&mut self.plans) {
-            if !c.scope.contains(&p.root) {
-                out.push(format!(
-                    "{} is outside the current scope; not committed",
-                    c.repos[p.root].name
-                ));
-                failed.insert(p.root);
-                continue;
-            }
-            let dep = failed.iter().any(|&r| {
-                c.repos[r].parent == Some(p.root)
-                    && p.files
-                        .iter()
-                        .any(|f| p.repo.join(&f.path) == c.repos[r].path)
-            });
-            if dep {
-                out.push(format!(
-                    "{} skipped because a child repository failed",
-                    c.repos[p.root].name
-                ));
-                failed.insert(p.root);
-                continue;
-            }
-            match backend::execute(&p) {
-                Ok(result) => {
-                    out.push(format!(
-                        "{} {} {}",
-                        c.repos[p.root].name,
-                        self.icons.glyph(Icon::Success),
-                        result.hash
-                    ));
-                    if let Some(note) = result.warning {
-                        self.push = false;
-                        out.push(format!("{} {note}", self.icons.glyph(Icon::Warning)));
-                    }
-                    success.push(p.root);
-                    self.amend.remove(&p.root);
-                    for f in p.files {
-                        self.checks
-                            .insert(format!("{}:{}", rid(c, p.root), keypart(&f.path)), false);
-                    }
-                }
-                Err(e) => {
-                    failed.insert(p.root);
-                    out.push(format!(
-                        "{} {} {e:#}",
-                        c.repos[p.root].name,
-                        self.icons.glyph(Icon::Error)
-                    ));
-                }
-            }
-        }
-        if !success.is_empty()
-            && failed.is_empty()
-            && !self
-                .files
-                .iter()
-                .any(|f| f.change.selectable() && self.checks.get(&f.key) == Some(&true))
-        {
-            self.saved.message = Some(String::new());
-        }
-        if let Err(e) = self.save(c) {
-            out.push(format!("Failed to save local state: {e}"))
-        }
-        Action::Committed {
-            repos: success.clone(),
-            push: self.push && !success.is_empty(),
-            message: out.join(" | "),
-        }
+        self.execute_submission(c)
     }
     pub(crate) fn hover_at(&mut self, x: u16, y: u16) -> bool {
         if self.edit.is_some() {
@@ -687,7 +635,28 @@ impl CommitPanel {
         changed
     }
     fn launch(&mut self, h: Hit, c: &Context) -> Action {
+        if self.add_running()
+            && matches!(h, Hit::Submit(_) | Hit::Ai | Hit::StageHunks | Hit::Refresh)
+        {
+            return err("Adding files to Git; browsing and message editing remain available");
+        }
+        if self.execution_running()
+            && !matches!(
+                h,
+                Hit::Row(_)
+                    | Hit::Show(_)
+                    | Hit::TogglePreview
+                    | Hit::ViewOptions
+                    | Hit::ViewItem(_)
+                    | Hit::Directories
+                    | Hit::Status
+                    | Hit::Expand(_)
+            )
+        {
+            return err("Wait for the commit batch to finish");
+        }
         match h {
+            Hit::StageHunks => return self.open_staging(c).unwrap_or_else(err),
             Hit::Refresh => return Action::Refresh("Changes refreshed".into()),
             Hit::ResolveConflicts => return Action::OpenConflicts,
             Hit::UndoCheck => {
@@ -780,6 +749,10 @@ impl CommitPanel {
 }
 impl Panel for CommitPanel {
     fn refresh(&mut self, c: &Context) -> Result<()> {
+        if self.execution_running() || self.add_running() {
+            self.request_refresh();
+            return Ok(());
+        }
         if !self.loaded {
             let p = c.state_dir.join("commit.json");
             if p.exists() {
@@ -817,7 +790,7 @@ impl Panel for CommitPanel {
         self.poll_ai(c)
     }
     fn editing(&self) -> bool {
-        self.edit.is_some() || self.view_menu.is_some()
+        self.edit.is_some() || self.view_menu.is_some() || self.staging.is_some()
     }
     fn selected_text(&self) -> Option<&str> {
         if self.view_menu.is_some() {
@@ -847,14 +820,67 @@ impl Panel for CommitPanel {
     fn confirm(&mut self, t: &str, c: &Context) -> Action {
         match t {
             "commit" => self.submit(c),
-            "commit-add" => self.submit_add(c),
             "commit-stash" => self.submit_stash(c),
+            "commit-hunk" => self.confirm_staging(c),
             _ => Action::None,
         }
     }
     fn event(&mut self, e: &Event, c: &Context) -> Action {
         if matches!(e, Event::Key(k) if k.kind == crossterm::event::KeyEventKind::Release) {
             return Action::None;
+        }
+        if let Some(action) = self.staging_event(e, c) {
+            return action;
+        }
+        if self.execution_running() {
+            match e {
+                Event::Key(k) if k.code == K::Char('x') && k.modifiers == Mod::CONTROL => {
+                    return self.stop_execution();
+                }
+                Event::Key(k)
+                    if matches!(
+                        k.code,
+                        K::Char(
+                            'j' | 'k'
+                                | 'h'
+                                | 'l'
+                                | 'g'
+                                | 'G'
+                                | 'v'
+                                | 'o'
+                                | 't'
+                                | 'T'
+                                | 'z'
+                                | 'Z'
+                                | '['
+                                | ']'
+                        ) | K::Up
+                            | K::Down
+                            | K::Left
+                            | K::Right
+                            | K::Home
+                            | K::End
+                            | K::PageUp
+                            | K::PageDown
+                            | K::Tab
+                            | K::BackTab
+                            | K::F(6)
+                            | K::Esc
+                    ) => {}
+                Event::Key(_) | Event::Paste(_) => {
+                    return err("Commit running; browse changes or use Ctrl-X to stop remaining repositories");
+                }
+                Event::Mouse(m)
+                    if m.kind == M::Down(MouseButton::Left)
+                        && inside(self.edit_view.0, m.column, m.row) =>
+                {
+                    return err("Wait for the commit batch before editing its message");
+                }
+                Event::Mouse(m) if matches!(m.kind, M::Drag(_) | M::Up(_)) => {
+                    self.dragged = None;
+                }
+                _ => (),
+            }
         }
         if matches!(e, Event::FocusLost) {
             self.dragged = None;
@@ -1019,6 +1045,9 @@ impl Panel for CommitPanel {
                 }
             }
             Event::Key(k) => match k.code {
+                K::Char('g') if k.modifiers == Mod::CONTROL && self.focus != Focus::Message => {
+                    return self.open_staging(c).unwrap_or_else(err)
+                }
                 K::Char('j') | K::Down => {
                     if self.focus == Focus::Diff {
                         self.diff_scroll = self.diff_scroll.saturating_add(1)
@@ -1074,7 +1103,7 @@ impl Panel for CommitPanel {
                     if self.focus == Focus::Tree
                         && !k.modifiers.intersects(Mod::CONTROL | Mod::ALT | Mod::SUPER) =>
                 {
-                    return self.review_add(c).unwrap_or_else(err);
+                    return self.add_untracked(c).unwrap_or_else(err);
                 }
                 K::Char('d') if self.focus == Focus::Tree && k.modifiers == Mod::NONE => {
                     return self.discard_review(c).unwrap_or_else(err);
@@ -1174,6 +1203,7 @@ impl CommitPanel {
             self.draw_edit(f, a, c, cursor);
         }
         self.draw_view_menu(f, a);
+        self.draw_staging(f, a, c);
     }
 
     fn draw_edit(&mut self, f: &mut Frame, a: Rect, _c: &Context, cursor: bool) {

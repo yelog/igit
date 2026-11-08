@@ -120,6 +120,24 @@ impl CommitPanel {
         self.refresh.report_error()
     }
 
+    pub(super) fn apply_add_statuses(
+        &mut self,
+        c: &Context,
+        mut statuses: BTreeMap<usize, Status>,
+    ) {
+        // An older read must not put just-added paths back into Unversioned Files.
+        self.refresh.generation = self.refresh.generation.wrapping_add(1);
+        if !self.options.ignored {
+            for changes in statuses
+                .values_mut()
+                .filter_map(|status| status.as_mut().ok())
+            {
+                changes.retain(|change| !change.ignored());
+            }
+        }
+        self.apply_statuses(c, statuses);
+    }
+
     fn apply_statuses(&mut self, c: &Context, mut statuses: BTreeMap<usize, Status>) -> bool {
         let old_target = self
             .active()
@@ -176,6 +194,8 @@ impl CommitPanel {
 
     pub(crate) fn poll_refresh(&mut self, c: &mut Context) -> Result<bool> {
         if !self.loaded
+            || self.execution_running()
+            || self.add_running()
             || c.repos.is_empty()
             || (self.editing() && !self.message_editing())
             || self.dragged.is_some()

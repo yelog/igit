@@ -2,9 +2,11 @@
 mod engine;
 mod keymap;
 mod list;
+mod recovery;
 mod view;
 use self::engine::*;
 use self::list::ConflictList;
+use self::recovery::{RecoveryAction, RecoveryPlan};
 use self::view::{EditorView, Overlay, Setting, Version};
 use crate::{
     core::Context,
@@ -27,7 +29,7 @@ use ratatui::{
     widgets::Paragraph,
     Frame,
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 use unicode_width::UnicodeWidthStr;
 pub(crate) use view::{RevisionDiff, RevisionEvent};
 
@@ -56,6 +58,8 @@ enum Hit {
     Save,
     Apply,
     Continue,
+    Abort,
+    Skip,
     Zoom,
     ResultLine(usize, usize),
     EditAt(usize, usize, usize),
@@ -138,13 +142,15 @@ pub struct MergePanel {
     zoom: bool,
     follow: bool,
     hist: Vec<Snapshot>,
-    drafts: HashMap<(usize, String), (Stages, Snapshot)>,
+    drafts: HashMap<(usize, PathBuf), (Stages, Snapshot)>,
     edit: Option<Editor>,
     prefix: Option<char>,
     hits: Vec<(Rect, Hit)>,
     rows_height: usize,
     rows_total: usize,
     plan: Option<(usize, Operation, String)>,
+    recovery_plan: Option<(usize, RecoveryPlan, String)>,
+    review_serial: u64,
 }
 fn rect(x: u16, y: u16, w: u16, h: u16) -> Rect {
     Rect::new(x, y, w, h)
@@ -273,6 +279,7 @@ impl MergePanel {
         Ok(())
     }
     fn selected_continue(&mut self, c: &Context) -> Action {
+        self.recovery_plan = None;
         let Some(i) = self.selected_root() else {
             return Action::Notice("No operation selected".into());
         };
@@ -288,6 +295,34 @@ impl MergePanel {
             Err(e) => Action::Notice(format!("{e:#}")),
         }
     }
+    fn selected_recovery(&mut self, c: &Context, action: RecoveryAction) -> Action {
+        self.plan = None;
+        self.recovery_plan = None;
+        let Some(root) = self.selected_root() else {
+            return Action::Notice("No operation selected".into());
+        };
+        if !c.scope.contains(&root) {
+            return Action::Notice("Repository is outside Roots scope".into());
+        }
+        let Some(repo) = c.repos.get(root) else {
+            return Action::Notice("Repository is no longer available".into());
+        };
+        match RecoveryPlan::review(&repo.path, action) {
+            Ok((plan, body)) => {
+                self.review_serial = self.review_serial.wrapping_add(1);
+                let token = format!("merge:recovery:{}", self.review_serial);
+                let title = format!(
+                    "{} {} · {}",
+                    action.label(),
+                    plan.operation_name(),
+                    repo.name
+                );
+                self.recovery_plan = Some((root, plan, token.clone()));
+                Action::Confirm { title, body, token }
+            }
+            Err(error) => Action::Notice(format!("{error:#}")),
+        }
+    }
     fn act(&mut self, hit: Hit, c: &Context) -> Action {
         if self.edit.is_some() {
             match hit {
@@ -298,6 +333,16 @@ impl MergePanel {
         }
         if matches!(hit, Hit::Continue) {
             return self.selected_continue(c);
+        }
+        if matches!(hit, Hit::Abort | Hit::Skip) {
+            return self.selected_recovery(
+                c,
+                if matches!(hit, Hit::Abort) {
+                    RecoveryAction::Abort
+                } else {
+                    RecoveryAction::Skip
+                },
+            );
         }
         if self.doc.is_none() {
             if !matches!(hit, Hit::File(_)) {
@@ -520,7 +565,7 @@ impl MergePanel {
                         d.pending()
                     ));
                 }
-                return Action::Confirm{title:format!("Stage resolved file · {}",c.repos[d.file.root].name),body:format!("Write the previewed result to {} and stage ONLY this path. This does not continue the repository operation.",d.file.path),token:"merge:apply".into()};
+                return Action::Confirm{title:format!("Stage resolved file · {}",c.repos[d.file.root].name),body:format!("Write the previewed result to {} and stage ONLY this path. This does not continue the repository operation.",d.file.label()),token:"merge:apply".into()};
             }
             _ => {}
         }
@@ -571,6 +616,7 @@ impl Panel for MergePanel {
             self.close_document();
         }
         self.plan = None;
+        self.recovery_plan = None;
         refreshed
     }
     fn help(&self) -> &'static str {
@@ -579,7 +625,7 @@ impl Panel for MergePanel {
         } else if self.doc.is_some() {
             "j/k block · [c ]c conflict · a safe · H/L/b choose · i edit · o folds · u undo · A apply · Esc files"
         } else {
-            "Enter Resolve · Y/T Preview sides · S Prepare drafts · C Continue · Esc Close"
+            "Enter Resolve · Y/T Preview · S Drafts · C Continue · B Abort · N Skip · Esc Close"
         }
     }
     fn editing(&self) -> bool {
@@ -597,6 +643,32 @@ impl Panel for MergePanel {
         }
     }
     fn confirm(&mut self, token: &str, c: &Context) -> Action {
+        if token.starts_with("merge:recovery:") {
+            let Some((root, plan, expected)) = self.recovery_plan.take() else {
+                return Action::Notice("Review expired".into());
+            };
+            if token != expected {
+                return Action::Notice("Review expired".into());
+            }
+            if !c.scope.contains(&root) {
+                return Action::Notice("Repository out of scope".into());
+            }
+            let Some(repo) = c.repos.get(root) else {
+                return Action::Notice("Repository is no longer available".into());
+            };
+            return match plan.execute(&repo.path) {
+                Ok(message) => {
+                    self.drafts.retain(|(id, _), _| *id != root);
+                    if self.doc.as_ref().is_some_and(|d| d.file.root == root) {
+                        self.doc = None;
+                        self.hist.clear();
+                        self.view.reset_document();
+                    }
+                    Action::Refresh(format!("{}: {message}", repo.name))
+                }
+                Err(error) => Action::Refresh(format!("{}: {error:#}", repo.name)),
+            };
+        }
         match token {
             "merge:apply" => {
                 let Some(d) = self.doc.as_ref() else {
@@ -614,7 +686,8 @@ impl Panel for MergePanel {
                         };
                         let msg = format!(
                             "{}: staged resolved {}. {next_step}",
-                            c.repos[d.file.root].name, d.file.path
+                            c.repos[d.file.root].name,
+                            d.file.label()
                         );
                         self.drafts.remove(&(d.file.root, d.file.path.clone()));
                         let root = d.file.root;
@@ -654,6 +727,9 @@ impl Panel for MergePanel {
         }
     }
     fn event(&mut self, e: &Event, c: &Context) -> Action {
+        // The shell owns the confirmation overlay. Any later panel input means
+        // that review was dismissed; its destructive authorization expires.
+        self.recovery_plan = None;
         if matches!(e, Event::FocusLost | Event::Resize(_, _)) {
             self.list.reset_click();
         }
@@ -832,6 +908,8 @@ impl Panel for MergePanel {
                 K::Char(' ') => return self.act(Hit::FoldUnresolved, c),
                 K::Char('o') => return self.act(Hit::TogglePaths, c),
                 K::Char('C') => return self.act(Hit::Continue, c),
+                K::Char('B') => return self.act(Hit::Abort, c),
+                K::Char('N') => return self.act(Hit::Skip, c),
                 K::Enter => return self.act(self.list.open(), c),
                 _ => (),
             };

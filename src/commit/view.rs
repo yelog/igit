@@ -79,18 +79,29 @@ impl CommitPanel {
             return;
         }
         let area = Rect::new(*x, bar.y, w as u16, 1);
-        let style = match hit {
-            Hit::Submit(false) | Hit::EditSave => button_style(true),
-            Hit::Submit(true) | Hit::EditCancel | Hit::Ai => button_style(false),
-            Hit::TogglePreview if self.preview_open => fg(BLUE).bg(TAG),
-            Hit::ViewOptions if self.view_menu.is_some() => fg(BLUE).bg(TAG),
-            Hit::Directories if self.options.directories => fg(BLUE).bg(TAG),
-            Hit::Status if self.options.status => fg(BLUE).bg(TAG),
-            Hit::UndoCheck if self.last_check.is_empty() => fg(Color::DarkGray),
-            _ => fg(DIM),
+        let disabled = self.add_running()
+            && matches!(
+                hit,
+                Hit::Submit(_) | Hit::Ai | Hit::StageHunks | Hit::Refresh
+            );
+        let style = if disabled {
+            button_style(false).fg(Color::DarkGray)
+        } else {
+            match hit {
+                Hit::Submit(false) | Hit::EditSave => button_style(true),
+                Hit::Submit(true) | Hit::EditCancel | Hit::Ai => button_style(false),
+                Hit::TogglePreview if self.preview_open => fg(BLUE).bg(TAG),
+                Hit::ViewOptions if self.view_menu.is_some() => fg(BLUE).bg(TAG),
+                Hit::Directories if self.options.directories => fg(BLUE).bg(TAG),
+                Hit::Status if self.options.status => fg(BLUE).bg(TAG),
+                Hit::UndoCheck if self.last_check.is_empty() => fg(Color::DarkGray),
+                _ => fg(DIM),
+            }
         };
         word(f, area, &format!(" {txt} "), style);
-        self.hits.push((area, hit));
+        if !disabled {
+            self.hits.push((area, hit));
+        }
         *x = area.right().saturating_add(1);
     }
 
@@ -307,6 +318,18 @@ impl CommitPanel {
         };
         let ai = format!("{glyph} {ai}");
         self.hit_button(f, action_row, &mut x, &ai, Hit::Ai);
+        if self.add_running() {
+            if !rule.is_empty() {
+                let progress = self.add_progress(usize::from(rule.width));
+                word(
+                    f,
+                    rule,
+                    &format!("{progress:width$}", width = usize::from(rule.width)),
+                    fg(BLUE).bg(PANEL),
+                );
+            }
+            return;
+        }
         let selected = self.selection(c);
         let root_count = selected
             .iter()
@@ -332,6 +355,9 @@ impl CommitPanel {
         }
         if self.checked_repos(c).iter().any(|r| self.amend.contains(r)) {
             status.push_str(" · Amend");
+        }
+        if self.execution_running() {
+            status = self.execution.progress.clone();
         }
         // Leave the scope visible even when the compact action row is occupied.
         let w = status.width() as u16;
@@ -383,6 +409,7 @@ impl CommitPanel {
             }
             self.hit_button(f, bar, &mut x, label, action);
         }
+        self.hit_button(f, bar, &mut x, "Hunks", Hit::StageHunks);
         x
     }
 

@@ -39,6 +39,26 @@ pub(crate) fn checkbox(icons: super::icons::IconMode, checked: bool) -> Span<'st
     Span::styled(icons.check(checked), style)
 }
 
+pub(crate) fn tracking_spans(
+    icons: super::icons::IconMode,
+    (ahead, behind): (usize, usize),
+) -> Vec<Span<'static>> {
+    use super::icons::Icon;
+    [
+        (Icon::Ahead, ahead, LOCAL_REF),
+        (Icon::Behind, behind, BLUE),
+    ]
+    .into_iter()
+    .filter(|(_, count, _)| *count > 0)
+    .map(|(icon, count, color)| {
+        Span::styled(
+            format!(" {}{count}", icons.glyph(icon)),
+            Style::new().fg(color),
+        )
+    })
+    .collect()
+}
+
 pub(crate) fn diff_line(line: &str) -> Line<'_> {
     let color = if line.starts_with("diff --git ")
         || line.starts_with("index ")

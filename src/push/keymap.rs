@@ -27,8 +27,13 @@ impl PushPanel {
                     &[
                         ("Backspace", "Delete last target character"),
                         ("Ctrl-u", "Clear target"),
-                        ("Enter", "Validate and save remote:branch target"),
-                        ("Esc", "Cancel; keep original target"),
+                        ("Tab", "Toggle setting source branch upstream after push"),
+                        (
+                            "Shift-Tab",
+                            "Toggle setting source branch upstream after push",
+                        ),
+                        ("Enter", "Save remote:branch and tracking choice for review"),
+                        ("Esc", "Cancel; keep original target and tracking choice"),
                     ],
                 ),
                 vec![],
@@ -44,7 +49,7 @@ impl PushPanel {
                     ("h", "Collapse repo commits"),
                     ("l", "Expand repo commits"),
                     ("Enter", "Toggle repo or open commit files"),
-                    ("t", "Edit current repo remote:branch target"),
+                    ("t", "Edit current repo target and upstream choice"),
                 ],
             ),
             1 => Section::new(
@@ -80,7 +85,7 @@ impl PushPanel {
                     ("Shift-Tab", "Focus previous pane"),
                     ("o", "Open Group By menu"),
                     ("Space", "Toggle current repo checkbox"),
-                    ("t", "Edit current repo push target"),
+                    ("t", "Edit current repo target and upstream choice"),
                     ("P", "Review push for visible checked repos"),
                     ("R", "Review and retry failed visible repos only"),
                     ("F", "Fetch Push targets in Roots"),

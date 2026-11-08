@@ -4,10 +4,16 @@ use anyhow::{bail, Context as _, Result};
 use std::path::Path;
 
 impl PermanentLayout {
-    pub(in crate::log) fn load(context: &Context) -> (Self, Vec<(usize, String)>) {
+    pub(in crate::log) fn load(
+        context: &Context,
+        cancelled: &impl Fn() -> bool,
+    ) -> (Self, Vec<(usize, String)>) {
         let mut commits = Vec::new();
         let mut errors = Vec::new();
         for &root in &context.scope {
+            if cancelled() {
+                return (Self::default(), errors);
+            }
             let Some(repo) = context.repos.get(root) else {
                 continue;
             };
@@ -15,6 +21,9 @@ impl PermanentLayout {
                 Ok(rows) => commits.extend(rows),
                 Err(error) => errors.push((root, format!("{}: graph layout: {error}", repo.name))),
             }
+        }
+        if cancelled() {
+            return (Self::default(), errors);
         }
         (Self::new(&commits), errors)
     }

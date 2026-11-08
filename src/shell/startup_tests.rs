@@ -34,8 +34,8 @@ fn wait_workspace(loading: &mut WorkspaceLoad) -> Result<Shell> {
 
 fn wait_log(app: &mut Shell) {
     let deadline = Instant::now() + Duration::from_secs(10);
-    while app.log_load.pending() {
-        app.poll_log_load();
+    while app.log_load.pending() || app.log.history_pending() {
+        app.poll();
         assert!(Instant::now() < deadline, "log worker timed out");
         thread::sleep(Duration::from_millis(5));
     }
@@ -327,6 +327,7 @@ fn direct_file_history_is_configured_before_background_load_and_keeps_normal_log
     assert!(app.log.can_close_tab());
     app.log.close_tab(&app.ctx).unwrap();
     assert!(!app.log.can_close_tab());
+    wait_log(&mut app);
     assert!(screen(&mut app, 160, 36).contains("unrelated change"));
     assert_eq!(snapshot(repo), before);
 }

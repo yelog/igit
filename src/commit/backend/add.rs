@@ -1,9 +1,8 @@
-//! Stage reviewed untracked leaves without changing other index entries.
-use super::working::{read as working, Working};
+//! Stage captured untracked leaves without changing other index entries.
+use super::working::{read_many as working, Working};
 use super::*;
 
 pub struct Plan {
-    pub root: usize,
     pub repo: PathBuf,
     pub files: Vec<Change>,
     head: Option<String>,
@@ -17,25 +16,24 @@ impl Plan {
     fn validate(&self) -> Result<()> {
         safe(&self.repo)?;
         if oid(&self.repo)? != self.head || branch_ref(&self.repo)? != self.branch {
-            bail!("Branch or HEAD changed. Refresh and review Add to Git again");
+            bail!("Branch or HEAD changed. Refresh and retry Add to Git");
         }
         let live: BTreeMap<_, _> = status(&self.repo)?
             .into_iter()
             .map(|file| (file.path.clone(), file))
             .collect();
-        for (file, before) in self.files.iter().zip(&self.working) {
-            if live.get(&file.path) != Some(file) || working(&self.repo, &file.path)? != *before {
-                bail!(
-                    "{} changed. Refresh and review Add to Git again",
-                    file.label()
-                );
+        let paths: Vec<_> = self.files.iter().map(|file| file.path.as_path()).collect();
+        let current = working(&self.repo, &paths)?;
+        for ((file, before), current) in self.files.iter().zip(&self.working).zip(current) {
+            if live.get(&file.path) != Some(file) || current != *before {
+                bail!("{} changed. Refresh and retry Add to Git", file.label());
             }
         }
         Ok(())
     }
 }
 
-pub fn review(root: usize, repo: &Path, files: Vec<Change>) -> Result<Plan> {
+pub fn review(repo: &Path, files: Vec<Change>) -> Result<Plan> {
     safe(repo)?;
     if files.is_empty()
         || files
@@ -47,20 +45,18 @@ pub fn review(root: usize, repo: &Path, files: Vec<Change>) -> Result<Plan> {
     let head = oid(repo)?;
     let branch = branch_ref(repo)?;
     let base = base_tree(repo, head.as_deref())?;
-    let mut fingerprints = Vec::with_capacity(files.len());
-    for file in &files {
-        let before = working(repo, &file.path)?;
+    let paths: Vec<_> = files.iter().map(|file| file.path.as_path()).collect();
+    let fingerprints = working(repo, &paths)?;
+    for (file, before) in files.iter().zip(&fingerprints) {
         if matches!(before, Working::Missing) {
-            bail!("{} disappeared. Refresh and review again", file.label());
+            bail!("{} disappeared. Refresh and retry Add to Git", file.label());
         }
-        fingerprints.push(before);
     }
     let index = git_path(repo, "index")?;
     let temp = tempfile::Builder::new()
         .prefix("igit-add-")
         .tempdir_in(index.parent().context("missing Git directory")?)?;
     let mut plan = Plan {
-        root,
         repo: repo.into(),
         files,
         head,
@@ -70,7 +66,7 @@ pub fn review(root: usize, repo: &Path, files: Vec<Change>) -> Result<Plan> {
         working: fingerprints,
     };
     plan.validate()?;
-    plan.tree = snapshot(repo, &plan.files, &plan.base, &temp)?.1;
+    plan.tree = snapshot_untracked(repo, &plan.files, &plan.base, &temp)?;
     plan.validate()?;
     Ok(plan)
 }
@@ -89,12 +85,12 @@ pub fn execute(plan: &Plan) -> Result<()> {
     let temp = tempfile::Builder::new()
         .prefix("igit-add-")
         .tempdir_in(index.parent().context("missing Git directory")?)?;
-    let (_, tree) = snapshot(repo, &plan.files, &plan.base, &temp)?;
+    let tree = snapshot_untracked(repo, &plan.files, &plan.base, &temp)?;
     if tree != plan.tree {
-        bail!("Selected content or Git conversion changed. Review Add to Git again");
+        bail!("Selected content or Git conversion changed. Refresh and retry Add to Git");
     }
     // Start with the current locked index so unrelated staging survives,
-    // including changes made after the review was opened.
+    // including changes made after the snapshot was captured.
     let next = temp.path().join("next");
     if index.exists() {
         fs::copy(&index, &next)?;
@@ -117,6 +113,36 @@ pub fn execute(plan: &Plan) -> Result<()> {
     fs::rename(&lock, &index).context("Cannot publish the updated Git index")?;
     guard.1 = true;
     Ok(())
+}
+
+fn snapshot_untracked(repo: &Path, files: &[Change], base: &str, temp: &TempDir) -> Result<String> {
+    let index = temp.path().join("selected");
+    g(repo, Some(&index), &["read-tree", base])?;
+    let paths: Vec<_> = files
+        .iter()
+        .flat_map(|file| {
+            file.path
+                .as_os_str()
+                .as_encoded_bytes()
+                .iter()
+                .copied()
+                .chain(std::iter::once(0))
+        })
+        .collect();
+    checked(run(
+        repo,
+        Some(&index),
+        &[
+            OsStr::new("add"),
+            OsStr::new("-A"),
+            OsStr::new("--pathspec-from-file=-"),
+            OsStr::new("--pathspec-file-nul"),
+        ],
+        Some(&paths),
+    )?)?;
+    let tree = txt(g(repo, Some(&index), &["write-tree"])?);
+    check_tree_scope(repo, base, &tree, files)?;
+    Ok(tree)
 }
 
 #[cfg(test)]

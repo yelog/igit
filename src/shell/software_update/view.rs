@@ -239,7 +239,7 @@ impl super::super::Shell {
             Some(Action::Check) => self.software_update.check(false),
             Some(Action::Install) => self.software_update.install(),
             Some(Action::Restart) => {
-                if self.push.busy() || self.panel().editing() {
+                if self.git_busy() || self.panel().editing() {
                     self.notice(
                         "Finish the current input or remote operation before restarting".into(),
                     );

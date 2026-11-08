@@ -1,6 +1,6 @@
 //! Read-only fingerprints shared by whole-file write reviews.
 use super::{checked, cmd, txt};
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Result};
 use std::{
     fs,
     path::{Component, Path, PathBuf},
@@ -14,6 +14,55 @@ pub(super) enum Working {
 }
 
 pub(super) fn read(repo: &Path, path: &Path) -> Result<Working> {
+    Ok(read_many(repo, &[path])?.remove(0))
+}
+
+pub(super) fn read_many(repo: &Path, paths: &[&Path]) -> Result<Vec<Working>> {
+    let mut values = paths
+        .iter()
+        .map(|path| metadata(repo, path))
+        .collect::<Result<Vec<_>>>()?;
+    let files: Vec<_> = paths
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| matches!(values[*i], Working::File { .. }))
+        .collect();
+    let mut remaining = files.as_slice();
+    while !remaining.is_empty() {
+        // Bound native argv size as well as file count, including long Windows paths.
+        let mut bytes = 0;
+        let count = remaining
+            .iter()
+            .take(128)
+            .take_while(|(_, path)| {
+                bytes += path.as_os_str().as_encoded_bytes().len() * 2 + 2;
+                bytes <= 16 * 1024
+            })
+            .count()
+            .max(1);
+        let (batch, rest) = remaining.split_at(count);
+        let hashes = txt(checked(
+            cmd(repo, None)
+                .args(["hash-object", "--no-filters", "--"])
+                .args(batch.iter().map(|(_, path)| path.as_os_str()))
+                .output()?,
+        )?);
+        let hashes: Vec<_> = hashes.lines().collect();
+        ensure!(
+            hashes.len() == batch.len(),
+            "Git returned incomplete working-file fingerprints"
+        );
+        for ((index, _), value) in batch.iter().zip(hashes) {
+            if let Working::File { hash, .. } = &mut values[*index] {
+                *hash = value.into();
+            }
+        }
+        remaining = rest;
+    }
+    Ok(values)
+}
+
+fn metadata(repo: &Path, path: &Path) -> Result<Working> {
     // Never follow a directory symlink or enter another working tree. Leaf
     // symlinks are safe: Git replaces the link, and remove_file unlinks it.
     let mut parent = repo.to_path_buf();
@@ -51,11 +100,8 @@ pub(super) fn read(repo: &Path, path: &Path) -> Result<Working> {
     };
     #[cfg(not(unix))]
     let mode = u32::from(meta.permissions().readonly());
-    let hash = txt(checked(
-        cmd(repo, None)
-            .args(["hash-object", "--no-filters", "--"])
-            .arg(path)
-            .output()?,
-    )?);
-    Ok(Working::File { hash, mode })
+    Ok(Working::File {
+        hash: String::new(),
+        mode,
+    })
 }

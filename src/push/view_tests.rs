@@ -233,8 +233,8 @@ fn push_columns_align_sources_targets_counts_and_submodules_in_terminal_cells() 
     for icons in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
         for width in [120, 180, 300] {
             let (mut p, c) = fixture(icons);
-            p.results.insert(0, Ok(()));
-            p.results.insert(3, Ok(()));
+            p.results.insert(0, Ok(PushOutcome::Complete));
+            p.results.insert(3, Ok(PushOutcome::Complete));
             p.results.insert(7, Err("offline".into()));
             let buf = draw(&mut p, &c, width, 36);
             let rows: Vec<_> = p
@@ -688,5 +688,64 @@ fn maximized_push_hides_details_selection_geometry_and_skips_closed_details() {
             [PaneId::Outgoing, PaneId::PushFiles]
         );
         assert_eq!(p.focused_pane(), PaneId::Outgoing);
+    }
+}
+
+#[test]
+fn target_tracking_choice_and_save_cancel_are_reachable_at_supported_sizes() {
+    for icons in [IconMode::Ascii, IconMode::Unicode, IconMode::NerdFont] {
+        for (width, height) in [(44, 12), (80, 24), (120, 36)] {
+            let (mut panel, c) = fixture(icons);
+            let checked = panel.checked.clone();
+            let initial = draw(&mut panel, &c, width, height);
+            let target = panel
+                .hits
+                .iter()
+                .find_map(|(r, h)| matches!(h, Hit::EditTarget).then_some(*r))
+                .unwrap();
+            assert!(!text_at(&initial, target).is_empty());
+            click(&mut panel, &c, target);
+            let buf = draw(&mut panel, &c, width, height);
+            assert!(panel.editing());
+            assert!(!panel.target_edit.as_ref().unwrap().set_upstream);
+            let hit = |p: &PushPanel, predicate: fn(&Hit) -> bool| {
+                p.hits
+                    .iter()
+                    .rev()
+                    .find_map(|(r, h)| predicate(h).then_some(*r))
+                    .unwrap()
+            };
+            let checkbox = hit(&panel, |h| matches!(h, Hit::Upstream));
+            assert!(text_at(&buf, checkbox).contains("Set upstream after push"));
+            assert!(text_at(&buf, checkbox).contains("[Tab]"));
+            let save = hit(&panel, |h| matches!(h, Hit::SaveTarget));
+            let cancel = hit(&panel, |h| matches!(h, Hit::CancelTarget));
+            assert_eq!(text_at(&buf, save), " Save Enter ");
+            assert_eq!(text_at(&buf, cancel), " Cancel Esc ");
+            assert!(cancel.right() < save.x);
+            for (rect, _) in &panel.hits {
+                assert!(!rect.is_empty() && rect.right() <= width && rect.bottom() <= height);
+            }
+            click(&mut panel, &c, checkbox);
+            assert!(panel.target_edit.as_ref().unwrap().set_upstream);
+            key(&mut panel, &c, KeyCode::BackTab);
+            assert!(!panel.target_edit.as_ref().unwrap().set_upstream);
+            key(&mut panel, &c, KeyCode::Tab);
+            assert!(panel.target_edit.as_ref().unwrap().set_upstream);
+            // Pane controls stay covered; clicking Push under the editor cannot
+            // approve anything or save the staged tracking choice.
+            let send = hit(&panel, |h| matches!(h, Hit::Send));
+            click(&mut panel, &c, send);
+            assert!(panel.editing() && panel.review.is_empty());
+            click(&mut panel, &c, cancel);
+            assert!(!panel.editing());
+            assert!(panel.tracking_choices.is_empty() && panel.targets.is_empty());
+            assert_eq!(panel.checked, checked);
+            key(&mut panel, &c, KeyCode::Char('t'));
+            key(&mut panel, &c, KeyCode::Tab);
+            key(&mut panel, &c, KeyCode::Esc);
+            assert!(!panel.editing());
+            assert_eq!(panel.checked, checked);
+        }
     }
 }
