@@ -661,7 +661,7 @@ fn group_toggle_ignores_conflicted_files_even_with_an_old_check() {
 }
 
 #[test]
-fn ai_review_of_a_replaced_file_never_includes_the_unchecked_child() {
+fn ai_request_of_a_replaced_file_never_includes_the_unchecked_child() {
     let (_dir, c) = fixture();
     let repo = &c.repos[0].path;
     let node = repo.join("node");
@@ -693,17 +693,9 @@ fn ai_review_of_a_replaced_file_never_includes_the_unchecked_child() {
     panel.ai_settings.endpoint = "http://127.0.0.1:1/mock".into();
     panel.ai_settings.model = "test".into();
     assert_eq!(panel.selection(&c).len(), 1);
-    let Action::Confirm { body, token, .. } =
-        panel.event(&Event::Key(KeyEvent::new(K::Char('A'), Mod::NONE)), &c)
-    else {
-        panic!("expected the AI review for the selected deletion");
-    };
-    assert_eq!(token, "commit-ai");
-    assert!(body.lines().any(|line| line.trim() == "node"));
-    assert!(!body.contains("private.txt"));
-    // Inspect the patch queued for the model without sending anything to a service.
-    let [ai::Patch { content: patch, .. }] = panel.ai_request.as_ref().unwrap().patches.as_slice()
-    else {
+    // Inspect the exact request without sending anything to a service.
+    let request = panel.prepare_ai(&c).unwrap();
+    let [ai::Patch { content: patch, .. }] = request.patches.as_slice() else {
         panic!("expected one repository's patch");
     };
     assert!(patch.contains("-tracked contents"));

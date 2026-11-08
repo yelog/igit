@@ -1,3 +1,4 @@
+mod add;
 mod ai;
 mod backend;
 mod discard;
@@ -87,7 +88,7 @@ enum Edit {
     Group,
     Move,
     AISettings,
-    AIDraft,
+    AIError,
 }
 #[derive(Clone)]
 enum Hit {
@@ -127,8 +128,8 @@ impl Hit {
             Self::Status => "Show Git status columns  T",
             Self::Expand(true) => "Expand all  Z",
             Self::Expand(false) => "Collapse all  z",
-            Self::Amend => "Amend the highlighted repository's last commit  a",
-            Self::Ai => "Review patches for an AI commit message  A",
+            Self::Amend => "Amend the highlighted repository's last commit  M",
+            Self::Ai => "Generate an AI commit message  A",
             Self::Settings => "AI settings  S",
             _ => return None,
         })
@@ -171,6 +172,7 @@ pub struct CommitPanel {
     diff_selection: TextSelection,
     message_selection: TextSelection,
     plans: Vec<Plan>,
+    add_plans: Vec<backend::add::Plan>,
     stash: stash::State,
     rollback: Option<Box<Rollback>>,
     push: bool,
@@ -178,9 +180,7 @@ pub struct CommitPanel {
     move_names: Vec<String>,
     pub(crate) ai_config: Option<crate::config::AiConfig>,
     ai_settings: crate::config::AiConfig,
-    ai_pending: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
-    ai_draft: String,
-    ai_request: Option<ai::Request>,
+    ai_pending: Option<ai::Pending>,
     ai_error: String,
     refresh: refresh::Refresh,
 }
@@ -223,6 +223,7 @@ impl Default for CommitPanel {
             diff_selection: Default::default(),
             message_selection: Default::default(),
             plans: Default::default(),
+            add_plans: Default::default(),
             stash: Default::default(),
             rollback: Default::default(),
             push: Default::default(),
@@ -231,8 +232,6 @@ impl Default for CommitPanel {
             ai_pending: Default::default(),
             ai_config: Default::default(),
             ai_settings: Default::default(),
-            ai_draft: Default::default(),
-            ai_request: Default::default(),
             ai_error: Default::default(),
             refresh: Default::default(),
         }
@@ -503,8 +502,9 @@ impl CommitPanel {
                 self.saved.prompt = settings.prompt.clone();
                 self.ai_settings = settings;
             }
-            Some(Edit::AIDraft) => {
-                self.saved.message = Some(self.ai_draft.clone());
+            Some(Edit::AIError) => {
+                self.edit = None;
+                return Ok(());
             }
             None => {}
         }
@@ -734,7 +734,14 @@ impl CommitPanel {
                 }
             }
             Hit::Submit(p) => return self.review(c, p).unwrap_or_else(err),
-            Hit::Ai => return self.ai_review(c).unwrap_or_else(err),
+            Hit::Ai => {
+                if self.ai_running() {
+                    return err("AI request in progress. Please wait");
+                }
+                return self
+                    .start_ai(c)
+                    .unwrap_or_else(|error| self.show_ai_error(error));
+            }
             Hit::Settings => {
                 self.buf = format!(
                     "{}\n{}\n{}",
@@ -806,18 +813,8 @@ impl Panel for CommitPanel {
         self.draw_content(f, a, c);
         self.draw_overlays(f, a, c, true);
     }
-    fn tick(&mut self, _c: &Context) -> Action {
-        let pending = self.ai_pending.is_some();
-        self.poll_ai();
-        if pending && self.ai_pending.is_none() {
-            if self.ai_error.is_empty() {
-                Action::Notice("AI message ready. Open Commit to review".into())
-            } else {
-                Action::Notice(self.ai_error.clone())
-            }
-        } else {
-            Action::None
-        }
+    fn tick(&mut self, c: &Context) -> Action {
+        self.poll_ai(c)
     }
     fn editing(&self) -> bool {
         self.edit.is_some() || self.view_menu.is_some()
@@ -844,14 +841,14 @@ impl Panel for CommitPanel {
         } else if matches!(self.edit, Some(Edit::Stash)) {
             "Enter Review · Esc Cancel · F1 Help"
         } else {
-            "Space check · Enter/v preview · s stash · d discard · i message · c review · ? keys"
+            "Space check · Enter/v preview · e edit file · s stash · d discard · i message · c review · ? keys"
         }
     }
     fn confirm(&mut self, t: &str, c: &Context) -> Action {
         match t {
             "commit" => self.submit(c),
+            "commit-add" => self.submit_add(c),
             "commit-stash" => self.submit_stash(c),
-            "commit-ai" => self.start_ai(c).unwrap_or_else(err),
             _ => Action::None,
         }
     }
@@ -1056,6 +1053,29 @@ impl Panel for CommitPanel {
                     }
                 }
                 K::Char(' ') if self.focus == Focus::Tree => self.toggle(self.cursor),
+                K::Char('e' | 'E')
+                    if self.focus == Focus::Tree
+                        && !k.modifiers.intersects(Mod::CONTROL | Mod::ALT | Mod::SUPER) =>
+                {
+                    let Some(file) = self.active().and_then(Row::file).map(|i| &self.files[i])
+                    else {
+                        return Action::Notice("Select a file in Changes to edit".into());
+                    };
+                    if !c.scope.contains(&file.root) {
+                        return Action::Notice("File is outside the current Roots".into());
+                    }
+                    let repo = c.repos[file.root].path.clone();
+                    return Action::EditFile {
+                        path: repo.join(&file.change.path),
+                        repo,
+                    };
+                }
+                K::Char('a') | K::Insert
+                    if self.focus == Focus::Tree
+                        && !k.modifiers.intersects(Mod::CONTROL | Mod::ALT | Mod::SUPER) =>
+                {
+                    return self.review_add(c).unwrap_or_else(err);
+                }
                 K::Char('d') if self.focus == Focus::Tree && k.modifiers == Mod::NONE => {
                     return self.discard_review(c).unwrap_or_else(err);
                 }
@@ -1126,7 +1146,7 @@ impl Panel for CommitPanel {
                 K::Char('i') => self.edit_message(c),
                 K::Char('n') => return self.launch(Hit::New, c),
                 K::Char('m') => self.move_menu(),
-                K::Char('a') => return self.launch(Hit::Amend, c),
+                K::Char('M') => return self.launch(Hit::Amend, c),
                 K::Char('A') => return self.launch(Hit::Ai, c),
                 K::Char('S') => return self.launch(Hit::Settings, c),
                 K::Char('c') => return self.launch(Hit::Submit(false), c),
@@ -1169,7 +1189,7 @@ impl CommitPanel {
             Edit::Group => "New changelist".into(),
             Edit::Move => "Move to changelist".into(),
             Edit::AISettings => "AI settings".into(),
-            Edit::AIDraft => "AI candidate · review before replacing message".into(),
+            Edit::AIError => "AI message failed".into(),
         };
         let block = Block::default()
             .borders(Borders::ALL)
@@ -1196,7 +1216,7 @@ impl CommitPanel {
             Edit::Move => "j/k Select · Enter Apply · Esc Cancel",
             Edit::AISettings if inn.width >= 62 => &key_hint,
             Edit::AISettings => "Lines: API URL, model, prompt",
-            Edit::AIDraft => "Save replaces shared message · Esc Discard",
+            Edit::AIError => "Commit message preserved · Enter/Esc Close",
         };
         word(f, slice(inn, 0), hint, Style::default().fg(MUTED));
         let text = Rect::new(inn.x, inn.y + 1, inn.width, inn.height - 2);
@@ -1222,9 +1242,9 @@ impl CommitPanel {
                 );
                 self.hits.push((r, Hit::MoveTo(s.clone())))
             }
-        } else if matches!(ed, Edit::AIDraft) {
+        } else if matches!(ed, Edit::AIError) {
             f.render_widget(
-                Paragraph::new(self.ai_draft.as_str())
+                Paragraph::new(self.ai_error.as_str())
                     .wrap(Wrap { trim: false })
                     .scroll((self.ai_scroll, 0)),
                 text,
@@ -1234,6 +1254,10 @@ impl CommitPanel {
         }
         let foot = slice(inn, inn.height - 1);
         let mut x = foot.x;
+        if matches!(ed, Edit::AIError) {
+            self.hit_button(f, foot, &mut x, "Close Enter/Esc", Hit::EditCancel);
+            return;
+        }
         let save_key = if matches!(ed, Edit::Message | Edit::AISettings) {
             "F2"
         } else {
@@ -1405,7 +1429,7 @@ impl CommitPanel {
                     }
                     self.caret = self.buf.len()
                 }
-            } else if matches!(self.edit, Some(Edit::AIDraft)) {
+            } else if matches!(self.edit, Some(Edit::AIError)) {
                 match m.kind {
                     M::ScrollDown => self.ai_scroll = self.ai_scroll.saturating_add(2),
                     M::ScrollUp => self.ai_scroll = self.ai_scroll.saturating_sub(2),
@@ -1443,7 +1467,7 @@ impl CommitPanel {
             || k.code == K::Enter
                 && matches!(
                     self.edit,
-                    Some(Edit::Move | Edit::Group | Edit::AIDraft | Edit::Stash)
+                    Some(Edit::Move | Edit::Group | Edit::AIError | Edit::Stash)
                 )
         {
             return self.launch(Hit::EditSave, c);
@@ -1458,7 +1482,7 @@ impl CommitPanel {
             }
             return Action::None;
         }
-        if matches!(self.edit, Some(Edit::AIDraft)) {
+        if matches!(self.edit, Some(Edit::AIError)) {
             match k.code {
                 K::Char('j') | K::Down => self.ai_scroll = self.ai_scroll.saturating_add(1),
                 K::Char('k') | K::Up => self.ai_scroll = self.ai_scroll.saturating_sub(1),

@@ -607,8 +607,13 @@ impl Panel for MergePanel {
                 }
                 match d.apply() {
                     Ok(()) => {
+                        let next_step = if d.op.is_some() {
+                            "Continue is a separate action."
+                        } else {
+                            "Review in Commit."
+                        };
                         let msg = format!(
-                            "{}: staged resolved {}. Continue is a separate action.",
+                            "{}: staged resolved {}. {next_step}",
                             c.repos[d.file.root].name, d.file.path
                         );
                         self.drafts.remove(&(d.file.root, d.file.path.clone()));

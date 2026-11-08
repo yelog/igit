@@ -130,8 +130,30 @@ an explicit filename also works. The plugin supplies an interactive lowercase
 `:igit` abbreviation because Neovim user commands must begin with an uppercase
 letter. Scripts and mappings should use `:Igit` or `require("igit").open(...)`.
 `:IgitClose` hides the plugin window while retaining its running session.
-The plugin's README and `:help igit` document all window and session options.
+The plugin's README and `:help igit.nvim` document all window and session options.
 Build this source version before using panel/file arguments with an older installed binary.
+
+## Edit a working file
+
+In Commit's Changes tree, highlight a file and press `e` or `E`. The highlighted
+working copy opens independently of its checkbox. Editing updates the working
+copy; existing staged content remains the commit candidate until reviewed.
+Containers, deleted files and submodule directories require a real file target.
+
+Standalone IGit follows [Git's editor selection](https://git-scm.com/docs/git-var.html):
+`GIT_EDITOR`, `core.editor`, `VISUAL`, `EDITOR`, then Git's compiled default
+(usually `vi`). Editor commands can include flags, for example `nvim`,
+`vim`, or `code --wait`. IGit restores the normal terminal while the editor runs,
+then resumes and refreshes Changes when it exits. Launch/exit errors return to
+the workspace with a notification.
+
+Inside `igit.nvim`, `e` opens the file in the same Neovim instance and reuses an
+existing buffer, including unsaved text. A floating IGit window hides while its
+process, checked files and drafts remain available; reopen it with the same
+command or your normal IGit shortcut. Splits stay visible, and tab sessions stay
+open while focus returns to the source editing window. Save the file normally;
+IGit's file watcher updates the working-copy status and preview. The plugin and
+native executable must both contain this integration.
 
 ## Configuration
 
@@ -331,6 +353,13 @@ The left branch/tag tree follows the applied Paths scope: local branches, remote
 
 **Accept Left / Right** previews an entire version. **Save and Close** (`s`) keeps a session draft and returns to the list. **Apply Changes** (`A`) opens a write review once every block is decided. On confirmation it stages only the displayed path. Back in the conflict list, `C` separately reviews Continue when the repository is ready.
 
+Conflicts from `git stash apply` or `git stash pop` use the same editor, including
+ordinary UTF-8 files with `eol=lf`. Standard EOL rules are supported when Git's
+checkout leaves all three source versions unchanged; actual CRLF conversion and
+custom filters still require external resolution. Stash conflicts have no
+Continue operation: after Apply Changes, review the staged result in Commit.
+The retained stash remains available until you explicitly drop it.
+
 **Compare Log with IDEA:** Run these commands from the source directory to view real branches and merges across two temporary repositories. Press `Space u`, enter `me`, then Enter; press `Space p`, enter `atlas-web`, then Enter. Light blue marks history reachable from the current branch; bright blue marks the selected commit. Graph colors follow reference names and ancestor fragments rather than screen columns. Each real parent edge stays separate until its parent commit; crossings do not create joins. Lanes compact between rows using IDEA's graph ordering. `Ctrl-T` opens an unfiltered Log tab; `[/]` switches tabs while retaining filters and commit position. `Ctrl-W c` or × beside the tab closes it. For a row-by-row comparison with IDEA's single-repository log, choose the same repository name in **Paths** in both apps. IGit's right pane identifies the current commit's repository; it does not restrict the whole tab's history, so global Roots need not change. `◀/▶` at the graph edge means the row's commit is off screen; selecting it pans the entire graph.
 
 ```sh
@@ -362,9 +391,17 @@ the saved entries, timestamps, and diffs. Git status columns now toggle with
 
 Checkboxes indicate checked, partially checked, unchecked, and unavailable (Unicode: `☑ / ⊟ / ☐ / ⊠`; ASCII: `[x] / [-] / [ ] / [!]`). Repositories and directories use expanded/collapsed folder icons; submodules keep a dedicated marker. Click the toolbar eye or press `o` for **View Options**. Under Group By, **Directory** starts enabled and **Module** (repository) starts disabled. They toggle independently. Show offers **Ignored Files** and **Git Status**. Use `j/k`, arrows, the wheel, or hover to select, `Space/Enter` to toggle immediately, and `Esc` to close. Ignored items are hidden by default and read-only when shown. Ignored directories appear as a single item without reading their contents and cannot be checked, committed, regrouped, or included in AI patches. Display options last for the session and do not alter existing selections.
 
-`s` toggles Git XY status such as `AM`; a nonempty `NO_COLOR` displays XY directly in file rows. `z/Z` collapses/expands all; `u` undoes the last checkbox change. `n/m` creates/moves groups; right-click or drag tracked files to another group also works. `a` toggles Amend for the repository of the highlighted file or group; a group spanning multiple repositories requires a more specific row. Preview starts enabled and appears side by side from 92 columns. Below that, Changes stays visible first; `v`, Enter on a file, or Tab opens the full-width preview. The toolbar Diff button or `v` toggles preview; `Esc` returns to the original row. The message pane has one shared draft with no repository tabs, plus **Commit**, **Commit and Push...**, and **Generate message** buttons. Generate message uses the same wand icon as Resolve Automatically. Narrow panes wrap the actions or shorten their labels. Use `S` for AI settings; `a` still toggles Amend.
+`T` toggles Git XY status such as `AM`; a nonempty `NO_COLOR` displays XY directly in file rows. `z/Z` collapses/expands all; `u` undoes the last checkbox change. `n/m` creates/moves groups; right-click or drag tracked files to another group also works. `M` toggles Amend for the repository of the highlighted file or group; a group spanning multiple repositories requires a more specific row. Preview starts enabled and appears side by side from 92 columns. Below that, Changes stays visible first; `v`, Enter on a file, or Tab opens the full-width preview. The toolbar Diff button or `v` toggles preview; `Esc` returns to the original row. The message pane has one shared draft with no repository tabs, plus **Commit**, **Commit and Push...**, and **Generate message** buttons. Generate message uses the same wand icon as Resolve Automatically. Narrow panes wrap the actions or shorten their labels. Use `S` for AI settings; `M` still toggles Amend.
 
 While Commit is active, native file notifications refresh only affected repositories in Roots after a 300ms quiet period. Continuous writes trigger a refresh within two seconds when no earlier scan or review is pending. Working files, Git indexes, branch refs, submodules, and linked worktrees are watched; ordinary reads and Git object/log/lock traffic do not trigger scans. Returning to Commit or regaining terminal focus processes queued changes without scanning unchanged repositories. A 30-second consistency scan of Roots covers missed notifications and filesystems where watching is unavailable. Refresh preserves checked paths, tree position, folds, and the shared message draft; new untracked files remain unchecked. Reviews, menus, and active drags defer updates while events remain queued. `F5` still refreshes the entire workspace.
+
+**Add to Git:** In Changes, press `a` (or `Insert`) on an untracked file,
+directory, repository, or **Unversioned Files** group. Review the listed paths,
+then confirm to stage those files and move them into Changes. Folded children
+are included; hidden Roots and files outside that row are excluded. Commit
+checkboxes do not determine this action and keep their existing values. Other
+files' staged/unstaged content and the commit message are preserved. `Space`
+still only changes commit selection; `M` toggles Amend.
 
 Unmerged files in Roots appear under **Changes → Merge Conflicts**, with red filenames and gray repository and parent paths. The group starts expanded and stays flat when directory or module grouping changes. Click **Resolve** or select the group and press `Enter` to open the Conflicts tab. The blue marks beside unmerged files are read-only; resolving and staging a file removes it from the group on refresh.
 
@@ -411,7 +448,7 @@ timeout_seconds = 60
 
 Use a full OpenAI-compatible chat completions URL. HTTPS services and localhost HTTP services with an explicit port are supported. The system executable `curl` is required. Set the key in the named environment variable before launching IGit; credentials are not stored in settings or workspace state. See [AI configuration](docs/configuration.md#ai-commit-messages) for defaults and precedence. `S` still edits endpoint/model/prompt in the workspace; user `[ai]` settings take precedence on the next launch.
 
-Click **Generate message** or press `A` to review the destination, repositories, files and selected patches. Confirmation sends one request for the entire selection and generates one shared candidate. Accept it to replace the draft, then edit the message with `i` if needed. Generating or accepting a message never commits files. Cancellation, request failures and invalid responses preserve the existing draft. All Git operations work without a model service.
+Click **Generate message** or press `A` to send one request containing the checked files in the current Roots. The button shows an animated loading indicator; success fills and saves the shared commit message directly. Press `i` to edit it before committing. Missing configuration, request failures, invalid responses, and save failures open an error dialog and preserve the existing draft. A message edited during generation is kept. Generating a message never commits files. Restart IGit after changing `[ai]` in your settings file; `S` edits AI settings for the current session. All Git operations work without a model service.
 
 Local groups, the shared message draft and workspace AI settings are stored in a workspace subdirectory under `IGIT_STATE_DIR` or `XDG_STATE_HOME/igit` (default `~/.local/state/igit`). On first load, an existing nonempty repository draft seeds the shared message; the old drafts remain in `commit.json` for recovery. Configuration is not written into the project by default.
 

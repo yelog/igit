@@ -6,14 +6,13 @@ use crossterm::event::MouseEvent;
 #[test]
 fn ai_settings_reach_commit_from_application_configuration() {
     let (_dir, original) = fixture();
-    let config = AppConfig::from_toml("[ai]\nendpoint='http://localhost:11434/v1/chat/completions'\nmodel='configured-model'\nprompt='Custom prompt'").unwrap();
+    let config = AppConfig::from_toml("[ai]\nendpoint='http://localhost:11434/v1/chat/completions'\nmodel='configured-model'\nprompt='Custom prompt'\napi_key_env='CUSTOM_AI_KEY'").unwrap();
     let mut app = Shell::with_config(original.ctx.clone(), config);
-    send(&mut app, "A");
-    let Some(Popup::Confirm { body, .. }) = &app.pop else {
-        panic!("expected AI review: {}", app.msg);
-    };
-    assert!(body.contains("Model: configured-model"));
-    assert!(body.contains("http://localhost:11434/v1/chat/completions"));
+    send(&mut app, "S");
+    let settings = screen(&mut app, 120, 36);
+    assert!(settings.contains("configured-model"));
+    assert!(settings.contains("http://localhost:11434/v1/chat/completions"));
+    assert!(settings.contains("CUSTOM_AI_KEY"));
     send(&mut app, "Esc");
 }
 
@@ -372,6 +371,53 @@ fn configuration_remapped_review_and_help_keep_git_and_index_unchanged() {
     assert!(matches!(app.pop, Some(Popup::Confirm { .. })));
     send(&mut app, "Esc");
     assert_eq!(snapshot(&repo), before);
+}
+
+#[test]
+fn configuration_add_to_git_defaults_remapping_help_and_cancel() {
+    use crate::core::git;
+    use std::fs;
+
+    let (_dir, mut app) = fixture();
+    let repo = app.ctx.repos[0].path.clone();
+    fs::write(repo.join("new 中文.txt"), "new file\n").unwrap();
+    app.refresh();
+    send(&mut app, "G");
+    let before = snapshot(&repo);
+    for shortcut in ["a", "Insert"] {
+        send(&mut app, shortcut);
+        assert!(
+            matches!(&app.pop, Some(Popup::Confirm { title, token, yes: false, .. })
+            if title.contains("Add to Git") && token == "commit-add")
+        );
+        for (width, height) in [(120, 36), (80, 24), (44, 12)] {
+            assert!(screen(&mut app, width, height).contains("Add to Git"));
+        }
+        send(&mut app, "Esc");
+        assert_eq!(snapshot(&repo), before);
+    }
+    configure(&mut app, "[keybindings.commit]\nadd-to-git=['Ctrl-g']");
+    send(&mut app, "a Insert I");
+    assert!(app.pop.is_none());
+    send(&mut app, "F1");
+    app.dispatch(&Event::Paste("Review adding untracked".into()));
+    let help = screen(&mut app, 120, 36);
+    assert!(help.contains("Ctrl-g"), "{help}");
+    send(&mut app, "Enter");
+    assert!(matches!(&app.pop, Some(Popup::Confirm { token, .. }) if token == "commit-add"));
+    send(&mut app, "Esc");
+    assert_eq!(snapshot(&repo), before);
+    send(&mut app, "Ctrl-g y");
+    assert!(app.pop.is_none());
+    assert_eq!(git(&repo, &["show", ":new 中文.txt"]).unwrap(), "new file");
+    assert_eq!(git(&repo, &["show", ":mixed.txt"]).unwrap(), "staged");
+    assert_eq!(
+        git(&repo, &["show", ":other.txt"]).unwrap(),
+        "unselected staged"
+    );
+    assert_eq!(git(&repo, &["rev-parse", "HEAD"]).unwrap(), before[0]);
+    assert_eq!(fs::read(repo.join("mixed.txt")).unwrap(), b"working tree\n");
+    assert_eq!(fs::read(repo.join("new 中文.txt")).unwrap(), b"new file\n");
 }
 
 #[test]

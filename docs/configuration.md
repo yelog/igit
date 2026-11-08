@@ -166,7 +166,7 @@ header, which supports local services without authentication. Do not put keys
 in the URL or settings file; inline `api_key` fields are not accepted.
 
 `prompt` is the system message and supports multiline Unicode text. IGit appends
-the reviewed patches as a separate user message: a JSON array of objects with
+the selected patches as a separate user message: a JSON array of objects with
 `repository` and `patch` fields. No template placeholders are required. The
 response must provide a nonempty `choices[0].message.content`. Streaming and
 provider-specific native APIs are not used; configure a compatible endpoint.
@@ -178,13 +178,17 @@ current session and saves the workspace fallback; it does not rewrite the user
 settings file. On restart, `[ai]` takes precedence again. Timeout and credential
 variable settings come from the user file or defaults.
 
-**Generate message** (`A`) first reviews the destination, model, file lists and
-patches. Confirmation sends one request containing only checked files in the
-current Roots, up to 160 KB of patch content in total. A staged file sends its
-index version; later unstaged edits and unchecked files are excluded. Accept
-the returned candidate to replace the shared draft, then edit it normally.
-Request errors and canceled reviews preserve the original draft. Each selected
-repository gets a separate Git commit with that same message after commit review.
+**Generate message** (`A`) immediately sends one request containing only checked
+files in the current Roots, up to 160 KB of patch content in total. A staged file
+sends its index version; later unstaged edits and unchecked files are excluded.
+The button animates while waiting. Success fills and saves the shared draft
+directly, ready for normal editing. Repeated clicks do not start another request.
+Configuration, request, response, and save errors open an error dialog and keep
+the original draft. Newer edits made while waiting are also kept. Active input
+defers applying a response until editing ends. Missing endpoint/model settings
+show an error; `S` remains the explicit settings action. Restart after changing
+the user settings file. Each selected repository gets a separate Git commit
+with the shared message after commit review.
 
 ## Key syntax and contexts
 
@@ -233,6 +237,14 @@ Branch navigation commands include `first-item` (`g g`, Home), `last-item`
 `page-down` / `page-up` (PgDn / PgUp and Ctrl-F / Ctrl-B), and
 `half-page-down` / `half-page-up` (Ctrl-D / Ctrl-U). Remapping `first-item`
 replaces the complete `g g` sequence.
+
+`commit.add-to-git` defaults to `a` and `Insert` in Changes. It reviews the
+highlighted untracked file or the untracked members of the highlighted container
+before staging them. Commit checkbox choices do not set this scope. Amend now
+uses `M` (`commit.amend`). Both commands can be remapped under
+`[keybindings.commit]`, for example `add-to-git = ["Ctrl-g"]`. An existing custom
+`amend = ["a"]` must be changed or unbound to use the new default without a
+binding conflict. Message editing retains ordinary text input.
 
 `commit.stash` defaults to `s`: it opens the shared stash-message editor for
 all changes in Roots, including untracked files. `commit.toggle-status` now
@@ -295,6 +307,27 @@ Help displays/searches the effective bindings and executes the same reviewed
 action. Rebinding Commit, Push, Merge Apply, or Continue never skips review.
 Shortcut changes do not change repository scope, checkbox selections, or retry
 semantics. Mouse buttons remain usable when a command is unbound.
+
+## Working-file editor
+
+`e` and `E` in Commit Changes edit the highlighted working copy. Remap with:
+
+```toml
+[keybindings.commit]
+edit-file = ["F8"]
+```
+
+Editor selection follows `git var GIT_EDITOR`: `GIT_EDITOR`, `core.editor`,
+`VISUAL`, `EDITOR`, then Git's compiled default. For example, configure
+`core.editor` as `nvim` or `code --wait` using normal Git configuration. GUI
+editors should wait for the file to close so IGit resumes at the expected time.
+Configured editor strings follow Git's shell syntax; file paths are passed as
+literal arguments. A failed command restores IGit and reports its exit status.
+
+With the matching `igit.nvim` plugin, the parent Neovim handles the file directly.
+Its buffer/modified-file settings apply; the floating IGit window hides after a
+successful switch and its process keeps running. `IGIT_NVIM_SESSION` is managed
+by the plugin and should not be exported in shell configuration.
 
 ## Shared focus shortcuts with Kitty and Neovim
 

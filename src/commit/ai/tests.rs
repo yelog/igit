@@ -80,9 +80,8 @@ fn wait(panel: &mut CommitPanel, c: &Context) -> Action {
 }
 
 #[test]
-fn reviewed_multi_repo_patches_make_one_request_and_candidate_requires_adoption() {
+fn generating_multi_repo_patches_fills_and_saves_the_shared_message() {
     let (_dir, c, mut panel) = fixture();
-    let original = panel.saved.message.clone();
     let before: Vec<_> = c
         .repos
         .iter()
@@ -96,16 +95,34 @@ fn reviewed_multi_repo_patches_make_one_request_and_candidate_requires_adoption(
         api_key_env: "IGIT_TEST_NONEXISTENT_LLM_KEY".into(),
         ..Default::default()
     };
-    let Action::Confirm { body, .. } = panel.ai_review(&c).unwrap() else {
-        panic!("review");
-    };
-    assert!(body.contains("app staged") && body.contains("api staged"));
-    assert!(!body.contains("private marker") && !body.contains("unselected staged marker"));
-    assert!(received.try_recv().is_err()); // Review alone never sends.
-    panel.ai_settings.model = "changed-after-review".into();
-    panel.ai_settings.prompt = "changed-after-review".into();
-    panel.start_ai(&c).unwrap();
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 36)).unwrap();
+    terminal
+        .draw(|frame| panel.draw(frame, frame.area(), &c))
+        .unwrap();
+    let button = panel
+        .hits
+        .iter()
+        .find(|(_, hit)| matches!(hit, Hit::Ai))
+        .unwrap()
+        .0;
+    let action = panel.event(
+        &Event::Mouse(crossterm::event::MouseEvent {
+            kind: M::Down(MouseButton::Left),
+            column: button.x + 1,
+            row: button.y,
+            modifiers: Mod::NONE,
+        }),
+        &c,
+    );
+    assert!(matches!(action, Action::Notice(message) if message.contains("Generating")));
+    assert!(panel.ai_running());
+    assert!(panel.edit.is_none());
     assert!(panel.start_ai(&c).is_err());
+    panel.launch(Hit::Ai, &c);
+    assert!(
+        panel.edit.is_none(),
+        "duplicate clicks keep the loading state"
+    );
     let (headers, payload) = received.recv_timeout(Duration::from_secs(5)).unwrap();
     assert!(headers.starts_with("POST /v1/chat/completions "));
     assert!(!headers.to_lowercase().contains("authorization:"));
@@ -120,25 +137,22 @@ fn reviewed_multi_repo_patches_make_one_request_and_candidate_requires_adoption(
     assert_eq!(patches[0]["repository"], "app");
     assert!(patches[0]["patch"].as_str().unwrap().contains("app staged"));
     assert_eq!(patches[1]["repository"], "api");
+    let serialized = payload.to_string();
+    assert!(!serialized.contains("private marker"));
+    assert!(!serialized.contains("unselected staged marker"));
     assert!(matches!(wait(&mut panel, &c), Action::Notice(_)));
     worker.join().unwrap();
-    assert!(matches!(panel.edit, Some(Edit::AIDraft)));
-    assert_eq!(panel.saved.message, original);
-    panel.launch(Hit::EditCancel, &c);
-    assert_eq!(panel.saved.message, original);
-    // Adoption uses the same save path; a failed save preserves both candidate and draft.
-    panel.edit = Some(Edit::AIDraft);
-    let mut blocked = c.clone();
-    blocked.state_dir = c.workspace.join("blocked");
-    fs::write(&blocked.state_dir, "file").unwrap();
-    assert!(panel.accept(&blocked).is_err());
-    assert_eq!(panel.saved.message, original);
-    assert!(matches!(panel.edit, Some(Edit::AIDraft)));
-    panel.accept(&c).unwrap();
+    assert!(
+        panel.edit.is_none(),
+        "success does not open a candidate dialog"
+    );
     assert_eq!(
         panel.saved.message.as_deref(),
         Some("feat: shared candidate\n\nDetails 中文")
     );
+    let saved: Saved =
+        serde_json::from_slice(&fs::read(c.state_dir.join("commit.json")).unwrap()).unwrap();
+    assert_eq!(saved.message, panel.saved.message);
     panel.edit_message(&c);
     panel.buf.push_str(" edited");
     panel.finish_message(&c).unwrap();
@@ -147,6 +161,10 @@ fn reviewed_multi_repo_patches_make_one_request_and_candidate_requires_adoption(
         assert_eq!(
             crate::core::git(&repo.path, &["ls-files", "--stage"]).unwrap(),
             before[i]
+        );
+        assert_eq!(
+            fs::read_to_string(repo.path.join("mixed.txt")).unwrap(),
+            "unstaged private marker\n"
         );
         assert_eq!(
             crate::core::git(&repo.path, &["rev-list", "--count", "HEAD"])
@@ -158,22 +176,18 @@ fn reviewed_multi_repo_patches_make_one_request_and_candidate_requires_adoption(
 }
 
 #[test]
-fn ai_scope_filters_hidden_roots_and_rechecks_scope_before_send() {
+fn ai_request_filters_hidden_roots_and_does_not_touch_git() {
     let (_dir, mut c, mut panel) = fixture();
     panel.ai_settings.endpoint = "http://127.0.0.1:1/mock".into();
     panel.ai_settings.model = "custom".into();
     c.scope = [0].into();
-    panel.ai_review(&c).unwrap();
-    let request = panel.ai_request.as_ref().unwrap();
+    let request = panel.prepare_ai(&c).unwrap();
     assert_eq!(request.patches.len(), 1);
     assert_eq!(request.patches[0].name, "app");
     c.scope = [1].into();
-    assert!(panel
-        .start_ai(&c)
-        .err()
-        .unwrap()
-        .to_string()
-        .contains("scope changed"));
+    let request = panel.prepare_ai(&c).unwrap();
+    assert_eq!(request.patches.len(), 1);
+    assert_eq!(request.patches[0].name, "api");
     assert!(panel.ai_pending.is_none());
 }
 
@@ -230,8 +244,7 @@ fn response_rejects_empty_truncated_filtered_and_invalid_messages() {
 fn failed_request_keeps_draft_and_reports_error_even_after_drawing() {
     let (_dir, c, mut panel) = fixture();
     let original = panel.saved.message.clone();
-    let (tx, rx) = mpsc::channel();
-    panel.ai_pending = Some(rx);
+    let tx = pending(&mut panel);
     tx.send(Err("AI service returned HTTP 401".into())).unwrap();
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
     terminal
@@ -239,7 +252,125 @@ fn failed_request_keeps_draft_and_reports_error_even_after_drawing() {
         .unwrap();
     assert!(matches!(panel.tick(&c), Action::Notice(message) if message.contains("HTTP 401")));
     assert_eq!(panel.saved.message, original);
+    assert!(matches!(panel.edit, Some(Edit::AIError)));
+    terminal
+        .draw(|frame| panel.draw(frame, frame.area(), &c))
+        .unwrap();
+    let screen: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(screen.contains("AI message failed") && screen.contains("HTTP 401"));
+    panel.event(
+        &Event::Key(crossterm::event::KeyEvent::new(K::Enter, Mod::NONE)),
+        &c,
+    );
     assert!(panel.edit.is_none());
+    assert_eq!(panel.saved.message, original);
+}
+
+fn pending(panel: &mut CommitPanel) -> mpsc::Sender<Result<String, String>> {
+    let (sender, receiver) = mpsc::channel();
+    panel.ai_pending = Some(Pending {
+        receiver,
+        message: panel.saved.message.clone(),
+        frame: 0,
+    });
+    sender
+}
+
+#[test]
+fn missing_ai_configuration_opens_an_error_instead_of_settings() {
+    let (_dir, c, mut panel) = fixture();
+    let original = panel.saved.message.clone();
+    assert!(
+        matches!(panel.launch(Hit::Ai, &c), Action::Notice(message) if message.contains("ai.endpoint") && message.contains("ai.model"))
+    );
+    assert!(matches!(panel.edit, Some(Edit::AIError)));
+    assert!(!panel.ai_running());
+    assert_eq!(panel.saved.message, original);
+}
+
+#[test]
+fn successful_generation_preserves_a_newer_draft_or_failed_save() {
+    for edited in [false, true] {
+        let (_dir, mut c, mut panel) = fixture();
+        let tx = pending(&mut panel);
+        if edited {
+            panel.edit_message(&c);
+            panel.buf = "User's newer message 中文".into();
+            panel.finish_message(&c).unwrap();
+        } else {
+            c.state_dir = c.workspace.join("blocked");
+            fs::write(&c.state_dir, "file").unwrap();
+        }
+        let original = panel.saved.message.clone();
+        tx.send(Ok("feat: generated message".into())).unwrap();
+        assert!(matches!(panel.tick(&c), Action::Notice(_)));
+        assert_eq!(panel.saved.message, original);
+        assert!(matches!(panel.edit, Some(Edit::AIError)));
+        assert!(!panel.ai_running());
+    }
+}
+
+#[test]
+fn completion_waits_for_active_input_and_keeps_unsaved_edits() {
+    let (_dir, c, mut panel) = fixture();
+    let tx = pending(&mut panel);
+    panel.edit_message(&c);
+    panel.buf = "User's unsaved message 中文".into();
+    tx.send(Ok("feat: generated message".into())).unwrap();
+    assert!(matches!(panel.tick(&c), Action::None));
+    assert!(panel.message_editing());
+    assert!(panel.ai_running());
+    panel.finish_message(&c).unwrap();
+    assert!(matches!(panel.tick(&c), Action::Notice(_)));
+    assert_eq!(
+        panel.saved.message.as_deref(),
+        Some("User's unsaved message 中文")
+    );
+    assert!(matches!(panel.edit, Some(Edit::AIError)));
+}
+
+#[test]
+fn loading_animates_in_the_composer_and_success_fills_it_without_a_dialog() {
+    let (_dir, c, mut panel) = fixture();
+    for (width, height) in [(44, 12), (80, 24), (120, 36)] {
+        panel.icons = IconMode::Ascii;
+        let tx = pending(&mut panel);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| panel.draw(frame, frame.area(), &c))
+            .unwrap();
+        let before = terminal.backend().buffer().clone();
+        assert!(panel.hits.iter().any(|(_, hit)| matches!(hit, Hit::Ai)));
+        assert!(matches!(panel.tick(&c), Action::None));
+        terminal
+            .draw(|frame| panel.draw(frame, frame.area(), &c))
+            .unwrap();
+        assert_ne!(terminal.backend().buffer(), &before);
+        tx.send(Ok("feat: generated message".into())).unwrap();
+        assert!(matches!(panel.tick(&c), Action::Notice(_)));
+        terminal
+            .draw(|frame| panel.draw(frame, frame.area(), &c))
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            screen.contains("feat: generated message"),
+            "{width}x{height}: {screen}"
+        );
+        assert!(panel.edit.is_none());
+    }
 }
 
 #[test]

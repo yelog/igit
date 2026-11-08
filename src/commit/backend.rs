@@ -9,6 +9,7 @@ use std::{
 };
 use tempfile::TempDir;
 
+pub(super) mod add;
 pub(super) mod discard;
 pub(super) mod stash;
 mod working;

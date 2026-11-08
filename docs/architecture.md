@@ -11,7 +11,7 @@ IGit is a Rust terminal application. Both entry points, [igit](../src/bin/igit.r
 | Why does help prioritize this area? | Internal panel `keymap` methods in [log/keymap.rs](../src/log/keymap.rs), [commit/keymap.rs](../src/commit/keymap.rs), [push/keymap.rs](../src/push/keymap.rs), and [merge/keymap.rs](../src/merge/keymap.rs) provide shortcuts for the current focus/editing state. [ui/help.rs](../src/ui/help.rs) owns Search, candidate selection, compact rendering, and hit areas. |
 | Why does a file or button use this icon? | [ui/icons.rs](../src/ui/icons.rs) maps semantics, filenames, and extensions to glyphs. Shell passes startup `IconMode` to all panels; layout and hit testing use actual terminal cell widths. Icon preferences are not written to repositories, drafts, or Git configuration. [graph/render.rs](../src/log/model/graph/render.rs) draws graph rails/nodes from topology. |
 | Why does a commit appear here? | [log/model.rs](../src/log/model.rs) reads real refs, commits, reachability, and patches; [graph.rs](../src/log/model/graph.rs) allocates rails. [log.rs](../src/log.rs) coordinates selection/events. [view.rs](../src/log/view.rs), [refs.rs](../src/log/refs.rs), and [inspector.rs](../src/log/inspector.rs) render the timeline, branch tree, and right pane. [filters.rs](../src/log/filters.rs) manages filters and session tabs. |
-| What does this commit include? | [commit.rs](../src/commit.rs): groups, checkboxes, the shared message, and batch commits. [commit/ai.rs](../src/commit/ai.rs): reviewed AI requests and candidate adoption. [commit/tree.rs](../src/commit/tree.rs): flat/compact-directory projections and native file identity. [commit/rows.rs](../src/commit/rows.rs): row rendering and shared arrow/checkbox coordinates. [commit/view.rs](../src/commit/view.rs): changes list, messages, and default-open preview. [commit/refresh.rs](../src/commit/refresh.rs) owns background status and current-patch refresh. [commit/backend.rs](../src/commit/backend.rs): status, snapshots, plans, and execution. |
+| What does this commit include? | [commit.rs](../src/commit.rs): groups, checkboxes, the shared message, and batch commits. [commit/ai.rs](../src/commit/ai.rs): direct AI requests and shared message generation. [commit/tree.rs](../src/commit/tree.rs): flat/compact-directory projections and native file identity. [commit/rows.rs](../src/commit/rows.rs): row rendering and shared arrow/checkbox coordinates. [commit/view.rs](../src/commit/view.rs): changes list, messages, and default-open preview. [commit/refresh.rs](../src/commit/refresh.rs) owns background status and current-patch refresh. [commit/backend.rs](../src/commit/backend.rs): status, snapshots, plans, and execution. |
 | Where will this push go, and will the target have the submodule commit? | [push.rs](../src/push.rs): outgoing commits, targets, plans, background jobs, and per-repository results. [push/loading.rs](../src/push/loading.rs) schedules outgoing commit and preview reads; [push/preview.rs](../src/push/preview.rs) reads immutable file lists and patches. [push/files.rs](../src/push/files.rs) parses changes and derives grouped rows from one tree; [push/display.rs](../src/push/display.rs) handles the session Group By menu; [push/view.rs](../src/push/view.rs) renders columns/hit areas. [push/submodules.rs](../src/push/submodules.rs) verifies remote availability of gitlinks in outgoing history. |
 | How do branch lists load and branch writes get reviewed? | [branch/loading.rs](../src/branch/loading.rs) reads refs and prepares tree rows in the background. [branch/operations.rs](../src/branch/operations.rs) revalidates one repository before a reviewed write. [core/loading.rs](../src/core/loading.rs) provides the bounded reader shared with Push. |
 | What will a workspace Pull or Fetch update? | [shell/update.rs](../src/shell/update.rs) owns the Roots review, selected strategy, Git worker, and structured per-repository results. [shell/update/view.rs](../src/shell/update/view.rs) renders the shared review/running/results list, responsive columns, Details, and action hit areas. |
@@ -180,6 +180,31 @@ Pull/Fetch, while workspace navigation, pane controls, and review guards remain
 available. The Lua companion plugin uses argv-based Neovim terminal jobs and
 window-local options; it performs no Git operations itself.
 
+### Editing working files
+
+Commit returns `Action::EditFile` for the highlighted native repository/path,
+independently of commit checkboxes. Shell queues the request and handles it
+outside drawing and panel dispatch. [editor.rs](../src/shell/editor.rs) validates
+an existing working file, resolves `git var GIT_EDITOR`, and forwards the literal
+absolute path as a shell positional argument. The query restores the inherited
+`GIT_EDITOR`, overriding the shared Git adapter's deliberate noninteractive
+`true`. Configured editor expressions retain Git's shell semantics; filenames
+never become shell code. Git for Windows supplies the required `sh`.
+
+The terminal guard releases and reacquires raw mode, alternate screen, mouse,
+focus, paste, enhanced-key flags and the Kitty marker around a foreground editor.
+Exit/launch failures also restore the TUI; returning refreshes the workspace.
+
+The Neovim plugin advertises `IGIT_NVIM_SESSION` per managed terminal. A native
+file action emits OSC 51 `igit-edit` with versioned JSON containing that session
+and an absolute UTF-8 path. JSON escaping protects terminal control characters.
+The plugin accepts matching requests only from its own terminal buffer and
+schedules changes outside TermRequest, supporting both Nvim 0.10's string data
+and later `.sequence` data. Background/stale requests cannot steal focus.
+The parent reuses buffers through a normal guarded buffer switch, hides floats
+after success, and retains split/tab sessions and their jobs. There is no RPC
+server, nested editor, staging or application-owned file writer in this path.
+
 ## Repositories, Scope, and Persistence
 
 Workspace Pull and Fetch build a read-only plan from global Roots. Each worktree is checked again before running Git. Pull also revalidates the branch, HEAD, upstream, and resolved remote URL; Fetch revalidates the configured remotes. After confirmation, a worker runs one `git pull` or `git fetch --all` per eligible worktree, with submodule recursion disabled. Pull integrates the reviewed upstream with an explicit Merge or Rebase strategy. The update dialog remains active through completion so another workspace write cannot overlap it. Presentation rows retain the reviewed identity, branch/target labels, and repository tint; structured worker outcomes map back in plan order. Row selection and Details scrolling are view-only state and cannot change the batch. Shell refreshes Log after Fetch and the workspace after Pull. Failures and Git conflict state remain per repository.
@@ -302,7 +327,7 @@ not retried automatically. Commit refreshes after the batch and the Stash tab
 reads saved entries on entry. This operation does not change the shared commit
 message or publish anything remotely.
 
-**AI commit messages: one reviewed request, one shared candidate.** [commit/ai.rs](../src/commit/ai.rs) snapshots the effective configuration and selected patches, labeled by repository, at review time. It limits total patch bytes to 160 KB and rechecks Roots before sending. After confirmation, a background `curl` request sends the custom system prompt and a user message containing the repository/patch array. User `[ai]` settings from [config.rs](../src/config.rs) override legacy workspace endpoint/model/prompt on startup; `S` changes the current session and saves a workspace fallback. The credential comes from `ai.api_key_env` (default `IGIT_LLM_API_KEY`) and is passed through a temporary header file, never command arguments or persisted state. HTTP failures, invalid/empty replies and incomplete responses are reported without echoing service bodies or credentials. Shell's tick consumes completion so redraw cannot swallow errors. The candidate replaces the shared draft only after acceptance; persistence failure retains both candidate and original draft. Generation never creates commits. Tests use local mock HTTP servers and temporary repositories.
+**AI commit messages: one request fills one shared draft.** [commit/ai.rs](../src/commit/ai.rs) snapshots the effective configuration and checked patches within the current Roots, labeled by repository, when Generate message / `A` is invoked. It limits total patch bytes to 160 KB. A background `curl` request sends the custom system prompt and a user message containing the repository/patch array. The pending request retains the original message and spinner frame; Shell redraws the active Commit pane while it runs. User `[ai]` settings from [config.rs](../src/config.rs) override legacy workspace endpoint/model/prompt on startup; `S` changes the current session and saves a workspace fallback. The credential comes from `ai.api_key_env` (default `IGIT_LLM_API_KEY`) and is passed through a temporary header file, never command arguments or persisted state. HTTP failures, invalid/empty replies and incomplete responses are reported without echoing service bodies or credentials. Shell's tick consumes completion so redraw cannot swallow errors. A successful response directly replaces and persists the shared draft without a candidate dialog. An active editor defers completion; newer saved edits are preserved. Configuration, transport, response, and persistence failures open a dismissible AI error dialog and retain the existing draft. Generation never creates commits. Tests use local mock HTTP servers and temporary repositories.
 
 Commit and AI share checked-file snapshots. Index entries match native paths exactly. Exclusions for Diff, temporary staging, and index publication match only selected-path descendants, escaping wildcards while preserving the gitlink itself. File/directory replacements validate scope against actual changed paths. If adding a file requires deleting unchecked descendants, stop and ask for a revised selection. The branch shown in Commit review comes from the same execution plan; cached branch lists do not determine the target.
 
@@ -335,11 +360,31 @@ source/URL/remote/submodule checks are unchanged.
 
 The editor's row layout aligns blocks across all three panes, pads shorter sides, and folds shared context in a single display coordinate system. Each pane keeps its own line numbers and horizontal offset. Intraline colors, indentation guides, and folds affect display only. Inline edits replace a result block and can be undone. Shell displays the editor without the workspace chrome and still owns Help and confirmation dialogs.
 
+`Document::open` admits standard `eol=lf` and `eol=crlf` attributes to its
+per-stage `git cat-file --filters --path` comparison. All three checkout results
+must match their raw blobs, so an ordinary LF rule can open while actual CRLF
+conversion remains blocked. Custom merge drivers, filters, encodings, and ident
+expansion remain unsupported. The attribute/config snapshot is still rechecked
+before Apply. Stash apply/pop conflicts use the same index stages with no
+`Operation`; after Apply, the notice points to Commit instead of Continue, and
+the stash ref is never removed by the merge editor.
+
 After Apply confirmation, revalidate operation, HEAD, conflict stages, original file content, permissions, and conversion configuration. Write a temporary file in the original directory, replace the original, then separately run `git add -- <path>`. If staging fails and the working file still matches the just-written result, attempt to restore original content. Do not directly overwrite conflicts outside ordinary three-stage text, binary content, files requiring checkout conversion, files beyond size/line limits, or externally edited files. **Continue is per repository:** separately review/validate the entire index tree and run the corresponding `git … --continue`. Other staged files in that repository are included in its scope.
 
 Commit's [discard controller](../src/commit/discard.rs) uses the cursor scope for initial checks independently of Commit checkboxes. Changelist rows use exact native paths from their visible members; physical directories and repositories can span changelists. The [Rollback modal](../src/commit/rollback.rs) is owned by Shell and renders all visible Changes rows with the shared tree and row renderer. Its checks, folds, grouping, Diff, and added-copy option are local to the modal. Close drops the pending plans, while F1 retains the modal and its state under Help.
 
 The [discard backend](../src/commit/backend/discard.rs) captures eligible visible paths at open, recording HEAD/branch, exact index records, and raw working-tree hashes/modes or symlink targets. Unavailable paths stay in the tree without a checkbox target. A file Diff is loaded on demand against the snapshot. Confirm narrows the retained plans to checked paths without recapturing Git state. Discard locks the real index, revalidates the selected snapshot, and prepares a private index with only the reviewed paths reset to HEAD (or the empty tree before the initial commit). `checkout-index` restores tracked leaves; `remove_file` removes untracked leaves and added local copies only when requested. Each leaf is checked again before writing. Unrelated staging is preserved, and partial failure publishes index changes only for completed leaves. Conflicts, active Git operations, submodule pointers, nested repositories, directory symlink traversal, and file/directory replacements remain read-only. Results refresh the workspace; no undo backup or cross-repository atomicity is provided.
+
+Commit's [Add to Git controller](../src/commit/add.rs) captures only untracked
+members of the highlighted row within Roots, independently of commit checkboxes.
+The [addition backend](../src/commit/backend/add.rs) reuses the commit snapshot
+builder and working-file fingerprints. Review builds a Git-filtered tree in a
+private index; confirmation rechecks branch/HEAD, exact untracked status, raw
+contents, and the rebuilt tree. It locks the real index, copies its current state,
+and reuses `reset_index_paths` to publish only the reviewed leaves, rejecting
+implicit removal of other staged paths. No working file or ref is written.
+Plans are consumed once, repositories report separate results, and the normal
+refresh moves additions into Changes while preserving checks and the message.
 
 ## Batch Writes and Failures
 

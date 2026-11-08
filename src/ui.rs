@@ -14,6 +14,7 @@ use ratatui::{
     widgets::{Block, Borders},
     Frame,
 };
+use std::path::PathBuf;
 
 pub enum Action {
     None,
@@ -23,6 +24,10 @@ pub enum Action {
         label: &'static str,
     },
     Refresh(String),
+    EditFile {
+        repo: PathBuf,
+        path: PathBuf,
+    },
     OpenConflicts,
     CloseDialog,
     ReviewRollback,

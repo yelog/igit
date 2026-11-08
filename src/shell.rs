@@ -1,5 +1,6 @@
 mod cli;
 mod configuration;
+mod editor;
 mod kitty;
 mod panes;
 mod software_update;
@@ -186,6 +187,7 @@ struct Shell {
     journal: Vec<String>,
     quit: bool,
     restart: Option<PathBuf>,
+    pending_edit: Option<editor::Request>,
     software_update: software_update::SoftwareUpdate,
     regions: workspace::Regions,
     pop_hits: Vec<(Rect, usize)>,
@@ -234,6 +236,7 @@ impl Shell {
             journal: vec![],
             quit: false,
             restart: None,
+            pending_edit: None,
             software_update: Default::default(),
             regions: Default::default(),
             pop_hits: vec![],
@@ -433,6 +436,10 @@ impl Shell {
         match a {
             Action::None => (),
             Action::Notice(s) => self.notice(s),
+            Action::EditFile { repo, path } => {
+                self.cancel_key_sequences();
+                self.pending_edit = Some(editor::Request { repo, path });
+            }
             Action::Copy { text, label } => match clipboard::copy(&text) {
                 Ok(()) => self.notice(format!("Copied {label}")),
                 Err(e) => self.notice(format!("Copy failed: {e:#}")),
@@ -1228,7 +1235,7 @@ impl Shell {
         change |= seq != self.push.progress_seq;
         let a = self.commit.tick(&self.ctx);
         if !matches!(a, Action::None) {
-            // A background AI request can open the message editor between two
+            // A background AI request can open an error dialog between two
             // input events, even while a window command or drag is pending.
             if self.tab == Commit && self.commit.editing() {
                 self.cancel_key_sequences();
@@ -1237,6 +1244,7 @@ impl Shell {
             self.action(a);
             change = true
         }
+        change |= self.tab == Commit && self.commit.ai_running();
         if self.branch.reads_pending() {
             match self.branch.poll_loading(&self.ctx) {
                 Ok(redraw) => change |= redraw && self.tab == Branch,
@@ -1515,16 +1523,46 @@ struct Tty {
     kitty_marker: bool,
     enhanced_keys: bool,
 }
-impl Drop for Tty {
-    fn drop(&mut self) {
+impl Tty {
+    fn enter(&mut self, mouse: bool, marker: bool) -> Result<()> {
+        enable_raw_mode()?;
+        let mut out = io::stdout();
+        execute!(
+            out,
+            EnterAlternateScreen,
+            EnableFocusChange,
+            EnableBracketedPaste
+        )?;
+        if mouse {
+            execute!(out, EnableMouseCapture)?;
+        }
+        if marker {
+            self.kitty_marker = true;
+            kitty::set_user_var(&mut out, true)?;
+        }
+        // Request directly: capability queries can block on unsupported terminals.
+        self.enhanced_keys = execute!(
+            out,
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+            )
+        )
+        .is_ok();
+        Ok(())
+    }
+
+    fn leave(&mut self) -> Result<()> {
         let mut out = io::stdout();
         if self.kitty_marker {
             let _ = kitty::set_user_var(&mut out, false);
+            self.kitty_marker = false;
         }
         if self.enhanced_keys {
             let _ = execute!(out, PopKeyboardEnhancementFlags);
+            self.enhanced_keys = false;
         }
-        let _ = execute!(
+        let screen = execute!(
             out,
             DisableFocusChange,
             DisableBracketedPaste,
@@ -1532,7 +1570,15 @@ impl Drop for Tty {
             LeaveAlternateScreen,
             Show
         );
-        let _ = disable_raw_mode();
+        let raw = disable_raw_mode();
+        screen?;
+        raw?;
+        Ok(())
+    }
+}
+impl Drop for Tty {
+    fn drop(&mut self) {
+        let _ = self.leave();
     }
 }
 pub fn run() -> Result<()> {
@@ -1588,38 +1634,13 @@ pub fn run() -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!("IGit needs an interactive terminal. Try igit --list-roots or igit --help.")
     }
-    let mut out = io::stdout();
     let mut guard = Tty::default();
-    enable_raw_mode()?;
-    execute!(
-        out,
-        EnterAlternateScreen,
-        EnableFocusChange,
-        EnableBracketedPaste
-    )?;
-    if config.mouse {
-        execute!(out, EnableMouseCapture)?;
-    }
     let mut kitty = kitty::Kitty::default();
     if config.smart_panes_enabled() {
         kitty = kitty::Kitty::from_env();
-        if kitty.available() {
-            guard.kitty_marker = true;
-            kitty::set_user_var(&mut out, true)?;
-        }
     }
-    // Request progressive enhancement directly, as in the protocol quickstart.
-    // A capability query can block for two seconds on terminals that do not reply.
-    // Unsupported backends retain ordinary keys; successful pushes are popped by Tty.
-    guard.enhanced_keys = execute!(
-        out,
-        PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-        )
-    )
-    .is_ok();
-    let mut term = Terminal::new(CrosstermBackend::new(out))?;
+    guard.enter(config.mouse, kitty.available())?;
+    let mut term = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     term.clear()?;
     let Some(mut app) = startup::open(&mut term, launch, config)? else {
         return Ok(());
@@ -1671,6 +1692,29 @@ pub fn run() -> Result<()> {
                 }
             }
         }
+        if let Some(request) = app.pending_edit.take() {
+            match request.prepare(env::var(editor::NVIM_SESSION).ok().as_deref()) {
+                Ok(editor::Prepared::Neovim(sequence)) => {
+                    if let Err(error) = editor::send_request(&mut io::stdout(), &sequence) {
+                        app.notice(format!("Edit file: {error:#}"));
+                    }
+                }
+                Ok(editor::Prepared::External(mut command)) => {
+                    guard.leave()?;
+                    let result = editor::execute(&mut command);
+                    // Always reacquire the terminal, including a failed editor launch.
+                    guard.enter(app.config.mouse, app.kitty.available())?;
+                    term.clear()?;
+                    app.refresh();
+                    match result {
+                        Ok(()) => app.notice("Returned from editor".into()),
+                        Err(error) => app.notice(format!("Edit file: {error:#}")),
+                    }
+                }
+                Err(error) => app.notice(format!("Edit file: {error:#}")),
+            }
+            dirty = true;
+        }
         if app.poll() {
             dirty = true
         }
@@ -1703,6 +1747,8 @@ mod key_sequence_tests;
 mod configuration_tests;
 #[cfg(test)]
 mod discard_tests;
+#[cfg(test)]
+mod editor_tests;
 #[cfg(test)]
 mod help_tests;
 #[cfg(test)]

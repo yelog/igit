@@ -225,7 +225,10 @@ fn conflict_list_accept_previews_the_entire_selected_side_before_apply() {
     assert!(body.contains(FILE));
     assert_eq!(fs::read(path.join(FILE)).unwrap(), original);
     assert_eq!(git(&["ls-files", "--stage"]), index);
-    assert!(matches!(panel.confirm(&token, &ctx), Action::Refresh(_)));
+    assert!(matches!(
+        panel.confirm(&token, &ctx),
+        Action::Refresh(message) if message.contains("Continue is a separate action")
+    ));
     assert_eq!(fs::read_to_string(path.join(FILE)).unwrap(), INCOMING);
     assert_eq!(
         git(&["ls-files", "--stage", "--", "unrelated.txt"]),

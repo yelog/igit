@@ -300,7 +300,12 @@ impl CommitPanel {
         } else {
             "Generate message"
         };
-        let ai = format!("{} {ai}", self.icons.glyph(Icon::AutoResolve));
+        let glyph = if self.ai_running() {
+            self.ai_spinner().to_string()
+        } else {
+            self.icons.glyph(Icon::AutoResolve).to_string()
+        };
+        let ai = format!("{glyph} {ai}");
         self.hit_button(f, action_row, &mut x, &ai, Hit::Ai);
         let selected = self.selection(c);
         let root_count = selected

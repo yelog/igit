@@ -11,7 +11,6 @@ use std::{
 mod tests;
 
 pub(super) struct Patch {
-    pub root: usize,
     pub name: String,
     pub content: String,
 }
@@ -19,6 +18,12 @@ pub(super) struct Patch {
 pub(super) struct Request {
     pub settings: AiConfig,
     pub patches: Vec<Patch>,
+}
+
+pub(super) struct Pending {
+    receiver: mpsc::Receiver<Result<String, String>>,
+    message: Option<String>,
+    frame: usize,
 }
 
 impl Request {
@@ -145,22 +150,33 @@ fn parse_response(body: &[u8]) -> Result<String> {
 }
 
 impl CommitPanel {
-    pub(super) fn ai_review(&mut self, c: &Context) -> Result<Action> {
-        self.ai_request = None;
-        if self.ai_pending.is_some() {
-            bail!("AI request in progress. Please wait")
-        }
+    pub(crate) fn ai_running(&self) -> bool {
+        self.ai_pending.is_some()
+    }
+
+    pub(super) fn ai_spinner(&self) -> char {
+        let frames: &[char] = if self.icons == IconMode::Ascii {
+            &['|', '/', '-', '\\']
+        } else {
+            &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧']
+        };
+        frames[self.ai_pending.as_ref().map_or(0, |p| p.frame) % frames.len()]
+    }
+
+    pub(super) fn show_ai_error(&mut self, error: impl ToString) -> Action {
+        self.ai_error = error.to_string();
+        self.ai_scroll = 0;
+        self.edit = Some(Edit::AIError);
+        err(&self.ai_error)
+    }
+
+    pub(super) fn prepare_ai(&self, c: &Context) -> Result<Request> {
         if self.ai_settings.endpoint.trim().is_empty() || self.ai_settings.model.trim().is_empty() {
-            self.launch(Hit::Settings, c);
-            bail!("Set ai.endpoint and ai.model in settings.toml, or complete AI settings")
+            bail!("Set ai.endpoint and ai.model in settings.toml, then restart IGit. Press S to edit AI settings for this session")
         }
         self.ai_settings.validate()?;
         let mut patches = vec![];
         let mut bytes = 0;
-        let mut body = format!(
-            "Send selected patches to {}\nModel: {}\nOne request generates one shared message for all selected repositories. Review the candidate before replacing your message.\n",
-            self.ai_settings.endpoint, self.ai_settings.model
-        );
         for root in self.checked_repos(c) {
             let files: Vec<_> = self
                 .selection(c)
@@ -173,16 +189,7 @@ impl CommitPanel {
             if bytes > 160_000 {
                 bail!("Selected patches exceed 160 KB. Select fewer files before generating a message")
             }
-            body.push_str(&format!(
-                "\n{} · {} bytes\n",
-                c.repos[root].name,
-                content.len()
-            ));
-            for file in &files {
-                body.push_str(&format!("  {}\n", file.label()));
-            }
             patches.push(Patch {
-                root,
                 name: c.repos[root].name.clone(),
                 content,
             });
@@ -190,20 +197,9 @@ impl CommitPanel {
         if patches.is_empty() {
             bail!("Select files first")
         }
-        for patch in &patches {
-            body.push_str(&format!(
-                "\n{} / selected patch\n{}",
-                patch.name, patch.content
-            ));
-        }
-        self.ai_request = Some(Request {
+        Ok(Request {
             settings: self.ai_settings.clone(),
             patches,
-        });
-        Ok(Action::Confirm {
-            title: "AI · Send selected patches?".into(),
-            body,
-            token: "commit-ai".into(),
         })
     }
 
@@ -211,19 +207,13 @@ impl CommitPanel {
         if self.ai_pending.is_some() {
             bail!("AI request in progress. Please wait")
         }
-        let request = self
-            .ai_request
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("Review selected patches first"))?;
-        if request
-            .patches
-            .iter()
-            .any(|patch| !c.scope.contains(&patch.root))
-        {
-            bail!("Repository scope changed. Review AI patches again")
-        }
+        let request = self.prepare_ai(c)?;
         let (tx, rx) = mpsc::channel();
-        self.ai_pending = Some(rx);
+        self.ai_pending = Some(Pending {
+            receiver: rx,
+            message: self.saved.message.clone(),
+            frame: 0,
+        });
         self.ai_error.clear();
         std::thread::spawn(move || {
             let _ = tx.send(request.send().map_err(|error| error.to_string()));
@@ -231,29 +221,39 @@ impl CommitPanel {
         Ok(err("Generating one commit message. You can keep browsing"))
     }
 
-    pub(super) fn poll_ai(&mut self) {
-        if self.edit.is_some() {
-            return;
-        }
-        let Some(rx) = self.ai_pending.as_ref() else {
-            return;
+    pub(super) fn poll_ai(&mut self, c: &Context) -> Action {
+        let Some(pending) = self.ai_pending.as_mut() else {
+            return Action::None;
         };
-        match rx.try_recv() {
-            Ok(Ok(message)) => {
-                self.ai_draft = message;
-                self.ai_scroll = 0;
-                self.edit = Some(Edit::AIDraft);
-                self.ai_pending = None;
+        pending.frame = pending.frame.wrapping_add(1);
+        // Do not interrupt active input or replace an unsaved edit.
+        if self.edit.is_some() {
+            return Action::None;
+        }
+        let result = match pending.receiver.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Disconnected) => Err("AI worker stopped".into()),
+            Err(mpsc::TryRecvError::Empty) => return Action::None,
+        };
+        let original = self.ai_pending.take().unwrap().message;
+        match result {
+            Ok(message) => {
+                if self.saved.message != original {
+                    return self.show_ai_error("The commit message changed during generation. Your newer message was kept. Generate again to replace it");
+                }
+                self.saved.message = Some(message);
+                if let Err(error) = self.save(c) {
+                    self.saved.message = original;
+                    return self.show_ai_error(format!(
+                        "Could not save AI commit message: {error}. The original message was kept"
+                    ));
+                }
+                self.message_selection.clear();
+                self.edit_view = (self.edit_view.0, 0, 0);
+                self.focus = Focus::Message;
+                Action::Notice("AI commit message generated".into())
             }
-            Ok(Err(error)) => {
-                self.ai_error = error;
-                self.ai_pending = None;
-            }
-            Err(mpsc::TryRecvError::Disconnected) => {
-                self.ai_error = "AI worker stopped".into();
-                self.ai_pending = None;
-            }
-            Err(mpsc::TryRecvError::Empty) => {}
+            Err(error) => self.show_ai_error(error),
         }
     }
 }

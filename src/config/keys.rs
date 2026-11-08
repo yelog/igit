@@ -218,6 +218,8 @@ commands! {
         "page-up" => "PgUp", COMMIT;
         "toggle" => "Space", CHANGES;
         "discard" => "d", CHANGES;
+        "add-to-git" => "a", CHANGES;
+        "edit-file" => "e", CHANGES;
         "open" => "Enter", COMMIT;
         "move-to-group" => "m", COMMIT;
         "preview" => "v", COMMIT;
@@ -232,7 +234,7 @@ commands! {
         "edit-message" => "i", COMMIT;
         "previous-repo" => "[", COMMIT;
         "next-repo" => "]", COMMIT;
-        "amend" => "a", COMMIT;
+        "amend" => "M", COMMIT;
         "ai-draft" => "A", COMMIT;
         "ai-settings" => "S", COMMIT;
         "review" => "c", COMMIT;

@@ -616,7 +616,10 @@ impl Document {
                 v == "unspecified"
                     || (key == "merge" && (v == "text" || v == "set"))
                     || (key != "merge" && v == "unset")
-                    || (key == "text" && matches!(v, "auto" | "set")),
+                    || (key == "text" && matches!(v, "auto" | "set"))
+                    // Standard EOL rules can be byte-preserving (notably eol=lf).
+                    // The per-stage checkout comparison below remains authoritative.
+                    || (key == "eol" && matches!(v, "lf" | "crlf")),
                 "Path uses {}={}; use its configured Git merge/filter workflow",
                 key,
                 v
@@ -821,6 +824,7 @@ impl Document {
 #[cfg(test)]
 mod tests {
     mod automatic;
+    mod conversion;
 
     use super::*;
     fn g(p: &Path, args: &[&str]) -> String {
