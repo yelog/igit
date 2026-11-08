@@ -251,7 +251,11 @@ There is no new persistent state.
 **Branch.** [branch.rs](../src/branch.rs) owns repository selection, pane focus,
 name input, and the pending shell review. [model.rs](../src/branch/model.rs) reads
 local and remote refs, commit IDs, symbolic HEAD, upstreams, and worktree ownership
-without loading history. [loading.rs](../src/branch/loading.rs) reads scoped snapshots
+for reviewed operations. Background display reads add
+`%(upstream:track,nobracket)` to the same NUL-delimited `for-each-ref` query and
+cache per-local-ref ahead/behind counts alongside default-branch metadata.
+Counts remain outside reviewed snapshots; operation revalidation does not
+request commit counts. [loading.rs](../src/branch/loading.rs) reads scoped snapshots
 and builds the selected tree in the background. Changing repositories projects
 rows from the cache; a completed refresh uses the latest selection and folds.
 The same ref scan reads remote HEAD aliases for initial expansion; this
@@ -260,8 +264,10 @@ display metadata stays separate from reviewed branch state.
 repository with stable fold and cursor identities. The [Group By menu](../src/branch/display.rs)
 toggles prefix grouping from cached refs. [navigation.rs](../src/branch/navigation.rs) maintains both
 viewports and exposes `gg` to the shell's sequence picker.
-[rows.rs](../src/branch/rows.rs) measures upstream columns per repository and
-uses shared Log reference colors. [view.rs](../src/branch/view.rs) uses the
+[rows.rs](../src/branch/rows.rs) measures upstream columns per repository,
+including counters on folded branches, and uses shared Log reference colors
+and tracking arrows. Count widths are reserved before clipping branch names;
+the selected-row details repeat the counters. [view.rs](../src/branch/view.rs) uses the
 shared pane layout for the repository list and selected branch tree, hiding
 the repository list for single-repository Roots. State is session-only.
 

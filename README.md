@@ -280,10 +280,16 @@ contains the default branch shown in the tree. Refresh preserves your fold
 choices. The current local branch is marked and listed first. Local branches
 show their actual upstream, including `[gone]` when its ref is missing. Remote
 HEAD aliases are omitted from the list.
+Beside each local branch name, green `↗2` means two commits ahead of its upstream
+and blue `↙3` means three commits behind. Diverged branches show both; zero
+counts, branches without an upstream, and missing upstreams show no counters.
+ASCII mode uses `^2` / `v3`. Counts use the locally recorded upstream ref;
+Fetch updates remote refs, and `F5` refreshes the displayed counts.
 Local and remote branches share one icon, colored green and purple as in Log.
 Group counts and indentation distinguish tree levels. Upstreams align in a
 separate column when the branch pane is wide enough; narrow panes show the
-focused upstream in the details area.
+focused upstream in the details area. Long names clip before the counters,
+which also appear in the focused branch's details.
 
 Use `j/k` to browse, `gg/G` (or Home/End) for the first/last row, and `H/M/L`
 for the first/middle/last visible row. `Ctrl-F/B` (or PgDn/PgUp) moves a full
@@ -378,7 +384,7 @@ commit_demo="$(sh examples/demo-commit.sh)"
 cargo run --locked --bin ig -- "$commit_demo"
 ```
 
-To test the local build from another terminal, first run `cargo build --locked --bins` in the source directory, then **`/absolute/path/to/source/target/debug/ig .`** in the target directory. This does not require installing or replacing global commands.
+To test the local build from another terminal, run `cargo build --locked --bins` in the source directory, then **`/absolute/path/to/source/target/debug/ig .`** in the target directory. Rebuild after changing Rust sources; `cargo test --lib` and `cargo clippy` do not refresh these runnable binaries. This does not require installing or replacing global commands.
 
 **Create a stash from Commit:** Press `s`, enter one shared message, then press
 `Enter` to review. Confirm with `y` to stash all staged, unstaged, and untracked

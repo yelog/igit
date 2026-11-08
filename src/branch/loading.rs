@@ -31,17 +31,20 @@ impl Loaded {
 }
 
 fn read_repo(root: usize, repo: &Repo) -> Repository {
-    let (state, default_branch) = match Snapshot::read_with_default(repo) {
-        Ok((snapshot, default_branch)) => (Ok(snapshot), default_branch),
-        Err(error) => (Err(format!("{error:#}")), None),
+    let (state, metadata) = match Snapshot::read_for_display(repo) {
+        Ok((snapshot, metadata)) => (Ok(snapshot), metadata),
+        Err(error) => (Err(format!("{error:#}")), model::Metadata::default()),
     };
     Repository {
         root,
         name: repo.name.clone(),
         path: repo.path.clone(),
         submodule: repo.submodule,
-        upstream_widths: state.as_ref().ok().and_then(rows::measure_upstream),
-        default_branch,
+        upstream_widths: state
+            .as_ref()
+            .ok()
+            .and_then(|snapshot| rows::measure_upstream(snapshot, &metadata)),
+        metadata,
         state,
     }
 }

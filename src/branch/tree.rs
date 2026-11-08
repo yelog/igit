@@ -114,7 +114,7 @@ impl Tree {
         self.clear_rows();
         let Some(repo) = repo else { return };
         let root = repo.root;
-        let default = repo.default_branch.as_deref();
+        let default = repo.metadata.default_branch.as_deref();
         match &repo.state {
             Ok(state) => {
                 for remote in [false, true] {

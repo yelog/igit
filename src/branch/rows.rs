@@ -2,7 +2,7 @@
 use super::*;
 use crate::ui::{
     icons::Icon,
-    idea::{clipped, repo_tint, CONFLICT, LOCAL_REF, REMOTE_REF, TAG},
+    idea::{clipped, repo_tint, BLUE, CONFLICT, LOCAL_REF, REMOTE_REF, TAG},
 };
 use ratatui::{
     style::{Style, Stylize},
@@ -25,24 +25,67 @@ fn status(branch: &Branch) -> &'static str {
     }
 }
 
-pub(super) fn measure_upstream(snapshot: &Snapshot) -> Option<(usize, usize)> {
+fn tracking_spans(icons: IconMode, (ahead, behind): (usize, usize)) -> Vec<Span<'static>> {
+    [
+        (Icon::Ahead, ahead, LOCAL_REF),
+        (Icon::Behind, behind, BLUE),
+    ]
+    .into_iter()
+    .filter(|(_, count, _)| *count > 0)
+    .map(|(icon, count, color)| {
+        Span::styled(
+            format!(" {}{count}", icons.glyph(icon)),
+            Style::new().fg(color),
+        )
+    })
+    .collect()
+}
+
+pub(super) fn measure_upstream(
+    snapshot: &Snapshot,
+    metadata: &model::Metadata,
+) -> Option<(usize, usize)> {
     // Include folded local refs so navigation never moves the upstream column.
     let mut has_upstream = false;
     let (mut grouped, mut flat) = (0, 0);
     for branch in snapshot.branches.values().filter(|b| !b.remote) {
         has_upstream |= !branch.upstream.is_empty();
         let depth = 1 + branch.name.matches('/').count();
+        let counts = metadata
+            .tracking
+            .get(&branch.reference)
+            .copied()
+            .unwrap_or_default();
+        let tracking_width = [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii]
+            .into_iter()
+            .map(|icons| {
+                tracking_spans(icons, counts)
+                    .iter()
+                    .map(Span::width)
+                    .sum::<usize>()
+            })
+            .max()
+            .unwrap_or_default();
+        let suffix_width = tracking_width + status(branch).width();
         grouped = grouped.max(
-            depth * INDENT
-                + branch.name.rsplit('/').next().unwrap_or("").width()
-                + status(branch).width(),
+            depth * INDENT + branch.name.rsplit('/').next().unwrap_or("").width() + suffix_width,
         );
-        flat = flat.max(INDENT + branch.name.width() + status(branch).width());
+        flat = flat.max(INDENT + branch.name.width() + suffix_width);
     }
     has_upstream.then_some((grouped, flat))
 }
 
 impl BranchPanel {
+    pub(super) fn tracking_spans(&self, branch: &Branch) -> Vec<Span<'static>> {
+        let counts = self
+            .repository()
+            .filter(|_| !branch.remote && !branch.gone)
+            .and_then(|repo| repo.metadata.tracking.get(&branch.reference))
+            .copied()
+            .unwrap_or_default();
+        tracking_spans(self.icons, counts)
+    }
+
     fn disclosure_width(&self) -> usize {
         self.icons
             .disclosure(false)
@@ -145,16 +188,22 @@ impl BranchPanel {
                 ));
                 let used: usize = spans.iter().map(Span::width).sum();
                 let available = usize::from(width).saturating_sub(used);
+                let tracking = self.tracking_spans(branch);
+                let tracking_width: usize = tracking.iter().map(Span::width).sum();
                 let tail = status(branch);
-                let tail = clipped(tail, available.saturating_sub(4));
+                let tail = clipped(tail, available.saturating_sub(tracking_width + 4));
                 spans.push(Span::styled(
-                    clipped(&row.label, available.saturating_sub(tail.width())),
+                    clipped(
+                        &row.label,
+                        available.saturating_sub(tracking_width + tail.width()),
+                    ),
                     if branch.current {
                         Style::new().fg(LOCAL_REF).bold()
                     } else {
                         Style::new().fg(FG)
                     },
                 ));
+                spans.extend(tracking);
                 spans.push(Span::styled(
                     tail,
                     Style::new().fg(if !branch.current && !branch.worktree.is_empty() {

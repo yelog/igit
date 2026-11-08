@@ -234,15 +234,22 @@ impl BranchPanel {
             Kind::Folder { count, .. } => (row.label.clone(), format!("{count} branches"), false),
             Kind::Message => (row.label.clone(), String::new(), false),
         };
-        let label = Span::styled(format!(" {}", clipped(&label, width)), Style::new().fg(FG));
+        let tracking = match &row.kind {
+            Kind::Branch(branch) => self.tracking_spans(branch),
+            _ => Vec::new(),
+        };
+        let tracking_width: usize = tracking.iter().map(Span::width).sum();
+        let mut label = vec![Span::styled(
+            format!(" {}", clipped(&label, width.saturating_sub(tracking_width))),
+            Style::new().fg(FG),
+        )];
+        label.extend(tracking);
         let mut lines = if narrow && matches!(row.kind, Kind::Branch(_)) {
             vec![Line::from(label), Line::from(format!(" {metadata}"))]
         } else {
             let separator = if tracked { " -> " } else { "  " };
-            vec![Line::from(vec![
-                label,
-                Span::raw(format!("{separator}{metadata}")),
-            ])]
+            label.push(Span::raw(format!("{separator}{metadata}")));
+            vec![Line::from(label)]
         };
         if show_path || detached.is_some() {
             let mut context = detached.unwrap_or_default().to_owned();

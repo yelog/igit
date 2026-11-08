@@ -7,6 +7,7 @@ use unicode_width::UnicodeWidthStr;
 
 mod navigation;
 mod presentation;
+mod tracking;
 
 fn expand_group(panel: &mut BranchPanel, c: &Context, id: &str) {
     panel.tree.cursor = panel.tree.rows.iter().position(|r| r.id == id).unwrap();

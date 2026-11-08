@@ -448,6 +448,17 @@ branch pane, the tree prioritizes names and the details area shows the selected
 upstream on its own line. Details also identify a detached HEAD; unborn
 branches show `[no commits]`.
 
+Local branch names are followed by compact tracking counters: green `↗N` for
+commits ahead of the configured upstream, then blue `↙N` for commits behind.
+Diverged branches show both. Zero counts, untracked branches, missing upstreams,
+and remote rows have no counters. Nerd Font uses the shared Log arrow glyphs;
+Unicode uses `↗` / `↙`, and ASCII uses `^` / `v`. Name clipping reserves space
+for the counters before the current/worktree suffix. Both grouped and flat
+upstream-column measurements include counters on folded branches, keeping the
+column stable during navigation. Selected-row details repeat the counters,
+including in narrow panes. Counts come from locally stored upstream refs in
+the background scan and refresh on entry, F5, focus return, and completed Fetch.
+
 Click a repository or move the cursor in the left pane to update the right pane
 from the cache. Both lists scroll independently; the wheel moves selection in
 the pane under the pointer. `Tab` moves between panes, and `Enter` or `l` in
