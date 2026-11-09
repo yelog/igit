@@ -95,7 +95,7 @@ class NativeTests(unittest.TestCase):
         archive = self.archive(version, bad_binary)
         data = manifest(version, "0" * 64 if bad_checksum else installer.sha256(archive))
 
-        def fetch(url, destination, limit=installer.MAX_ARCHIVE):
+        def fetch(url, destination, limit=installer.MAX_ARCHIVE, headers=None):
             if url.endswith(".json"):
                 destination.write_text(json.dumps(data), encoding="utf-8")
             else:
@@ -173,6 +173,27 @@ class NativeTests(unittest.TestCase):
                 self.run_version("0.1.0-beta.2", **options)
             self.assertEqual(self.snapshot(), before)
         self.assertFalse((self.root / ".install.lock").exists())
+
+    def test_embedded_progress_reports_checksum_failure_without_activation(self):
+        current, latest = "0.1.0-beta.1", "0.1.0-beta.2"
+        self.run_version(current)
+        before = self.snapshot()
+
+        def arguments(directory):
+            return self.args("--from-executable", str(self.bin / "igit"), "--running-version", current,
+                             "--version", latest, "--json", "--progress-dir", str(directory))
+
+        failed = self.directory / "failed progress"
+        with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+            self.run_version(latest, arguments(failed), bad_checksum=True)
+        self.assertEqual((failed / "stage").read_text(), "verifying_checksum")
+        self.assertGreater((failed / "release.tar.gz").stat().st_size, 0)
+        self.assertEqual(self.snapshot(), before)
+
+        installed = self.directory / "successful progress"
+        self.assertEqual(self.run_version(latest, arguments(installed))["status"], "updated")
+        self.assertEqual((installed / "stage").read_text(), "finishing")
+        self.assertEqual(installer.inspect_installation(self.root)["version"], latest)
 
     def test_foreign_or_modified_commands_are_never_replaced(self):
         self.bin.mkdir()

@@ -82,7 +82,7 @@ def validate_manifest(data, channel, target, base_url):
     return version, data["assets"][target]
 
 
-def download(url, destination, limit=MAX_ARCHIVE):
+def download(url, destination, limit=MAX_ARCHIVE, headers=None):
     if not allowed_url(url):
         raise ValueError("downloads require HTTPS (HTTP is allowed only on loopback)")
     protocols = "=https,http" if urlparse(url).scheme == "http" else "=https"
@@ -90,8 +90,11 @@ def download(url, destination, limit=MAX_ARCHIVE):
         "curl", "--fail", "--silent", "--show-error", "--location",
         "--proto", protocols, "--proto-redir", "=https", "--tlsv1.2",
         "--connect-timeout", "15", "--max-time", "120", "--retry", "2",
-        "--max-filesize", str(limit), "--output", str(destination), url,
+        "--max-filesize", str(limit), "--output", str(destination),
     ]
+    if headers is not None:
+        command.extend(["--dump-header", str(headers)])
+    command.append(url)
     result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=400)
     if result.returncode:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
@@ -251,7 +254,15 @@ def activate(root, release):
             temporary.unlink()
 
 
-def install_release(root, install_dir, archive, version, target, digest):
+def report_progress(directory, stage):
+    if directory is not None:
+        try:
+            (directory / "stage").write_text(stage, encoding="ascii")
+        except OSError:
+            pass  # An unavailable display must not interrupt activation or rollback.
+
+
+def install_release(root, install_dir, archive, version, target, digest, progress_dir=None):
     existing = inspect_installation(root, install_dir)
     if existing is None:
         if root.exists() and any(root.iterdir()):
@@ -271,13 +282,16 @@ def install_release(root, install_dir, archive, version, target, digest):
         created_bin = not install_dir.exists()
         try:
             if release.exists() or release.is_symlink():
+                report_progress(progress_dir, "verifying_installation")
                 if release.is_symlink() or verify_release(release, target)["archive_sha256"] != digest:
                     raise ValueError("existing release differs; refusing to replace it")
             else:
                 with tempfile.TemporaryDirectory(prefix=".stage-", dir=str(releases)) as temporary:
                     staged = Path(temporary) / "release"
                     staged.mkdir()
+                    report_progress(progress_dir, "extracting")
                     extract_archive(archive, staged, version, target)
+                    report_progress(progress_dir, "verifying_installation")
                     verify_binaries(staged, version)
                     write_json(staged / ".igit-release.json", release_record(staged, version, target, digest))
                     os.rename(staged, release)
@@ -297,6 +311,7 @@ def install_release(root, install_dir, archive, version, target, digest):
                     "bin_dir": str(install_dir), "target": target,
                 })
                 created_state = True
+            report_progress(progress_dir, "activating")
             activate(root, release)
             activated = True
         finally:
@@ -357,6 +372,7 @@ def parser():
     result.add_argument("--from-executable", help=argparse.SUPPRESS)
     result.add_argument("--running-version", help=argparse.SUPPRESS)
     result.add_argument("--unmanaged", action="store_true", help=argparse.SUPPRESS)
+    result.add_argument("--progress-dir", help=argparse.SUPPRESS)
     return result
 
 
@@ -391,8 +407,15 @@ def run(args):
         raise ValueError("invalid channel base URL")
     current = state["version"] if state else args.running_version if args.unmanaged else None
     report = {"schema": 1, "product": "igit", "channel": channel, "current_version": current, "target_version": None}
-    with tempfile.TemporaryDirectory(prefix="igit-download-") as temporary:
-        temporary = Path(temporary)
+    progress_dir = Path(args.progress_dir) if args.progress_dir else None
+    with contextlib.ExitStack() as cleanup:
+        if progress_dir is None:
+            temporary = Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix="igit-download-")))
+        else:
+            if not executable or args.check or not args.json:
+                raise ValueError("progress requires an embedded installation update")
+            progress_dir.mkdir(mode=0o700)
+            temporary = progress_dir  # The Rust worker owns the directory and its cleanup.
         manifest = temporary / "manifest.json"
         try:
             download(base + "/" + channel + ".json", manifest, 1024 * 1024)
@@ -414,10 +437,13 @@ def run(args):
         else:
             print("Downloading IGit %s (%s)..." % (version, target), file=sys.stderr)
             archive = temporary / "release.tar.gz"
-            download(asset["url"], archive)
+            report_progress(progress_dir, "downloading")
+            download(asset["url"], archive, headers=temporary / "download.headers" if progress_dir else None)
+            report_progress(progress_dir, "verifying_checksum")
             if sha256(archive) != asset["sha256"]:
                 raise ValueError("release archive checksum mismatch; installation unchanged")
-            install_release(root, install_dir, archive, version, target, asset["sha256"])
+            install_release(root, install_dir, archive, version, target, asset["sha256"], progress_dir)
+            report_progress(progress_dir, "finishing")
             report["status"] = "updated" if state else "installed"
             if not executable:
                 configure_path(install_dir, not args.no_modify_path)

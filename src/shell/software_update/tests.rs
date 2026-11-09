@@ -4,6 +4,7 @@ use crate::{
     ui::icons::IconMode,
 };
 use crossterm::event::MouseEvent;
+use ratatui::{backend::TestBackend, buffer::Buffer, style::Color};
 use std::{
     fs,
     time::{Duration, UNIX_EPOCH},
@@ -37,11 +38,130 @@ fn complete(
     automatic: bool,
 ) {
     let (sender, receiver) = mpsc::channel();
-    sender.send(result).unwrap();
+    sender.send(JobEvent::Finished(result)).unwrap();
     update.state = state;
     update.job = Some(receiver);
     update.automatic = automatic;
-    assert!(update.poll());
+    assert!(update.poll(true));
+}
+
+fn buffer(app: &mut Shell) -> Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    terminal.backend().buffer().clone()
+}
+
+#[test]
+fn up_to_date_matches_the_reference_layout_and_fades_in() {
+    let (_dir, mut app) = fixture();
+    app.icons = IconMode::Unicode;
+    let mut current = report(Status::UpToDate);
+    current.channel = "stable".into();
+    current.target_version = current.current_version.clone();
+    app.software_update.state = State::Report(current);
+    app.open_software_update();
+    let opened = app.software_update.opened_at.unwrap();
+    let cyan = Color::Rgb(99, 230, 216);
+    assert_eq!(buffer(&mut app)[(8, 8)].fg, Color::Rgb(0, 0, 0));
+    assert!(app.software_update.animate(opened + FADE_TICK * 5));
+    assert_ne!(buffer(&mut app)[(8, 8)].fg, cyan);
+    assert!(app.software_update.animate(opened + FADE_TICK * 10));
+    assert!(app.software_update.animation_timeout().is_none());
+
+    let cells = buffer(&mut app);
+    assert_eq!(cells[(8, 8)].symbol(), "╭");
+    assert_eq!(cells[(71, 14)].symbol(), "╯");
+    assert_eq!(cells[(8, 8)].fg, cyan);
+    assert_eq!(cells[(11, 9)].fg, Color::Rgb(92, 200, 150));
+    assert_eq!(cells[(11, 10)].fg, Color::Rgb(105, 126, 146));
+    assert_eq!(cells[(9, 13)].bg, cells[(11, 10)].bg, "no footer strip");
+    let text = screen(&mut app, 80, 24);
+    for expected in [
+        "UPDATE CENTER",
+        "✓ You're up to date",
+        &format!("Current {} · Stable", env!("CARGO_PKG_VERSION")),
+        "[ > OK ]",
+        "Enter confirm   r check again   Esc close",
+    ] {
+        assert!(text.contains(expected), "{expected:?} missing from {text}");
+    }
+    assert_eq!(app.pop_hits[0], (Rect::new(36, 12, 8, 1), 0));
+    assert_eq!(cells[(36, 12)].bg, cyan);
+    app.dispatch(&click(10, 13)); // Enter hint confirms the focused button.
+    assert!(app.pop.is_none());
+}
+
+#[test]
+fn install_progress_survives_backgrounding_and_animates_only_without_a_total() {
+    let (_dir, mut app) = fixture();
+    app.icons = IconMode::Unicode;
+    let (sender, receiver) = mpsc::channel();
+    app.software_update.job = Some(receiver);
+    app.software_update.state =
+        State::Installing(report(Status::UpdateAvailable), Progress::Preparing);
+    app.open_software_update();
+    let start = app.software_update.opened_at.unwrap();
+    app.software_update.started_at = Some(start);
+    app.software_update.animate(start + SWEEP_TICK * 2);
+    let frame = screen(&mut app, 80, 24);
+    assert!(frame.contains("Preparing update") && frame.contains("Run in background"));
+    assert!(app.software_update.animate(start + SWEEP_TICK * 3));
+    assert_ne!(screen(&mut app, 80, 24), frame);
+    app.dispatch(&key(KeyCode::Enter));
+    assert!(app.pop.is_none());
+
+    sender
+        .send(JobEvent::Progress(Progress::Downloading {
+            bytes: 1024,
+            total: Some(2048),
+        }))
+        .unwrap();
+    assert!(
+        !app.software_update.poll(false),
+        "background byte counts do not request redraws"
+    );
+    app.open_software_update();
+    let start = app.software_update.opened_at.unwrap();
+    app.software_update.animate(start + SWEEP_TICK * 3);
+    assert!(app.software_update.animation_timeout().is_none());
+    let text = screen(&mut app, 44, 12);
+    assert!(
+        text.contains("Downloading update") && text.contains("50%"),
+        "{text}"
+    );
+
+    sender
+        .send(JobEvent::Progress(Progress::VerifyingInstallation))
+        .unwrap();
+    assert!(app.software_update.poll(true));
+    assert_eq!(app.software_update.animation_timeout(), Some(SWEEP_TICK));
+    let text = screen(&mut app, 80, 24);
+    assert!(
+        text.contains("Verifying installation") && !text.contains('%'),
+        "{text}"
+    );
+    sender
+        .send(JobEvent::Finished(Ok(report(Status::Updated))))
+        .unwrap();
+    assert!(app.software_update.poll(true));
+    assert!(app.software_update.animation_timeout().is_none());
+    assert!(screen(&mut app, 80, 24).contains("Update installed"));
+}
+
+#[test]
+fn unmanaged_guidance_expands_only_on_request() {
+    let (_dir, mut app) = fixture();
+    app.software_update.state = State::Report(report(Status::ManagerActionRequired));
+    app.open_software_update();
+    let text = screen(&mut app, 44, 12);
+    assert!(text.contains("How to update") && !text.contains("original package"));
+    let button = app.pop_hits[0].0;
+    app.dispatch(&click(button.x, button.y));
+    let text = screen(&mut app, 80, 24);
+    assert!(text.contains("Update with the original package manager") && text.contains("[ > OK ]"));
+    assert!(app.software_update.job.is_none());
+    app.dispatch(&key(KeyCode::Enter));
+    assert!(app.pop.is_none());
 }
 
 #[test]
@@ -56,7 +176,7 @@ fn footer_version_status_and_click_geometry_survive_narrow_layouts() {
                 (State::Checking, "Checking"),
                 (State::Report(report(Status::UpdateAvailable)), "Update"),
                 (
-                    State::Installing(report(Status::UpdateAvailable)),
+                    State::Installing(report(Status::UpdateAvailable), Progress::Preparing),
                     "Updating",
                 ),
                 (State::Ready(report(Status::Updated)), "Restart"),
@@ -85,7 +205,7 @@ fn footer_version_status_and_click_geometry_survive_narrow_layouts() {
             app.dispatch(&click(hit.x, hit.y));
             assert!(matches!(app.pop, Some(Popup::SoftwareUpdate)));
             app.dispatch(&key(KeyCode::Enter));
-            assert!(app.pop.is_none(), "Close is focused initially");
+            assert!(app.pop.is_none(), "OK is focused initially");
             screen(&mut app, 30, 8);
             assert!(app.regions.software_update.is_empty());
             app.dispatch(&click(hit.x, hit.y));
@@ -105,10 +225,13 @@ fn update_center_defaults_to_close_and_preserves_editing_and_git_state() {
         assert!(matches!(app.pop, Some(Popup::SoftwareUpdate)));
         let text = screen(&mut app, width, height);
         assert!(
-            text.contains("Update Center") && text.contains("Install update"),
+            text.contains("UPDATE CENTER") && text.contains("[   Update ]"),
             "{text}"
         );
-        assert!(text.contains("Running v"), "{text}");
+        assert!(
+            text.contains("Current ") && text.contains("Latest "),
+            "{text}"
+        );
         app.dispatch(&key(KeyCode::Enter));
         assert!(app.pop.is_none());
         assert!(app.software_update.job.is_none());
@@ -158,7 +281,8 @@ fn update_shortcut_respects_remapping_and_other_reviews() {
 #[test]
 fn worker_results_stay_available_after_closing_and_failures_are_quiet_only_when_automatic() {
     let (_dir, mut app) = fixture();
-    app.software_update.state = State::Installing(report(Status::UpdateAvailable));
+    app.software_update.state =
+        State::Installing(report(Status::UpdateAvailable), Progress::Preparing);
     app.open_software_update();
     app.dispatch(&key(KeyCode::Esc));
     assert!(app.pop.is_none() && app.software_update.installing());
@@ -166,12 +290,12 @@ fn worker_results_stay_available_after_closing_and_failures_are_quiet_only_when_
     assert!(app.pop.is_none());
     complete(
         &mut app.software_update,
-        State::Installing(report(Status::UpdateAvailable)),
+        State::Installing(report(Status::UpdateAvailable), Progress::Preparing),
         Ok(report(Status::Updated)),
         false,
     );
     app.open_software_update();
-    assert!(screen(&mut app, 80, 24).contains("Restart IGit"));
+    assert!(screen(&mut app, 80, 24).contains("Restart now"));
     assert!(!app.software_update.primary);
     app.dispatch(&key(KeyCode::Enter));
     assert!(app.pop.is_none() && !app.quit);
@@ -192,10 +316,11 @@ fn worker_results_stay_available_after_closing_and_failures_are_quiet_only_when_
     app.pop = Some(Popup::SoftwareUpdate);
     assert!(screen(&mut app, 80, 24).contains("offline"));
     let (sender, receiver) = mpsc::channel();
-    app.software_update.state = State::Installing(report(Status::UpdateAvailable));
+    app.software_update.state =
+        State::Installing(report(Status::UpdateAvailable), Progress::Preparing);
     app.software_update.job = Some(receiver);
     drop(sender);
-    assert!(app.software_update.poll());
+    assert!(app.software_update.poll(true));
     assert!(matches!(app.software_update.state, State::Failed(_)));
 }
 
@@ -262,16 +387,16 @@ fn manual_open_reports_a_check_failure_and_long_details_remain_scrollable() {
     let (_dir, mut app) = fixture();
     let (sender, receiver) = mpsc::channel();
     sender
-        .send(Err(format!(
+        .send(JobEvent::Finished(Err(format!(
             "{}\nLast diagnostic line",
             "Network unavailable\n".repeat(30)
-        )))
+        ))))
         .unwrap();
     app.software_update.job = Some(receiver);
     app.software_update.state = State::Checking;
     app.software_update.automatic = true;
     app.open_software_update();
-    assert!(app.software_update.poll());
+    assert!(app.software_update.poll(true));
     assert!(matches!(app.software_update.state, State::Failed(_)));
     let initial = screen(&mut app, 44, 12);
     assert!(initial.contains("Update failed") && initial.contains("Check again"));
@@ -280,7 +405,7 @@ fn manual_open_reports_a_check_failure_and_long_details_remain_scrollable() {
     }
     let end = screen(&mut app, 44, 12);
     assert!(end.contains("Last diagnostic line"), "{end}");
-    assert!(end.contains("Check again") && end.contains("Close"));
+    assert!(end.contains("Check again") && end.contains("Not now"));
     app.dispatch(&key(KeyCode::Esc));
     assert!(app.pop.is_none());
 }

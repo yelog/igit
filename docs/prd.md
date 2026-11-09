@@ -94,10 +94,12 @@ mode, and Actions open one keyboard/mouse dialog. Startup checks begin after
 1.5 seconds, cache successful results for 24 hours across workspaces, and keep
 automatic failures quiet. Both settings are configurable. Native updates retain
 their channel and install only the reviewed version after explicit activation;
-Close is focused initially. The worker continues if the dialog closes, and
-completion offers a separate restart. Cargo/manual copies can check releases
-but receive original-installation instructions. Software checks and installation
-do not change repository scope, Git data, or workspace drafts.
+Not now is focused initially when a write or restart is offered. The compact
+dialog shows real download progress and the current installation stage. The
+worker continues if the dialog closes, and completion offers a separate
+restart. Cargo/manual copies can check releases and open guidance for their
+original installation method. Software checks and installation do not change
+repository scope, Git data, or workspace drafts.
 
 **Pane maximize (R7/R8 extension).** `Ctrl-W f` maximizes/restores the focused
 pane in Commit, Push, and Conflicts without changing saved split sizes. Tab

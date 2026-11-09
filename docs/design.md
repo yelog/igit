@@ -52,13 +52,17 @@ target; the brand and remaining hints do not open the update window. The footer
 also remains visible below the full-screen conflict editor.
 
 `F9` in normal mode, the version-label click, and Actions → Update IGit open
-Update Center. It shows running/available versions and channel, with Close
-focused initially. `Tab`/arrows switch buttons; `Enter` or a click activates;
-`Esc` closes; `r` checks again; `j/k` or the wheel scrolls long details. Input
-and write-review dialogs keep their own keyboard controls. Background checks
-never open a window or install a release. Installation stays in the background
-if the window closes, and completion offers a separate restart action. Restart
-waits until text entry and remote operations have finished.
+Update Center. Its cyan rounded frame fades in and fits the status, version,
+and channel. A current installation shows one centered **OK** button. When
+there is a choice, **Not now** starts focused. `Tab`/arrows switch buttons;
+`Enter` or a click activates; `Esc` closes. `r` checks again after a current or
+failed check; `j/k` or the wheel scrolls long details. The footer lists available
+shortcuts and also accepts clicks. Input and write-review dialogs keep their
+own keyboard controls. Background checks never open a window or install a
+release. The progress bar fills from downloaded bytes when the total is known;
+otherwise it moves while the current stage is shown. **Run in background**
+closes the dialog while installation continues. Completion offers a separate
+restart after text entry and remote operations have finished.
 
 Startup first paints a Workspace loading view, before scanning directories or
 reading Git state. It reports `Discovering repositories...`, `Loading changes...`,

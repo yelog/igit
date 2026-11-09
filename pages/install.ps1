@@ -11,6 +11,7 @@ param(
     [string]$FromExecutable,
     [string]$RunningVersion,
     [switch]$Unmanaged,
+    [string]$ProgressDir,
     [switch]$LibraryOnly
 )
 
@@ -54,12 +55,15 @@ function Test-IgitUrl([string]$Value) {
     return (-not $uri.UserInfo -and -not $uri.Fragment -and ($uri.Scheme -eq 'https' -or ($uri.Scheme -eq 'http' -and $uri.IsLoopback)))
 }
 
-function Invoke-IgitDownload([string]$Url, [string]$Destination, [long]$Limit = 134217728) {
+function Invoke-IgitDownload([string]$Url, [string]$Destination, [long]$Limit = 134217728, [string]$Headers = '') {
     if (-not (Test-IgitUrl $Url)) { throw 'Downloads require HTTPS (HTTP is allowed only on loopback).' }
     # curl.exe is part of the supported Windows runner/OS family. Bound both
     # redirects and transfer time, and never pass credentials to asset hosts.
     $protocols = if (([Uri]$Url).Scheme -eq 'http') { '=https,http' } else { '=https' }
-    & curl.exe --fail --silent --show-error --location --proto $protocols --proto-redir '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 --retry 2 --max-filesize $Limit --output $Destination $Url
+    $arguments = @('--fail', '--silent', '--show-error', '--location', '--proto', $protocols, '--proto-redir', '=https', '--tlsv1.2', '--connect-timeout', '15', '--max-time', '120', '--retry', '2', '--max-filesize', $Limit, '--output', $Destination)
+    if ($Headers) { $arguments += @('--dump-header', $Headers) }
+    $arguments += $Url
+    & curl.exe @arguments
     if ($LASTEXITCODE -ne 0) { throw "Download failed: $Url" }
     $file = Get-Item -LiteralPath $Destination
     if ($file.Length -le 0 -or $file.Length -gt $Limit) { throw 'Download is empty or exceeds its size limit.' }
@@ -245,6 +249,13 @@ function Get-IgitInstallation([string]$Root, [string]$ExpectedBin = '', [string]
     return @{ root = $Root; bin_dir = $state.bin_dir; version = $record.version; channel = (Get-IgitChannel $record.version); release = $release }
 }
 
+function Write-IgitProgress([string]$Stage) {
+    if ($ProgressDir) {
+        try { [IO.File]::WriteAllText((Join-Path $ProgressDir 'stage'), $Stage, $IgitUtf8) }
+        catch { } # Progress is best effort; the installation result is authoritative.
+    }
+}
+
 function Install-IgitRelease([string]$Root, [string]$Bin, [string]$Archive, [string]$ReleaseVersion, [string]$Digest) {
     Assert-IgitDirectory $Bin
     $existing = Get-IgitInstallation $Root $Bin
@@ -268,10 +279,13 @@ function Install-IgitRelease([string]$Root, [string]$Bin, [string]$Archive, [str
     try {
         [IO.Directory]::CreateDirectory($releases) | Out-Null
         if (Test-Path -LiteralPath $release) {
+            Write-IgitProgress 'verifying_installation'
             if ((Assert-IgitRelease $release).archive_sha256 -cne $Digest) { throw 'Existing release differs; refusing to replace it.' }
         } else {
             [IO.Directory]::CreateDirectory($stage) | Out-Null
+            Write-IgitProgress 'extracting'
             Expand-IgitArchive $Archive $stage $ReleaseVersion
+            Write-IgitProgress 'verifying_installation'
             Assert-IgitBinaries $stage $ReleaseVersion
             Write-IgitAtomic (Join-Path $stage '.igit-release.json') ((Get-IgitReleaseRecord $stage $ReleaseVersion $Digest) | ConvertTo-Json -Depth 8)
             [IO.Directory]::Move($stage, $release)
@@ -299,6 +313,7 @@ function Install-IgitRelease([string]$Root, [string]$Bin, [string]$Archive, [str
             Write-IgitAtomic (Join-Path $Root 'install.json') (@{ schema = 1; product = 'igit'; manager = 'native'; root = $Root; bin_dir = $Bin; target = $IgitTarget } | ConvertTo-Json)
             $createdState = $true
         }
+        Write-IgitProgress 'activating'
         Write-IgitAtomic (Join-Path $Root 'current.txt') ($selection + "`n")
         $activated = $true
     } finally {
@@ -337,7 +352,14 @@ function Invoke-IgitInstall {
     $selectedChannel = if ($Channel) { $Channel } elseif ($state) { $state.channel } elseif ($Unmanaged -and $RunningVersion.Contains('-beta.')) { 'beta' } else { 'stable' }
     $base = if ($env:IGIT_CHANNEL_BASE_URL) { $env:IGIT_CHANNEL_BASE_URL.TrimEnd('/') } else { 'https://igit.yelog.org/channels' }
     if (-not (Test-IgitUrl $base)) { throw 'Invalid channel base URL.' }
-    $temporary = Join-Path ([IO.Path]::GetTempPath()) ('igit-install-' + [Guid]::NewGuid().ToString('N'))
+    if ($ProgressDir) {
+        if (-not $FromExecutable -or $Check -or -not $Json -or (Test-Path -LiteralPath $ProgressDir)) {
+            throw 'Progress requires an embedded installation update and a new directory.'
+        }
+        $temporary = $ProgressDir # The Rust worker cleans up its private directory.
+    } else {
+        $temporary = Join-Path ([IO.Path]::GetTempPath()) ('igit-install-' + [Guid]::NewGuid().ToString('N'))
+    }
     [IO.Directory]::CreateDirectory($temporary) | Out-Null
     try {
         $manifestPath = Join-Path $temporary 'manifest.json'
@@ -358,10 +380,14 @@ function Invoke-IgitInstall {
             [Console]::Error.WriteLine("Downloading IGit $($manifest.version) ($IgitTarget)...")
             $archive = Join-Path $temporary 'release.zip'
             $asset = $manifest.assets.$IgitTarget
-            Invoke-IgitDownload $asset.url $archive
+            Write-IgitProgress 'downloading'
+            $headers = if ($ProgressDir) { Join-Path $temporary 'download.headers' } else { '' }
+            Invoke-IgitDownload $asset.url $archive -Headers $headers
+            Write-IgitProgress 'verifying_checksum'
             $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($actual -cne $asset.sha256) { throw 'Release archive checksum mismatch; installation unchanged.' }
             Install-IgitRelease $root $bin $archive $manifest.version $actual
+            Write-IgitProgress 'finishing'
             $report.status = if ($state) { 'updated' } else { 'installed' }
             if (-not $FromExecutable -and -not $NoModifyPath) {
                 try {
@@ -380,7 +406,7 @@ function Invoke-IgitInstall {
             if ($report.status -eq 'update_available') { $report.status = 'manager_action_required' }
         }
         return $report
-    } finally { Remove-Item -LiteralPath $temporary -Recurse -Force }
+    } finally { if (-not $ProgressDir) { Remove-Item -LiteralPath $temporary -Recurse -Force } }
 }
 
 if ($LibraryOnly) { return }

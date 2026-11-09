@@ -1,5 +1,5 @@
 //! Structured access to the same installer used by `igit update`.
-use super::{clean_environment, helper, native_root, Options};
+use super::{clean_environment, helper, native_root, progress, Options, Progress};
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, process::Output};
@@ -78,7 +78,7 @@ fn decode(output: Output) -> Result<Inspection> {
     Ok(inspection)
 }
 
-fn execute(options: &Options) -> Result<Inspection> {
+fn execute(options: &Options, notify: Option<&mut dyn FnMut(Progress)>) -> Result<Inspection> {
     let executable = std::env::current_exe()
         .context("Locate the running executable")?
         .canonicalize()
@@ -86,17 +86,24 @@ fn execute(options: &Options) -> Result<Inspection> {
     let temporary = tempfile::tempdir().context("Create an isolated update helper")?;
     let mut command = helper(temporary.path(), &executable, options)?;
     clean_environment(&mut command);
-    decode(command.output().context("Start the update helper")?)
+    let output = match notify {
+        Some(notify) => progress::capture(&mut command, temporary.path(), notify)?,
+        None => command.output().context("Start the update helper")?,
+    };
+    decode(output)
 }
 
 pub(crate) fn inspect() -> Result<Inspection> {
     let executable = std::env::current_exe()?.canonicalize()?;
-    let inspection = execute(&Options {
-        check: true,
-        json: true,
-        unmanaged: native_root(&executable).is_none(),
-        ..Options::default()
-    })?;
+    let inspection = execute(
+        &Options {
+            check: true,
+            json: true,
+            unmanaged: native_root(&executable).is_none(),
+            ..Options::default()
+        },
+        None,
+    )?;
     ensure!(
         inspection.status != Status::Updated,
         "Check unexpectedly installed an update"
@@ -104,7 +111,10 @@ pub(crate) fn inspect() -> Result<Inspection> {
     Ok(inspection)
 }
 
-pub(crate) fn install(reviewed: &Inspection) -> Result<Inspection> {
+pub(crate) fn install(
+    reviewed: &Inspection,
+    mut notify: impl FnMut(Progress),
+) -> Result<Inspection> {
     reviewed.validate()?;
     ensure!(
         reviewed.status == Status::UpdateAvailable,
@@ -115,12 +125,15 @@ pub(crate) fn install(reviewed: &Inspection) -> Result<Inspection> {
         native_root(&executable).is_some(),
         "Use the original installation method to update this executable"
     );
-    let inspection = execute(&Options {
-        json: true,
-        channel: Some(reviewed.channel.clone()),
-        version: Some(reviewed.target_version.clone()),
-        ..Options::default()
-    })?;
+    let inspection = execute(
+        &Options {
+            json: true,
+            channel: Some(reviewed.channel.clone()),
+            version: Some(reviewed.target_version.clone()),
+            ..Options::default()
+        },
+        Some(&mut notify),
+    )?;
     ensure!(
         inspection.target_version == reviewed.target_version
             && inspection.channel == reviewed.channel

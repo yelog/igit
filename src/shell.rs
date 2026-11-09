@@ -1219,7 +1219,11 @@ impl Shell {
             self.action(action);
             change = true;
         }
-        change |= self.software_update.poll();
+        let update_visible = matches!(self.pop, Some(Popup::SoftwareUpdate));
+        change |= self.software_update.poll(update_visible);
+        if update_visible {
+            change |= self.software_update.animate(Instant::now());
+        }
         change |= self.stash.poll_preview(&self.ctx);
         if self.tab == Commit && self.pop.is_none() {
             match self.commit.poll_refresh(&mut self.ctx) {
@@ -1337,11 +1341,15 @@ impl Shell {
         } else {
             IDLE
         };
+        let update_timeout = matches!(self.pop, Some(Popup::SoftwareUpdate))
+            .then(|| self.software_update.animation_timeout())
+            .flatten();
         let timeout = self
             .log
             .preview_wakeup()
             .unwrap_or(idle)
             .min(self.stash.preview_wakeup().unwrap_or(idle))
+            .min(update_timeout.unwrap_or(idle))
             .min(idle);
         self.key_picker
             .wakeup(Instant::now())

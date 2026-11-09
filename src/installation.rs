@@ -1,7 +1,9 @@
 //! Explicit software updates are separate from workspace Pull/Fetch operations.
 mod inspection;
+mod progress;
 use anyhow::{bail, Context, Result};
 pub(crate) use inspection::{inspect, install, restart_path, Inspection, Status};
+pub(crate) use progress::Progress;
 use std::{ffi::OsString, fs, path::Path, process::Command};
 
 const HELP: &str = "Usage: igit update [OPTIONS]  (alias: ig update)

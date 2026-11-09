@@ -43,9 +43,11 @@ Native builds containing the updater support `igit update --check` and
 The bottom-left status line shows the running version. Press `F9` in normal
 mode, click the version/update label, or choose **Update IGit** in Actions to
 open Update Center. It checks in the background 1.5 seconds after startup,
-using a 24-hour cache. Installation requires **Install update**; after it
-finishes, choose **Restart IGit** or relaunch later. Cargo/manual copies show
-instructions for their original installation method. See
+using a 24-hour cache. Choose **Update** to install the reviewed release. The
+dialog shows download progress and the current installation stage; choose
+**Run in background** to keep working. When it finishes, choose **Restart now**
+or relaunch later. Cargo/manual copies offer **How to update** for their
+original installation method. See
 [update settings](docs/configuration.md#update-checks).
 
 Build and launch from this source directory. To use `igit` or `ig` in any workspace, optionally install both commands into Cargo's bin directory:

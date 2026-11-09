@@ -97,18 +97,20 @@ Configure or disable startup checks in [settings](configuration.md#update-checks
 
 Press `F9` in normal mode, click the bottom-left version/update label, or choose
 **Update IGit** in Actions. Update Center shows the running version, channel,
-available version, and installation result. **Close** is focused initially;
-`Tab` selects another button, `Enter` activates it, and `Esc` closes the window.
-Buttons are also clickable. `r` checks again when no check/install is running
-and no restart is pending; `j/k` or the wheel scrolls details.
+available version, and installation result. **Not now** starts focused when an
+update or restart is offered. `Tab` selects another button, `Enter` activates
+it, and `Esc` closes the window. Buttons and shortcut hints are clickable.
+`r` checks again after a current or failed check; `j/k` or the wheel scrolls
+details.
 
-Native copies offer **Install update**, retaining their channel and validating
-the exact reviewed version. Closing the window leaves installation running.
-Once complete, choose **Restart IGit** or relaunch later; finish text editing
+Native copies offer **Update**, retaining their channel and validating the
+exact reviewed version. The dialog shows download progress and the installation
+stage. **Run in background** closes the dialog while the update continues.
+Once complete, choose **Restart now** or relaunch later; finish text editing
 and remote operations before restarting. Restart reuses the original command
 arguments. Cargo/manual copies check their running version's stable/beta channel
-and show instructions when a newer release is available; they are updated using
-their original installation method.
+and offer **How to update** when a newer release is available. Update these copies
+using their original installation method.
 
 **The published `v0.1.0-beta.1` predates the built-in update command.** Rerun the
 appropriate installation command above to update that version. Once a later

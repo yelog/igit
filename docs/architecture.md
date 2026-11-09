@@ -40,8 +40,12 @@ in the dialog. Opening another workspace retains the worker and result.
 reports from the embedded helper. Read-only unmanaged inspection compares the
 running version against its channel without reading another installation's
 state. Native installation pins the reviewed channel/version and keeps all
-existing ownership/checksum/staging checks. Shell prevents quit during an
-install and prevents restart during text editing or remote operations. An
+existing ownership/checksum/staging checks. During a dialog install, the worker
+[samples stage markers and download bytes](../src/installation/progress.rs) in
+its private helper directory. It uses the final response length when available;
+the installer still returns one JSON result. The visible dialog animates while
+work has no known total. Shell prevents quit during an install and prevents
+restart during text editing or remote operations. An
 explicit restart resolves the activated native executable, restores terminal
 modes, and reuses the original CLI arguments.
 
