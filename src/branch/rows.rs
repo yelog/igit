@@ -147,16 +147,22 @@ impl BranchPanel {
             tracking.clear();
             count_width = 0;
         }
-        let head = clipped(&head, head_budget.saturating_sub(count_width));
-        let head_width = head.width() + count_width;
-        let name = clipped(
+        let head = self.repo_search.field(&repo.root, 1).clipped(
+            &head,
+            head_budget.saturating_sub(count_width),
+            Style::new().fg(if on_branch { FG } else { MUTED }),
+        );
+        let head_width = head.iter().map(Span::width).sum::<usize>() + count_width;
+        let name = self.repo_search.field(&repo.root, 0).clipped(
             &repo.name,
             available.saturating_sub(head_width + usize::from(head_width > 0)),
+            Style::new().fg(FG).bold(),
         );
         // Optional markers use spare cells, preserving both labels and whole counters.
-        let gap = available.saturating_sub(name.width() + head_width);
+        let gap =
+            available.saturating_sub(name.iter().map(Span::width).sum::<usize>() + head_width);
         let marker_budget = gap.saturating_sub(1);
-        let tag = (on_branch && !head.is_empty())
+        let tag = (on_branch && head_width > count_width)
             .then(|| self.current_marker())
             .filter(|tag| tag.width() <= marker_budget);
         let tag_width = tag.as_ref().map_or(0, Span::width);
@@ -164,19 +170,14 @@ impl BranchPanel {
             format!(" {}", self.icons.glyph(Icon::Next)),
             Style::new().fg(MUTED),
         );
-        let arrow =
-            (!head.is_empty() && arrow.width() <= marker_budget - tag_width).then_some(arrow);
+        let arrow = (head_width > count_width && arrow.width() <= marker_budget - tag_width)
+            .then_some(arrow);
         let padding = gap - tag_width - arrow.as_ref().map_or(0, Span::width);
-        let mut spans = vec![
-            Span::styled(icon, Style::new().fg(repo_tint(repo.root))),
-            Span::styled(name, Style::new().fg(FG).bold()),
-            Span::raw(" ".repeat(padding)),
-        ];
+        let mut spans = vec![Span::styled(icon, Style::new().fg(repo_tint(repo.root)))];
+        spans.extend(name);
+        spans.push(Span::raw(" ".repeat(padding)));
         spans.extend(tag);
-        spans.push(Span::styled(
-            head,
-            Style::new().fg(if on_branch { FG } else { MUTED }),
-        ));
+        spans.extend(head);
         spans.extend(tracking);
         spans.extend(arrow);
         f.render_widget(
@@ -187,6 +188,7 @@ impl BranchPanel {
 
     pub(super) fn draw_row(&self, f: &mut Frame, rect: Rect, index: usize, columns: BranchColumns) {
         let row = &self.tree.rows[index];
+        let highlight = self.branch_search.field(&row.id, 0);
         let selected = index == self.tree.cursor;
         let focused = self.focused_pane() == PaneId::Branches;
         let bg = selection_bg(selected, focused);
@@ -234,8 +236,9 @@ impl BranchPanel {
                     &format!("  {count}"),
                     available.saturating_sub(row.label.width()),
                 );
-                spans.push(Span::styled(
-                    clipped(&row.label, available.saturating_sub(tail.width())),
+                spans.extend(highlight.clipped(
+                    &row.label,
+                    available.saturating_sub(tail.width()),
                     Style::new().fg(color).bold(),
                 ));
                 spans.push(Span::styled(tail, Style::new().fg(secondary)));
@@ -257,11 +260,9 @@ impl BranchPanel {
                 let tracking_width: usize = tracking.iter().map(Span::width).sum();
                 let tail = status(branch);
                 let tail = clipped(tail, available.saturating_sub(tracking_width + 4));
-                spans.push(Span::styled(
-                    clipped(
-                        &row.label,
-                        available.saturating_sub(tracking_width + tail.width()),
-                    ),
+                spans.extend(highlight.clipped(
+                    &row.label,
+                    available.saturating_sub(tracking_width + tail.width()),
                     if branch.current {
                         Style::new().fg(FG).bold()
                     } else {
@@ -295,8 +296,9 @@ impl BranchPanel {
                     }
                 }
             }
-            Kind::Message => spans.push(Span::styled(
-                clipped(&row.label, usize::from(width).saturating_sub(indent)),
+            Kind::Message => spans.extend(highlight.clipped(
+                &row.label,
+                usize::from(width).saturating_sub(indent),
                 Style::new().fg(MUTED),
             )),
         }

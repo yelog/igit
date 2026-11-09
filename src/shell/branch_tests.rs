@@ -406,7 +406,7 @@ fn branch_review_cancel_and_confirm_refresh_current_branch_without_staging_chang
 fn branch_commands_can_be_remapped_without_leaking_into_name_input_or_roots() {
     let (_temp, fixture) = fixture();
     let config = AppConfig::from_toml(
-        "[keybindings.global]\nupdate=[]\nfocus-branch=['F8']\n[keybindings.branch]\nrename=['R']\ncreate=['n']\nview-options=['F9']",
+        "[keybindings.global]\nupdate=[]\nfocus-branch=['F8']\n[keybindings.branch]\nrename=['R']\ncreate=['n']\nnext-match=['F7']\nview-options=['F9']",
     )
     .unwrap();
     let mut app = Shell::with_config(fixture.ctx.clone(), config);

@@ -236,7 +236,10 @@ impl LogPanel {
             return Ok(());
         };
         match k {
-            Field::Refs => self.ref_query = v,
+            Field::Refs => {
+                self.ref_query = v;
+                self.ref_search.invalidate();
+            }
             Field::Text => {
                 self.matcher(&v)?;
                 self.filter.query = v;
@@ -414,6 +417,8 @@ impl LogPanel {
         ViewState {
             filter: self.filter.clone(),
             ref_query: self.ref_query.clone(),
+            ref_search: self.ref_search.clone(),
+            file_search: self.file_search.clone(),
             regex: self.regex,
             case_sensitive: self.case_sensitive,
             selected: self.history_selection(),
@@ -423,6 +428,8 @@ impl LogPanel {
         let s = self.views[self.view_index].clone();
         self.filter = s.filter;
         self.ref_query = s.ref_query;
+        self.ref_search = s.ref_search;
+        self.file_search = s.file_search;
         self.regex = s.regex;
         self.case_sensitive = s.case_sensitive;
         self.discard_editor();

@@ -330,6 +330,21 @@ Push, Merge Apply, and Continue keep their separate reviews.
 Shortcut changes do not change repository scope, checkbox selections, or retry
 semantics. Mouse buttons remain usable when a command is unbound.
 
+### Pane search
+
+`find`, `next-match`, and `previous-match` default to `/`, `n`, and `N` under
+`[keybindings.commit]`, `[keybindings.log]`, `[keybindings.push]`,
+`[keybindings.branch]`, and `[keybindings.stash]`. They apply only to the
+searchable panes listed in the [README](../README.md#find-in-a-pane). For example,
+set `find = ["F8"]` under `[keybindings.commit]` to change the shortcut for
+Changes and the file preview. Enter and Esc retain their input behavior.
+
+Log's `search` and `search-refs` still open its commit and branch filters.
+`commit.new-group` now defaults to `Ctrl-n`. Move any custom `n` binding in
+an overlapping context, or remap `next-match` there to keep the custom key.
+The file preview also provides `scroll-preview-left` and
+`scroll-preview-right` (`h`/Left and `l`/Right).
+
 ## Working-file editor
 
 `e` and `E` in Commit Changes edit the highlighted working copy. Remap with:

@@ -1,5 +1,6 @@
 use super::*;
 mod inline_message;
+mod search;
 mod text_selection;
 use crate::core::{git, Repo};
 use crossterm::event::{KeyEvent, MouseEvent};

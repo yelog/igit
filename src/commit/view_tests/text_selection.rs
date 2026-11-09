@@ -103,7 +103,7 @@ fn text_selection_commit_preview_copies_patch_and_keeps_file_dragging_separate()
         p.launch(Hit::Show(Focus::Diff), &c);
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
         draw(&mut p, &mut t, &c);
-        p.diff_scroll = u16::MAX;
+        p.diff_scroll = usize::MAX;
         draw(&mut p, &mut t, &c);
         let expected = "+model body";
         let (x, y) = (p.diff.y..p.diff.bottom())

@@ -42,7 +42,7 @@ impl StashPanel {
         self.preview.generation += 1;
         self.preview.due = self.selection().map(|_| Instant::now() + delay);
         self.preview.error = None;
-        self.files = SnapshotPreview::default();
+        self.files.clear();
     }
 
     pub(crate) fn preview_wakeup(&self) -> Option<Duration> {

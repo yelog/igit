@@ -244,6 +244,28 @@ The current row determines the preview; checkboxes determine commit and push can
 
 When a file preview is visible in Commit or in a Log file history tab (`igit log <file>`), press `J` to scroll it down or `K` to scroll it up without leaving the list. Lowercase `j/k` still moves through the list while it has focus.
 
+### Find in a pane
+
+Focus a pane with `Tab` or a click, then press `/` and type or paste a keyword.
+Matching text is highlighted as you type. `Enter` goes to the first match at or
+after the cursor, and `n` / `N` visit the next / previous occurrence, wrapping
+at either end. Folded rows are searchable; a jump opens only the folders needed
+to show its result. `Esc` cancels typing or clears the current pane's search.
+
+| Tab | Searchable panes |
+| --- | --- |
+| Commit | Changes tree labels and the selected file's Diff preview text |
+| Log | Branch tree labels and the upper-right Diff file tree |
+| Push | Outgoing repositories, branches and commit subjects; Changed files tree |
+| Branch | Repositories and their current branches; selected repository's branch tree |
+| Stash | Repository and stash names; selected stash's Diff file tree |
+
+Search is literal, ignores case, and stays within the loaded content and Roots.
+It moves the cursor without checking rows or changing Git. Log's commit list
+still uses `/` to filter commit text or hashes; `S` still filters the branch
+tree. In Commit, `Ctrl-N` creates a changelist, and `h/l` or Left/Right scrolls
+a focused file patch horizontally. See [search bindings](docs/configuration.md#pane-search).
+
 **Pull and Fetch:** Both reviews use Push-style title bars, colored repository icons, aligned targets and statuses, and a separated action footer. They list every repository in global Roots, regardless of the current Log tab or Push checkboxes. Branch names show the same green `↗N` (ahead) and blue `↙N` (behind) counts as Branch; ASCII uses `^N` / `vN`. Counts compare the current branch with its configured upstream using locally available refs. Opening review does not fetch; zero or unavailable counts stay hidden, and results refresh them after the operation. Pull uses each current branch's upstream. Choose **Merge incoming changes** (the default, allowing fast-forward) or **Rebase current branches** in the toolbar with `m/r` or a click. Fetch lists all configured remotes and updates remote refs without integrating changes. Browse with `j/k`, arrows, PageUp/PageDown, Home/End, row clicks, or the wheel; highlighting a row only changes Details. Complete branch/upstream names, counts, and errors wrap there; `J/K` or the wheel over Details scrolls them. **Pull** / **Fetch** starts focused when available; otherwise Cancel has focus. A blue background marks the focused button. Use `h/l`, `Tab`, or `Shift-Tab` to switch between **Cancel** and **Pull** / **Fetch**, then `Enter` to activate the focused button. Action labels have no repository count; ready and Roots counts remain visible separately. `Esc` cancels before Git runs. Results retain the repository list, color successes/failures/skips, and select the first failure for inspection. If Pull stops with conflicts, close results and select the highlighted **Conflicts** tab or press `6`.
 
 **Select and copy text:** Log's lower-right commit details and file Diff, Commit's inline message editor and Diff preview, and Push's Details / Diff support left-button drag selection with a blue highlight. **Releasing the left button immediately copies the text and clears the selection; no shortcut is needed.** A normal click or empty selection does not copy. Clicking a parent commit link still navigates; dragging does not. Copy preserves original indentation, blank lines, and line breaks, without soft wraps, borders, or terminal padding. You can scroll while dragging; changing the commit/file or hiding the area clears stale selections.
@@ -450,7 +472,7 @@ the saved entries, timestamps, and diffs. Git status columns now toggle with
 
 Checkboxes indicate checked, partially checked, unchecked, and unavailable (Unicode: `☑ / ⊟ / ☐ / ⊠`; ASCII: `[x] / [-] / [ ] / [!]`). Repositories and directories use expanded/collapsed folder icons; submodules keep a dedicated marker. Click the toolbar eye or press `o` for **View Options**. Under Group By, **Directory** starts enabled and **Module** (repository) starts disabled. They toggle independently. Show offers **Ignored Files** and **Git Status**. Use `j/k`, arrows, the wheel, or hover to select, `Space/Enter` to toggle immediately, and `Esc` to close. Ignored items are hidden by default and read-only when shown. Ignored directories appear as a single item without reading their contents and cannot be checked, committed, regrouped, or included in AI patches. Display options last for the session and do not alter existing selections.
 
-`T` toggles Git XY status such as `AM`; a nonempty `NO_COLOR` displays XY directly in file rows. `z/Z` collapses/expands all; `u` undoes the last checkbox change. `n/m` creates/moves groups; right-click or drag tracked files to another group also works. `M` toggles Amend for the repository of the highlighted file or group; a group spanning multiple repositories requires a more specific row. Preview starts enabled and appears side by side from 92 columns. Below that, Changes stays visible first; `v`, Enter on a file, or Tab opens the full-width preview. The toolbar Diff button or `v` toggles preview; `Esc` returns to the original row. The message pane has one shared draft with no repository tabs, plus **Commit**, **Commit and Push...**, and **Generate message** buttons. Generate message uses the same wand icon as Resolve Automatically. Narrow panes wrap the actions or shorten their labels. Use `S` for AI settings; `M` still toggles Amend.
+`T` toggles Git XY status such as `AM`; a nonempty `NO_COLOR` displays XY directly in file rows. `z/Z` collapses/expands all; `u` undoes the last checkbox change. `Ctrl-N` creates a changelist; `m`, right-click, or dragging tracked files moves them. `M` toggles Amend for the repository of the highlighted file or group; a group spanning multiple repositories requires a more specific row. Preview starts enabled and appears side by side from 92 columns. Below that, Changes stays visible first; `v`, Enter on a file, or Tab opens the full-width preview. The toolbar Diff button or `v` toggles preview; `Esc` returns to the original row after clearing any search or text selection. The message pane has one shared draft with no repository tabs, plus **Commit**, **Commit and Push...**, and **Generate message** buttons. Generate message uses the same wand icon as Resolve Automatically. Narrow panes wrap the actions or shorten their labels. Use `S` for AI settings; `M` still toggles Amend.
 
 The **Overview** preview uses file path colors to indicate Git status, without status letters.
 

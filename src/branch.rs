@@ -6,6 +6,7 @@ mod model;
 mod navigation;
 mod operations;
 mod rows;
+mod search;
 mod tree;
 mod view;
 
@@ -14,6 +15,7 @@ use crate::{
     ui::{
         icons::IconMode,
         panes::{PaneId, PaneLayout},
+        search::Search,
         *,
     },
 };
@@ -60,6 +62,8 @@ pub struct BranchPanel {
     repos: Vec<Repository>,
     repo_root: Option<usize>,
     repo_viewport: Viewport,
+    repo_search: Search,
+    branch_search: Search<String>,
     tree: Tree,
     viewport: Viewport,
     focus: Focus,
@@ -111,6 +115,7 @@ impl BranchPanel {
         self.repo_viewport.reveal(index, self.repos.len());
         if self.repo_root != Some(repo.root) {
             self.repo_root = Some(repo.root);
+            self.branch_search.invalidate();
             self.tree.rebuild(Some(repo));
             self.viewport.top = 0;
             self.keep_branch_visible();
@@ -270,6 +275,10 @@ impl BranchPanel {
         if self.view_menu && self.view_menu_event(event) {
             return Ok(Action::None);
         }
+        if self.search_event(event) {
+            self.cancel_key_sequence();
+            return Ok(Action::None);
+        }
         if let Event::Key(key) = event {
             if self.navigation_key(key) {
                 return Ok(Action::None);
@@ -364,7 +373,9 @@ impl Panel for BranchPanel {
     }
 
     fn editing(&self) -> bool {
-        self.input.is_some() || self.view_menu
+        self.input.is_some()
+            || self.view_menu
+            || self.focused_search().is_some_and(|prompt| prompt.editing())
     }
 
     fn help(&self) -> &'static str {

@@ -393,3 +393,43 @@ fn stash_drop_refresh_keeps_a_nearby_entry_in_the_same_repository_and_consumes_r
         .enumerate()
         .any(|(index, repo)| index != root && !run(&repo.path, &["stash", "list"]).is_empty()));
 }
+
+#[test]
+fn pane_search_stash_reveals_entries_and_saved_files_without_changing_the_reflog() {
+    let (_temp, c, mut p) = fixture();
+    let (root, _) = p.identity().unwrap();
+    let path = &c.repos[root].path;
+    let stashes = run(path, &["stash", "list"]);
+    let status = run(path, &["status", "--porcelain=v1"]);
+    p.folded.insert(root);
+    p.rebuild();
+    p.cursor = p.repository_row(root).unwrap();
+    p.request_preview(Duration::ZERO);
+
+    let find = |p: &mut StashPanel, term: &str| {
+        key(p, &c, K::Char('/'));
+        assert!(p.editing());
+        p.event(&Event::Paste(term.into()), &c);
+        key(p, &c, K::Enter);
+    };
+    find(&mut p, "API WORK");
+    assert_eq!(p.selection().unwrap().1.message(), "api work 2");
+    assert!(!p.folded.contains(&root));
+    key(&mut p, &c, K::Char('n'));
+    assert_eq!(p.selection().unwrap().1.message(), "api work 1");
+    key(&mut p, &c, K::Char('N'));
+    assert_eq!(p.selection().unwrap().1.message(), "api work 2");
+    finish(&mut p, &c);
+    p.focus_pane(PaneId::Files);
+    key(&mut p, &c, K::Char('z'));
+    find(&mut p, "新增.txt");
+    let buffer = render(&mut p, &c, 80, 24);
+    assert!(buffer.content().iter().any(|cell| cell.symbol() == "新"
+        && (Some(cell.bg) == crate::ui::search::CURRENT.bg
+            || cell.modifier.contains(ratatui::style::Modifier::REVERSED))));
+    key(&mut p, &c, K::Enter);
+    assert!(p.editing());
+    assert!(screen(&mut p, &c, 80, 24).contains("untracked api 2"));
+    assert_eq!(run(path, &["stash", "list"]), stashes);
+    assert_eq!(run(path, &["status", "--porcelain=v1"]), status);
+}

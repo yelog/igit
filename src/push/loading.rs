@@ -50,6 +50,7 @@ impl PushPanel {
             .cloned();
         let reseed = self.reseed.take();
         self.entries = entries;
+        self.outgoing_search.invalidate();
         self.tracking_choices.retain(|idx, choice| {
             !c.scope.contains(idx)
                 || self
@@ -137,6 +138,7 @@ impl PushPanel {
             self.preview_request = None;
             match result {
                 Ok(preview::Loaded::Files { files, summary }) => {
+                    self.file_search.invalidate();
                     self.preview = Preview {
                         tree: FileTree::new(&files, self.grouping),
                         files,

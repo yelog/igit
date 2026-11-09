@@ -33,6 +33,7 @@ impl BranchPanel {
     fn toggle_grouping(&mut self) {
         let repo = self.repository_index().map(|index| &self.repos[index]);
         self.tree.toggle_grouping(repo);
+        self.branch_search.invalidate();
         self.keep_branch_visible();
         self.hits
             .retain(|(_, hit)| !matches!(hit, Hit::Row(_) | Hit::Operation(_)));

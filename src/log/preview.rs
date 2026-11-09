@@ -71,6 +71,7 @@ impl LogPanel {
         self.preview.error = None;
         self.details = Details::default();
         self.inspector = Inspector::default();
+        self.file_search.invalidate();
         self.diff = None;
         self.history_diff = None;
         self.history_mouse = false;
@@ -93,6 +94,7 @@ impl LogPanel {
                 Ok((details, tree, history_diff)) => {
                     self.details = details;
                     self.inspector = tree;
+                    self.file_search.invalidate();
                     self.history_diff = history_diff;
                     if open_diff {
                         self.open_diff(c)?;

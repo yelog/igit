@@ -2,6 +2,7 @@ use super::{
     display, display_path, keypart, CommitPanel, Context, File, IconMode, DEF, IGNORED, NEW,
 };
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
     path::{Path, PathBuf},
@@ -37,6 +38,13 @@ pub(super) struct Tree<'a> {
 }
 
 impl Row {
+    pub fn search_label(&self) -> Cow<'_, str> {
+        match self.kind {
+            Kind::Directory(_) => Cow::Owned(format!("{}/", self.label)),
+            Kind::Repo(_) => Cow::Owned(display_path(Path::new(&self.label))),
+            _ => Cow::Borrowed(&self.label),
+        }
+    }
     pub fn file(&self) -> Option<usize> {
         match self.kind {
             Kind::File(i) => Some(i),
@@ -154,6 +162,7 @@ impl CommitPanel {
         }
         self.options.directories = directories;
         self.options.modules = modules;
+        self.changes_search.invalidate();
         let all = self.rows_with_folds(c, &BTreeSet::new());
         for (old, id) in candidates {
             if let Some(i) = all.iter().position(|r| r.id == id) {
@@ -198,7 +207,7 @@ impl CommitPanel {
         self.rows_with_folds(c, &self.fold)
     }
 
-    fn rows_with_folds(&self, c: &Context, folds: &BTreeSet<String>) -> Vec<Row> {
+    pub(super) fn rows_with_folds(&self, c: &Context, folds: &BTreeSet<String>) -> Vec<Row> {
         self.changes_tree().rows_with_folds(c, folds)
     }
 

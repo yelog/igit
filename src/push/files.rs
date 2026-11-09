@@ -199,6 +199,16 @@ pub(super) struct FileTree {
 }
 
 impl FileTree {
+    pub fn order(&self) -> &[usize] {
+        &self.order
+    }
+
+    pub fn reveal(&mut self, id: usize) {
+        self.folded
+            .retain(|&parent| !(parent < id && id < self.nodes[parent].end));
+        self.reflow(id);
+    }
+
     pub fn new(files: &[Change], grouping: Grouping) -> Self {
         let mut root = Directory::default();
         for (i, file) in files.iter().enumerate() {

@@ -293,6 +293,7 @@ impl Shell {
     fn panel_event(&mut self, ev: &Event) {
         if self.commit.add_running()
             && self.tab == Push
+            && !self.push.editing()
             && matches!(ev, Event::Key(key) if key.code == KeyCode::Char('F'))
         {
             self.notice("Adding files to Git; wait before fetching".into());
@@ -300,6 +301,7 @@ impl Shell {
         }
         if self.push.busy()
             && self.tab == Commit
+            && !self.commit.editing()
             && matches!(ev, Event::Key(key) if matches!(key.code, KeyCode::Char('a') | KeyCode::Insert) && key.modifiers.is_empty())
         {
             self.notice("Wait for the remote operation before adding files".into());
@@ -598,6 +600,17 @@ impl Shell {
             _ => (),
         }
     }
+    fn focused_search(&self) -> Option<&crate::ui::search::Prompt> {
+        match self.tab {
+            Commit => self.commit.focused_search(),
+            Log => self.log.focused_search(),
+            Push => self.push.focused_search(),
+            Branch => self.branch.focused_search(),
+            Stash => self.stash.focused_search(),
+            Conflicts => None,
+        }
+    }
+
     fn help_content(&self) -> HelpContent {
         match self.pop.as_ref() {
             Some(Popup::Rollback(dialog)) => dialog.keymap(),
@@ -674,6 +687,13 @@ impl Shell {
             ),
             Some(Popup::Help { .. }) => unreachable!("help content describes the origin"),
             None => {
+                let search = self.focused_search();
+                if search.is_some_and(|prompt| prompt.editing()) {
+                    return HelpContent::new(
+                        HelpSection::new("Pane Search", crate::ui::search::INPUT_BINDINGS),
+                        vec![],
+                    );
+                }
                 let mut content = match self.tab {
                     Log => self.log.keymap(),
                     Commit => self.commit.keymap(),
@@ -682,6 +702,19 @@ impl Shell {
                     Branch => self.branch.keymap(),
                     Stash => self.stash.keymap(),
                 };
+                if let Some(search) = search {
+                    content.sections.insert(
+                        1,
+                        HelpSection::new(
+                            "Pane Search",
+                            if search.visible() {
+                                crate::ui::search::BINDINGS
+                            } else {
+                                &crate::ui::search::BINDINGS[..3]
+                            },
+                        ),
+                    );
+                }
                 if self.can_return_to_main_tab() {
                     content.sections.push(HelpSection::new(
                         "Workspace tabs",
@@ -1003,6 +1036,9 @@ impl Shell {
         !self.panel().editing()
     }
     fn can_return_to_main_tab(&self) -> bool {
+        if self.focused_search().is_some_and(|prompt| prompt.visible()) {
+            return false;
+        }
         match self.tab {
             Push => self.push.at_root(),
             Conflicts => self.merge.at_root(),
@@ -1105,7 +1141,8 @@ impl Shell {
                 }
             }
         }
-        if matches!(self.tab, Commit | Log | Branch | Stash | Conflicts)
+        if (matches!(self.tab, Commit | Log | Branch | Stash | Conflicts)
+            || self.focused_search().is_some_and(|prompt| prompt.editing()))
             && matches!(
                 ev,
                 Event::Key(_)

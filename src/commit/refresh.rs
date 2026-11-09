@@ -117,6 +117,8 @@ impl CommitPanel {
         self.dragged = None;
         self.diff_key.clear();
         self.diff_selection.reset();
+        self.invalidate_diff_search();
+        self.changes_search.invalidate();
         self.refresh.report_error()
     }
 
@@ -180,6 +182,9 @@ impl CommitPanel {
             }
         }
         let changed = files != self.files;
+        if changed {
+            self.changes_search.invalidate();
+        }
         self.files = files;
         self.sync(c);
         let target = self
@@ -188,6 +193,7 @@ impl CommitPanel {
         if target != old_target {
             self.diff_key.clear();
             self.diff_selection.reset();
+            self.invalidate_diff_search();
         }
         changed
     }
@@ -235,8 +241,10 @@ impl CommitPanel {
                                 && (self.diff_key != key || self.diff_text != text)
                             {
                                 self.diff_selection.reset();
+                                self.invalidate_diff_search();
                                 if self.diff_key != key {
                                     self.diff_scroll = 0;
+                                    self.diff_left = 0;
                                 }
                                 self.diff_key = key;
                                 self.diff_text = text;

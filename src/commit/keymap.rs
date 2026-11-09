@@ -9,6 +9,12 @@ impl CommitPanel {
                 Section::new("Commit / File Preview", PREVIEW_SCROLL_BINDINGS),
             );
         }
+        if self.file_preview_visible() && self.focus == Focus::Diff {
+            content.sections.push(Section::new(
+                "Commit / Patch",
+                &[("h", "Scroll patch left"), ("l", "Scroll patch right")],
+            ));
+        }
         content
     }
 
@@ -264,7 +270,7 @@ impl CommitPanel {
                     ("z", "Collapse all containers"),
                     ("Z", "Expand all containers"),
                     ("u", "Undo last checkbox change"),
-                    ("n", "New changelist"),
+                    ("Ctrl-n", "New changelist"),
                     ("i", "Edit shared commit message"),
                     ("[", "Previous repository in Changes"),
                     ("]", "Next repository in Changes"),

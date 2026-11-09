@@ -1,6 +1,7 @@
 //! Push presentation uses shared column geometry for text and mouse controls.
 use super::*;
 use crate::ui::idea::{button_style, clipped, clipped_path, repo_tint, CONFLICT};
+use crate::ui::search::Highlight;
 use ratatui::widgets::{Block, Borders};
 use unicode_width::UnicodeWidthStr;
 
@@ -141,9 +142,20 @@ fn cell(row: Rect, column: usize, width: usize) -> Rect {
 }
 
 fn put(line: &mut Line<'static>, column: Column, text: &str, style: Style) {
+    put_search(line, column, text, style, Highlight::default());
+}
+
+fn put_search(
+    line: &mut Line<'static>,
+    column: Column,
+    text: &str,
+    style: Style,
+    highlight: Highlight<'_>,
+) {
     if column.width > 0 {
         pad_to(line, column.start);
-        line.push_span(Span::styled(clipped(text, column.width), style));
+        line.spans
+            .extend(highlight.clipped(text, column.width, style));
     }
 }
 
@@ -151,8 +163,7 @@ fn files_count(n: usize) -> String {
     format!("{n} file{}", if n == 1 { "" } else { "s" })
 }
 
-fn filename(path: &Path, width: usize) -> String {
-    let name = label(path.file_name().unwrap_or(path.as_os_str()).as_ref());
+fn filename(name: &str, width: usize) -> String {
     if name.width() > width {
         if let Some((stem, ext)) = name.rsplit_once('.') {
             if width >= ext.width() + 4 {
@@ -160,7 +171,7 @@ fn filename(path: &Path, width: usize) -> String {
             }
         }
     }
-    clipped(&name, width)
+    clipped(name, width)
 }
 
 impl PushPanel {
@@ -357,11 +368,19 @@ impl PushPanel {
             let muted = Style::new().fg(MUTED);
             self.hits.push((row, Hit::Row(self.offset + dy)));
             let mut line = Line::default();
+            let key = (id, commit);
             if let Some(index) = commit {
                 let h = &e.logs[index];
                 // IDEA keeps the subject directly below its repository name.
                 pad_to(&mut line, columns.name.start);
-                line.push_span(Span::raw(h.msg.clone()));
+                let room = usize::from(row.width).saturating_sub(line.width());
+                line.spans
+                    .extend(self.outgoing_search.field(&key, 0).clipped_with(
+                        &h.msg,
+                        room,
+                        Style::default(),
+                        |text, _| text.into(),
+                    ));
             } else {
                 let repo = &c.repos[id];
                 let fold = icons.disclosure(self.expanded.contains(&id));
@@ -403,7 +422,7 @@ impl PushPanel {
                 let result_width = result
                     .map(|(icon, _)| icons.glyph(icon).width() + 1)
                     .unwrap_or(0);
-                put(
+                put_search(
                     &mut line,
                     Column {
                         width: columns.name.width.saturating_sub(result_width),
@@ -413,6 +432,7 @@ impl PushPanel {
                     Style::new()
                         .fg(if e.n > 0 || selected { FG } else { MUTED })
                         .add_modifier(Modifier::BOLD),
+                    self.outgoing_search.field(&key, 0),
                 );
                 if let Some((icon, color)) = result {
                     line.push_span(Span::styled(
@@ -421,11 +441,12 @@ impl PushPanel {
                     ));
                 }
                 if e.error.is_empty() {
-                    put(
+                    put_search(
                         &mut line,
                         columns.source,
                         &e.source,
                         Style::new().fg(if e.n > 0 || selected { FG } else { MUTED }),
+                        self.outgoing_search.field(&key, 1),
                     );
                     put(
                         &mut line,
@@ -433,11 +454,12 @@ impl PushPanel {
                         &format!(" {} ", icons.glyph(Icon::Right)),
                         muted,
                     );
-                    put(
+                    put_search(
                         &mut line,
                         columns.target,
-                        &format!("{}:{}", e.t.remote, e.t.dst),
+                        &e.target_label(),
                         Style::new().fg(if e.n > 0 || selected { ACCENT } else { MUTED }),
+                        self.outgoing_search.field(&key, 2),
                     );
                     if columns.target.width > 0 {
                         self.hits.push((
@@ -488,6 +510,9 @@ impl PushPanel {
         root: usize,
     ) -> (Line<'static>, Option<Column>) {
         let node = &self.preview.tree.nodes[id];
+        let repo = &c.repos[root];
+        let name = node.kind.label(&self.preview.files, repo);
+        let highlight = self.file_search.field(&id, 0);
         let icons = self.icons;
         let indent = (node.depth(self.grouping) * 2 + 1).min(width.saturating_sub(14));
         let mut line = Line::from(" ".repeat(indent));
@@ -534,9 +559,11 @@ impl PushPanel {
                 .as_ref()
                 .filter(|_| room >= 14)
                 .map_or(0, |p| (p.width() + 2).min(room / 3).min(12));
-            line.push_span(Span::styled(
-                filename(&file.path, room - reserve),
+            line.spans.extend(highlight.clipped_with(
+                &name,
+                room - reserve,
                 Style::new().fg(color),
+                filename,
             ));
             if let Some(parent) = parent {
                 let room = width.saturating_sub(line.width() + 2);
@@ -546,24 +573,10 @@ impl PushPanel {
                 }
             }
         } else {
-            let repo = &c.repos[root];
-            let (icon, tint, name) = match &node.kind {
-                Kind::Repository => (
-                    icons.repo(repo.submodule),
-                    repo_tint(root),
-                    label(Path::new(&repo.name)),
-                ),
-                Kind::Module => (
-                    icons.folder(open),
-                    ACCENT,
-                    label(
-                        repo.path
-                            .file_name()
-                            .unwrap_or(repo.path.as_os_str())
-                            .as_ref(),
-                    ),
-                ),
-                Kind::Directory { name, .. } => (icons.folder(open), MUTED, name.clone()),
+            let (icon, tint) = match &node.kind {
+                Kind::Repository => (icons.repo(repo.submodule), repo_tint(root)),
+                Kind::Module => (icons.folder(open), ACCENT),
+                Kind::Directory { .. } => (icons.folder(open), MUTED),
                 Kind::File(_) => unreachable!(),
             };
             if width >= line.width() + icon.width() + 5 {
@@ -576,16 +589,19 @@ impl PushPanel {
             } else {
                 String::new()
             };
-            line.push_span(Span::styled(
-                clipped(&name, room.saturating_sub(count.width())),
-                Style::new()
-                    .fg(FG)
-                    .add_modifier(if matches!(node.kind, Kind::Repository) {
-                        Modifier::BOLD
-                    } else {
-                        Modifier::empty()
-                    }),
-            ));
+            line.spans.extend(
+                highlight.clipped(
+                    &name,
+                    room.saturating_sub(count.width()),
+                    Style::new()
+                        .fg(FG)
+                        .add_modifier(if matches!(node.kind, Kind::Repository) {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+            );
             line.push_span(Span::styled(count, Style::new().fg(MUTED)));
             if matches!(node.kind, Kind::Module) {
                 let relative = repo

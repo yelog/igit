@@ -5,7 +5,9 @@ use super::{
     DIM, EDGE, GOLD, INK, PANEL, SELECT,
 };
 use crate::core::{Context, Repo};
+use crate::ui::search::Input;
 use crate::ui::selection::{TextLayout, Wrap};
+use crossterm::event::Event;
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
@@ -14,6 +16,7 @@ use ratatui::{
     Frame,
 };
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     path::Path,
 };
@@ -29,6 +32,35 @@ enum Kind {
     Parent(usize),
     Directory(String),
     File(usize),
+}
+
+impl Kind {
+    fn label<'a>(&'a self, details: &model::Details, repo: &Repo) -> Cow<'a, str> {
+        match self {
+            Self::File(i) => {
+                let raw = &details.files[*i].raw;
+                Cow::Owned(model::plain(
+                    raw.rsplit(|&b| b == b'/').next().unwrap_or_default(),
+                ))
+            }
+            Self::Parent(i) => {
+                let p = &details.parents[*i];
+                Cow::Owned(format!(
+                    "Changes to {} {}",
+                    &p.oid[..8.min(p.oid.len())],
+                    p.subject
+                ))
+            }
+            Self::Repository => Cow::Owned(model::plain(repo.name.as_bytes())),
+            Self::Module => Cow::Owned(model::plain(
+                repo.path
+                    .file_name()
+                    .map_or(repo.name.as_bytes(), |v| v.as_encoded_bytes()),
+            )),
+            Self::Directory(name) => Cow::Borrowed(name),
+            Self::Summary => Cow::Borrowed(""),
+        }
+    }
 }
 
 struct Node {
@@ -245,6 +277,32 @@ fn fit(text: &str, width: usize, keep_end: bool) -> String {
 }
 
 impl LogPanel {
+    pub(super) fn file_search_event(&mut self, event: &Event, c: &Context) -> bool {
+        let direction = match self.file_search.event(event) {
+            Input::Pass => return false,
+            Input::Handled => return true,
+            Input::Jump(direction) => direction,
+        };
+        let repo = self.rev().and_then(|rev| c.repos.get(rev.root));
+        let tree = &mut self.inspector;
+        let hit = self.file_search.jump(
+            direction,
+            tree.visible.get(tree.cursor),
+            repo.into_iter().flat_map(|repo| {
+                tree.nodes
+                    .iter()
+                    .enumerate()
+                    .map(|(id, node)| (id, [node.kind.label(&self.details, repo)]))
+            }),
+        );
+        if let Some(hit) = hit {
+            tree.folded
+                .retain(|&id| !(id < hit.row && hit.row < tree.nodes[id].end));
+            tree.reflow(hit.row);
+        }
+        true
+    }
+
     pub(super) fn file_cursor(&self) -> usize {
         self.inspector.cursor
     }
@@ -433,11 +491,12 @@ impl LogPanel {
     ) -> Line<'static> {
         let s = &self.inspector;
         let node = &s.nodes[id];
+        let label = node.kind.label(&self.details, repo);
+        let highlight = self.file_search.field(&id, 0);
         let indent = (1 + node.depth * 2).min(width.saturating_sub(13));
         let mut line = Line::from(" ".repeat(indent));
         if let Kind::File(i) = node.kind {
             let file = &self.details.files[i];
-            let name = file.raw.rsplit(|&b| b == b'/').next().unwrap_or_default();
             let path = model::path_from_bytes(&file.raw).unwrap_or_else(|_| Path::new(""));
             let (icon, tint) = self.icons.file(path);
             let color = match file.status.as_bytes().first() {
@@ -455,10 +514,11 @@ impl LogPanel {
                 line.push_span(Span::styled(format!("{icon} "), fg(tint)));
             }
             let space = width.saturating_sub(line.width());
-            line.push_span(Span::styled(
-                fit(&model::plain(name), space, true),
-                fg(color),
-            ));
+            line.spans.extend(
+                highlight.clipped_with(&label, space, fg(color), |text, width| {
+                    fit(text, width, true)
+                }),
+            );
             return line;
         }
         let open = !s.folded.contains(&id) && node.end > id + 1;
@@ -466,33 +526,18 @@ impl LogPanel {
         if width >= line.width() + slot.width() + 3 {
             line.push_span(Span::styled(slot, fg(DIM)));
         }
-        let basename = repo
-            .path
-            .file_name()
-            .map(|v| model::plain(v.as_encoded_bytes()));
-        let repo_name = model::plain(repo.name.as_bytes());
-        if let Kind::Parent(i) = node.kind {
-            let p = &self.details.parents[i];
-            let label = format!("Changes to {} {}", &p.oid[..8.min(p.oid.len())], p.subject);
-            line.push_span(Span::styled(
-                fit(&label, width.saturating_sub(line.width()), false),
-                fg(INK),
-            ));
+        if let Kind::Parent(_) = node.kind {
+            let room = width.saturating_sub(line.width());
+            line.spans.extend(
+                highlight
+                    .clipped_with(&label, room, fg(INK), |text, width| fit(text, width, false)),
+            );
             return line;
         }
-        let (icon, tint, label) = match &node.kind {
-            Kind::Repository => (
-                self.icons.repo(repo.submodule),
-                repo_tint(root),
-                repo_name.as_str(),
-            ),
-            Kind::Module => (
-                self.icons.folder(open),
-                BLUE,
-                basename.as_deref().unwrap_or(&repo_name),
-            ),
-            Kind::Directory(label) => (self.icons.folder(open), DIM, label.as_str()),
-            Kind::Summary => (self.icons.folder(open), DIM, ""),
+        let (icon, tint) = match &node.kind {
+            Kind::Repository => (self.icons.repo(repo.submodule), repo_tint(root)),
+            Kind::Module => (self.icons.folder(open), BLUE),
+            Kind::Directory(_) | Kind::Summary => (self.icons.folder(open), DIM),
             Kind::File(_) | Kind::Parent(_) => unreachable!(),
         };
         let min_label = label.width().min(4);
@@ -506,7 +551,9 @@ impl LogPanel {
             ""
         };
         let room = width.saturating_sub(line.width() + count.width());
-        line.push_span(Span::styled(fit(label, room, true), fg(INK)));
+        line.spans.extend(
+            highlight.clipped_with(&label, room, fg(INK), |text, width| fit(text, width, true)),
+        );
         line.push_span(Span::styled(count.to_owned(), fg(DIM)));
         if matches!(node.kind, Kind::Module) {
             let relative = repo
@@ -515,7 +562,7 @@ impl LogPanel {
                 .ok()
                 .filter(|p| !p.as_os_str().is_empty());
             let path = relative.map(|p| model::plain(p.as_os_str().as_encoded_bytes()));
-            let annotation = path.as_deref().unwrap_or(label);
+            let annotation = path.as_deref().unwrap_or(&label);
             if line.width() + 2 + annotation.width() <= width {
                 line.push_span(Span::styled(format!("  {annotation}"), fg(DIM)));
             }
@@ -753,6 +800,35 @@ mod tests {
         };
         p.inspector = Inspector::new(&p.details);
         (p, c)
+    }
+
+    #[test]
+    fn pane_search_log_diff_selects_the_exact_path_even_with_duplicate_names() {
+        use crate::ui::Panel;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let paths: &[&[u8]] = &[b"a/same.txt", b"b/same.txt", b"c/other.txt"];
+        let (mut p, c) = fixture(paths);
+        p.focus = Pane::Files;
+        p.file_fold_all(true);
+        let press = |p: &mut LogPanel, code| {
+            p.event(&Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), &c);
+        };
+        press(&mut p, KeyCode::Char('/'));
+        p.event(&Event::Paste("same.txt".into()), &c);
+        press(&mut p, KeyCode::Enter);
+        assert_eq!(p.file_index(), Some(0));
+        press(&mut p, KeyCode::Char('n'));
+        assert_eq!(p.file_index(), Some(1));
+        assert_eq!(p.details.files[p.file_index().unwrap()].raw, paths[1]);
+        press(&mut p, KeyCode::Char('N'));
+        assert_eq!(p.file_index(), Some(0));
+        assert!(p.diff.is_none() && p.filter.query.is_empty());
+        assert!(!p
+            .inspector
+            .visible
+            .iter()
+            .any(|&id| matches!(p.inspector.nodes[id].kind, Kind::File(2))));
     }
 
     #[test]

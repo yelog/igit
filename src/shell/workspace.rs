@@ -279,16 +279,30 @@ impl Shell {
             ((version.width() + status.width()) as u16).min(visible_width),
             1,
         );
+        let search = self.focused_search().filter(|prompt| {
+            self.pop.is_none()
+                && prompt.visible()
+                && (prompt.editing() || self.msg.is_empty() && !self.commit.add_running())
+        });
+        let hint = if search.is_some() {
+            String::new()
+        } else {
+            format!("  {hint}")
+        };
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(brand, button_style(true)),
                 Span::styled(version, Style::new().fg(MUTED)),
                 Span::styled(status, status_style),
-                Span::styled(format!("  {hint}"), Style::new().fg(color)),
+                Span::styled(hint, Style::new().fg(color)),
             ]))
             .style(Style::new().bg(TAG)),
             foot,
         );
+        if let Some(search) = search {
+            let x = self.regions.software_update.right().min(foot.right());
+            search.draw(f, Rect::new(x, foot.y, foot.right() - x, 1));
+        }
     }
 
     fn draw_workspace_overlays(&mut self, f: &mut Frame, work: Rect) {

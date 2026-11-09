@@ -896,3 +896,49 @@ fn configuration_remaps_workspace_update_and_log_filter_prefixes() {
     send(&mut app, "Enter");
     assert!(matches!(app.pop, Some(Popup::Update(_))));
 }
+
+#[test]
+fn pane_search_remaps_owns_text_input_and_keeps_other_pane_commands() {
+    let (_dir, mut app) = fixture();
+    configure(
+        &mut app,
+        "[keybindings.commit]\nfind=['F8']\nnext-match=['F7']",
+    );
+    screen(&mut app, 80, 24);
+    send(&mut app, "/");
+    assert!(!app.commit.editing());
+    send(&mut app, "F8");
+    assert_eq!(app.help_content().context(), "Pane Search");
+    send(&mut app, "p r 5 q");
+    assert_eq!(app.tab, Commit);
+    assert!(app.pop.is_none());
+    assert!(screen(&mut app, 44, 12).contains("/pr5q"));
+    send(&mut app, "F1 Esc");
+    assert!(app.commit.editing());
+    send(&mut app, "Ctrl-u");
+    app.dispatch(&Event::Paste(".TXT".into()));
+    send(&mut app, "Enter");
+    assert!(screen(&mut app, 80, 24).contains("/.TXT  1/2"));
+    send(&mut app, "n");
+    assert!(screen(&mut app, 80, 24).contains("/.TXT  1/2"));
+    send(&mut app, "F7");
+    assert!(screen(&mut app, 80, 24).contains("/.TXT  2/2"));
+    send(&mut app, "Esc Ctrl-n");
+    assert_eq!(app.help_content().context(), "Commit / New Changelist");
+}
+
+#[test]
+fn pane_search_escape_clears_push_search_before_returning_to_commit() {
+    let (_dir, mut app) = fixture();
+    app.go(Push);
+    screen(&mut app, 80, 24);
+    send(&mut app, "/");
+    app.dispatch(&Event::Paste("no match".into()));
+    send(&mut app, "Enter");
+    assert!(screen(&mut app, 80, 24).contains("No matches"));
+    send(&mut app, "Esc");
+    assert_eq!(app.tab, Push);
+    assert!(!app.push.focused_search().unwrap().visible());
+    send(&mut app, "Esc");
+    assert_eq!(app.tab, Commit);
+}

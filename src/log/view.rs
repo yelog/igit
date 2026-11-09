@@ -336,7 +336,8 @@ impl LogPanel {
             [Rect::default(); 2]
         };
         let areas = [refs, graph, files, info];
-        let active = self.panes.active && !self.editing();
+        let active = self.panes.active
+            && (!self.editing() || self.focused_search().is_some_and(|prompt| prompt.editing()));
         for (p, outer) in Pane::ORDER.into_iter().zip(areas) {
             if !self.pane_visible(p) {
                 continue;

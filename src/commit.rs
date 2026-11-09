@@ -12,6 +12,7 @@ mod message_tests;
 mod refresh;
 mod rollback;
 mod rows;
+mod search;
 mod staging;
 mod stash;
 mod tree;
@@ -26,6 +27,7 @@ use crate::{
         inside,
         panes::{PaneId, PaneLayout},
         preview_scroll_key,
+        search::Search,
         selection::{self, TextLayout, TextSelection, Wrap as TextWrap},
         Action, Panel,
     },
@@ -144,7 +146,7 @@ impl Hit {
             Self::ResolveConflicts => "Open Conflicts  Enter on group",
             Self::UndoCheck => "Undo last checkbox change  u",
             Self::Move => "Move to changelist  m",
-            Self::New => "New changelist  n",
+            Self::New => "New changelist  Ctrl-N",
             Self::TogglePreview => "Show or hide preview  v",
             Self::ViewOptions => "View Options  o",
             Self::Directories => "Group by directory  t",
@@ -193,7 +195,13 @@ pub struct CommitPanel {
     edit_follow: bool,
     diff_key: String,
     diff_text: String,
-    diff_scroll: u16,
+    diff_scroll: usize,
+    diff_left: usize,
+    diff_line_at_top: Option<usize>,
+    diff_anchor: Option<usize>,
+    diff_match: Option<crate::ui::search::Hit<usize>>,
+    diff_search: Search,
+    changes_search: Search<String>,
     diff_selection: TextSelection,
     message_selection: TextSelection,
     add: add::State,
@@ -247,6 +255,12 @@ impl Default for CommitPanel {
             diff_key: Default::default(),
             diff_text: Default::default(),
             diff_scroll: Default::default(),
+            diff_left: 0,
+            diff_line_at_top: None,
+            diff_anchor: None,
+            diff_match: None,
+            diff_search: Search::default(),
+            changes_search: Search::default(),
             diff_selection: Default::default(),
             message_selection: Default::default(),
             add: Default::default(),
@@ -318,7 +332,9 @@ impl CommitPanel {
 
     fn pane_focused(&self, pane: PaneId) -> bool {
         self.panes.active
-            && (!self.editing() || self.message_editing())
+            && (!self.editing()
+                || self.message_editing()
+                || self.focused_search().is_some_and(|prompt| prompt.editing()))
             && self.focused_pane() == pane
     }
 
@@ -749,7 +765,10 @@ impl Panel for CommitPanel {
         self.poll_ai(c)
     }
     fn editing(&self) -> bool {
-        self.edit.is_some() || self.view_menu.is_some() || self.staging.is_some()
+        self.edit.is_some()
+            || self.view_menu.is_some()
+            || self.staging.is_some()
+            || self.focused_search().is_some_and(|prompt| prompt.editing())
     }
     fn selected_text(&self) -> Option<&str> {
         if self.view_menu.is_some() {
@@ -791,6 +810,11 @@ impl Panel for CommitPanel {
         }
         if let Some(action) = self.staging_event(e, c) {
             return action;
+        }
+        if self.search_event(e, c) {
+            self.dragged = None;
+            self.last_click = None;
+            return Action::None;
         }
         let scroll_key = preview_scroll_key(e);
         if self.execution_running() {
@@ -909,6 +933,7 @@ impl Panel for CommitPanel {
         self.hover = None;
         if let Some(key) = scroll_key.filter(|_| self.file_preview_visible()) {
             let step = if key == K::Down { 1 } else { -1 };
+            self.diff_anchor = None;
             self.diff_scroll = self.diff_scroll.saturating_add_signed(step);
             return Action::None;
         }
@@ -1007,7 +1032,8 @@ impl Panel for CommitPanel {
                     if inside(self.tree, m.column, m.row) {
                         self.move_cursor(d)
                     } else if inside(self.diff, m.column, m.row) {
-                        self.diff_scroll = self.diff_scroll.saturating_add_signed(d as i16)
+                        self.diff_anchor = None;
+                        self.diff_scroll = self.diff_scroll.saturating_add_signed(d)
                     }
                 }
             }
@@ -1017,6 +1043,7 @@ impl Panel for CommitPanel {
                 }
                 K::Char('j') | K::Down => {
                     if self.focus == Focus::Diff {
+                        self.diff_anchor = None;
                         self.diff_scroll = self.diff_scroll.saturating_add(1)
                     } else {
                         self.move_cursor(1)
@@ -1024,19 +1051,27 @@ impl Panel for CommitPanel {
                 }
                 K::Char('k') | K::Up => {
                     if self.focus == Focus::Diff {
+                        self.diff_anchor = None;
                         self.diff_scroll = self.diff_scroll.saturating_sub(1)
                     } else {
                         self.move_cursor(-1)
                     }
                 }
-                K::Char('g') | K::Home if self.focus == Focus::Diff => self.diff_scroll = 0,
-                K::Char('G') | K::End if self.focus == Focus::Diff => self.diff_scroll = u16::MAX,
+                K::Char('g') | K::Home if self.focus == Focus::Diff => {
+                    self.diff_anchor = None;
+                    self.diff_scroll = 0;
+                }
+                K::Char('G') | K::End if self.focus == Focus::Diff => {
+                    self.diff_anchor = None;
+                    self.diff_scroll = usize::MAX;
+                }
                 K::Char('g') | K::Home => self.cursor = 0,
                 K::Char('G') | K::End => self.cursor = self.view.len().saturating_sub(1),
                 K::PageUp | K::PageDown => {
                     let forward = k.code == K::PageDown;
                     if self.focus == Focus::Diff {
-                        let step = self.diff.height.saturating_sub(1).max(1);
+                        self.diff_anchor = None;
+                        let step = usize::from(self.diff.height.saturating_sub(1).max(1));
                         self.diff_scroll = if forward {
                             self.diff_scroll.saturating_add(step)
                         } else {
@@ -1104,6 +1139,16 @@ impl Panel for CommitPanel {
                         }
                     }
                 }
+                K::Char('h' | 'l') | K::Left | K::Right
+                    if self.focus == Focus::Diff
+                        && k.modifiers.is_empty()
+                        && self.file_preview_visible() =>
+                {
+                    let right = matches!(k.code, K::Char('l') | K::Right);
+                    self.diff_left =
+                        self.diff_left
+                            .saturating_add_signed(if right { 4 } else { -4 });
+                }
                 K::Char('t') => return self.launch(Hit::Directories, c),
                 K::Char('o') => return self.launch(Hit::ViewOptions, c),
                 K::Char('s') if k.modifiers == Mod::NONE => return self.edit_stash(c),
@@ -1147,7 +1192,7 @@ impl Panel for CommitPanel {
                     );
                 }
                 K::Char('i') => self.edit_message(c),
-                K::Char('n') => return self.launch(Hit::New, c),
+                K::Char('n') if k.modifiers == Mod::CONTROL => return self.launch(Hit::New, c),
                 K::Char('m') => self.move_menu(),
                 K::Char('M') => return self.launch(Hit::Amend, c),
                 K::Char('A') => return self.launch(Hit::MessageAction(MessageAction::Generate), c),
@@ -1715,7 +1760,7 @@ mod flow_tests {
         panel.refresh(&c).unwrap();
         let mut term = Terminal::new(TestBackend::new(110, 30)).unwrap();
         let key = |ch| Event::Key(KeyEvent::new(K::Char(ch), Mod::NONE));
-        panel.event(&key('n'), &c);
+        panel.event(&Event::Key(KeyEvent::new(K::Char('n'), Mod::CONTROL)), &c);
         panel.event(&Event::Paste("Later".into()), &c);
         panel.event(&Event::Key(KeyEvent::new(K::Enter, Mod::NONE)), &c);
         term.draw(|f| panel.draw(f, f.area(), &c)).unwrap();

@@ -281,7 +281,7 @@ fn help_shortcut_preserves_mouse_focus_and_text_input() {
     app.dispatch(&Event::Paste("Query ?12".into()));
     let before = screen(&mut app, 120, 36);
     app.dispatch(&key(KeyCode::F(1)));
-    assert_eq!(context(&app), "Log / Text Search");
+    assert_eq!(context(&app), "Pane Search");
     assert!(app.log.editing());
     app.dispatch(&Event::Paste("different help query".into()));
     app.dispatch(&key(KeyCode::Enter));

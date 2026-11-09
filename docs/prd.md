@@ -12,6 +12,15 @@ Product-owned interface text, help, errors, examples, and documentation use Engl
 
 ## Requirements and Delivery Status
 
+**Pane search (R7/R8 extension).** `/` finds literal text in Commit Changes and
+the file Diff preview, Log's branch and Diff file trees, Push's outgoing and
+changed file trees, Branch's repositories and branches, and Stash's list and
+Diff file tree. All visible occurrences are highlighted. `n/N` wraps through
+matches, including offscreen text and folded rows in the loaded scope. A jump
+moves only the browsing cursor and reveals the result; Commit and Push checks
+and Git state are unchanged. Log's commit text and branch filters remain
+available separately.
+
 **Workflow completeness (R1/R2/R3/R7/R8 extension, 2026-11-08).** Commit offers
 reviewed Stage/Unstage for one tracked text hunk from its Staged/Unstaged view
 (`Ctrl-G` / Hunks), preserving working bytes, unrelated staging, checkboxes,
@@ -312,6 +321,7 @@ ws="$(sh examples/demo-workspace.sh)"
 
 | Case / requirement | Procedure | Pass criteria |
 | --- | --- | --- |
+| Pane search (R7, R8) | Run `cargo test --locked --lib pane_search`. In a practice workspace, find a duplicate filename under folded directories and a repeated term far to the right in a Commit patch. Repeat at 44×12 and try searching from another pane. | Enter reveals a match; `n/N` visits all occurrences and wraps; Escape cancels or clears only the focused search. Long Unicode matches remain readable where space permits. Git, checkboxes, and unrelated folds stay unchanged. |
 | Branch repository layout (R1, R7, R8) | Open Branch in a disposable workspace with two repositories, each with a distinct local branch. Switch repositories with mouse and keyboard at 120×36, 80×25, and 44×12. Apply Roots with one repository, then restore both. Review an operation in the second repository. | Both panes stay visible in the tiled layout; the right pane shows only the selected repository's branches. With one repository in Roots, the branch list uses the full width and hides the repository name. Branch selection and folds return when switching back; the review names only the selected repository. |
 | Branch tree and operations (R1, R4, R7, R8) | Open Branch with `4` in a temporary multi-repository workspace. Add nested local/remote names, a recorded remote HEAD, and an upstream whose ref is missing. Browse/fold and toggle the eye menu at 120×36, 80×25, and 44×12. Exercise reviewed create, rename, checkout, safe deletion and merge. Run `cargo test --locked branch`. | The current branch is the first local leaf. Both branch sections and all nested folders start expanded; explicit folds are retained. The eye switches between folders and full names without changing refs or the selected branch. Verify folder icons, indentation, keyboard motions, and aligned upstreams. Remote HEAD aliases are omitted; local upstreams and `[gone]` labels reflect Git. Creation uses the focused commit without switching; remote checkout establishes tracking. Cancellation, stale reviews, other-worktree branches, and refused overwrites preserve refs/index/content. Renaming preserves upstream and mixed staging. A failing merge exposes Conflicts. Branch owns `r`; Actions retains Roots, and remapped global Roots labels do not replace Rename. |
 | Branch loading (R1, R3, R7, R8) | Run `cargo test --locked shell::branch_tests`. Hold a Branch read open, switch tabs, return, then change Roots before an older read finishes. | The Branch header and loading state paint before the scan completes. Help and tab switching remain responsive. Same-scope refresh keeps browsing and the latest selection/folds; new branch actions wait for the current list. Results from prior Roots never appear. |

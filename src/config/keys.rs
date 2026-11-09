@@ -103,6 +103,9 @@ commands! {
         "quit" => "q", ALL;
     }
     "stash" {
+        "find" => "/", STASH;
+        "next-match" => "n", STASH;
+        "previous-match" => "N", STASH;
         "apply" => "a", STASH;
         "pop" => "P", STASH;
         "drop" => "d", STASH;
@@ -145,6 +148,9 @@ commands! {
         "close-log-tab" => "Ctrl-w c", LOG;
     }
     "branch" {
+        "find" => "/", BRANCH;
+        "next-match" => "n", BRANCH;
+        "previous-match" => "N", BRANCH;
         "move-down" => "j", BRANCH;
         "move-up" => "k", BRANCH;
         "collapse" => "h", BRANCH;
@@ -187,7 +193,10 @@ commands! {
         "commit-actions" => "a", LOG_GRAPH;
         "edit-message" => "F2", LOG_GRAPH;
         "open" => "Enter", LOG;
-        "search" => "/", LOG;
+        "search" => "/", LOG_GRAPH | LOG_INFO;
+        "find" => "/", LOG_REFS | LOG_FILES;
+        "next-match" => "n", LOG_REFS | LOG_FILES;
+        "previous-match" => "N", LOG_REFS | LOG_FILES;
         "search-refs" => "S", LOG_REFS;
         "branch-filter" => "Space b", LOG;
         "user-filter" => "Space u", LOG;
@@ -208,6 +217,11 @@ commands! {
         "expand-all" => "Z", LOG_FILES;
     }
     "commit" {
+        "find" => "/", CHANGES | PREVIEW;
+        "next-match" => "n", CHANGES | PREVIEW;
+        "previous-match" => "N", CHANGES | PREVIEW;
+        "scroll-preview-left" => "h", PREVIEW;
+        "scroll-preview-right" => "l", PREVIEW;
         "move-down" => "j", COMMIT;
         "move-up" => "k", COMMIT;
         "collapse" => "h", CHANGES;
@@ -231,7 +245,7 @@ commands! {
         "collapse-all" => "z", COMMIT;
         "expand-all" => "Z", COMMIT;
         "undo-selection" => "u", COMMIT;
-        "new-group" => "n", COMMIT;
+        "new-group" => "Ctrl-n", COMMIT;
         "edit-message" => "i", COMMIT;
         "previous-repo" => "[", COMMIT;
         "next-repo" => "]", COMMIT;
@@ -242,6 +256,9 @@ commands! {
         "review-and-push" => "P", COMMIT;
     }
     "push" {
+        "find" => "/", PUSH_REPOS | PUSH_FILES;
+        "next-match" => "n", PUSH_REPOS | PUSH_FILES;
+        "previous-match" => "N", PUSH_REPOS | PUSH_FILES;
         "move-down" => "j", PUSH;
         "move-up" => "k", PUSH;
         "collapse" => "h", PUSH_REPOS | PUSH_FILES;

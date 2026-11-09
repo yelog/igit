@@ -33,6 +33,7 @@ impl PushPanel {
         let selected = tree.visible.get(tree.cursor).copied();
         self.grouping.toggle(group);
         tree.regroup(&self.preview.files, self.grouping);
+        self.file_search.invalidate();
         // A retained selection keeps its summary and scroll position.
         if self.show_details && selected != tree.visible.get(tree.cursor).copied() {
             self.update_details();

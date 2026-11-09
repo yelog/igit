@@ -4,6 +4,7 @@ mod files;
 mod keymap;
 mod loading;
 mod preview;
+mod search;
 mod submodules;
 mod target;
 mod upstream;
@@ -143,6 +144,8 @@ pub struct PushPanel {
     pos: usize,
     offset: usize,
     focus: usize,
+    outgoing_search: crate::ui::search::Search<(usize, Option<usize>)>,
+    file_search: crate::ui::search::Search,
     preview: Preview,
     diff: Option<diff::Diff>,
     grouping: Grouping,
@@ -406,7 +409,9 @@ impl PushPanel {
     }
 
     fn active_pane(&self, id: PaneId) -> bool {
-        self.panes.active && !self.editing() && self.focused_pane() == id
+        self.panes.active
+            && (!self.editing() || self.focused_search().is_some_and(|prompt| prompt.editing()))
+            && self.focused_pane() == id
     }
 
     pub(crate) fn at_root(&self) -> bool {
@@ -744,7 +749,10 @@ impl Panel for PushPanel {
         }
     }
     fn editing(&self) -> bool {
-        self.diff.is_some() || self.target_edit.is_some() || self.group_menu.is_some()
+        self.diff.is_some()
+            || self.target_edit.is_some()
+            || self.group_menu.is_some()
+            || self.focused_search().is_some_and(|prompt| prompt.editing())
     }
     fn selected_text(&self) -> Option<&str> {
         if let Some(diff) = &self.diff {
@@ -767,6 +775,7 @@ impl Panel for PushPanel {
         self.review.clear();
         self.entries.retain(|e| c.scope.contains(&e.idx));
         if scope_changed || old != self.selected_identity() {
+            self.outgoing_search.invalidate();
             self.pos = old
                 .as_ref()
                 .and_then(|identity| self.position_for_identity(identity))
@@ -793,6 +802,10 @@ impl Panel for PushPanel {
         }
         if let Some(action) = self.target_event(e, c) {
             return action;
+        }
+        if self.search_event(e, c) {
+            self.panes.cancel_drag();
+            return Action::None;
         }
         if self.show_details && self.focus == 2 {
             if let Some(action) = self.detail_selection.key(e, true) {

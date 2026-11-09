@@ -127,6 +127,8 @@ struct DateRangeEditor {
 struct ViewState {
     filter: Filter,
     ref_query: String,
+    ref_search: crate::ui::search::Search<String>,
+    file_search: crate::ui::search::Search,
     regex: bool,
     case_sensitive: bool,
     selected: Option<(usize, String)>,
@@ -157,6 +159,8 @@ pub struct LogPanel {
     node_glyphs: NodeGlyphs,
     refs: refs::RefTree,
     ref_query: String,
+    ref_search: crate::ui::search::Search<String>,
+    file_search: crate::ui::search::Search,
     inspector: inspector::Inspector,
     cursor: usize,
     choice: Option<usize>,
@@ -207,6 +211,8 @@ impl Default for LogPanel {
             node_glyphs: NodeGlyphs::detect(),
             refs: Default::default(),
             ref_query: String::new(),
+            ref_search: Default::default(),
+            file_search: Default::default(),
             inspector: Default::default(),
             cursor: 0,
             choice: None,
@@ -243,6 +249,22 @@ impl Default for LogPanel {
     }
 }
 impl LogPanel {
+    pub(crate) fn focused_search(&self) -> Option<&crate::ui::search::Prompt> {
+        if self.editor.is_some()
+            || self.diff.is_some()
+            || self.view_menu.is_some()
+            || self.commit_dialog.is_some()
+            || !self.pane_visible(self.focus)
+        {
+            return None;
+        }
+        match self.focus {
+            Pane::Refs => Some(self.ref_search.prompt()),
+            Pane::Files => Some(self.file_search.prompt()),
+            _ => None,
+        }
+    }
+
     pub(crate) fn focused_pane(&self) -> PaneId {
         self.focus.id()
     }
@@ -698,6 +720,7 @@ impl Panel for LogPanel {
             || self.diff.is_some()
             || self.view_menu.is_some()
             || self.commit_dialog.is_some()
+            || self.focused_search().is_some_and(|prompt| prompt.editing())
     }
     fn selected_text(&self) -> Option<&str> {
         if self.commit_dialog.is_some() {
@@ -740,6 +763,18 @@ impl Panel for LogPanel {
     }
     fn event(&mut self, e: &Event, c: &Context) -> Action {
         self.check_history_context(c);
+        if self.focused_search().is_some()
+            && match self.focus {
+                Pane::Refs => self.ref_search_event(e, c),
+                Pane::Files => self.file_search_event(e, c),
+                _ => false,
+            }
+        {
+            self.panes.cancel_drag();
+            self.cancel_key_sequence();
+            self.last = None;
+            return Action::None;
+        }
         if let Some(action) = self.history_event(e) {
             return action;
         }
@@ -945,9 +980,10 @@ impl Panel for LogPanel {
                 )?,
                 K::Char(']') => self.switch_tab((self.view_index + 1) % self.views.len(), c)?,
                 K::Char('/')
-                    if !k
-                        .modifiers
-                        .intersects(Mods::ALT | Mods::CONTROL | Mods::SUPER) =>
+                    if matches!(self.focus, Pane::Graph | Pane::Info)
+                        && !k
+                            .modifiers
+                            .intersects(Mods::ALT | Mods::CONTROL | Mods::SUPER) =>
                 {
                     self.begin(Field::Text, c)?
                 }

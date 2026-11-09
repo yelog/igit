@@ -1,6 +1,7 @@
 use super::{
-    backend, rows::CONFLICT_SELECTION, slice, word, CommitPanel, Focus, Hit, Kind, MessageAction,
-    Row,
+    backend,
+    rows::{monochrome, CONFLICT_SELECTION},
+    slice, word, CommitPanel, Focus, Hit, Kind, MessageAction, Row,
 };
 use crate::{
     core::Context,
@@ -252,7 +253,14 @@ impl CommitPanel {
                 fg(INK)
             };
             f.render_widget(
-                Paragraph::new(model.change_row(row, c, r.width)).style(style),
+                Paragraph::new(model.row_line(
+                    row,
+                    c,
+                    r.width,
+                    monochrome(),
+                    self.changes_search.field(&row.id, 0),
+                ))
+                .style(style),
                 r,
             );
             if row.kind == Kind::Conflicts {
@@ -441,7 +449,9 @@ impl CommitPanel {
         if key != self.diff_key {
             self.diff_key = key.to_owned();
             self.diff_selection.reset();
+            self.invalidate_diff_search();
             self.diff_scroll = 0;
+            self.diff_left = 0;
             self.diff_text = file
                 .map(|i| {
                     let v = &self.files[i];
@@ -516,14 +526,7 @@ impl CommitPanel {
                 Span::styled(format!("{file_icon} "), fg(tint)),
                 Span::styled(v.change.label(), fg(INK)),
             ])];
-            preview_body(
-                f,
-                body,
-                &mut self.diff_scroll,
-                &mut self.diff_selection,
-                details,
-                self.diff_text.split('\n').map(diff_line),
-            );
+            self.draw_patch(f, body, details);
         } else {
             let (checked, _) = self.check_counts(row);
             let conflicts = row
@@ -643,34 +646,82 @@ impl CommitPanel {
             );
         }
     }
+
+    fn draw_patch(&mut self, f: &mut Frame, area: Rect, details: Vec<Line<'_>>) {
+        if area.is_empty() {
+            return;
+        }
+        let width = usize::from(area.width);
+        let mut layout = preview_layout(area.width, details);
+        let first = layout.rows.len();
+        let lines = self.diff_text.split('\n');
+        let height = usize::from(area.height);
+        if let Some(hit) = self.diff_match.take() {
+            if let Some(text) = lines.clone().nth(hit.row) {
+                let row = first + hit.row;
+                self.diff_scroll = self
+                    .diff_scroll
+                    .min(row)
+                    .max((row + 1).saturating_sub(height));
+                let cells = hit.cells(text);
+                if self.diff_left > cells.start {
+                    self.diff_left = cells.start.saturating_sub(width / 4);
+                }
+                self.diff_left = self
+                    .diff_left
+                    .max(cells.end.saturating_sub(width).min(cells.start));
+            }
+        }
+        self.diff_scroll = self
+            .diff_scroll
+            .min((first + lines.clone().count()).saturating_sub(height));
+        self.diff_line_at_top = self.diff_scroll.checked_sub(first);
+        let visible = self.diff_scroll..self.diff_scroll + height;
+        let mut widest = width;
+        for (i, text) in lines.enumerate() {
+            let line = diff_line(text);
+            if self.diff_left != 0 {
+                widest = widest.max(text.width());
+            }
+            if self.diff_search.prompt().visible() && visible.contains(&(first + i)) {
+                let spans = self.diff_search.field(&i, 0).spans(text, line.style);
+                layout.push(Line::from(spans), area.width, Wrap::Clip);
+            } else {
+                layout.push(line, area.width, Wrap::Clip);
+            }
+        }
+        self.diff_left = self.diff_left.min(widest.saturating_sub(width));
+        self.diff_selection
+            .render(f, area, layout, self.diff_scroll, self.diff_left);
+    }
+}
+
+fn preview_layout(width: u16, details: Vec<Line<'_>>) -> TextLayout {
+    let mut layout = TextLayout::default();
+    for line in details {
+        layout.push(line, width, Wrap::Character);
+    }
+    layout.decoration(Line::styled("─".repeat(width.into()), fg(EDGE)));
+    layout
 }
 
 // Keep long paths readable with the same scroll controls as the patch, even on a short terminal.
 fn preview_body<'a>(
     f: &mut Frame,
     area: Rect,
-    scroll: &mut u16,
+    scroll: &mut usize,
     selection: &mut TextSelection,
     details: Vec<Line<'a>>,
     content: impl Iterator<Item = Line<'a>>,
 ) {
-    let width = usize::from(area.width);
-    if width == 0 {
+    if area.width == 0 {
         return;
     }
-    let mut layout = TextLayout::default();
-    for line in details {
-        layout.push(line, area.width, Wrap::Character);
-    }
-    layout.decoration(Line::styled("─".repeat(width), fg(EDGE)));
+    let mut layout = preview_layout(area.width, details);
     for line in content {
         layout.push(line, area.width, Wrap::Clip);
     }
-    let max = layout
-        .rows
-        .len()
-        .saturating_sub(usize::from(area.height))
-        .min(u16::MAX as usize);
-    *scroll = (*scroll).min(max as u16);
-    selection.render(f, area, layout, usize::from(*scroll), 0);
+    let max = layout.rows.len().saturating_sub(usize::from(area.height));
+    *scroll = (*scroll).min(max);
+    selection.render(f, area, layout, *scroll, 0);
 }

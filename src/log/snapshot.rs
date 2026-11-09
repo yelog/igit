@@ -64,13 +64,29 @@ pub(crate) struct SnapshotPreview {
 }
 
 impl SnapshotPreview {
-    pub(crate) fn set(&mut self, snapshot: Snapshot) {
+    pub(crate) fn clear(&mut self) {
+        let mut search = std::mem::take(&mut self.panel.file_search);
+        search.invalidate();
         self.panel = LogPanel::default();
+        self.panel.file_search = search;
+        self.sources.clear();
+    }
+
+    pub(crate) fn set(&mut self, snapshot: Snapshot) {
+        self.clear();
         self.panel.hist.revs = vec![snapshot.revision];
         self.panel.visible = vec![0];
         self.panel.details.files = snapshot.files;
         self.panel.inspector = inspector::Inspector::new(&self.panel.details);
         self.sources = snapshot.sources;
+    }
+
+    pub(crate) fn search_prompt(&self) -> &crate::ui::search::Prompt {
+        self.panel.file_search.prompt()
+    }
+
+    pub(crate) fn search_event(&mut self, event: &Event, c: &Context) -> bool {
+        self.panel.file_search_event(event, c)
     }
 
     pub(crate) fn draw_files(

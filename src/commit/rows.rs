@@ -94,7 +94,7 @@ fn parent_hint(repo: &str, path: &Path, width: usize) -> String {
     clipped_path(hint, width)
 }
 
-fn monochrome() -> bool {
+pub(super) fn monochrome() -> bool {
     std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
 }
 
@@ -105,7 +105,8 @@ impl CommitPanel {
 
     #[cfg(test)]
     fn row_line(&self, row: &Row, c: &Context, width: u16, mono: bool) -> Line<'static> {
-        self.changes_tree().row_line(row, c, width, mono)
+        self.changes_tree()
+            .row_line(row, c, width, mono, Default::default())
     }
 }
 
@@ -199,10 +200,17 @@ impl Tree<'_> {
     }
 
     pub(super) fn change_row(&self, row: &Row, c: &Context, width: u16) -> Line<'static> {
-        self.row_line(row, c, width, monochrome())
+        self.row_line(row, c, width, monochrome(), Default::default())
     }
 
-    fn row_line(&self, row: &Row, c: &Context, width: u16, mono: bool) -> Line<'static> {
+    pub(super) fn row_line(
+        &self,
+        row: &Row,
+        c: &Context,
+        width: u16,
+        mono: bool,
+        highlight: crate::ui::search::Highlight<'_>,
+    ) -> Line<'static> {
         let cells = self.row_cells(row, Rect::new(0, 0, width, 1), mono);
         let mut line = Line::default();
         cells.disclosure.draw(&mut line);
@@ -252,9 +260,11 @@ impl Tree<'_> {
                         line.push_span(" ");
                         room -= icon_width;
                     }
-                    line.push_span(Span::styled(
-                        filename(&row.label, room),
+                    line.spans.extend(highlight.clipped_with(
+                        &row.label,
+                        room,
                         file_style(change, cells.merge_conflict),
+                        filename,
                     ));
                     let room = usize::from(width) - line.width();
                     if (cells.merge_conflict || !self.options.directories) && room >= 3 {
@@ -268,8 +278,9 @@ impl Tree<'_> {
                     }
                 }
                 Kind::Conflicts => {
-                    line.push_span(Span::styled(
-                        clipped(&row.label, cells.body.width.into()),
+                    line.spans.extend(highlight.clipped(
+                        &row.label,
+                        cells.body.width.into(),
                         Style::new().fg(INK).bold(),
                     ));
                     if !cells.resolve.is_empty() {
@@ -282,11 +293,7 @@ impl Tree<'_> {
                 }
                 _ => {
                     let room = usize::from(cells.body.width);
-                    let label = match row.kind {
-                        Kind::Directory(_) => format!("{}/", row.label),
-                        Kind::Repo(_) => display_path(Path::new(&row.label)),
-                        _ => row.label.clone(),
-                    };
+                    let label = row.search_label();
                     let (glyph, color) = match row.kind {
                         Kind::Repo(root) => (
                             if c.repos[root].submodule {
@@ -324,7 +331,8 @@ impl Tree<'_> {
                     } else {
                         Style::new().fg(INK).bold()
                     };
-                    line.push_span(Span::styled(clipped(&label, name_room), style));
+                    line.spans
+                        .extend(highlight.clipped(&label, name_room, style));
                     if show_count {
                         let color = if cells.merge_conflict {
                             CONFLICT_META

@@ -277,6 +277,7 @@ impl LogPanel {
                     ("a", "Open commit actions"),
                     ("F2", "Edit commit message"),
                     ("Enter", "Open commit file diff"),
+                    ("/", "Search commit text or hash"),
                 ],
             ),
             Pane::Refs => Section::new(
@@ -315,6 +316,7 @@ impl LogPanel {
                 "Log / Commit Details",
                 &[
                     ("Ctrl-a", "Select all commit details"),
+                    ("/", "Search commit text or hash"),
                     ("Esc", "Clear selection; otherwise return to commits"),
                     ("j", "Scroll commit details down"),
                     ("k", "Scroll commit details up"),
@@ -334,7 +336,6 @@ impl LogPanel {
                 &[
                     ("Tab", "Focus next workspace pane"),
                     ("Shift-Tab", "Focus previous workspace pane"),
-                    ("/", "Search commit text or hash"),
                     ("Space b", "Open Branch filter"),
                     ("Space u", "Open User filter"),
                     ("Space d", "Open Date filter"),

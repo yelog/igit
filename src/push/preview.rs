@@ -245,6 +245,7 @@ impl PushPanel {
         self.diff = None;
         self.detail_selection.reset();
         self.preview = Preview::default();
+        self.file_search.invalidate();
         self.detail_off = 0;
         let Some(request) = self.preview_request(c, None) else {
             return;

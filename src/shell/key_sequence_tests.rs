@@ -93,7 +93,7 @@ fn log_space_filters_take_priority_over_global_pull_and_keep_editor_keys() {
     }
     app.log.focus_pane(PaneId::Refs);
     send(&mut app, '/');
-    assert_eq!(app.help_content().context(), "Log / Text Search");
+    assert_eq!(app.help_content().context(), "Pane Search");
     for ch in ['p', ' ', 'f'] {
         send(&mut app, ch);
     }

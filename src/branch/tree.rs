@@ -77,6 +77,29 @@ fn namespace(remote: bool) -> &'static str {
 }
 
 impl Tree {
+    pub fn unfolded_rows(&self, repo: Option<&Repository>) -> Option<Vec<Row>> {
+        if self.collapsed.is_empty() {
+            return None;
+        }
+        let mut tree = Self {
+            flat: self.flat,
+            ..Self::default()
+        };
+        tree.rebuild(repo);
+        Some(tree.rows)
+    }
+
+    pub fn reveal(&mut self, id: &str, repo: Option<&Repository>) {
+        if !self.rows.iter().any(|row| row.id == id) {
+            self.collapsed
+                .retain(|parent| id == parent || !id.starts_with(parent));
+            self.rebuild(repo);
+        }
+        if let Some(i) = self.rows.iter().position(|row| row.id == id) {
+            self.cursor = i;
+        }
+    }
+
     pub fn for_refresh(&self) -> Self {
         Self {
             flat: self.flat,

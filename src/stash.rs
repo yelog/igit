@@ -2,6 +2,7 @@
 mod model;
 mod operations;
 mod preview;
+mod search;
 mod view;
 
 use crate::{
@@ -35,6 +36,7 @@ enum Row {
 pub struct StashPanel {
     repos: Vec<Repository>,
     rows: Vec<Row>,
+    stash_search: crate::ui::search::Search<Row>,
     folded: BTreeSet<usize>,
     empty_expanded: bool,
     cursor: usize,
@@ -54,6 +56,7 @@ impl Default for StashPanel {
         Self {
             repos: vec![],
             rows: vec![],
+            stash_search: Default::default(),
             folded: BTreeSet::new(),
             empty_expanded: false,
             cursor: 0,
@@ -87,29 +90,27 @@ impl StashPanel {
             .map(|(root, entry)| (root, entry.oid.clone()))
     }
 
-    fn rebuild(&mut self) {
-        self.rows.clear();
-        self.hits.clear();
+    fn rows_with_folds(&self, unfold: bool) -> Vec<Row> {
+        let mut rows = Vec::new();
         for repo in self.repos.iter().filter(|repo| !repo.entries.is_empty()) {
-            self.rows.push(Row::Repository(repo.root));
-            if !self.folded.contains(&repo.root) {
-                self.rows
-                    .extend((0..repo.entries.len()).map(|entry| Row::Stash {
-                        root: repo.root,
-                        entry,
-                    }));
+            rows.push(Row::Repository(repo.root));
+            if unfold || !self.folded.contains(&repo.root) {
+                rows.extend((0..repo.entries.len()).map(|entry| Row::Stash {
+                    root: repo.root,
+                    entry,
+                }));
             }
         }
-        self.rows.extend(
+        rows.extend(
             self.repos
                 .iter()
                 .filter(|repo| repo.error.is_some())
                 .map(|repo| Row::Repository(repo.root)),
         );
         if self.repos.iter().any(Repository::is_empty) {
-            self.rows.push(Row::EmptyGroup);
-            if self.empty_expanded {
-                self.rows.extend(
+            rows.push(Row::EmptyGroup);
+            if unfold || self.empty_expanded {
+                rows.extend(
                     self.repos
                         .iter()
                         .filter(|repo| repo.is_empty())
@@ -117,6 +118,12 @@ impl StashPanel {
                 );
             }
         }
+        rows
+    }
+
+    fn rebuild(&mut self) {
+        self.rows = self.rows_with_folds(false);
+        self.hits.clear();
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
     }
 
@@ -248,8 +255,17 @@ impl StashPanel {
         if matches!(e, Event::Key(k) if k.kind == KeyEventKind::Release) {
             return Ok(Action::None);
         }
-        if self.editing() {
+        if self.files.editing() {
             return self.files.event(e, c);
+        }
+        let handled = if self.focus == PaneId::Files {
+            self.files.search_event(e, c)
+        } else {
+            self.stash_search_event(e, c)
+        };
+        if handled {
+            self.panes.cancel_drag();
+            return Ok(Action::None);
         }
         if let Event::Mouse(m) = e {
             if self.panes.mouse(m) {
@@ -338,7 +354,7 @@ impl StashPanel {
     }
 
     pub(crate) fn keymap(&self) -> HelpContent {
-        if self.editing() {
+        if self.files.editing() {
             return self.files.keymap();
         }
         let list = HelpSection::new(
@@ -395,6 +411,7 @@ impl Panel for StashPanel {
         let keep = self.identity();
         let previous = self.rows.get(self.cursor).copied();
         self.repos = model::load(c);
+        self.stash_search.invalidate();
         self.rebuild();
         self.cursor = keep
             .and_then(|(root, oid)| {
@@ -437,7 +454,7 @@ impl Panel for StashPanel {
         Action::Refresh(result)
     }
     fn editing(&self) -> bool {
-        self.files.editing()
+        self.files.editing() || self.focused_search().is_some_and(|prompt| prompt.editing())
     }
     fn selected_text(&self) -> Option<&str> {
         self.files.selected_text()

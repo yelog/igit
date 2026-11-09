@@ -583,3 +583,48 @@ fn merge_rechecks_dirty_index_and_does_not_autostash() {
     assert!(run(repo, &["stash", "list"]).is_empty());
     assert!(Review::prepare(&c, 0, &source(&c, "refs/heads/topic"), Operation::Merge, "").is_err());
 }
+
+#[test]
+fn pane_search_branch_switches_repository_and_reveals_only_matching_ancestors() {
+    let (_temp, c, mut p) = fixture();
+    let root = c.repos.iter().position(|repo| repo.name == "web").unwrap();
+    let path = &c.repos[root].path;
+    for name in ["feature/查找-alpha", "feature/查找-beta", "other/hidden"] {
+        run(path, &["branch", name]);
+    }
+    reload(&mut p, &c);
+    let before = state(path);
+    let find = |p: &mut BranchPanel, term: &str| {
+        key(p, &c, K::Char('/'));
+        p.event(&Event::Paste(term.into()), &c);
+        key(p, &c, K::Enter);
+    };
+    p.focus_pane(PaneId::BranchRepos);
+    find(&mut p, "WEB");
+    assert_eq!(p.repo_root, Some(root));
+    assert_eq!(p.focused_pane(), PaneId::BranchRepos);
+    p.focus_pane(PaneId::Branches);
+    let prefix = format!("{root}:refs/heads/");
+    for folder in ["feature/", "other/"] {
+        p.tree.cursor = folder_index(&p, &format!("{prefix}{folder}"));
+        key(&mut p, &c, K::Char('h'));
+    }
+    assert!(p.tree.rows.iter().all(|row| row.label != "查找-alpha"));
+    find(&mut p, "查找");
+    assert_eq!(p.selection().unwrap().1.name, "feature/查找-alpha");
+    assert!(p.tree.rows.iter().all(|row| row.label != "hidden"));
+    key(&mut p, &c, K::Char('n'));
+    assert_eq!(p.selection().unwrap().1.name, "feature/查找-beta");
+    key(&mut p, &c, K::Char('N'));
+    assert_eq!(p.selection().unwrap().1.name, "feature/查找-alpha");
+    let t = render(&mut p, &c, 44, 12);
+    assert!(t
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .any(|cell| cell.symbol() == "查"
+            && (Some(cell.bg) == crate::ui::search::CURRENT.bg
+                || cell.modifier.contains(ratatui::style::Modifier::REVERSED))));
+    assert_eq!(state(path), before);
+}

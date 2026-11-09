@@ -138,6 +138,8 @@ impl BranchPanel {
         if let Some(result) = self.loading.task.take_result() {
             match result {
                 Ok(Some(loaded)) => {
+                    self.repo_search.invalidate();
+                    self.branch_search.invalidate();
                     self.repos = loaded.repos;
                     let repo = self.repository_index().map(|index| &self.repos[index]);
                     self.tree.install(loaded.tree, repo);

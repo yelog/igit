@@ -37,6 +37,11 @@ fn log_panes_stay_tiled_with_one_focus_frame_at_all_sizes() {
     p.panes.active = true;
     key(&mut p, K::Char('/'), Mods::NONE, &c);
     render(&mut p, &mut t, &c);
+    assert_frames(&p, &t, Some(PaneId::Files));
+    key(&mut p, K::Esc, Mods::NONE, &c);
+    p.focus_pane(PaneId::Graph);
+    key(&mut p, K::Char('/'), Mods::NONE, &c);
+    render(&mut p, &mut t, &c);
     assert_frames(&p, &t, None);
     key(&mut p, K::Esc, Mods::NONE, &c);
 

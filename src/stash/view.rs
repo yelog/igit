@@ -168,18 +168,27 @@ impl StashPanel {
 
     fn list_line(&self, c: &Context, row: Row, width: usize, selected: bool) -> Line<'static> {
         let muted = Style::new().fg(if selected { FG } else { MUTED });
+        let highlight = self.stash_search.field(&row, 0);
         match row {
             Row::Stash { root, entry } => stash_line(
                 &self.repository(root).unwrap().entries[entry],
                 width,
                 selected,
+                highlight,
             ),
             Row::Repository(root) => {
                 let repo = self.repository(root).unwrap();
                 let name = model::label(&c.repos[root].name);
                 let icon = self.icons.repo(c.repos[root].submodule);
                 if repo.is_empty() {
-                    return Line::styled(clipped(&format!("  {icon} {name}"), width), muted);
+                    let prefix = format!("  {icon} ");
+                    let mut line = Line::styled(prefix.clone(), muted);
+                    line.spans.extend(highlight.clipped(
+                        &name,
+                        width.saturating_sub(prefix.width()),
+                        muted,
+                    ));
+                    return line;
                 }
                 let (prefix, badge, badge_style) = if repo.error.is_some() {
                     (
@@ -195,38 +204,42 @@ impl StashPanel {
                         muted,
                     )
                 };
-                let label = clipped(&name, width.saturating_sub(prefix.width() + badge.width()));
-                Line::from(vec![
-                    Span::styled(prefix, muted),
-                    Span::styled(label, Style::new().fg(FG).bold()),
-                    Span::styled(badge, badge_style),
-                ])
+                let room = width.saturating_sub(prefix.width() + badge.width());
+                let mut line = Line::from(Span::styled(prefix, muted));
+                line.spans
+                    .extend(highlight.clipped(&name, room, Style::new().fg(FG).bold()));
+                line.push_span(Span::styled(badge, badge_style));
+                line
             }
             Row::EmptyGroup => {
                 let count = self.repos.iter().filter(|repo| repo.is_empty()).count();
-                let noun = if count == 1 { "repo" } else { "repos" };
                 let all_empty = count == self.repos.len();
-                let title = if all_empty {
-                    format!("No stashes · {count} {noun}")
-                } else {
-                    format!("{count} {noun} without stashes")
-                };
+                let title = self.empty_group_label();
                 let disclosure = self.icons.disclosure(self.empty_expanded);
                 let room = width.saturating_sub(disclosure.width() + 1);
-                let title = if title.width() <= room {
-                    title
-                } else if all_empty {
-                    clipped(&format!("No stashes ({count})"), room)
-                } else {
-                    clipped(&format!("{count} without stashes"), room)
-                };
-                Line::styled(format!("{disclosure} {title}"), muted)
+                let mut line = Line::from(Span::styled(format!("{disclosure} "), muted));
+                line.spans
+                    .extend(highlight.clipped_with(&title, room, muted, |text, width| {
+                        if text.width() <= width {
+                            text.into()
+                        } else if all_empty {
+                            clipped(&format!("No stashes ({count})"), width)
+                        } else {
+                            clipped(&format!("{count} without stashes"), width)
+                        }
+                    }));
+                line
             }
         }
     }
 }
 
-fn stash_line(entry: &Entry, width: usize, selected: bool) -> Line<'static> {
+fn stash_line(
+    entry: &Entry,
+    width: usize,
+    selected: bool,
+    highlight: crate::ui::search::Highlight<'_>,
+) -> Line<'static> {
     let indent = if width >= 8 { "    " } else { "" };
     let room = width.saturating_sub(indent.len());
     // Keep a readable message column. When width runs out, drop the number,
@@ -243,16 +256,19 @@ fn stash_line(entry: &Entry, width: usize, selected: bool) -> Line<'static> {
         .find(|value| value.width() + 2 + 16 <= room)
         .unwrap_or("");
     let gap = if meta.is_empty() { 0 } else { 2 };
-    let message = clipped(entry.message(), room.saturating_sub(meta.width() + gap));
-    let pad = room.saturating_sub(message.width() + meta.width());
-    Line::from(vec![
-        Span::raw(indent),
-        Span::raw(message),
-        Span::styled(
-            format!("{}{meta}", " ".repeat(pad)),
-            Style::new().fg(if selected { FG } else { MUTED }),
-        ),
-    ])
+    let message = highlight.clipped(
+        entry.message(),
+        room.saturating_sub(meta.width() + gap),
+        Style::default(),
+    );
+    let pad = room.saturating_sub(message.iter().map(Span::width).sum::<usize>() + meta.width());
+    let mut line = Line::from(indent);
+    line.spans.extend(message);
+    line.push_span(Span::styled(
+        format!("{}{meta}", " ".repeat(pad)),
+        Style::new().fg(if selected { FG } else { MUTED }),
+    ));
+    line
 }
 
 fn draw_diff_context(f: &mut Frame, area: &mut Rect, name: &str, entry: &Entry) {

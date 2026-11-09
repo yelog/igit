@@ -86,6 +86,17 @@ context-owned input. Help carries display labels separately from static command
 identity, so searching or choosing a custom binding cannot create a new Git
 execution path. No settings are loaded from repositories or written by the app.
 
+[Pane search](../src/ui/search.rs) owns single-line input, literal match ranges,
+wrapping navigation, and highlighted spans. Shell displays the prompt in the
+footer and routes text through the panel's editing guard. The panes search their
+loaded row labels or patch text and map each match back to a native row key or
+source line. Searching does not filter a Git snapshot or fetch more data. Jumps
+use existing selection and preview paths and reveal only the matched row's
+ancestors. Stash reuses Log's inspector search through `SnapshotPreview`.
+Queries are session state; replacing a snapshot clears old match positions
+without changing the query. Commit's patch uses the existing selectable text
+layout so colors and automatic scrolling do not change clipboard bytes.
+
 Smart focus is a typed command rather than a synthetic key sequence. Shell
 consumes its configured chords before editor/review handlers, moving only in
 normal mode. [Pane routing](../src/shell/panes.rs) uses current geometry before

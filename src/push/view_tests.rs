@@ -749,3 +749,54 @@ fn target_tracking_choice_and_save_cancel_are_reachable_at_supported_sizes() {
         }
     }
 }
+
+#[test]
+fn pane_search_push_reveals_outgoing_commits_and_changed_files_without_checking_repos() {
+    let (mut p, c) = fixture(IconMode::Ascii);
+    p.entries[0].logs.push(Out {
+        id: "aaaa".into(),
+        msg: "First needle".into(),
+    });
+    p.entries[7].logs.push(Out {
+        id: "bbbb".into(),
+        msg: "Second NEEDLE".into(),
+    });
+    let preview = std::mem::take(&mut p.preview);
+    let checks = p.checked.clone();
+    let find = |p: &mut PushPanel, term: &str| {
+        key(p, &c, KeyCode::Char('/'));
+        assert!(p.editing());
+        p.event(&Event::Paste(term.into()), &c);
+        key(p, &c, KeyCode::Enter);
+    };
+    find(&mut p, "needle");
+    assert_eq!(p.selected(), Some((0, Some(0))));
+    assert!(!p.expanded.contains(&7));
+    key(&mut p, &c, KeyCode::Char('n'));
+    assert_eq!(p.selected(), Some((7, Some(0))));
+    assert!(p.expanded.contains(&7));
+    key(&mut p, &c, KeyCode::Char('n'));
+    assert_eq!(p.selected(), Some((0, Some(0))));
+    assert_eq!(p.checked, checks);
+
+    p.preview_load.cancel();
+    p.preview_request = None;
+    p.preview = preview;
+    p.focus_pane(PaneId::PushFiles);
+    key(&mut p, &c, KeyCode::Char('['));
+    find(&mut p, "system.ts");
+    let path = |p: &PushPanel| {
+        p.preview.files[p.preview.tree.file_index().unwrap()]
+            .path
+            .clone()
+    };
+    assert_eq!(path(&p), Path::new("src/locales/en_US/system.ts"));
+    let buffer = draw(&mut p, &c, 80, 24);
+    assert!(buffer.content().iter().any(|cell| cell.symbol() == "s"
+        && (Some(cell.bg) == crate::ui::search::CURRENT.bg
+            || cell.modifier.contains(Modifier::REVERSED))));
+    key(&mut p, &c, KeyCode::Char('N'));
+    assert_eq!(path(&p), Path::new("src/locales/zh_CN/system.ts"));
+    assert_eq!(p.checked, checks);
+    assert!(p.diff.is_none() && !p.busy());
+}
