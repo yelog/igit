@@ -52,11 +52,12 @@ target; the brand and remaining hints do not open the update window. The footer
 also remains visible below the full-screen conflict editor.
 
 `F9` in normal mode, the version-label click, and Actions → Update IGit open
-Update Center. Its cyan rounded frame fades in and fits the status, version,
-and channel. A current installation shows one centered **OK** button. When
-there is a choice, **Not now** starts focused. `Tab`/arrows switch buttons;
-`Enter` or a click activates; `Esc` closes. `r` checks again after a current or
-failed check; `j/k` or the wheel scrolls long details. The footer lists available
+Update Center. Its rounded frame uses the workspace palette and fades in.
+The dialog fits the status, version, and channel. A current installation
+shows one centered **OK** button. When there is a choice, **Not now** starts
+focused. `Tab`/arrows switch buttons; `Enter` or a click activates; `Esc` closes.
+`r` checks again after a current or failed check; `j/k` or the wheel scrolls
+long details. The footer lists available
 shortcuts and also accepts clicks. Input and write-review dialogs keep their
 own keyboard controls. Background checks never open a window or install a
 release. The progress bar fills from downloaded bytes when the total is known;

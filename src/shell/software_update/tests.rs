@@ -1,10 +1,14 @@
 use super::*;
 use crate::{
     shell::{test_support::*, *},
-    ui::icons::IconMode,
+    ui::{icons::IconMode, idea::GREEN},
 };
 use crossterm::event::MouseEvent;
-use ratatui::{backend::TestBackend, buffer::Buffer, style::Color};
+use ratatui::{
+    backend::TestBackend,
+    buffer::Buffer,
+    style::{Color, Modifier},
+};
 use std::{
     fs,
     time::{Duration, UNIX_EPOCH},
@@ -61,20 +65,24 @@ fn up_to_date_matches_the_reference_layout_and_fades_in() {
     app.software_update.state = State::Report(current);
     app.open_software_update();
     let opened = app.software_update.opened_at.unwrap();
-    let cyan = Color::Rgb(99, 230, 216);
-    assert_eq!(buffer(&mut app)[(8, 8)].fg, Color::Rgb(0, 0, 0));
+    let first = buffer(&mut app);
+    assert_eq!(first[(8, 8)].fg, Color::Rgb(0, 0, 0));
+    assert_eq!(first[(36, 12)].fg, Color::Rgb(0, 0, 0));
     assert!(app.software_update.animate(opened + FADE_TICK * 5));
-    assert_ne!(buffer(&mut app)[(8, 8)].fg, cyan);
+    assert_ne!(buffer(&mut app)[(8, 8)].fg, ACCENT);
     assert!(app.software_update.animate(opened + FADE_TICK * 10));
     assert!(app.software_update.animation_timeout().is_none());
 
     let cells = buffer(&mut app);
     assert_eq!(cells[(8, 8)].symbol(), "╭");
     assert_eq!(cells[(71, 14)].symbol(), "╯");
-    assert_eq!(cells[(8, 8)].fg, cyan);
-    assert_eq!(cells[(11, 9)].fg, Color::Rgb(92, 200, 150));
-    assert_eq!(cells[(11, 10)].fg, Color::Rgb(105, 126, 146));
-    assert_eq!(cells[(9, 13)].bg, cells[(11, 10)].bg, "no footer strip");
+    assert_eq!(cells[(8, 8)].fg, ACCENT);
+    assert_eq!(cells[(11, 9)].fg, GREEN);
+    assert_eq!(cells[(11, 10)].fg, MUTED);
+    assert_eq!(cells[(11, 10)].bg, BG);
+    assert_eq!(cells[(9, 13)].bg, BG, "no footer strip");
+    assert!(cells[(0, 0)].modifier.contains(Modifier::DIM));
+    assert!(!cells[(8, 8)].modifier.contains(Modifier::DIM));
     let text = screen(&mut app, 80, 24);
     for expected in [
         "UPDATE CENTER",
@@ -86,7 +94,7 @@ fn up_to_date_matches_the_reference_layout_and_fades_in() {
         assert!(text.contains(expected), "{expected:?} missing from {text}");
     }
     assert_eq!(app.pop_hits[0], (Rect::new(36, 12, 8, 1), 0));
-    assert_eq!(cells[(36, 12)].bg, cyan);
+    assert_eq!(cells[(36, 12)].bg, SEL);
     app.dispatch(&click(10, 13)); // Enter hint confirms the focused button.
     assert!(app.pop.is_none());
 }

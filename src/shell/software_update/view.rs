@@ -4,10 +4,10 @@ use crate::{
     ui::{
         help::{HelpContent, HelpSection},
         icons::IconMode,
-        idea::{CONFLICT, GREEN, RED},
+        idea::{button_style, CONFLICT, GREEN, RED},
         inside,
         selection::{TextLayout, Wrap},
-        ACCENT, MUTED,
+        ACCENT, BG, FG, MUTED,
     },
 };
 use crossterm::event::{
@@ -15,22 +15,12 @@ use crossterm::event::{
 };
 use ratatui::{
     layout::Rect,
-    style::{Color, Style, Stylize},
+    style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
     Frame,
 };
 use unicode_width::UnicodeWidthStr;
-
-// Match LazyDB's Deep Space dialog without changing the workspace palette.
-const BACKDROP: Color = Color::Rgb(7, 11, 18);
-const SURFACE: Color = Color::Rgb(12, 19, 30);
-const TEXT: Color = Color::Rgb(215, 226, 237);
-const DETAIL: Color = Color::Rgb(105, 126, 146);
-const CYAN: Color = Color::Rgb(99, 230, 216);
-const ACTIVE: Color = Color::Rgb(101, 167, 255);
-const SUCCESS: Color = Color::Rgb(92, 200, 150);
-const ERROR: Color = Color::Rgb(255, 107, 122);
 
 const CONFIRM: usize = usize::MAX;
 const NEXT: usize = usize::MAX - 1;
@@ -83,12 +73,12 @@ impl SoftwareUpdate {
         let (title, color, details) = match &self.state {
             State::Idle => (
                 "Ready to check for updates".into(),
-                TEXT,
+                FG,
                 vec!["No update check has run yet.".into()],
             ),
             State::Checking => (
                 "Checking for updates…".into(),
-                ACTIVE,
+                ACCENT,
                 vec!["This only takes a moment.".into()],
             ),
             State::Report(report) if report.status == Status::UpToDate => {
@@ -106,16 +96,16 @@ impl SoftwareUpdate {
                 } else {
                     "You're up to date"
                 };
-                (format!("{success} {title}"), SUCCESS, details)
+                (format!("{success} {title}"), GREEN, details)
             }
             State::Report(report) => (
                 format!("{up} Update available"),
-                ACTIVE,
+                CONFLICT,
                 vec![versions(report)],
             ),
             State::Installing(report, progress) => (
                 "Updating IGit".into(),
-                ACTIVE,
+                ACCENT,
                 vec![
                     format!(
                         "Installing {} {dot} {}",
@@ -127,12 +117,12 @@ impl SoftwareUpdate {
             ),
             State::Ready(report) => (
                 format!("{success} Update installed"),
-                SUCCESS,
+                GREEN,
                 vec![format!("Restart to use {}", report.target_version)],
             ),
             State::Failed(message) => (
                 format!("{error} Update failed"),
-                ERROR,
+                RED,
                 vec![terminal_text(message)],
             ),
         };
@@ -146,7 +136,7 @@ impl SoftwareUpdate {
         for detail in &details {
             for line in detail.split('\n') {
                 body.push(
-                    Line::styled(line, Style::new().fg(DETAIL)),
+                    Line::styled(line, Style::new().fg(MUTED)),
                     width,
                     Wrap::Word,
                 );
@@ -162,7 +152,7 @@ impl SoftwareUpdate {
                         .unwrap_or("Update IGit with its original installation method."),
                 );
                 for line in message.split('\n') {
-                    body.push(Line::styled(line, Style::new().fg(TEXT)), width, Wrap::Word);
+                    body.push(Line::styled(line, Style::new().fg(FG)), width, Wrap::Word);
                 }
             }
         }
@@ -238,15 +228,16 @@ impl SoftwareUpdate {
             width,
             height,
         );
-        dim(f, area);
+        f.buffer_mut()
+            .set_style(area, Style::new().add_modifier(Modifier::DIM));
         f.render_widget(Clear, popup);
         let block = Block::new()
             .title(" UPDATE CENTER ")
-            .title_style(Style::new().fg(CYAN).bold())
+            .title_style(Style::new().fg(ACCENT).bold())
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(CYAN))
-            .style(Style::new().fg(TEXT).bg(SURFACE));
+            .border_style(Style::new().fg(ACCENT))
+            .style(Style::new().fg(FG).bg(BG));
         let inner = block.inner(popup);
         f.render_widget(block, popup);
 
@@ -284,12 +275,10 @@ impl SoftwareUpdate {
             } else {
                 Rect::new(x, buttons_y, width, 1)
             };
-            let style = if focused {
-                Style::new().fg(BACKDROP).bg(CYAN).bold()
-            } else {
-                Style::new().fg(TEXT).bg(SURFACE)
-            };
-            f.render_widget(Paragraph::new(Span::styled(label, style)), button);
+            f.render_widget(
+                Paragraph::new(Span::styled(label, button_style(focused))),
+                button,
+            );
             hits.push((button, i));
             x += width + 2;
         }
@@ -341,10 +330,10 @@ impl SoftwareUpdate {
             if x + len as u16 > area.right() {
                 break;
             }
-            spans.push(Span::styled(key, Style::new().fg(TEXT).bold()));
+            spans.push(Span::styled(key, Style::new().fg(FG).bold()));
             if !description.is_empty() {
                 spans.push(Span::raw(" "));
-                spans.push(Span::styled(description, Style::new().fg(DETAIL)));
+                spans.push(Span::styled(description, Style::new().fg(MUTED)));
             }
             spans.push(Span::raw(if gap == 2 { "  " } else { "   " }));
             hits.push((Rect::new(x, area.y, len as u16, 1), hit));
@@ -395,9 +384,9 @@ fn progress_line(progress: Progress, width: u16, frame: usize, ascii: bool) -> L
         })
         .collect();
     Line::from(vec![
-        Span::styled("[", Style::new().fg(DETAIL)),
-        Span::styled(bar, Style::new().fg(ACTIVE)),
-        Span::styled(format!("]{suffix}"), Style::new().fg(TEXT)),
+        Span::styled("[", Style::new().fg(MUTED)),
+        Span::styled(bar, Style::new().fg(ACCENT)),
+        Span::styled(format!("]{suffix}"), Style::new().fg(FG)),
     ])
 }
 
@@ -411,15 +400,6 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-fn dim(f: &mut Frame, area: Rect) {
-    let buffer = f.buffer_mut();
-    for y in area.y..area.bottom() {
-        for x in area.x..area.right() {
-            buffer[(x, y)].set_fg(DETAIL).set_bg(BACKDROP);
-        }
-    }
-}
-
 fn fade(f: &mut Frame, popup: Rect, frame: u8) {
     let remaining = u16::from(FADE_STEPS - frame);
     let total = u16::from(FADE_STEPS).pow(2);
@@ -429,9 +409,12 @@ fn fade(f: &mut Frame, popup: Rect, frame: u8) {
     for y in popup.y..popup.bottom() {
         for x in popup.x..popup.right() {
             let cell = &mut buffer[(x, y)];
-            if let Color::Rgb(r, g, b) = cell.fg {
-                cell.set_fg(Color::Rgb(scale(r), scale(g), scale(b)));
-            }
+            let (r, g, b) = match cell.fg {
+                Color::Rgb(r, g, b) => (r, g, b),
+                Color::White => (255, 255, 255),
+                _ => continue,
+            };
+            cell.set_fg(Color::Rgb(scale(r), scale(g), scale(b)));
         }
     }
 }
