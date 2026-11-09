@@ -572,7 +572,7 @@ fn help_enter_runs_the_selected_candidate_after_down_and_keeps_typing_in_search(
     assert!(app.pop.is_none());
     assert!(!app.log.editing());
     app.go(Commit);
-    run_help(&mut app, "Edit shared commit message");
+    run_help(&mut app, "Focus and edit commit message");
     assert!(app.commit.editing());
     app.dispatch(&Event::Paste("Original draft".into()));
     run_help(&mut app, "Move to line start");
@@ -583,19 +583,27 @@ fn help_enter_runs_the_selected_candidate_after_down_and_keeps_typing_in_search(
 }
 
 #[test]
-fn help_enter_opens_commit_review_and_cancel_preserves_head_index_and_worktree() {
+fn help_enter_commits_directly_and_cancel_leaves_git_unchanged() {
     let (_dir, mut app) = fixture();
-    let before = snapshot(&app.ctx.repos[0].path);
+    let repo = app.ctx.repos[0].path.clone();
+    let before = snapshot(&repo);
     app.go(Commit);
     app.dispatch(&key(KeyCode::Char('i')));
-    app.dispatch(&Event::Paste("review from keymap".into()));
+    app.dispatch(&Event::Paste("commit from keymap".into()));
     app.dispatch(&key(KeyCode::F(2)));
-    run_help(&mut app, "Review commit of visible checked files");
-    assert!(matches!(app.pop, Some(Popup::Confirm { .. })));
-    assert_eq!(snapshot(&app.ctx.repos[0].path), before);
-    run_help(&mut app, "Cancel review");
+    app.dispatch(&key(KeyCode::F(1)));
+    app.dispatch(&Event::Paste("Run selected message action".into()));
+    app.dispatch(&key(KeyCode::Esc));
     assert!(app.pop.is_none());
-    assert_eq!(snapshot(&app.ctx.repos[0].path), before);
+    assert_eq!(snapshot(&repo), before);
+    run_help(&mut app, "Run selected message action");
+    assert!(app.pop.is_none());
+    assert_eq!(git(&repo, &["rev-parse", "HEAD^"]).unwrap(), before[0]);
+    assert_eq!(
+        git(&repo, &["log", "-1", "--format=%B"]).unwrap(),
+        "commit from keymap"
+    );
+    assert_eq!(git(&repo, &["diff", "--binary"]).unwrap(), before[2]);
 }
 
 #[test]

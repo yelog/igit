@@ -1,13 +1,23 @@
 use super::*;
-use crate::ui::help::{HelpContent, HelpSection as Section};
+use crate::ui::help::{HelpContent, HelpSection as Section, PREVIEW_SCROLL_BINDINGS};
 
 impl CommitPanel {
+    fn with_file_preview_help(&self, mut content: HelpContent) -> HelpContent {
+        if self.file_preview_visible() {
+            content.sections.insert(
+                1,
+                Section::new("Commit / File Preview", PREVIEW_SCROLL_BINDINGS),
+            );
+        }
+        content
+    }
+
     pub(crate) fn keymap(&self) -> HelpContent {
         if self.staging.is_some() {
             return self.staging_help();
         }
         if self.execution_running() {
-            return HelpContent::new(
+            return self.with_file_preview_help(HelpContent::new(
                 Section::new(
                     "Commit / Running",
                     &[
@@ -21,7 +31,7 @@ impl CommitPanel {
                     ],
                 ),
                 vec![],
-            );
+            ));
         }
         if self.view_menu.is_some() {
             return HelpContent::new(
@@ -103,7 +113,6 @@ impl CommitPanel {
                         ("Delete", "Delete character after cursor"),
                         ("Ctrl-s", "Save input"),
                         ("F2", "Save input"),
-                        ("Esc", "Clear selection; otherwise cancel editing"),
                     ],
                 ),
             };
@@ -112,6 +121,7 @@ impl CommitPanel {
                     Section::new(
                         "Commit / Message Navigation",
                         &[
+                            ("Esc", "Save message and return to actions"),
                             ("Ctrl-w", "Delete word before cursor"),
                             ("Ctrl-u", "Delete to line start"),
                             ("Tab", "Save message and focus next pane"),
@@ -132,6 +142,11 @@ impl CommitPanel {
                         ],
                     ),
                 ]
+            } else if matches!(edit, Edit::AISettings) {
+                vec![Section::new(
+                    "Commit / AI Settings",
+                    &[("Esc", "Cancel settings")],
+                )]
             } else {
                 vec![]
             };
@@ -150,6 +165,7 @@ impl CommitPanel {
                         ("Space", "Toggle commit checkbox"),
                         ("Enter", "Open Diff or toggle container"),
                         ("v", "Toggle preview"),
+                        ("c", "Focus and edit commit message"),
                         ("i", "Edit shared commit message"),
                     ],
                 ),
@@ -160,17 +176,14 @@ impl CommitPanel {
                         ("k", "Scroll preview up"),
                         ("Esc", "Return to changes"),
                         ("v", "Toggle preview"),
+                        ("c", "Focus and edit commit message"),
                     ],
                 ),
-                Focus::Message => Section::new(
-                    "Commit / Message",
-                    &[
-                        ("i", "Edit shared commit message"),
-                        ("Enter", "Edit shared commit message"),
-                    ],
-                ),
+                Focus::Message => {
+                    Section::new("Commit / Message", &[("i", "Edit shared commit message")])
+                }
             };
-            return HelpContent::new(current, vec![]);
+            return self.with_file_preview_help(HelpContent::new(current, vec![]));
         }
         let current = match self.focus {
             Focus::Tree => Section::new(
@@ -180,6 +193,7 @@ impl CommitPanel {
                     ("k", "Select previous change"),
                     ("Space", "Toggle file, repo or changelist checkbox"),
                     ("Enter", "Open Diff, Resolve conflicts, or toggle container"),
+                    ("c", "Focus and edit commit message"),
                     ("e", "Edit highlighted working file"),
                     (
                         "Ctrl-g",
@@ -216,13 +230,17 @@ impl CommitPanel {
                     ("PgDn", "Page down"),
                     ("PgUp", "Page up"),
                     ("Enter", "Return to current change"),
+                    ("c", "Focus and edit commit message"),
                     ("v", "Close preview"),
                 ],
             ),
             Focus::Message => Section::new(
                 "Commit / Message",
                 &[
-                    ("Enter", "Edit shared commit message"),
+                    ("Left", "Select previous message action"),
+                    ("Right", "Select next message action"),
+                    ("Enter", "Run selected message action"),
+                    ("i", "Edit shared commit message"),
                     ("[", "Previous repository in Changes"),
                     ("]", "Next repository in Changes"),
                     ("M", "Toggle Amend for highlighted repository"),
@@ -231,7 +249,7 @@ impl CommitPanel {
                 ],
             ),
         };
-        HelpContent::new(
+        let content = HelpContent::new(
             current,
             vec![Section::new(
                 "Commit / General",
@@ -253,12 +271,12 @@ impl CommitPanel {
                     ("M", "Toggle Amend for highlighted repository"),
                     ("A", "Generate and fill shared commit message"),
                     ("S", "Open AI settings"),
-                    ("c", "Review commit of visible checked files"),
-                    ("P", "Review commit, then open Push preview"),
+                    ("P", "Commit, then open Push preview"),
                     ("Esc", "Return to changes"),
                 ],
             )],
-        )
-        .with_selection(self.selected_text().is_some(), true)
+        );
+        self.with_file_preview_help(content)
+            .with_selection(self.selected_text().is_some(), true)
     }
 }

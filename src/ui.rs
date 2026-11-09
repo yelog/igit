@@ -7,7 +7,7 @@ pub(crate) mod panes;
 pub(crate) mod selection;
 use crate::core::Context;
 use anyhow::Result;
-use crossterm::event::Event;
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     layout::Rect,
     style::{Color, Style},
@@ -62,6 +62,18 @@ pub trait Panel {
 }
 pub fn inside(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
+}
+pub(crate) fn preview_scroll_key(event: &Event) -> Option<KeyCode> {
+    let Event::Key(key) = event else { return None };
+    if key.kind == KeyEventKind::Release {
+        return None;
+    }
+    let key = crate::config::keys::normalize(*key);
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('J'), KeyModifiers::NONE) => Some(KeyCode::Down),
+        (KeyCode::Char('K'), KeyModifiers::NONE) => Some(KeyCode::Up),
+        _ => None,
+    }
 }
 pub const BG: Color = idea::PANEL;
 pub const FG: Color = idea::INK;

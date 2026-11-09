@@ -1,5 +1,6 @@
 //! A file-scoped history tab and its adjacent immutable revision preview.
 use super::*;
+use crate::ui::preview_scroll_key;
 use anyhow::{ensure, Context as _};
 use std::path::{Path, PathBuf};
 
@@ -135,19 +136,18 @@ impl LogPanel {
         } else {
             false
         };
-        if !mouse && !self.inline_diff_key(event) {
+        let scroll_key = preview_scroll_key(event);
+        if !mouse && scroll_key.is_none() && !self.inline_diff_key(event) {
             return None;
         }
         self.cancel_key_sequence();
         let mut forwarded = event.clone();
         if let Event::Key(k) = &mut forwarded {
-            if matches!(k.code, K::Char('[' | ']')) {
-                k.code = if k.code == K::Char('[') {
-                    K::BackTab
-                } else {
-                    K::Tab
-                };
-            }
+            k.code = scroll_key.unwrap_or(match k.code {
+                K::Char('[') => K::BackTab,
+                K::Char(']') => K::Tab,
+                code => code,
+            });
         }
         let Some(diff) = self.history_diff.as_mut() else {
             if matches!(event, Event::Key(k) if k.code == K::Esc) {
@@ -182,7 +182,7 @@ impl LogPanel {
                 _ => (),
             }
         }
-        if let Event::Key(k) = event {
+        if let Event::Key(k) = &forwarded {
             match k.code {
                 K::Esc => self.focus = Pane::Graph,
                 K::Char('j') | K::Down => diff.y = diff.y.saturating_add(1),

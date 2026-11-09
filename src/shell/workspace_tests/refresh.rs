@@ -17,7 +17,7 @@ fn wait_for(app: &mut Shell, label: &str) {
 }
 
 #[test]
-fn commit_auto_refresh_runs_while_typing_and_preserves_review_until_closed() {
+fn commit_auto_refresh_runs_while_typing_and_resumes_after_dialog_closes() {
     let (_dir, mut app) = fixture();
     let repo = app.ctx.repos[0].path.clone();
     let index = git(&repo, &["ls-files", "--stage"]).unwrap();
@@ -41,21 +41,14 @@ fn commit_auto_refresh_runs_while_typing_and_preserves_review_until_closed() {
     assert!(app.commit.message_editing());
     assert!(screen(&mut app, 120, 36).contains("saved draft"));
     app.dispatch(&key(KeyCode::F(2)));
-    app.dispatch(&key(KeyCode::Char('c')));
-    let Some(Popup::Confirm { body, .. }) = &app.pop else {
-        panic!("expected commit review")
-    };
-    assert!(body.contains("saved draft") && !body.contains("automatic.txt"));
-    let reviewed = body.clone();
-    fs::write(repo.join("after-review.txt"), "after review\n").unwrap();
+    app.dispatch(&key(KeyCode::Char('q')));
+    assert!(matches!(&app.pop, Some(Popup::Confirm { token, .. }) if token == "__quit"));
+    fs::write(repo.join("after-dialog.txt"), "after dialog\n").unwrap();
     app.dispatch(&Event::FocusGained);
     app.poll();
-    let Some(Popup::Confirm { body, .. }) = &app.pop else {
-        panic!("review was replaced")
-    };
-    assert_eq!(body, &reviewed);
+    assert!(matches!(&app.pop, Some(Popup::Confirm { token, .. }) if token == "__quit"));
     app.dispatch(&key(KeyCode::Esc));
-    wait_for(&mut app, "after-review.txt");
+    wait_for(&mut app, "after-dialog.txt");
     assert_eq!(git(&repo, &["ls-files", "--stage"]).unwrap(), index);
 }
 

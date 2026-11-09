@@ -1,4 +1,5 @@
 use super::*;
+mod diff;
 mod text_selection;
 use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
@@ -80,7 +81,6 @@ fn fixture(icons: IconMode) -> (PushPanel, Context) {
             files,
             body: "master → origin:master".into(),
             summary: "master → origin:master".into(),
-            ..Default::default()
         },
         ..Default::default()
     };
@@ -372,7 +372,7 @@ fn push_toolbars_and_footer_fit_without_overlapping_in_every_icon_mode() {
             let cancel = hit(&p, |h| matches!(h, Hit::Cancel));
             let tags = hit(&p, |h| matches!(h, Hit::Tags));
             let hooks = hit(&p, |h| matches!(h, Hit::Hooks));
-            assert_eq!(text_at(&buf, send), " Push 1 ");
+            assert_eq!(text_at(&buf, send), " Push ");
             assert_eq!(text_at(&buf, cancel), " Cancel ");
             assert_eq!(send.right(), width);
             assert_eq!(cancel.y, send.y);
@@ -514,7 +514,7 @@ fn file_tree_mouse_keyboard_scrolling_and_pane_cycle_keep_push_selection() {
 }
 
 #[test]
-fn pane_navigation_push_resizes_around_the_diff_without_copying_or_checking() {
+fn pane_navigation_push_resizes_around_details_without_copying_or_checking() {
     let (mut p, c) = fixture(IconMode::Ascii);
     p.show_details = true;
     p.focus_pane(PaneId::PushDetails);

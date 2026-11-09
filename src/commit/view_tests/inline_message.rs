@@ -24,7 +24,10 @@ fn inline_message_click_keeps_editor_in_composer_and_positions_first_caret() {
         assert_eq!(composer.intersection(p.edit_view.0), p.edit_view.0);
         assert_eq!(t.backend().buffer()[(composer.x, composer.y)].fg, BLUE);
         assert!(read(t.backend().buffer(), p.tree).contains("Changes"));
-        assert!(p.hits.iter().any(|(_, h)| matches!(h, Hit::Submit(false))));
+        assert!(p
+            .hits
+            .iter()
+            .any(|(_, h)| matches!(h, Hit::MessageAction(MessageAction::Commit))));
         assert!(!p
             .hits
             .iter()
@@ -34,45 +37,7 @@ fn inline_message_click_keeps_editor_in_composer_and_positions_first_caret() {
 }
 
 #[test]
-fn inline_message_commit_buttons_save_current_input_before_review() {
-    let (_dir, c) = fixture();
-    let before = git(&c.repos[0].path, &["ls-files", "--stage"]).unwrap();
-    for push in [false, true] {
-        let mut p = CommitPanel::default();
-        p.refresh(&c).unwrap();
-        let checks = p.checks.clone();
-        let mut t = Terminal::new(TestBackend::new(120, 36)).unwrap();
-        draw(&mut p, &mut t, &c);
-        key(&mut p, &c, K::Char('i'));
-        p.event(&Event::Key(KeyEvent::new(K::Char('a'), Mod::CONTROL)), &c);
-        p.event(&Event::Paste("Inline subject\n\nBody ＵＩ".into()), &c);
-        draw(&mut p, &mut t, &c);
-        let button = hit(&p, |h| matches!(h, Hit::Submit(value) if *value == push));
-        let action = mouse(
-            &mut p,
-            &c,
-            M::Down(MouseButton::Left),
-            button.x + 1,
-            button.y,
-        );
-        assert!(
-            matches!(action, Action::Confirm { body, .. } if body.contains("Inline subject") && body.contains("Body ＵＩ"))
-        );
-        assert!(p.edit.is_none());
-        assert_eq!(
-            p.saved.message.as_deref().unwrap(),
-            "Inline subject\n\nBody ＵＩ"
-        );
-        assert_eq!(p.checks, checks);
-    }
-    assert_eq!(
-        git(&c.repos[0].path, &["ls-files", "--stage"]).unwrap(),
-        before
-    );
-}
-
-#[test]
-fn inline_message_first_drag_copies_and_inline_cancel_restores_saved_draft() {
+fn inline_message_first_drag_copies_and_escape_saves_the_edited_draft() {
     let (_dir, c) = fixture();
     let mut p = CommitPanel::default();
     p.refresh(&c).unwrap();
@@ -89,7 +54,8 @@ fn inline_message_first_drag_copies_and_inline_cancel_restores_saved_draft() {
     draw(&mut p, &mut t, &c);
     key(&mut p, &c, K::Esc);
     assert!(!p.editing());
-    assert_eq!(p.saved.message.as_deref().unwrap(), "Subject ＵＩ\nBody");
+    assert_eq!(p.focused_pane(), PaneId::Message);
+    assert_eq!(p.saved.message.as_deref().unwrap(), "Subject! ＵＩ\nBody");
 }
 
 #[test]
@@ -122,9 +88,18 @@ fn default_preview_and_three_composer_actions_fit_wide_and_narrow_windows() {
                     "{w}x{h}: {}",
                     read(t.backend().buffer(), composer)
                 );
-                assert!(matches!(actions[0].1, Hit::Submit(false)));
-                assert!(matches!(actions[1].1, Hit::Submit(true)));
-                assert!(matches!(actions[2].1, Hit::Ai));
+                assert!(matches!(
+                    actions[0].1,
+                    Hit::MessageAction(MessageAction::Commit)
+                ));
+                assert!(matches!(
+                    actions[1].1,
+                    Hit::MessageAction(MessageAction::CommitAndPush)
+                ));
+                assert!(matches!(
+                    actions[2].1,
+                    Hit::MessageAction(MessageAction::Generate)
+                ));
                 let ai = actions[2].0;
                 assert!(read(t.backend().buffer(), ai).contains(icons.glyph(Icon::AutoResolve)));
                 assert_eq!(
@@ -138,6 +113,43 @@ fn default_preview_and_three_composer_actions_fit_wide_and_narrow_windows() {
                         .all(|(other, _)| area.intersection(*other).is_empty()));
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn message_action_highlight_follows_arrows_at_wide_and_compact_widths() {
+    let (_dir, c) = fixture();
+    for (w, h) in [(120, 36), (44, 12), (34, 6)] {
+        let mut p = CommitPanel::default();
+        p.refresh(&c).unwrap();
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        p.focus_pane(PaneId::Message);
+        for (arrow, expected) in [
+            (K::Left, MessageAction::Commit),
+            (K::Right, MessageAction::CommitAndPush),
+            (K::Right, MessageAction::Generate),
+            (K::Right, MessageAction::Generate),
+            (K::Left, MessageAction::CommitAndPush),
+            (K::Left, MessageAction::Commit),
+        ] {
+            key(&mut p, &c, arrow);
+            draw(&mut p, &mut t, &c);
+            let actions = p.hits.iter().filter_map(|(area, hit)| match hit {
+                Hit::MessageAction(action) => Some((*area, *action)),
+                _ => None,
+            });
+            assert_eq!(actions.clone().count(), 3, "{w}x{h}");
+            for (area, action) in actions {
+                let style = crate::ui::idea::button_style(action == expected);
+                assert_eq!(
+                    t.backend().buffer()[(area.x, area.y)].bg,
+                    style.bg.unwrap(),
+                    "{w}x{h}"
+                );
+            }
+            assert_eq!(p.focused_pane(), PaneId::Message);
+            assert!(!p.editing());
         }
     }
 }
@@ -223,19 +235,19 @@ fn inline_message_is_shared_across_repository_scope_and_reopening() {
     assert!(!p.editing());
     assert_eq!(p.saved.message.as_deref(), Some("app draft updated"));
     key(&mut p, &c, K::Char('i'));
-    p.event(&Event::Paste(" discarded".into()), &c);
+    p.event(&Event::Paste(" and kept".into()), &c);
     key(&mut p, &c, K::Esc);
     let mut reopened = CommitPanel::default();
     reopened.refresh(&c).unwrap();
     assert_eq!(
         reopened.saved.message.as_deref().unwrap(),
-        "app draft updated"
+        "app draft updated and kept"
     );
     assert_eq!(p.checks, checks);
 }
 
 #[test]
-fn inline_message_save_failure_keeps_editing_and_blocks_review() {
+fn inline_message_save_failure_keeps_editing_and_blocks_commit() {
     let (_dir, mut c) = fixture();
     let mut p = CommitPanel::default();
     p.refresh(&c).unwrap();
@@ -247,7 +259,9 @@ fn inline_message_save_failure_keeps_editing_and_blocks_review() {
     draw(&mut p, &mut t, &c);
     c.state_dir = c.workspace.join("blocked-state");
     fs::write(&c.state_dir, "a file cannot hold state").unwrap();
-    let button = hit(&p, |h| matches!(h, Hit::Submit(false)));
+    let button = hit(&p, |h| {
+        matches!(h, Hit::MessageAction(MessageAction::Commit))
+    });
     let action = mouse(
         &mut p,
         &c,
@@ -256,8 +270,15 @@ fn inline_message_save_failure_keeps_editing_and_blocks_review() {
         button.y,
     );
     assert!(matches!(action, Action::Notice(_)));
-    assert!(p.message_editing() && p.plans.is_empty());
+    assert!(p.message_editing());
+    assert!(git(&c.repos[0].path, &["rev-parse", "--verify", "HEAD"]).is_err());
     assert_eq!(p.buf, "Original unsaved");
     key(&mut p, &c, K::Esc);
+    assert!(p.message_editing());
     assert_eq!(p.saved.message.as_deref().unwrap(), "Original");
+    c.state_dir = c.workspace.join("state");
+    key(&mut p, &c, K::Esc);
+    assert!(!p.message_editing());
+    assert_eq!(p.focused_pane(), PaneId::Message);
+    assert_eq!(p.saved.message.as_deref().unwrap(), "Original unsaved");
 }

@@ -48,77 +48,86 @@ fn switching_repositories_during_refresh_keeps_the_latest_selection_and_folds() 
     key(&mut p, &c, K::Enter);
     assert_eq!(p.selection().unwrap().1.name, "remember-this");
     assert!(!screen(&mut p, &c, 120, 36).contains("new-since-refresh"));
-    expand_branch_path(&mut p, &c, 1, "refs/remotes/origin/other");
+    let origin = "1:refs/remotes/origin/";
+    p.tree.cursor = folder_index(&p, origin);
+    key(&mut p, &c, K::Char('h'));
     select(&mut p, 1, "refs/heads/remember-this");
     release();
     p.finish_loading(&c);
 
     assert_eq!(p.selection().unwrap().1.name, "remember-this");
     assert!(p.tree.rows.iter().all(|row| row.root == 1));
-    assert!(p.tree.rows.iter().any(
+    assert!(matches!(
+        p.tree.rows[folder_index(&p, origin)].kind,
+        Kind::Folder { open: false, .. }
+    ));
+    assert!(!p.tree.rows.iter().any(
         |row| matches!(&row.kind, Kind::Branch(b) if b.reference == "refs/remotes/origin/other")
     ));
     assert!(screen(&mut p, &c, 120, 36).contains("new-since-refresh"));
 }
 
 #[test]
-fn remote_groups_start_closed_and_keep_explicit_choices_across_refresh_and_scope() {
+fn branch_groups_start_open_and_keep_explicit_folds_across_refresh_and_scope() {
     let (_temp, mut c, mut p) = fixture();
+    let repo = &c.repos[0].path;
     tracking(&c, "main", "main");
+    run(repo, &["branch", "feature/team/local"]);
+    run(
+        repo,
+        &[
+            "update-ref",
+            "refs/remotes/origin/topic/team/remote",
+            "HEAD",
+        ],
+    );
     reload(&mut p, &c);
-    let remote = |p: &BranchPanel| {
-        p.tree
-            .rows
-            .iter()
-            .position(|r| r.id == "0:refs/remotes/")
-            .unwrap()
+    let remote = "0:refs/remotes/";
+    let topic = "0:refs/remotes/origin/topic/";
+    let leaf = "0:refs/remotes/origin/topic/team/remote";
+    let is_open = |p: &BranchPanel, id| {
+        matches!(
+            p.tree.rows[folder_index(p, id)].kind,
+            Kind::Folder { open: true, .. }
+        )
     };
-    assert!(matches!(
-        p.tree.rows[remote(&p)].kind,
-        Kind::Folder { open: false, .. }
-    ));
-    assert!(!p
-        .tree
-        .rows
-        .iter()
-        .any(|r| matches!(&r.kind, Kind::Branch(b) if b.remote)));
-    p.tree.cursor = remote(&p);
-    key(&mut p, &c, K::Char('l'));
-    assert!(p.tree.rows.iter().any(|row| {
-        row.id == "0:refs/remotes/origin/" && matches!(row.kind, Kind::Folder { open: false, .. })
-    }));
-    expand_group(&mut p, &c, "0:refs/remotes/origin/");
-    reload(&mut p, &c);
-    assert!(matches!(
-        p.tree.rows[remote(&p)].kind,
-        Kind::Folder { open: true, .. }
-    ));
     assert!(p
         .tree
         .rows
         .iter()
-        .any(|r| matches!(&r.kind, Kind::Branch(b) if b.remote)));
+        .all(|r| !matches!(r.kind, Kind::Folder { open: false, .. })));
+    assert!(p
+        .tree
+        .rows
+        .iter()
+        .any(|r| r.id == "0:refs/heads/feature/team/local"));
+    assert!(p.tree.rows.iter().any(|r| r.id == leaf));
+
+    p.tree.cursor = folder_index(&p, topic);
+    key(&mut p, &c, K::Char('h'));
+    p.tree.cursor = folder_index(&p, remote);
+    key(&mut p, &c, K::Char('h'));
+    reload(&mut p, &c);
+    assert!(!is_open(&p, remote));
     c.scope.remove(&0);
     reload(&mut p, &c);
     c.scope.insert(0);
     reload(&mut p, &c);
     p.select_repository(0);
-    assert!(matches!(
-        p.tree.rows[remote(&p)].kind,
-        Kind::Folder { open: true, .. }
-    ));
+    assert!(!is_open(&p, remote));
+    p.tree.cursor = folder_index(&p, remote);
+    key(&mut p, &c, K::Char('l'));
+    assert!(is_open(&p, remote));
+    assert!(!is_open(&p, topic));
     assert!(p
         .tree
         .rows
         .iter()
         .any(|row| row.id == "0:refs/remotes/origin/main"));
-    p.tree.cursor = remote(&p);
-    key(&mut p, &c, K::Char('h'));
-    reload(&mut p, &c);
-    assert!(matches!(
-        p.tree.rows[remote(&p)].kind,
-        Kind::Folder { open: false, .. }
-    ));
+    assert!(!p.tree.rows.iter().any(|r| r.id == leaf));
+    p.tree.cursor = folder_index(&p, topic);
+    key(&mut p, &c, K::Char('l'));
+    assert!(p.tree.rows.iter().any(|r| r.id == leaf));
 }
 
 #[test]

@@ -12,25 +12,18 @@ pub(super) fn fixture() -> (tempfile::TempDir, Shell) {
     let repo = dir.path().join("repo");
     fs::create_dir(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]).unwrap();
+    for (name, value) in [
+        ("user.name", "Help tester"),
+        ("user.email", "help@example.invalid"),
+        ("commit.gpgSign", "false"),
+        ("core.hooksPath", "/dev/null"),
+    ] {
+        git(&repo, &["config", name, value]).unwrap();
+    }
     fs::write(repo.join("mixed.txt"), "base\n").unwrap();
     fs::write(repo.join("other.txt"), "base\n").unwrap();
     git(&repo, &["add", "."]).unwrap();
-    git(
-        &repo,
-        &[
-            "-c",
-            "user.name=Help tester",
-            "-c",
-            "user.email=help@example.invalid",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--no-gpg-sign",
-            "-qm",
-            "base",
-        ],
-    )
-    .unwrap();
+    git(&repo, &["commit", "-qm", "base"]).unwrap();
     fs::write(repo.join("mixed.txt"), "staged\n").unwrap();
     fs::write(repo.join("other.txt"), "unselected staged\n").unwrap();
     git(&repo, &["add", "."]).unwrap();
@@ -38,6 +31,16 @@ pub(super) fn fixture() -> (tempfile::TempDir, Shell) {
     let mut ctx = Context::discover(&repo).unwrap();
     ctx.state_dir = dir.path().join("state");
     (dir, Shell::new(ctx, IconMode::Ascii))
+}
+
+pub(super) fn finish_commit(app: &mut Shell) {
+    assert!(app.commit.execution_running(), "{}", app.msg);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.commit.execution_running() {
+        app.poll();
+        assert!(Instant::now() < deadline, "commit timed out: {}", app.msg);
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 /// Turn the disposable repository from `fixture` into a conflicted merge.

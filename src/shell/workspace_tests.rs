@@ -369,8 +369,9 @@ fn push_cancel_returns_to_the_last_main_tab_even_with_details_open() {
 }
 
 #[test]
-fn commit_and_push_refreshes_the_tabs_and_keeps_reviews_separate() {
+fn commit_and_push_keyboard_action_commits_once_and_requires_separate_push_confirmation() {
     let (dir, mut app) = fixture();
+    app.commit.enable_background_execution();
     let repo = app.ctx.repos[0].path.clone();
     let remote = dir.path().join("remote.git");
     git(&repo, &["clone", "--bare", ".", remote.to_str().unwrap()]).unwrap();
@@ -381,14 +382,6 @@ fn commit_and_push_refreshes_the_tabs_and_keeps_reviews_separate() {
     .unwrap();
     git(&repo, &["fetch", "origin"]).unwrap();
     git(&repo, &["branch", "--set-upstream-to=origin/main"]).unwrap();
-    for (name, value) in [
-        ("user.name", "Tabs tester"),
-        ("user.email", "tabs@example.invalid"),
-        ("commit.gpgsign", "false"),
-        ("core.hooksPath", "/dev/null"),
-    ] {
-        git(&repo, &["config", name, value]).unwrap();
-    }
     let original_head = git(&remote, &["rev-parse", "main"]).unwrap();
     let text = screen(&mut app, 140, 36);
     let (row, line) = text
@@ -404,15 +397,24 @@ fn commit_and_push_refreshes_the_tabs_and_keeps_reviews_separate() {
         modifiers: KeyModifiers::NONE,
     }));
     app.dispatch(&key(KeyCode::Char(' '))); // Leave the other staged file unchecked.
-    app.dispatch(&key(KeyCode::Char('i')));
+    let before_commit = snapshot(&repo);
+    app.dispatch(&key(KeyCode::Tab));
+    assert_eq!(app.commit.focused_pane(), PaneId::Preview);
+    screen(&mut app, 80, 24);
+    app.dispatch(&key(KeyCode::Char('c')));
+    assert!(app.commit.message_editing());
+    assert_eq!(app.commit.focused_pane(), PaneId::Message);
     app.dispatch(&Event::Paste("tab-sync".into()));
-    app.dispatch(&key(KeyCode::F(2)));
-    app.dispatch(&key(KeyCode::Char('P')));
-    assert!(
-        matches!(&app.pop, Some(Popup::Confirm { owner: Commit, body, .. }) if body.contains("mixed.txt") && !body.contains("other.txt"))
-    );
-    app.dispatch(&key(KeyCode::Char('y')));
+    app.dispatch(&key(KeyCode::Esc));
+    assert!(!app.commit.message_editing());
+    assert_eq!(app.commit.focused_pane(), PaneId::Message);
+    app.dispatch(&key(KeyCode::Right));
+    assert_eq!(snapshot(&repo), before_commit);
+    app.dispatch(&key(KeyCode::Enter));
+    assert!(app.pop.is_none());
+    finish_commit(&mut app);
     assert_eq!(app.tab, Push);
+    assert!(app.pop.is_none());
     assert!(screen(&mut app, 140, 36).contains("Push Commits"));
     app.push.finish_loading(&app.ctx);
     app.dispatch(&key(KeyCode::Char('P')));
@@ -456,6 +458,20 @@ fn commit_and_push_refreshes_the_tabs_and_keeps_reviews_separate() {
     app.dispatch(&key(KeyCode::Char('P')));
     app.dispatch(&key(KeyCode::Enter));
     assert!(app.pop.is_none() && app.push.busy());
+    app.go(Commit);
+    app.commit.focus_pane(PaneId::Changes);
+    app.dispatch(&key(KeyCode::Char('G')));
+    app.dispatch(&key(KeyCode::Char(' ')));
+    app.dispatch(&key(KeyCode::Char('i')));
+    app.dispatch(&Event::Paste("must wait for push".into()));
+    app.dispatch(&key(KeyCode::Esc));
+    app.dispatch(&key(KeyCode::Enter));
+    assert!(app.pop.is_none() && !app.commit.execution_running());
+    assert!(
+        app.msg.contains("Wait for the remote operation"),
+        "{}",
+        app.msg
+    );
     let deadline = Instant::now() + Duration::from_secs(10);
     while app.push.busy() {
         app.poll();

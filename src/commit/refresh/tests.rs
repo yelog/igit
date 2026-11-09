@@ -134,7 +134,7 @@ fn background_changes_refresh_status_and_same_status_diff_without_touching_index
 }
 
 #[test]
-fn unchanged_scan_keeps_preview_selection_scroll_checkbox_undo_and_review_snapshot() {
+fn unchanged_scan_keeps_preview_selection_scroll_and_checkbox_undo() {
     let (_dir, mut c, mut p) = fixture();
     select(&mut p, "mixed.txt");
     draw(&mut p, &c);
@@ -144,28 +144,10 @@ fn unchanged_scan_keeps_preview_selection_scroll_checkbox_undo_and_review_snapsh
     p.diff_scroll = 3;
     p.last_check = vec![(p.files[0].key.clone(), false)];
     let undo = p.last_check.clone();
-    p.saved.message = Some("reviewed".into());
-    p.review(&c, false).unwrap();
-    let reviewed = p.plans[0].preview.clone();
     assert!(!scan(&mut p, &mut c));
     assert_eq!(p.selected_text(), Some(text.as_str()));
     assert_eq!(p.diff_scroll, 3);
     assert_eq!(p.last_check, undo);
-    fs::write(c.repos[0].path.join("mixed.txt"), "changed staged\n").unwrap();
-    git(&c.repos[0].path, &["add", "mixed.txt"]).unwrap();
-    assert!(scan(&mut p, &mut c));
-    assert_eq!(p.plans[0].preview, reviewed);
-    let index = git(&c.repos[0].path, &["ls-files", "--stage"]).unwrap();
-    let head = git(&c.repos[0].path, &["rev-parse", "HEAD"]).unwrap();
-    let Action::Committed { repos, .. } = p.confirm("commit", &c) else {
-        panic!("expected reviewed commit result")
-    };
-    assert!(repos.is_empty());
-    assert_eq!(
-        git(&c.repos[0].path, &["ls-files", "--stage"]).unwrap(),
-        index
-    );
-    assert_eq!(git(&c.repos[0].path, &["rev-parse", "HEAD"]).unwrap(), head);
 }
 
 #[test]

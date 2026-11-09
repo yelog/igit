@@ -307,7 +307,7 @@ fn tree_patch(repo: &Path, base: &str, tree: &str) -> Result<Vec<u8>> {
         ],
     )
 }
-/// Build the exact snapshot displayed in review. Use real Git's filters, modes,
+/// Build the exact snapshot for the selection. Use real Git's filters, modes,
 /// ignore rules and staged blob OIDs. Never stage the user's live worktree here.
 fn snapshot(repo: &Path, files: &[Change], base: &str, di: &TempDir) -> Result<(PathBuf, String)> {
     let at = di.path().join("selected");
@@ -387,20 +387,20 @@ fn check_tree_scope(repo: &Path, base: &str, tree: &str, files: &[Change]) -> Re
             .context("Git returned a file change without a path")?;
         let Some(deleted) = expected.remove(path) else {
             bail!(
-                "Replacing a file with a directory or vice versa also affects unselected path {}. Select all affected paths and review again",
+                "Replacing a file with a directory or vice versa also affects unselected path {}. Select all affected paths and try again",
                 super::display_path(Path::new(&raw(path)))
             )
         };
         if deleted != (kind == b"D") {
             bail!(
-                "The selected versions cannot coexist in one commit: {}. Check file/directory replacements, refresh, and review again",
+                "The selected versions cannot coexist in one commit: {}. Check file/directory replacements, refresh, and try again",
                 super::display_path(Path::new(&raw(path)))
             )
         }
     }
     if let Some((path, _)) = expected.first_key_value() {
         bail!(
-            "The snapshot has no changes for selected path {}. Check your selection, refresh, and review again",
+            "The snapshot has no changes for selected path {}. Check your selection, refresh, and try again",
             super::display_path(Path::new(&raw(path)))
         )
     }
@@ -414,7 +414,6 @@ pub struct Plan {
     pub msg: String,
     pub head: Option<String>,
     pub tree: String,
-    pub preview: String,
     pub branch: String,
     pub amend: bool,
     stages: Vec<Vec<u8>>,
@@ -436,7 +435,7 @@ fn check_sources(repo: &Path, files: &[Change]) -> Result<()> {
                 .get(&f.path)
                 .is_none_or(|x| x.conflict || x.staged() != f.staged())
     }) {
-        bail!("Files or staging state changed. Press F5 and review again")
+        bail!("Files or staging state changed. Press F5 and try again")
     }
     Ok(())
 }
@@ -477,28 +476,12 @@ pub fn plan(
     }
     let idx = git_path(repo, "index")?;
     let d = tempfile::Builder::new()
-        .prefix("igit-review-")
+        .prefix("igit-plan-")
         .tempdir_in(idx.parent().context("missing git directory")?)?;
     let old = base_tree(repo, head.as_deref())?;
     let (_, tree) = snapshot(repo, &files, &old, &d)?;
     if tree == old && !amend {
         bail!("No committable changes selected. If a submodule only has uncommitted files, commit them in the submodule first")
-    }
-    // Derive review text from the exact two trees, not from a possibly stale
-    // render-time worktree diff. Keep the row summary visible above patches.
-    let bytes = tree_patch(repo, &old, &tree)?;
-    let patch = String::from_utf8_lossy(&bytes);
-    let mut preview = String::new();
-    for (i, l) in patch.lines().enumerate() {
-        if i >= 500 || preview.len() > 48000 {
-            preview.push_str("… Preview truncated; see the file list above for remaining paths.");
-            break;
-        }
-        preview.extend(l.chars().take(1800));
-        if l.chars().nth(1800).is_some() {
-            preview.push('…')
-        }
-        preview.push('\n');
     }
     let stages = stages(repo, &files)?;
     Ok(Plan {
@@ -510,7 +493,6 @@ pub fn plan(
         tree,
         amend,
         branch: branch_ref(repo)?,
-        preview,
         stages,
     })
 }
@@ -570,7 +552,7 @@ fn reset_index_paths<'a>(
         .filter(unchecked)
         .ne(after.split(|b| *b == 0).filter(unchecked))
     {
-        bail!("Replacing a file with a directory or vice versa would overwrite unselected staged entries. Check the real index and review again")
+        bail!("Replacing a file with a directory or vice versa would overwrite unselected staged entries. Check the real index and try again")
     }
     Ok(())
 }
@@ -586,10 +568,10 @@ pub fn execute(p: &Plan) -> Result<Outcome> {
         .context("Cannot lock the Git index; wait for other operations to finish")?;
     let mut guard = Guard(lock.clone(), false);
     if stages(repo, &p.files)? != p.stages {
-        bail!("Staged content changed. Review again")
+        bail!("Staged content changed. Refresh and try again")
     }
     if oid(repo)? != p.head || branch_ref(repo)? != p.branch {
-        bail!("Branch or HEAD changed. Review again")
+        bail!("Branch or HEAD changed. Refresh and try again")
     }
     let d = tempfile::Builder::new()
         .prefix("igit-commit-")
@@ -608,7 +590,7 @@ pub fn execute(p: &Plan) -> Result<Outcome> {
         )?
         .is_empty()
     {
-        bail!("HEAD is now reachable from a remote-tracking ref. Review again")
+        bail!("Cannot amend: HEAD is now reachable from a remote-tracking ref")
     }
     let before = base_tree(repo, p.head.as_deref())?;
     let staged_before = g(
@@ -630,7 +612,7 @@ pub fn execute(p: &Plan) -> Result<Outcome> {
     .collect::<std::collections::BTreeSet<_>>();
     let (at, tree) = snapshot(repo, &p.files, &before, &d)?;
     if tree != p.tree {
-        bail!("Selected content changed. Refresh and review again")
+        bail!("Selected content changed. Refresh and try again")
     }
     // Start the next real index from the *current* live index, which is locked.
     // Replace selected entries only; every other staged path stays untouched.
@@ -922,8 +904,11 @@ mod tests {
                 .unwrap();
             assert_eq!(selected.xy, *b"MM");
             let plan = plan(0, r, vec![selected], "literal path".into(), false).unwrap();
-            assert!(plan.preview.contains("+selected staged"));
-            assert!(!plan.preview.contains("selected working"));
+            let mut object = OsString::from(plan.tree);
+            object.push(":");
+            object.push(path);
+            let output = run(r, None, &[OsStr::new("show"), &object], None).unwrap();
+            assert_eq!(checked(output).unwrap(), b"selected staged\n");
             assert_eq!(
                 exact_path(r, None, &["ls-files", "-z"], path).unwrap(),
                 [path.as_os_str().as_encoded_bytes(), b"\0"].concat()
@@ -954,7 +939,7 @@ mod tests {
         assert_eq!(get(r, &["diff", "--name-only"]), "a");
     }
     #[test]
-    fn untracked_first_commit_and_stale_review() {
+    fn untracked_first_commit_and_stale_snapshot() {
         let d = setup();
         let r = d.path();
         let name = if cfg!(windows) { "a[x]" } else { "a*[x]" };
@@ -998,11 +983,7 @@ mod tests {
             let preview = diff(r, &selected[0]).unwrap();
             let ai = patch(r, &selected).unwrap();
             let plan = plan(0, r, selected, "delete old leaf".into(), false).unwrap();
-            for (label, text) in [
-                ("file preview", preview),
-                ("AI patch", ai),
-                ("commit review", plan.preview.clone()),
-            ] {
+            for (label, text) in [("file preview", preview), ("AI patch", ai)] {
                 assert!(text.contains("-old leaf"), "{label}: {text}");
                 assert!(
                     !text.contains("private"),

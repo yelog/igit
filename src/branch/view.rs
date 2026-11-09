@@ -160,25 +160,22 @@ impl BranchPanel {
         }
         self.viewport.area = list;
         self.keep_branch_visible();
-        let upstream = self.upstream_column(row_width(list, len));
-        f.render_widget(
-            Paragraph::new(" Branch").style(Style::new().fg(MUTED)),
-            heading,
-        );
-        if let Some(x) = upstream {
-            f.render_widget(
-                Paragraph::new("Upstream").style(Style::new().fg(MUTED)),
-                Rect::new(
-                    heading.x + x,
-                    heading.y,
-                    heading.width.saturating_sub(x),
-                    heading.height,
-                ),
-            );
+        let columns = self.branch_columns(row_width(list, len));
+        for (label, offset) in [
+            (" Branch", Some(0)),
+            ("Upstream", columns.upstream),
+            ("Last Commit", columns.last_commit),
+        ] {
+            if let Some(x) = offset {
+                f.render_widget(
+                    Paragraph::new(label).style(Style::new().fg(MUTED)),
+                    Rect::new(heading.x + x, heading.y, heading.width - x, heading.height),
+                );
+            }
         }
         for i in self.viewport.visible(len) {
             let rect = row_rect(&self.viewport, len, i);
-            self.draw_row(f, rect, i, upstream);
+            self.draw_row(f, rect, i, columns);
             self.hits.push((rect, Hit::Row(i)));
         }
         if len == 0 {

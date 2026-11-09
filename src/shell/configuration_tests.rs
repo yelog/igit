@@ -1,5 +1,6 @@
 use super::{test_support::*, *};
 use crate::config::keys::parse_sequence;
+use crate::core::git;
 use crate::ui::clipboard::CopyCapture;
 use crossterm::event::MouseEvent;
 
@@ -220,7 +221,7 @@ fn configuration_smart_resize_keeps_tabs_isolated_and_help_executes_the_action()
 }
 
 #[test]
-fn configuration_smart_resize_preserves_drafts_and_reviewed_selection() {
+fn configuration_smart_resize_preserves_drafts_and_selection() {
     let (_dir, mut app) = fixture();
     configure(&mut app, SMART_RESIZE);
     let before = snapshot(&app.ctx.repos[0].path);
@@ -235,20 +236,14 @@ fn configuration_smart_resize_preserves_drafts_and_reviewed_selection() {
     );
     assert_eq!(app.panel().selected_text(), Some("Resize draft 中文"));
     assert_eq!(app.regions.body, body);
-    send(&mut app, "Esc F2 c");
-    let review = match &app.pop {
-        Some(Popup::Confirm { body, .. }) => body.clone(),
-        _ => panic!("expected commit review"),
-    };
-    assert!(
-        review.contains("mixed.txt") && !review.contains("other.txt"),
-        "{review}"
-    );
+    send(&mut app, "Esc q");
     send(
         &mut app,
         "Cmd+Ctrl+Shift+h Cmd+Ctrl+Shift+j Cmd+Ctrl+Shift+k Cmd+Ctrl+Shift+l",
     );
-    assert!(matches!(&app.pop, Some(Popup::Confirm { body, yes: false, .. }) if body == &review));
+    assert!(
+        matches!(&app.pop, Some(Popup::Confirm { token, yes: false, .. }) if token == "__quit")
+    );
     send(&mut app, "Esc");
     for chord in [
         "Cmd+Ctrl+Shift+h",
@@ -259,8 +254,11 @@ fn configuration_smart_resize_preserves_drafts_and_reviewed_selection() {
         send(&mut app, chord);
         screen(&mut app, 120, 36);
     }
-    send(&mut app, "c");
-    assert!(matches!(&app.pop, Some(Popup::Confirm { body, .. }) if body == &review));
+    let text = screen(&mut app, 120, 36);
+    assert!(
+        text.contains("Resize draft 中文") && text.contains("1 file selected"),
+        "{text}"
+    );
     assert_eq!(snapshot(&app.ctx.repos[0].path), before);
 }
 
@@ -317,7 +315,7 @@ fn configuration_smart_focus_preserves_editors_help_and_confirmations() {
     app.dispatch(&Event::Paste("Kitty".into()));
     send(&mut app, "Cmd+Ctrl+j");
     assert!(screen(&mut app, 120, 36).contains("No matching shortcuts"));
-    send(&mut app, "Esc Esc F2 q");
+    send(&mut app, "Esc Esc q");
     assert!(matches!(app.pop, Some(Popup::Confirm { yes: false, .. })));
     send(&mut app, "Cmd+Ctrl+h Cmd+Ctrl+j Cmd+Ctrl+k Cmd+Ctrl+l");
     assert!(matches!(app.pop, Some(Popup::Confirm { yes: false, .. })));
@@ -387,7 +385,7 @@ fn configuration_smart_focus_stays_in_the_tab_and_survives_workspace_rescan() {
 }
 
 #[test]
-fn configuration_remapped_review_and_help_keep_git_and_index_unchanged() {
+fn configuration_remapped_message_focus_keeps_help_and_commits_only_on_enter() {
     let (_dir, mut app) = fixture();
     let repo = app.ctx.repos[0].path.clone();
     let before = snapshot(&repo);
@@ -406,31 +404,33 @@ fn configuration_remapped_review_and_help_keep_git_and_index_unchanged() {
     assert_eq!(app.tab, Commit);
     screen(&mut app, 120, 36);
     // mixed.txt is selected, while other.txt has unrelated staged content.
-    send(&mut app, "G Space");
-    send(&mut app, "i");
-    app.dispatch(&Event::Paste("configured review".into()));
-    send(&mut app, "F2");
-    send(&mut app, "c");
+    send(&mut app, "G Space c");
+    assert!(!app.commit.message_editing());
     assert!(app.pop.is_none());
-    send(&mut app, "Ctrl-r");
-    match &app.pop {
-        Some(Popup::Confirm { body, .. }) => {
-            assert!(body.contains("mixed.txt"), "{body}");
-            assert!(!body.contains("other.txt"), "{body}");
-        }
-        _ => panic!(
-            "remapping must open review, not execute a commit: {}",
-            app.msg
-        ),
-    }
-    send(&mut app, "Esc F1");
-    app.dispatch(&Event::Paste("Review commit of visible".into()));
+    assert_eq!(snapshot(&repo), before);
+    send(&mut app, "F1");
+    app.dispatch(&Event::Paste("Focus and edit commit message".into()));
     let help = screen(&mut app, 120, 36);
     assert!(help.contains("Ctrl-r"), "{help}");
-    send(&mut app, "Enter");
-    assert!(matches!(app.pop, Some(Popup::Confirm { .. })));
-    send(&mut app, "Esc");
+    send(&mut app, "Esc Ctrl-r");
+    assert!(app.commit.message_editing());
+    app.dispatch(&Event::Paste("configured commit".into()));
+    send(&mut app, "Esc Ctrl-r");
+    assert!(!app.commit.message_editing());
     assert_eq!(snapshot(&repo), before);
+    send(&mut app, "Enter");
+    assert!(app.pop.is_none());
+    assert_eq!(git(&repo, &["rev-parse", "HEAD^"]).unwrap(), before[0]);
+    assert_eq!(
+        git(&repo, &["log", "-1", "--format=%B"]).unwrap(),
+        "configured commit"
+    );
+    assert_eq!(git(&repo, &["show", "HEAD:mixed.txt"]).unwrap(), "staged");
+    assert_eq!(
+        git(&repo, &["diff", "--cached", "--name-only"]).unwrap(),
+        "other.txt"
+    );
+    assert_eq!(git(&repo, &["diff", "--binary"]).unwrap(), before[2]);
 }
 
 #[test]
@@ -574,7 +574,8 @@ fn add_to_git_slow_shell_operation_keeps_feedback_help_tabs_and_write_guards_ava
     assert!(matches!(app.pop, Some(Popup::Help { .. })));
     assert!(screen(&mut app, 120, 36).contains("Adding 1 file"));
     send(&mut app, "Esc r p f");
-    send(&mut app, "c");
+    app.commit.focus_pane(crate::ui::panes::PaneId::Message);
+    send(&mut app, "Enter");
     assert!(app.pop.is_none());
     send(&mut app, "i");
     app.dispatch(&Event::Paste("Draft while adding".into()));
@@ -623,6 +624,8 @@ fn add_to_git_slow_shell_operation_keeps_feedback_help_tabs_and_write_guards_ava
 #[test]
 fn configuration_swaps_unbinds_and_preserves_text_input() {
     let (_dir, mut app) = fixture();
+    let repo = app.ctx.repos[0].path.clone();
+    let before = snapshot(&repo);
     let _capture = CopyCapture::start();
     configure(
         &mut app,
@@ -638,8 +641,17 @@ fn configuration_swaps_unbinds_and_preserves_text_input() {
     send(&mut app, "Ctrl-a Ctrl-c");
     assert_eq!(app.panel().selected_text(), Some("ciAq 中文"));
     assert!(app.pop.is_none());
-    send(&mut app, "Esc F2 i");
-    assert!(matches!(app.pop, Some(Popup::Confirm { .. })));
+    assert_eq!(snapshot(&repo), before);
+    send(&mut app, "Esc i");
+    assert!(!app.commit.message_editing());
+    send(&mut app, "c");
+    assert!(app.commit.message_editing());
+    send(&mut app, "Esc Enter");
+    assert!(app.pop.is_none());
+    assert_eq!(
+        git(&repo, &["log", "-1", "--format=%B"]).unwrap(),
+        "ciAq 中文"
+    );
 }
 
 #[test]

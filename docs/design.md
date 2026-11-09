@@ -76,7 +76,7 @@ message appears only after discovery completes.
  IGit  v0.1.0  Tab Panes  Ctrl-W Pane keys  p Pull  f Fetch  F9 Updates  F1 Help
 ```
 
-- **Keep four kinds of selection distinct.** The highlighted row determines what is being viewed; checkboxes determine candidates for the operation; Roots limits which repositories are available; write review determines whether to execute. Moving the highlight must not silently check a row. Commit/Push retain selections hidden by filters, but exclude them from the current operation. When a workspace has at least one repository, global Roots cannot be applied empty.
+- **Keep four kinds of selection distinct.** The highlighted row determines what is being viewed; checkboxes determine candidates for the operation; Roots limits which repositories are available; an explicit action starts execution. Moving the highlight must not silently check a row. Commit/Push retain selections hidden by filters, but exclude them from the current operation. When a workspace has at least one repository, global Roots cannot be applied empty.
 - Click a workspace tab or press `1` for Commit, `2` for Log, `3` for Push, `4` for Branch, or `5` for Stash. Each panel retains its cursor, checkboxes, and filters. Log's own filter tabs and `+` share the header row on the left; their hit areas stop before the workspace tabs.
 - **Conflicts** appears in bold amber while any repository in Roots has unmerged files or an operation awaiting Continue. Open it by clicking or pressing `6`. When the last pending operation ends, the tab disappears and returns to the last Commit, Log, Branch or Stash tab if it was active. The same tabs are available from Actions (`:`).
 - In Push or Conflicts, `Esc` first backs out of editing, details, or the conflict document, then returns to the last Commit, Log, Branch or Stash tab. Commit & Push opens the Push tab after committing; pushing requires a separate review.
@@ -84,7 +84,7 @@ message appears only after discovery completes.
 - In normal mode, `Tab` / `Shift-Tab` cycles panes within the current tab (`F6` is equivalent). Commit cycles Changes, Preview (if open), and Message; Log cycles Branches, Commits, Files, and Details. Branch cycles Repositories and the branch tree when Roots includes multiple repositories; Stash cycles Repositories and Files. Hidden sidebars are skipped. `Ctrl-W` followed by `h/j/k/l` focuses the adjacent left/down/up/right pane and stops at the outside edge. Browsing focus is independent of file checkboxes.
 - `Ctrl-W` followed by `>` / `<` increases/decreases the current pane's width; `+` / `-` changes height. A count can follow the prefix, such as `Ctrl-W 10 +`. Drag a target border directly; movement stops at its bounds and ends on release. Text selection and file dragging still belong to the area where the gesture began. `Ctrl-W =` restores default proportions for the active tab. Single-column mode has no vertical divider.
 - Editors, filters, help, and review retain their own Tab and input rules. Shell review dialogs receive events before panels. `Tab` switches buttons, `Enter` activates the focused button, and `Esc` cancels. Push, Stash, Pull, and Fetch reviews open with the available primary action focused. Other shared confirmations start on **Cancel** and also accept `y/n`. Long review content scrolls.
-- **Text selection.** Log commit details / Diff, Commit message editing / Diff preview, and Push Details / Diff support left-button dragging with a blue highlight. Release copies once and clears the selection. Empty selections and ordinary clicks do not copy; dragging does not activate links. The editing caret stays at the drag endpoint after release. Keyboard selections support `Ctrl-C`, `Ctrl-Insert`, and `y` in read-only text; `Ctrl-A` selects the current text area. `Esc` clears a selection before its normal back action. Selection refers to original text and does not split wide Unicode characters, combining characters, or emoji. Soft wraps and decorative separators are excluded from the clipboard; original blank lines, indentation, and line breaks remain. Drag and keyboard selections survive scrolling/resizing; changing the object or hiding the area clears stale selection. Dialogs take event priority; canceling help restores keyboard selection. Parent commit links activate on release only without dragging. The Commit editor supports Shift+Arrow / Home / End; typing/pasting replaces keyboard selection, while Backspace/Delete removes it. The wheel scrolls long messages; keyboard movement scrolls only when the caret leaves the viewport. Text dragging does not change file checkboxes, groups, or Git state.
+- **Text selection.** Log commit details / Diff, Commit message editing / Diff preview, and Push Details / Diff support left-button dragging with a blue highlight. Release copies once and clears the selection. Empty selections and ordinary clicks do not copy; dragging does not activate links. The editing caret stays at the drag endpoint after release. Keyboard selections support `Ctrl-C`, `Ctrl-Insert`, and `y` in read-only text; `Ctrl-A` selects the current text area. In read-only panes, `Esc` clears a selection before its normal back action. Selection refers to original text and does not split wide Unicode characters, combining characters, or emoji. Soft wraps and decorative separators are excluded from the clipboard; original blank lines, indentation, and line breaks remain. Drag and keyboard selections survive scrolling/resizing; changing the object or hiding the area clears stale selection. Dialogs take event priority; canceling help restores keyboard selection. Parent commit links activate on release only without dragging. The Commit editor supports Shift+Arrow / Home / End; typing/pasting replaces keyboard selection, while Backspace/Delete removes it. The wheel scrolls long messages; keyboard movement scrolls only when the caret leaves the viewport. Text dragging does not change file checkboxes, groups, or Git state.
 - **Context help.** `?` / `F1` captures the current focus or dialog as context. It follows lazydb's help style: centered, at most 74 columns × 34 rows, rounded borders, dark blue background, cyan `KEYMAP // area` title and Search, bold blue keys, white descriptions, and a gray footer. The list has no group headings or count row. Each item uses one line, with `>` for the current candidate and descriptions clipped by terminal cell width. Search ignores case; each space-separated term must match characters in order within a shortcut, description, or area name. Matches may contain gaps. Filtering and highlighting use the same matcher, preferring contiguous occurrences over a scattered match in each field. Matched characters in shortcuts and descriptions use bold amber text, or bold underlined text with `NO_COLOR`; whole Unicode graphemes remain intact and a clipping ellipsis is never highlighted. Rows matching only their area name may have no highlighted characters in the visible row. At normal widths, the key column is 18 cells; below 60 columns, it uses the longest shortcut plus two cells, capped at 18, to leave more room for descriptions. The footer selects a complete hint that fits and retains Esc to close. Search opens with a caret; ordinary characters including j/k/g/G enter text. Left/right, Home/End, Backspace/Delete, and Ctrl-W/U/A/E edit. ↑/↓ cycles candidates; PgUp/PgDn changes selection by a page. Clicking only selects, while the wheel/scrollbar changes the viewport; selection stays visible. Enter closes help, restores the original area or dialog, then executes the candidate's static key sequence. With no results, Enter leaves help open. Available actions appear in current-area, panel-wide, then global order; duplicate keys keep the higher-priority entry. Switch focus to see another area's actions. Input fields and dialogs list only applicable actions; F1 does not cancel input. Esc/F1 cancels help and restores state unchanged. Commit, push, and merge application keep their existing review paths.
 - **Key sequence hints.** Normal-mode `Ctrl-W`, Branch `g`, Log commit-list `g` / `y`, and Merge conflict-document `[` / `]` open a bottom overlay after 200ms without another key. It lists only valid continuation keys and descriptions for the current prefix. Typing a continuation executes immediately; completing/canceling during the delay never shows the hint, and a new prefix restarts the timer. Once visible, arrows select by displayed columns; Enter or clicking executes. Candidate navigation is not intercepted before the overlay appears. Highlighting a candidate does not change the selected commit/conflict block. Esc/Ctrl-C cancels only the prefix and keeps Merge's document open. Candidates use one to three columns based on actual cell width, without covering the bottom status line. Borders, padding, and wheel events block underlying controls; clicking outside cancels and passes through that click. Other actions, focus changes, overlays, paste, loss of focus, or resizing clear the prefix. Text input never opens candidates.
 - Recommended size: **120×36 cells**. Below 44 columns or 12 rows, Shell shows a terminal-too-small message. All panels and Roots use Commit's [shared palette](../src/ui/idea.rs): dark gray background `#1C1D22`, body text `#CFD2DB`, secondary text `#8B8F9A`, blue focus `#74A4F8`, and selected-row background `#314675`. Blue marks the browsing row; checkboxes indicate inclusion. Push and Commit patches use green/red for additions/deletions. Merge uses amber warnings for unresolved conflicts and green completion markers for resolved blocks. A shared bottom line displays `IGit v<VERSION>` and update status, followed by action hints or the latest message.
@@ -206,8 +206,9 @@ Syntax colors, changed text, line numbers, context folding, and synchronized
 scrolling use the same read-only revision renderer as the normal Log Diff.
 
 `j/k` and row clicks select commits and replace the preview after the navigation
-debounce. `Enter` focuses Diff; `Tab`/`Shift-Tab` and `Ctrl-W h/l` move between the
-two panes. Drag the divider or use `Ctrl-W >/<` to resize. In Diff, `[/]` changes
+debounce. `J/K` scrolls the preview down/up from either pane without changing the
+selected commit. `Enter` focuses Diff; `Tab`/`Shift-Tab` and `Ctrl-W h/l` move
+between the two panes. Drag the divider or use `Ctrl-W >/<` to resize. In Diff, `[/]` changes
 the focused revision, `n/p` changes the selected difference, `f` toggles folding,
 `z` zooms, and `Esc` clears a selection before returning to the history list.
 In this context, `p/f` belong to the preview. Global workspace tabs remain
@@ -258,13 +259,15 @@ With unmerged files in Roots, **Changes** counts them and shows one expanded **M
 | --- | --- | --- |
 | Browse and check | Row names browse, arrows expand/collapse, boxes check, and the wheel scrolls. Toolbar hover shows action/shortcut. Each target has its own hit area. | `j/k` browses, `PgUp/PgDn` pages, `h/l` collapses/expands or visits parent/child, `Space` checks; `u` undoes only the last checkbox change. |
 | Open conflict resolution | Click the blue, underlined **Resolve** link on Merge Conflicts. Clicking the label browses; clicking the arrow folds. | `Enter` on Merge Conflicts opens the Conflicts tab. Use `h/l` to fold or expand the group. |
-| Preview a patch or scope | Double-click a file; the toolbar preview button opens the current row. In wide mode, keep clicking other left-side rows. Use close/back-to-list to return. | `Enter` on a file opens Diff; `v` toggles preview. Groups, repositories, and directories preview their visible scope. At 92+ columns, preview is side by side; below that, it fills the tool window. `Esc` returns to the original row; `Tab/F6` switches available areas. |
+| Preview a patch or scope | Double-click a file; the toolbar preview button opens the current row. In wide mode, keep clicking other left-side rows. Use close/back-to-list to return. | `Enter` on a file opens Diff; `v` toggles preview. `J/K` scrolls a visible file preview down/up without moving focus or selection. Groups, repositories, and directories preview their visible scope. At 92+ columns, preview is side by side; below that, it fills the tool window. `Esc` returns to the original row; `Tab/F6` switches available areas. |
 | Change layout or inspect raw status | The eye opens View Options; final two buttons expand/collapse all; Diff previews the current row. | `o` opens the menu, `t` toggles directories, `T` toggles Git XY status, and `z/Z` collapses/expands all. Layout does not change identity or checkboxes. |
 | Manage groups | Add creates a group; Move, right-click, or dragging tracked files moves them. | `n/m` creates/moves groups. Untracked files remain separate; regrouping does not run git add. |
 | Add untracked files to Git | Highlight a file or container in Changes. | `a` or `Insert` immediately starts adding the highlighted untracked file or the untracked members of its group, repository, or directory, including folded children, without confirmation. An inline `Adding N files…` indicator appears in existing Changes/footer space before background Git work. Wider layouts show Checking / Staging / Updating, the current repository, and actual completed repository counts. Browsing, Help, tab switching, and message editing remain available; write controls are disabled and repeated Add requests reuse the current job. No percentage or staged file color is invented while waiting. Completion updates affected Changes rows and reports separate results; checkboxes and the message are retained. Failed files remain available for retry, with full errors in Console. `M` toggles Amend. |
-| Write messages and commit | Click the message area to edit directly in the bottom Commit pane. The composer has one shared message and no repository tabs. Its action area contains Commit, Commit and Push..., and a secondary Generate message button with the Resolve Automatically wand icon; narrow panes wrap actions or shorten labels. Clicking another control saves the shared draft first. **Commit** and **Commit and Push...** both review first. Amend remains available through `M` and is indicated in the selection summary. | `[/]` browses repositories in Changes in normal mode; `i` or Enter in the Message pane starts inline editing. Enter adds a newline, `Ctrl-W` deletes the previous word and trailing whitespace, and `Ctrl-U` deletes to the logical line start. Both deletion keys remove a selection first. `F2/Ctrl-S` saves, and `Esc` clears selection before canceling. `Tab/Shift-Tab/F6` saves and moves focus. `M` toggles Amend for the highlighted file/group's repository (a group spanning repositories requires a more specific row); `c/P` reviews commit / commit then Push. `A` generates and fills the shared message; `S` opens AI settings. |
+| Write messages and commit | Click the message area to edit directly in the bottom Commit pane. The composer has one shared message and no repository tabs. Its action area contains Commit, Commit and Push..., and a secondary Generate message button with the Resolve Automatically wand icon; narrow panes wrap actions or shorten labels. Clicking another control saves the shared draft first. **Commit** starts the local commit immediately. **Commit and Push...** does the same, then opens Push for a separate review. Amend remains available through `M` and is indicated in the selection summary. | `[/]` browses repositories in Changes in normal mode. From Changes or Preview, `c` focuses Message and starts editing. In the editor, Enter adds a newline, `Ctrl-W` deletes the previous word and trailing whitespace, and `Ctrl-U` deletes to the logical line start. Both deletion keys remove a selection first. `Esc` and `F2/Ctrl-S` save and leave Message focused. `Tab/Shift-Tab/F6` saves and moves focus. In Message, Left/Right moves the blue selection between Commit, Commit and Push..., and Generate message. Commit starts selected when focus enters the pane. Enter runs the selected action; `i` reopens the editor. `M` toggles Amend for the highlighted file/group's repository (a group spanning repositories requires a more specific row); `P` commits and opens Push. `A` generates and fills the shared message; `S` opens AI settings. |
 
-The inline editor uses the message pane's existing rectangle, including in narrow terminals; it does not cover Changes or Git Log. The active Message pane keeps its blue border. Long messages scroll to the caret and support wheel scrolling, Unicode selection, and drag-to-copy. Resize the Changes / Message divider in normal mode for more writing space. Clicking another workspace pane saves before moving focus; a save failure keeps the input active and blocks navigation or review. F1 help preserves the input, caret, and selection. Changelist and AI settings editors retain their dialogs; AI failures use a dismissible error dialog.
+The **Overview** lists files by repository. Each path uses its Git status color and a file type icon when space permits, without a status letter column.
+
+The inline editor uses the message pane's existing rectangle, including in narrow terminals; it does not cover Changes or Git Log. The active Message pane keeps its blue border. Long messages scroll to the caret and support wheel scrolling, Unicode selection, and drag-to-copy. Resize the Changes / Message divider in normal mode for more writing space. Clicking another workspace pane saves before moving focus; a save failure keeps the input active and blocks navigation or submission. F1 help preserves the input, caret, and selection. Changelist and AI settings editors retain their dialogs; AI failures use a dismissible error dialog.
 
 Commit uses native file events and per-repository debounce: a 300ms quiet period, capped at two seconds during continuous changes. One background worker reads only affected repositories in Roots and refreshes the current Diff only when its repository is scanned. Tab entry and terminal focus process queued changes without forcing a full scan. A 30-second Roots scan reconciles missed or unsupported events. Unchanged scans retain preview selection and scrolling; changes preserve checked paths, folds, cursor identity, the shared draft, and caret. Reviews, menus, and drags defer updates without discarding queued changes. Late results from before an explicit refresh or ignored-files toggle are discarded. F5 still refreshes the entire workspace.
 
@@ -341,10 +344,10 @@ workspace replacement, Roots changes, and quitting wait for batch completion.
                                           │       main.ts
                                           │     README.md
  ─────────────────────────────────────────────────────────────
- [ ] Follow tags  [x] Hooks                       Cancel  Push N
+ [ ] Follow tags  [x] Hooks                         Cancel  Push
 ```
 
-The Push tab has one contextual title: `Push Commits to <repository>` for a single repository, or a repository count for a batch. Pane headings and toolbars align. Target / Fetch sit above outgoing commits; Retry appears there only after a push failure in visible scope. Tree grouping/details sit on the right, with compact expand/collapse icons at its far edge. Both lists meet a shared footer separator rather than separate bottom borders. The footer uses quiet inline options, a secondary Cancel button, and one highlighted Push N button. At narrow widths, actions move onto a separate row; hidden checked repositories retain a separate notice. Toolbars keep text labels where possible; pane headings shorten to preserve complete counts. Push N counts only visible, checked repositories eligible for review and is disabled with no candidates or while a remote operation runs. Cancel returns to the last Commit, Log, Branch or Stash tab, including when Details is open; target editing must first be saved or canceled. During a remote operation it reads Close and the operation continues in the background.
+The Push tab has one contextual title: `Push Commits to <repository>` for a single repository, or a repository count for a batch. Pane headings and toolbars align. Target / Fetch sit above outgoing commits; Retry appears there only after a push failure in visible scope. Tree grouping/details sit on the right, with compact expand/collapse icons at its far edge. Both lists meet a shared footer separator rather than separate bottom borders. The footer uses quiet inline options, a secondary Cancel button, and one highlighted Push button. At narrow widths, actions move onto a separate row; hidden checked repositories retain a separate notice. Toolbars keep text labels where possible; pane headings shorten to preserve complete counts. Push is disabled when no visible, checked repository is eligible or while a remote operation runs. Cancel returns to the last Commit, Log, Branch or Stash tab, including when Details is open; target editing must first be saved or canceled. During a remote operation it reads Close and the operation continues in the background.
 
 Opening Push shows `Loading outgoing commits…` immediately. On later visits,
 existing rows and previews remain visible under `Refreshing outgoing commits…`.
@@ -357,19 +360,27 @@ retains the selected file, folds, and Diff scroll.
 
 Left/right proportions are about **50%** each. The left sorts by repository name, with separate left-aligned columns for name, source branch, arrow, target, outgoing count, and submodule. Success/failure markers do not shift branch columns. Pushable targets are blue; repositories with no outgoing commits are dim. Every repository retains its checkbox: blue when checked, gray when unchecked, including when there are no outgoing commits. Rows with no outgoing commits cannot be toggled or pushed. Narrow layouts hide secondary columns first. Long text clips only within its own column; Target and details still expose the full destination.
 
-The right defaults to a full-height repository → directory → file tree, avoiding a repeated content-root name. Consecutive single-child directories compress to paths such as `dev/iframe-proxy`; directories show descendant file counts. Icons share Log / Commit type colors. Filenames use change colors: added/copied green, modified blue, deleted red, renamed/type changes amber, without trailing status letters. Only file rows open a file Diff; repository/directory details summarize scope. Opening details splits the right side about 60/40%; closing restores the same tree row.
+The right defaults to a full-height repository → directory → file tree, avoiding a repeated content-root name. Consecutive single-child directories compress to paths such as `dev/iframe-proxy`; directories show descendant file counts. Icons share Log / Commit type colors. Filenames use change colors: added/copied green, modified blue, deleted red, renamed/type changes amber, without trailing status letters. Details summarizes the current scope and splits the right side about 60/40%.
 
-Click the eye or press `o` for the Group By menu. Directory and Repository start enabled; Module (the repository's content root) starts disabled and can be enabled independently. All eight combinations remain available. Without Directory, files sort flat by name, then repository-relative path, with gray parent paths at the end. Disabling Repository or Module only removes that level. Switching preserves the current file and open patch; if a selected container is hidden, a still-visible parent is preferred. Grouping persists across repository/commit changes, refresh, and reopening Push within the workspace session.
+Click the eye or press `o` for the Group By menu. Directory and Repository start enabled; Module (the repository's content root) starts disabled and can be enabled independently. All eight combinations remain available. Without Directory, files sort flat by name, then repository-relative path, with gray parent paths at the end. Disabling Repository or Module only removes that level. Switching preserves the selected file; if a selected container is hidden, a still-visible parent is preferred. Grouping persists across repository/commit changes, refresh, and reopening Push within the workspace session.
 
-Repository rows preview the batch; commit rows preview that commit. Merge commit files/Diffs compare against the first parent. If the current repository has no outgoing commits or no row is selected, the file area centers `No commits selected` without empty repository nodes; read failures still show specific reasons. The push unit is always the repository's target branch; an intermediate commit cannot be pushed alone. At most 60 recent commits per repository are displayed, but counts and execution use the full branch.
+Repository rows compare the last fetched target with the local branch tip. Commit rows compare the first parent with that commit, including merges. A new target or initial commit has an empty Before side. If the current repository has no outgoing commits or no row is selected, the file area centers `No commits selected` without empty repository nodes; read failures still show specific reasons. The push unit is always the repository's target branch; an intermediate commit cannot be pushed alone. At most 60 recent commits per repository are displayed, but counts and execution use the full branch.
+
+Opening a file fills the workspace with Log's read-only **Repository Diff**.
+Before and After share aligned line numbers, syntax and change highlighting,
+context folds, and synchronized vertical scrolling. Below 48 columns, Tab
+switches the visible revision. Binary, large, and other unsupported revisions
+show a Git patch with a reason. Closing restores the file tree with the last
+viewed file highlighted.
 
 | Task | Mouse | Vim / keyboard |
 | --- | --- | --- |
 | Select and inspect | Boxes check repositories, triangles expand/collapse, rows update the right side, and files open Diff. | `j/k` browses; `h/l` or left/right collapses/expands; `h` in files can visit the parent. `Space` checks the owning repository; `Enter` expands/collapses containers or opens files; `Tab/F6` changes area. |
 | Change file grouping | Click Group By on the right, then options; the menu stays open for further changes. | `o` opens, `j/k` or ↑/↓ selects, `Space/Enter` toggles, and `Esc/o` closes. Space in the menu changes only grouping. |
-| File tree and details | Toolbar Expand / Collapse changes all nodes; Details toggles summary/Diff. | `[/]` collapses/expands all in files; `d` toggles details and `Esc` closes back to the tree. |
+| File tree and details | Toolbar Expand / Collapse changes all nodes. Details opens Diff on a selected file or toggles the scope summary. | `[/]` collapses/expands all in files; `d` runs Details. |
+| Inspect a Diff | Use the toolbar to navigate changes and files, fold context, zoom, or close. | `n/p` moves between changes, `[/]` moves between visible files, `f` folds context, `z` zooms, and `Esc` closes after clearing any text selection. |
 | Review target and options | Click the blue target or outgoing toolbar's Target to edit; Follow tags / Hooks toggles options; Fetch updates Push targets in scope. | `t` edits remote:branch; Enter saves and Esc cancels. `v/x` toggles Follow tags/hooks; `F` fetches Push targets. |
-| Execute and handle failures | Push N → review each source SHA and target → Confirm; inspect failed rows and click Retry. | `P` opens review with Confirm focused; `Enter` confirms and `Esc` cancels. `R` reviews only failed repositories still in scope with outgoing work. |
+| Execute and handle failures | Push → review each source SHA and target → Confirm; inspect failed rows and click Retry. | `P` opens review with Confirm focused; `Enter` confirms and `Esc` cancels. `R` reviews only failed repositories still in scope with outgoing work. |
 
 On first direct entry, a repository with outgoing commits is selected. Entry from Commit & Push sets checkboxes from the repositories that just committed successfully. Success is not rolled back because another repository failed. Changed remote tips, non-fast-forwards, and unverifiable changed submodule pointers show reasons, not success. Implementation: [push.rs](../src/push.rs), [push/submodules.rs](../src/push/submodules.rs).
 
@@ -457,7 +468,14 @@ immediately and discards any result from the previous scope.
 
 The selected repository's tree has **Local Branches** and **Remote Branches**.
 The left list uses Push's repository icon colors, submodule glyph, and bold
-names. The selected repository stays marked when focus moves to the tree.
+names. Each row right-aligns the current branch and its upstream counters.
+The green tag precedes the branch name, and a gray chevron follows the branch
+and counters at the right edge. Narrow rows may omit these markers to fit names
+and counts.
+Detached HEAD shows `detached@<short-id>`; an unborn branch shows its name
+without counters. Long names clip to leave room for the repository label and
+complete counters. The selected repository stays marked when focus moves to
+the tree.
 The eye at the upper right of the tree toolbar and `o` open **Group By**.
 **Branch Prefix (/)** starts checked; toggle it with a click or Space/Enter.
 Unchecked, both sections show full branch names at one level. Turning the
@@ -466,23 +484,28 @@ outside closes the menu. The option applies to the Branch tab for the session.
 
 Groups show a folder glyph, disclosure arrow, and branch count. Indent guides
 separate levels and give way to names in narrow panes. Blue identifies the
-focused row. The Local Branches section starts open. Prefix folders open
-initially along the current and known default branch paths; other prefixes
-start closed. Branch prefers `origin/HEAD`, then another configured remote's
-locally stored HEAD alias, and uses a same-name local branch when available.
-The Remote Branches section starts closed unless it contains the default
-branch shown in the tree. Branch selection and fold choices are remembered
-per repository and survive refresh and temporary Roots changes.
+focused row. Both local and remote sections start expanded, including all
+nested prefix folders. Branch selection and manual folds are remembered per
+repository and survive refresh and temporary Roots changes.
 Current-branch folders come first recursively and the current leaf is marked
 `(current)`. Default-branch folders come next, then other siblings sort by
-name. Remote symbolic HEAD aliases are omitted from the list. Local leaves append the actual
-upstream, with `[gone]` for missing refs. Both types use the local branch glyph,
-green for local and purple for remote, sharing Log's reference colors. Upstreams
-occupy a common column independent of indentation, label width, and current
+name. To identify the default branch, Branch prefers `origin/HEAD`, then
+another configured remote's locally stored HEAD alias, and uses a same-name
+local branch when available. Remote symbolic HEAD aliases are omitted from
+the list. Local leaves append the actual upstream, with `[gone]` for missing
+refs. The current branch uses Log's green tag glyph in both panes, with the
+same text color as other local branches.
+Other branches use the branch glyph, green for local and purple for remote.
+Upstreams occupy a common column independent of indentation, label width, and current
 markers; long labels clip by terminal cells. Below 64 usable columns in the
 branch pane, the tree prioritizes names and the details area shows the selected
 upstream on its own line. Details also identify a detached HEAD; unborn
 branches show `[no commits]`.
+
+The **Last Commit** column aligns the tip commit's committer time for local
+and remote leaves as `YYYY/MM/DD, HH:MM` in local time. Folders and branches
+without a commit have no time. Below 48 usable columns in the branch pane,
+the column gives way to branch names.
 
 Local branch names are followed by compact tracking counters: green `↗N` for
 commits ahead of the configured upstream, then blue `↙N` for commits behind.
@@ -493,7 +516,8 @@ for the counters before the current/worktree suffix. Both grouped and flat
 upstream-column measurements include counters on folded branches, keeping the
 column stable during navigation. Selected-row details repeat the counters,
 including in narrow panes. Counts come from locally stored upstream refs in
-the background scan and refresh on entry, F5, focus return, and completed Fetch.
+the background scan. Counts and commit times refresh on entry, F5, focus
+return, and completed Fetch.
 
 Click a repository or move the cursor in the left pane to update the right pane
 from the cache. Both lists scroll independently; the wheel moves selection in
@@ -524,22 +548,28 @@ or recursive submodule checkout is used. A failed merge refreshes Conflicts.
 
 ## 6 · Stash: Saved Changes by Repository
 
-Stash is a workspace tab, opened with `5`. The left pane groups newest-first
-stash entries under every repository in global Roots. Groups start expanded;
-empty repositories show **No stashes**, and a failed read stays attached to
-that repository. Each entry shows its selector and message, followed by its
-saved date and time. The recorded UTC offset appears when the pane is wide
-enough. Selection is retained by repository and object ID after a refresh,
-even when a newer stash changes the selector number.
+Stash is a workspace tab, opened with `5`. Repositories in global Roots with
+saved stashes appear first and start expanded. Each newest-first entry uses a
+single row: message on the left, short selector and saved date/time on the
+right. Narrow panes give the message priority and omit metadata as space runs
+out. The row highlight identifies the current entry. Repositories with no
+stashes are listed under one collapsed summary at the bottom. Failed reads
+have separate repository rows; selecting one shows its error on the right.
+Selection is retained by repository and object ID after a refresh, even when a
+newer stash changes the selector number.
 
-The right pane reuses Log's **Diff / Expand / Collapse** toolbar and directory
-tree. Selecting a stash loads that tree in the background after navigation
-settles. Moving to another stash clears the previous files immediately;
+The right pane shows the selected repository and full stash selector above
+Log's **Diff / Expand / Collapse** toolbar and directory tree. Narrow panes
+can put the repository and selector on separate lines; roomier panes also
+show the original subject and timestamp with its recorded UTC offset.
+Selecting a stash loads the tree in the background after navigation settles.
+Moving to another stash clears the previous files immediately;
 results from older selections or Roots are discarded. `Tab` cycles the two
 panes; `Ctrl-W`, divider dragging, and pane maximize follow workspace rules.
-`Enter` on an entry focuses Files, while Enter on a repository toggles it.
+`Enter` on an entry focuses Files. `Enter`, Space, and `h/l` fold or unfold
+repository groups and the empty repository summary.
 Within Files, Enter on a directory toggles it; Enter on a file or a double-click
-opens Log's read-only Before/After comparison. `z/Z` folds/unfolds the whole tree.
+opens Log's read-only Before/After comparison. `z/Z` folds/unfolds the file tree.
 
 Tracked files compare the first parent (base) with the saved worktree.
 The optional third-parent snapshot contributes saved untracked/ignored files
@@ -550,8 +580,8 @@ copy, narrow-screen behavior, and binary/large-file fallback match Log.
 comparison keeps its snapshot until closed. Tests cover 120×36, 80×25, and 44×12.
 
 `a` (Apply), `P` (Pop), and `d` (Drop) operate on the selected stash from
-Repositories or Files. Repository headers and empty lists have no action
-target. The Diff overlay owns its input and exposes no writes. The status bar
+Repositories or Files. Repository headers, empty rows, and the summary have no
+action target. The Diff overlay owns its input and exposes no writes. The status bar
 and F1 help show the configured bindings; lowercase `p` retains global Pull.
 
 The confirmation opens with a fixed summary of what happens to the saved entry.
@@ -570,11 +600,12 @@ after success and another list check. Conflicts keep the stash and appear in
 Conflicts. If application succeeded but removal failed, the result directs the
 user to inspect and Drop instead of applying twice. Drop changes only the
 selected saved entry and cannot be undone from IGit. Refresh selects a nearby
-entry in the same repository, or its header when the last entry is removed.
+entry in the same repository. When the last entry is removed, the cursor goes
+to that repository in the empty group, or to the summary if it is collapsed.
 
 ## Commit Comparison Acceptance
 
 1. Run the [Commit practice script](../examples/demo-commit.sh) and start IGit with the printed path. At 120×36 and 80×24, confirm all 19 items can be reached by scrolling the Changes pane. Distinguish checked, partial, unchecked, unavailable, and independent row highlighting. With `--icons ascii`, click both ends of a three-cell checkbox: either end must toggle only that item; clicking a filename must only browse.
 2. In the default directory tree, open both `index.vue` files and verify their paths/patches. Collapse/expand ancestors, then switch to flat mode while retaining the same file. Container previews show only their scope. Browsing, collapsing, and layout switching must not change checkboxes or the index.
-3. Check only `scripts/iframe-proxy.mjs` and open Diff. It has both staged and unstaged changes; preview and commit review must contain only the staged version. Cancel review, then compare HEAD, the real index, and the working tree.
-4. Recheck repository scope with the [multi-repository practice script](../examples/demo-workspace.sh): hide a checked repository, open commit review, and confirm only visible candidates appear. See [PRD A2 / A7 / A9](prd.md).
+3. Check only `scripts/iframe-proxy.mjs` and open Diff. It has both staged and unstaged changes; the preview shows the staged version. Click Commit once. Compare HEAD, the real index, and the working tree to verify that only the staged version was committed and later edits remain.
+4. Recheck repository scope with the [multi-repository practice script](../examples/demo-workspace.sh): hide a checked repository, commit, and verify that only checked files in visible Roots were committed. See [PRD A2 / A7 / A9](prd.md).

@@ -79,7 +79,7 @@ fn row_area(p: &CommitPanel, name: &str) -> Rect {
 }
 
 #[test]
-fn resizing_both_commit_dividers_reveals_message_body_and_preserves_review() {
+fn resizing_both_commit_dividers_reveals_message_body_and_preserves_draft() {
     let (_dir, c) = fixture();
     let mut p = CommitPanel::default();
     p.refresh(&c).unwrap();
@@ -131,21 +131,7 @@ fn resizing_both_commit_dividers_reveals_message_body_and_preserves_review() {
     assert!(matches!(p.edit, Some(Edit::Message)));
     assert_eq!(p.buf, message);
     key(&mut p, &c, K::Esc);
-    draw(&mut p, &mut t, &c);
-    let review = p
-        .hits
-        .iter()
-        .find(|(_, h)| matches!(h, Hit::Submit(false)))
-        .unwrap()
-        .0;
-    let action = mouse(
-        &mut p,
-        &c,
-        M::Down(MouseButton::Left),
-        review.x + 1,
-        review.y,
-    );
-    assert!(matches!(action, Action::Confirm { body, .. } if body.contains("Details three")));
+    assert_eq!(p.saved.message.as_deref(), Some(message));
     assert_eq!(
         git(&c.repos[0].path, &["ls-files", "--stage"]).unwrap(),
         index
@@ -275,7 +261,7 @@ fn view_options_menu_keeps_checks_and_blocks_underlying_actions_in_all_icon_mode
             click(&mut p, &c, menu.x, menu.y + 1);
             key(&mut p, &c, K::Char('c'));
             assert_eq!(p.cursor, cursor);
-            assert!(p.plans.is_empty() && p.edit.is_none());
+            assert!(p.edit.is_none());
             key(&mut p, &c, K::Char(' '));
             assert!(!p.view.iter().any(|r| matches!(r.kind, Kind::Directory(_))));
             draw(&mut p, &mut t, &c);
@@ -376,16 +362,9 @@ fn regrouped_commit_keeps_the_selected_index_version_and_unselected_staged_file(
         p.toggle_view_item(item, &c).unwrap();
     }
     p.saved.message = Some("selected".into());
-    let Action::Confirm { body, .. } = p.review(&c, false).unwrap() else {
-        panic!("expected review");
-    };
-    assert!(body.contains("selected index version"));
-    assert!(
-        !body.contains("selected working version")
-            && !body.contains("unselected index version")
-            && !body.contains("ignored marker")
-    );
-    assert!(matches!(p.confirm("commit", &c), Action::Committed { repos, .. } if repos == [0]));
+    p.focus_pane(PaneId::Message);
+    let action = p.event(&Event::Key(KeyEvent::new(K::Enter, Mod::NONE)), &c);
+    assert!(matches!(action, Action::Committed { repos, .. } if repos == [0]));
     assert_eq!(
         git(repo, &["show", &format!("HEAD:{selected}")]).unwrap(),
         "selected index version"

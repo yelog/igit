@@ -134,7 +134,7 @@ binding; the action's mouse button remains available.
 | `keybindings.global` | See defaults | Switch workspace tabs, review Pull/Fetch, Roots, Actions, refresh, help, quit |
 | `keybindings.panes` | See defaults | Focus/cycle panes, resize/reset sizes, maximize/restore, optional Kitty synchronization, close a Log tab |
 | `keybindings.log` | See defaults | Movement, paging, copying, filtering, tabs, display options |
-| `keybindings.commit` | See defaults | Movement, checkboxes, groups, preview, messages, AI and commit review |
+| `keybindings.commit` | See defaults | Movement, checkboxes, groups, preview, messages, AI and commits |
 | `keybindings.push` | See defaults | Movement, repository selection, targets, fetch, push review and retry |
 | `keybindings.merge` | See defaults | Conflicts tab: navigation, resolutions, undo, drafts, Apply and Continue review |
 
@@ -142,6 +142,13 @@ These settings do not store repository selections, message drafts, pane sizes,
 or display-menu choices. Existing workspace state remains
 under `IGIT_STATE_DIR` / `XDG_STATE_HOME/igit`; see [README](../README.md#ai-commit-messages-optional).
 API keys come only from the configured environmtent variable.
+
+`keybindings.commit.review` keeps its configuration name and defaults to `c`
+in Changes and Preview. It focuses Message and starts editing.
+`keybindings.commit.edit-message` defaults to `i`, and `Esc` saves and leaves the
+editor with Message focused. In Message, Left/Right selects an action and Enter
+(`keybindings.commit.open`) runs it. `keybindings.commit.review-and-push` (`P`)
+still commits and opens Push for separate confirmation.
 
 `keybindings.commit.stage-hunks` defaults to `["Ctrl-g"]` in Changes/Preview.
 It opens the highlighted tracked file's Staged/Unstaged hunk view. That view's
@@ -201,7 +208,7 @@ the original draft. Newer edits made while waiting are also kept. Active input
 defers applying a response until editing ends. Missing endpoint/model settings
 show an error; `S` remains the explicit settings action. Restart after changing
 the user settings file. Each selected repository gets a separate Git commit
-with the shared message after commit review.
+with the shared message when you choose Commit.
 
 ## Key syntax and contexts
 
@@ -297,7 +304,8 @@ Merge's `apply` operates in an open conflict document. Menus, search fields,
 Diff overlays, editors, Roots, and confirmation dialogs retain their existing
 controls. A command cannot be moved into a text-entry or confirmation context.
 
-`F1` always opens/closes contextual help. `Esc` remains cancellation/back.
+`F1` always opens/closes contextual help. `Esc` is handled by the current
+context; in the Commit message editor it saves and returns to the actions.
 Text selection keeps `Ctrl-a`, `Ctrl-c`, `Ctrl-Insert`, and read-only `y`;
 selection copy takes precedence over normal commands. The configurable
 `global.help` command controls the normal-mode `?` shortcut. The configurable
@@ -305,7 +313,7 @@ selection copy takes precedence over normal commands. The configurable
 or cancellation of a pending sequence.
 
 Exact duplicates and complete-key/prefix conflicts in overlapping contexts are
-errors. For example, binding Commit review to `i` also requires changing or
+errors. For example, binding `commit.review` to `i` also requires changing or
 disabling `commit.edit-message`. Different panels may reuse a chord. Two
 sequences may share a prefix (`g g` and `g a`), but `g` and `g a` cannot both
 be complete commands in the same context.
@@ -317,8 +325,8 @@ over picker navigation. Esc/Ctrl-c cancels only the pending sequence. Switching
 focus, opening a dialog, resizing, pasting, or losing terminal focus clears it.
 Digits following `Ctrl-w` are reserved for window counts (`Ctrl-w 3 +`).
 
-Help displays/searches the effective bindings and executes the same reviewed
-action. Rebinding Commit, Push, Merge Apply, or Continue never skips review.
+Help displays and runs the effective bindings. Commit starts the local batch;
+Push, Merge Apply, and Continue keep their separate reviews.
 Shortcut changes do not change repository scope, checkbox selections, or retry
 semantics. Mouse buttons remain usable when a command is unbound.
 

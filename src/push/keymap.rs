@@ -3,6 +3,43 @@ use crate::ui::help::{HelpContent, HelpSection as Section};
 
 impl PushPanel {
     pub(crate) fn keymap(&self) -> HelpContent {
+        if let Some(diff) = &self.diff {
+            let section = match diff.content {
+                Some(preview::FileDiff::Split(_)) => Section::new(
+                    "Push / Diff (read-only)",
+                    &[
+                        ("Tab", "Focus next revision pane"),
+                        ("Shift-Tab", "Focus previous revision pane"),
+                        ("n", "Next change"),
+                        ("p", "Previous change"),
+                        ("]", "Next file comparison"),
+                        ("[", "Previous file comparison"),
+                        ("j", "Scroll both revisions down"),
+                        ("k", "Scroll both revisions up"),
+                        ("h", "Scroll focused revision left"),
+                        ("l", "Scroll focused revision right"),
+                        ("f", "Fold or unfold unchanged regions"),
+                        ("z", "Zoom focused revision / restore split panes"),
+                        ("Ctrl-a", "Select complete focused revision"),
+                        ("y", "Copy selection or complete focused revision"),
+                        ("Esc", "Clear selection; otherwise close diff"),
+                    ],
+                ),
+                _ => Section::new(
+                    "Push / Diff (read-only)",
+                    &[
+                        ("]", "Next file comparison"),
+                        ("[", "Previous file comparison"),
+                        ("j", "Scroll patch down"),
+                        ("k", "Scroll patch up"),
+                        ("Ctrl-a", "Select all patch text"),
+                        ("Esc", "Clear selection; otherwise close diff"),
+                    ],
+                ),
+            };
+            return HelpContent::new(section, vec![])
+                .with_selection(self.selected_text().is_some(), true);
+        }
         if self.group_menu.is_some() {
             return HelpContent::new(
                 Section::new(
@@ -62,17 +99,17 @@ impl PushPanel {
                     ("Enter", "Open file diff or toggle folder"),
                     ("[", "Collapse all folders"),
                     ("]", "Expand all folders"),
-                    ("d", "Toggle current file diff"),
+                    ("d", "Open current file diff or toggle details"),
                 ],
             ),
             _ => Section::new(
                 "Push / Diff and Details",
                 &[
                     ("Ctrl-a", "Select all details text"),
-                    ("j", "Scroll diff or details down"),
-                    ("k", "Scroll diff or details up"),
+                    ("j", "Scroll details down"),
+                    ("k", "Scroll details up"),
                     ("Esc", "Clear selection; otherwise close details"),
-                    ("d", "Close diff / details"),
+                    ("d", "Close details"),
                 ],
             ),
         };

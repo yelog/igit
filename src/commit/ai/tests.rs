@@ -95,33 +95,19 @@ fn generating_multi_repo_patches_fills_and_saves_the_shared_message() {
         api_key_env: "IGIT_TEST_NONEXISTENT_LLM_KEY".into(),
         ..Default::default()
     };
-    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 36)).unwrap();
-    terminal
-        .draw(|frame| panel.draw(frame, frame.area(), &c))
-        .unwrap();
-    let button = panel
-        .hits
-        .iter()
-        .find(|(_, hit)| matches!(hit, Hit::Ai))
-        .unwrap()
-        .0;
-    let action = panel.event(
-        &Event::Mouse(crossterm::event::MouseEvent {
-            kind: M::Down(MouseButton::Left),
-            column: button.x + 1,
-            row: button.y,
-            modifiers: Mod::NONE,
-        }),
-        &c,
-    );
+    let key = |code| Event::Key(crossterm::event::KeyEvent::new(code, Mod::NONE));
+    panel.focus_pane(PaneId::Message);
+    panel.event(&key(K::Right), &c);
+    panel.event(&key(K::Right), &c);
+    let action = panel.event(&key(K::Enter), &c);
     assert!(matches!(action, Action::Notice(message) if message.contains("Generating")));
     assert!(panel.ai_running());
     assert!(panel.edit.is_none());
     assert!(panel.start_ai(&c).is_err());
-    panel.launch(Hit::Ai, &c);
+    panel.event(&key(K::Enter), &c);
     assert!(
         panel.edit.is_none(),
-        "duplicate clicks keep the loading state"
+        "a repeated Generate action keeps the loading state"
     );
     let (headers, payload) = received.recv_timeout(Duration::from_secs(5)).unwrap();
     assert!(headers.starts_with("POST /v1/chat/completions "));
@@ -287,7 +273,7 @@ fn missing_ai_configuration_opens_an_error_instead_of_settings() {
     let (_dir, c, mut panel) = fixture();
     let original = panel.saved.message.clone();
     assert!(
-        matches!(panel.launch(Hit::Ai, &c), Action::Notice(message) if message.contains("ai.endpoint") && message.contains("ai.model"))
+        matches!(panel.launch(Hit::MessageAction(MessageAction::Generate), &c), Action::Notice(message) if message.contains("ai.endpoint") && message.contains("ai.model"))
     );
     assert!(matches!(panel.edit, Some(Edit::AIError)));
     assert!(!panel.ai_running());
@@ -347,7 +333,10 @@ fn loading_animates_in_the_composer_and_success_fills_it_without_a_dialog() {
             .draw(|frame| panel.draw(frame, frame.area(), &c))
             .unwrap();
         let before = terminal.backend().buffer().clone();
-        assert!(panel.hits.iter().any(|(_, hit)| matches!(hit, Hit::Ai)));
+        assert!(panel
+            .hits
+            .iter()
+            .any(|(_, hit)| matches!(hit, Hit::MessageAction(MessageAction::Generate))));
         assert!(matches!(panel.tick(&c), Action::None));
         terminal
             .draw(|frame| panel.draw(frame, frame.area(), &c))

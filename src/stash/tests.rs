@@ -1,7 +1,7 @@
 use super::*;
 use crate::core::git;
 use crossterm::event::{KeyEvent, MouseEvent};
-use ratatui::{backend::TestBackend, Terminal};
+use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
 use std::{fs, path::Path, time::Instant};
 
 fn run(path: &Path, args: &[&str]) -> String {
@@ -65,18 +65,30 @@ fn finish(panel: &mut StashPanel, c: &Context) {
     );
 }
 
-fn screen(panel: &mut StashPanel, c: &Context, w: u16, h: u16) -> String {
+fn render(panel: &mut StashPanel, c: &Context, w: u16, h: u16) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
     terminal.draw(|f| panel.draw(f, f.area(), c)).unwrap();
-    let buffer = terminal.backend().buffer();
-    (0..h)
-        .map(|y| (0..w).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+    terminal.backend().buffer().clone()
+}
+
+fn text_in(buffer: &Buffer, area: Rect) -> String {
+    (area.top()..area.bottom())
+        .map(|y| {
+            (area.left()..area.right())
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
+fn screen(panel: &mut StashPanel, c: &Context, w: u16, h: u16) -> String {
+    let buffer = render(panel, c, w, h);
+    text_in(&buffer, buffer.area)
+}
+
 #[test]
-fn stash_lists_all_scoped_repositories_with_dates_and_empty_states() {
+fn stash_lists_saved_entries_on_one_row_and_groups_empty_repositories() {
     let (_temp, c, mut panel) = fixture();
     assert_eq!(panel.repos.len(), 3);
     for repo in &panel.repos {
@@ -92,21 +104,84 @@ fn stash_lists_all_scoped_repositories_with_dates_and_empty_states() {
     }
     finish(&mut panel, &c);
     for (w, h) in [(120, 36), (80, 25), (44, 12)] {
-        let text = screen(&mut panel, &c, w, h);
-        assert!(
-            text.contains("stash@{0}") && text.contains("file.txt"),
-            "{text}"
+        let buffer = render(&mut panel, &c, w, h);
+        let list = text_in(&buffer, panel.viewport);
+        let diff = text_in(&buffer, panel.panes.rect(PaneId::Files).unwrap());
+        let row = list.lines().find(|row| row.contains("api work 2")).unwrap();
+        assert!(row.trim_start().starts_with("api work 2"), "{list}");
+        assert_eq!(
+            list.lines()
+                .filter(|row| row.contains("api work 2"))
+                .count(),
+            1
         );
         assert!(
-            text.contains(&panel.selection().unwrap().1.saved[..19]),
-            "{text}"
+            diff.contains("api / stash@{0}") && diff.contains("file.txt"),
+            "{diff}"
         );
+        if w == 120 {
+            let saved = &panel.selection().unwrap().1.saved;
+            assert!(row.contains("#0") && row.contains(&saved[..16]), "{row}");
+            assert!(diff.contains(saved), "{diff}");
+        }
+        if w == 44 {
+            assert!(!row.contains("#0"), "{row}");
+            assert!(list.contains("1 without stashes"), "{list}");
+        }
     }
     let text = screen(&mut panel, &c, 120, 36);
-    assert!(
-        text.contains("empty") && text.contains("No stashes"),
-        "{text}"
+    assert_eq!(panel.hits.len(), 7, "{text}");
+    assert!(text.find("web work 1").unwrap() < text.find("1 repo without stashes").unwrap());
+    assert!(!text.contains("empty"), "{text}");
+
+    let summary = panel.hits.last().unwrap().0;
+    panel.event(
+        &Event::Mouse(MouseEvent {
+            kind: M::Down(MouseButton::Left),
+            column: summary.x + 1,
+            row: summary.y,
+            modifiers: Mods::NONE,
+        }),
+        &c,
     );
+    assert!(screen(&mut panel, &c, 120, 36).contains("empty"));
+    panel.refresh(&c).unwrap();
+    assert!(screen(&mut panel, &c, 120, 36).contains("empty"));
+    key(&mut panel, &c, K::Char('l')); // Enter the expanded group.
+    for shortcut in ['a', 'P', 'd'] {
+        assert!(
+            matches!(key(&mut panel, &c, K::Char(shortcut)), Action::Notice(_)),
+            "An empty repository must not target a stash"
+        );
+    }
+    key(&mut panel, &c, K::Char('h')); // Return to the summary.
+    key(&mut panel, &c, K::Char('h')); // Collapse it.
+    assert!(!screen(&mut panel, &c, 120, 36).contains("empty"));
+    key(&mut panel, &c, K::Enter);
+    assert!(screen(&mut panel, &c, 120, 36).contains("empty"));
+}
+
+#[test]
+fn stash_narrow_diff_keeps_repository_name_and_selector_visible_above_files() {
+    let (_temp, mut c, mut panel) = fixture();
+    let (root, _) = panel.identity().unwrap();
+    c.repos[root].name = "界面工具-web".into();
+    finish(&mut panel, &c);
+    key(&mut panel, &c, K::Enter);
+    let buffer = render(&mut panel, &c, 44, 12);
+    let diff = text_in(&buffer, panel.panes.rect(PaneId::Files).unwrap());
+    let repo_row = diff
+        .lines()
+        .position(|row| row.contains("界 面 工 具 -web"));
+    let selector_row = diff.lines().position(|row| row.contains("stash@{0}"));
+    let toolbar_row = diff.lines().position(|row| row.contains(" Diff "));
+    assert!(
+        repo_row.is_some() && repo_row < selector_row && selector_row < toolbar_row,
+        "{diff}"
+    );
+    assert!(diff.contains("file.txt"), "{diff}");
+    key(&mut panel, &c, K::Enter);
+    assert!(panel.editing());
 }
 
 #[test]
@@ -119,6 +194,11 @@ fn stash_selection_survives_renumbering_and_roots_never_keep_a_hidden_preview() 
     panel.refresh(&c).unwrap();
     assert_eq!(panel.identity(), Some((root, oid)));
     assert_eq!(panel.selection().unwrap().1.selector, "stash@{1}");
+    let text = screen(&mut panel, &c, 120, 36);
+    assert!(
+        text.contains("api / stash@{1}") && text.contains("Loading saved files"),
+        "{text}"
+    );
     panel.poll_preview(&c); // A result for the old scope must never be installed.
     c.scope.remove(&root);
     panel.refresh(&c).unwrap();
@@ -168,14 +248,18 @@ fn stash_files_enter_mouse_diff_and_file_navigation_use_saved_content() {
     assert!(text.contains("untracked api 2"), "{text}");
     key(&mut panel, &c, K::Esc);
     assert!(!panel.editing());
-    screen(&mut panel, &c, 120, 36);
+    let text = screen(&mut panel, &c, 120, 36);
     let pane = panel.panes.rect(PaneId::Files).unwrap();
     // Click the inspector's actual Diff toolbar, shared with Log.
+    let toolbar = text
+        .lines()
+        .position(|row| row.contains("+- Diff"))
+        .unwrap();
     panel.event(
         &Event::Mouse(MouseEvent {
             kind: M::Down(MouseButton::Left),
             column: pane.x + 3,
-            row: pane.y + 1,
+            row: toolbar as u16,
             modifiers: Mods::NONE,
         }),
         &c,
@@ -196,7 +280,16 @@ fn stash_failed_repository_is_local_and_other_repositories_still_load() {
     assert!(panel.repos[0].error.is_some());
     assert!(panel.repos.iter().any(|r| !r.entries.is_empty()));
     finish(&mut panel, &c);
-    assert!(screen(&mut panel, &c, 120, 36).contains("Error:"));
+    let text = screen(&mut panel, &c, 120, 36);
+    assert!(text.find("api  Error").unwrap() < text.find("1 repo without stashes").unwrap());
+    assert!(!text.contains("api work"));
+    panel.select(panel.row_index(Row::Repository(0)).unwrap());
+    let buffer = render(&mut panel, &c, 44, 12);
+    let diff = text_in(&buffer, panel.panes.rect(PaneId::Files).unwrap());
+    assert!(
+        diff.contains("Error:") && !diff.contains("stash@{"),
+        "{diff}"
+    );
 }
 
 #[test]
@@ -277,13 +370,7 @@ fn stash_drop_refresh_keeps_a_nearby_entry_in_the_same_repository_and_consumes_r
     let (_temp, c, mut panel) = fixture();
     let root = c.repos.iter().position(|repo| repo.name == "web").unwrap();
     let entries = panel.repository(root).unwrap().entries.clone();
-    panel.select(
-        panel
-            .rows
-            .iter()
-            .position(|row| row.root == root && row.entry == Some(1))
-            .unwrap(),
-    );
+    panel.select(panel.row_index(Row::Stash { root, entry: 1 }).unwrap());
     assert!(matches!(
         key(&mut panel, &c, K::Char('d')),
         Action::Confirm { .. }
@@ -298,8 +385,7 @@ fn stash_drop_refresh_keeps_a_nearby_entry_in_the_same_repository_and_consumes_r
     key(&mut panel, &c, K::Char('d'));
     panel.confirm("stash-operation", &c);
     panel.refresh(&c).unwrap();
-    let row = panel.rows[panel.cursor];
-    assert_eq!((row.root, row.entry), (root, None));
+    assert_eq!(panel.rows[panel.cursor], Row::EmptyGroup);
     assert!(panel.selection().is_none());
     assert!(c
         .repos

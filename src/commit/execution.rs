@@ -1,4 +1,5 @@
-//! Execute a reviewed batch without holding the terminal event loop.
+//! Snapshot the Commit panel's selection and run the batch in the background.
+use super::backend::Plan;
 use super::*;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -9,6 +10,7 @@ use std::sync::{
 #[derive(Default)]
 pub(super) struct Execution {
     pub enabled: bool,
+    blocked: bool,
     pending: Option<Pending>,
     pub progress: String,
 }
@@ -47,7 +49,7 @@ fn run(c: &Context, plans: Vec<Plan>, stop: &AtomicBool, mut report: impl FnMut(
         let outcome = if stop.load(Ordering::Acquire) {
             Err("Not started: batch stopped after the current repository".into())
         } else if !c.scope.contains(&root) {
-            Err("Outside the reviewed Roots; not committed".into())
+            Err("Outside the selected Roots; not committed".into())
         } else if dependency {
             Err("Skipped because a child repository failed".into())
         } else {
@@ -95,6 +97,10 @@ impl CommitPanel {
         self.execution.pending.is_some()
     }
 
+    pub(crate) fn block_submissions(&mut self, blocked: bool) {
+        self.execution.blocked = blocked;
+    }
+
     pub(crate) fn stop_execution(&mut self) -> Action {
         if let Some(pending) = &self.execution.pending {
             pending.stop.store(true, Ordering::Release);
@@ -106,11 +112,59 @@ impl CommitPanel {
         }
     }
 
-    pub(super) fn execute_submission(&mut self, c: &Context) -> Action {
-        if self.execution_running() {
-            return err("A commit batch is already running");
+    pub(super) fn submit(&mut self, c: &Context, push: bool) -> Result<Action> {
+        if self.add_running() {
+            bail!("Adding files to Git; wait before committing");
         }
-        let plans = std::mem::take(&mut self.plans);
+        if self.execution.blocked {
+            bail!("Wait for the remote operation before committing");
+        }
+        if self.execution_running() {
+            bail!("Wait for the current commit batch to finish");
+        }
+        let plans = self.prepare_submission(c)?;
+        Ok(self.execute_submission(c, plans, push))
+    }
+
+    pub(super) fn prepare_submission(&mut self, c: &Context) -> Result<Vec<Plan>> {
+        let mut files_by_root = BTreeMap::<_, Vec<_>>::new();
+        for file in self.selection(c) {
+            files_by_root
+                .entry(file.root)
+                .or_default()
+                .push(file.change.clone());
+        }
+        if files_by_root.is_empty() {
+            bail!("Select files first");
+        }
+        let msg = self.saved.message.clone().unwrap_or_default();
+        if msg.trim().is_empty() {
+            self.edit_message(c);
+            bail!("Enter a commit message for the selected files");
+        }
+        let mut plans = Vec::with_capacity(files_by_root.len());
+        for (root, files) in files_by_root {
+            let repo = &c.repos[root];
+            let plan = backend::plan(
+                root,
+                &repo.path,
+                files,
+                msg.clone(),
+                self.amend.contains(&root),
+            )
+            .map_err(|error| anyhow::anyhow!("{}: {error}", repo.name))?;
+            plans.push(plan);
+        }
+        plans.sort_by_key(|p| std::cmp::Reverse(p.repo.components().count()));
+        Ok(plans)
+    }
+
+    pub(super) fn execute_submission(
+        &mut self,
+        c: &Context,
+        plans: Vec<Plan>,
+        push: bool,
+    ) -> Action {
         let message = self.saved.message.clone();
         if !self.execution.enabled {
             let mut completed = Vec::new();
@@ -119,33 +173,28 @@ impl CommitPanel {
                     completed.push(*result);
                 }
             });
-            return self.finish_submission(c, completed, self.push, message, None);
+            return self.finish_submission(c, completed, push, message, None);
         }
         let ctx = c.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
         let (sender, receiver) = mpsc::channel();
-        // On spawn failure, restore the reviewed plans for an explicit retry.
-        let shared = Arc::new(std::sync::Mutex::new(Some(plans)));
-        let worker_plans = shared.clone();
         let spawned = std::thread::Builder::new()
             .name("igit-commit".into())
             .spawn(move || {
-                let plans = worker_plans.lock().unwrap().take().unwrap();
                 run(&ctx, plans, &worker_stop, |report| {
                     let _ = sender.send(report);
                 });
             });
         if let Err(error) = spawned {
-            self.plans = shared.lock().unwrap().take().unwrap_or_default();
             return err(format!("Cannot start commit worker: {error}"));
         }
-        self.execution.progress = "Starting reviewed commits…".into();
+        self.execution.progress = "Starting commits…".into();
         self.execution.pending = Some(Pending {
             receiver,
             stop,
             completed: Vec::new(),
-            push: self.push,
+            push,
             message,
         });
         Action::Notice(self.execution.progress.clone())

@@ -1,7 +1,7 @@
 use super::*;
 use crate::ui::{
     icons::Icon,
-    idea::{BLUE, LOCAL_REF},
+    idea::{BLUE, LOCAL_REF, TAG},
 };
 
 fn commit_on(repo: &Path, parent: &str, message: &str) -> String {
@@ -54,17 +54,15 @@ fn diverged_fixture() -> (tempfile::TempDir, Context, BranchPanel) {
 }
 
 fn row_text(p: &mut BranchPanel, c: &Context, reference: &str, width: u16, height: u16) -> String {
-    select(p, 0, reference);
-    let text = screen(p, c, width, height);
-    let rect = p
-        .hits
-        .iter()
-        .find_map(|(rect, hit)| match hit {
-            Hit::Row(i) if *i == p.tree.cursor => Some(*rect),
-            _ => None,
-        })
-        .unwrap();
-    text.lines().nth(usize::from(rect.y)).unwrap().into()
+    select(p, p.repo_root.unwrap(), reference);
+    let t = render(p, c, width, height);
+    let rect = hit_rect(p, |hit| matches!(hit, Hit::Row(i) if *i == p.tree.cursor));
+    row_cells(&t, rect)
+}
+
+fn repository_text(t: &Terminal<TestBackend>, p: &BranchPanel, index: usize) -> String {
+    let rect = hit_rect(p, |hit| matches!(hit, Hit::Repository(i) if *i == index));
+    row_cells(t, rect)
 }
 
 #[test]
@@ -76,7 +74,9 @@ fn branch_tracking_counts_follow_each_configured_upstream_and_refresh_without_wr
     run(repo, &["add", "."]);
     fs::write(repo.join("file"), "unstaged\n").unwrap();
     let before = state(repo);
-    let other = state(&c.repos[1].path);
+    let web = &c.repos[1].path;
+    run(web, &["switch", "-c", "web-live"]);
+    let other = state(web);
     reload(&mut p, &c);
     let cached = p.repository().unwrap();
     let snapshot = cached.state.as_ref().unwrap();
@@ -125,17 +125,42 @@ fn branch_tracking_counts_follow_each_configured_upstream_and_refresh_without_wr
         }
     }
     p.select_repository(1);
-    let row = screen(&mut p, &c, 120, 36);
+    let row = row_text(&mut p, &c, "refs/heads/web-live", 120, 36);
     assert!(!row.contains("^2") && !row.contains("v3"), "{row}");
-    p.select_repository(0);
+    let t = render(&mut p, &c, 120, 36);
+    let api = repository_text(&t, &p, 0);
+    let web_row = repository_text(&t, &p, 1);
+    assert!(
+        api.starts_with(" R api") && api.ends_with("main ^2 v3 >"),
+        "{api}"
+    );
+    assert!(
+        web_row.starts_with(" R web") && web_row.ends_with("web-live >"),
+        "{web_row}"
+    );
+    let repo_row = hit_rect(&p, |hit| matches!(hit, Hit::Repository(0)));
+    p.event(
+        &Event::Mouse(MouseEvent {
+            kind: M::Down(MouseButton::Left),
+            column: repo_row.right() - 1,
+            row: repo_row.y,
+            modifiers: Mods::NONE,
+        }),
+        &c,
+    );
+    assert_eq!(p.repo_root, Some(0));
     assert_eq!(state(repo), before);
-    assert_eq!(state(&c.repos[1].path), other);
+    assert_eq!(state(web), other);
 
     run(repo, &["update-ref", "refs/remotes/origin/release", "main"]);
+    run(web, &["switch", "--detach"]);
     let before = state(repo);
     reload(&mut p, &c);
     let row = row_text(&mut p, &c, "refs/heads/main", 120, 36);
     assert!(!row.contains("^2") && !row.contains("v3"), "{row}");
+    let t = render(&mut p, &c, 120, 36);
+    assert!(repository_text(&t, &p, 0).ends_with("main >"));
+    assert!(repository_text(&t, &p, 1).contains("detached@"));
     assert_eq!(state(repo), before);
 }
 
@@ -151,29 +176,30 @@ fn branch_tracking_arrows_keep_colors_and_click_identity_in_all_icon_modes_and_s
             p.icons = mode;
             for (width, height) in [(120, 36), (80, 25), (44, 12)] {
                 select(&mut p, 0, "refs/heads/main");
-                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-                terminal.draw(|f| p.draw(f, f.area(), &c)).unwrap();
-                let rect = p
-                    .hits
-                    .iter()
-                    .find_map(|(rect, hit)| match hit {
-                        Hit::Row(i) if *i == p.tree.cursor => Some(*rect),
-                        _ => None,
-                    })
-                    .unwrap();
+                let terminal = render(&mut p, &c, width, height);
+                let rect = hit_rect(&p, |hit| matches!(hit, Hit::Row(i) if *i == p.tree.cursor));
                 let buffer = terminal.backend().buffer();
-                for (icon, count, color) in
-                    [(Icon::Ahead, "2", LOCAL_REF), (Icon::Behind, "3", BLUE)]
-                {
-                    let glyph = mode.glyph(icon);
-                    let x = (rect.x..rect.right())
-                        .find(|&x| buffer[(x, rect.y)].symbol() == glyph)
-                        .unwrap_or_else(|| {
-                            panic!("Missing {icon:?} at {width}x{height}, {mode:?}")
-                        });
-                    assert_eq!(buffer[(x, rect.y)].fg, color);
-                    assert_eq!(buffer[(x, rect.y)].bg, SEL);
-                    assert_eq!(buffer[(x + glyph.width() as u16, rect.y)].symbol(), count);
+                let mut rows = vec![(rect, SEL)];
+                if !single_repo {
+                    rows.push((hit_rect(&p, |h| matches!(h, Hit::Repository(0))), TAG));
+                }
+                for (row, bg) in rows {
+                    for (icon, count, color) in
+                        [(Icon::Ahead, "2", LOCAL_REF), (Icon::Behind, "3", BLUE)]
+                    {
+                        let glyph = mode.glyph(icon);
+                        let x = (row.x..row.right())
+                            .find(|&x| buffer[(x, row.y)].symbol() == glyph)
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "Missing {icon:?} at {width}x{height}, {mode:?}: {}",
+                                    row_cells(&terminal, row)
+                                )
+                            });
+                        assert_eq!(buffer[(x, row.y)].fg, color);
+                        assert_eq!(buffer[(x, row.y)].bg, bg);
+                        assert_eq!(buffer[(x + glyph.width() as u16, row.y)].symbol(), count);
+                    }
                 }
                 p.event(
                     &Event::Mouse(MouseEvent {
@@ -201,7 +227,6 @@ fn branch_tracking_counts_survive_long_unicode_names_in_grouped_and_flat_details
     run(repo, &["branch", name]);
     run(repo, &["branch", "--set-upstream-to=origin/release", name]);
     reload(&mut p, &c);
-    expand_branch_path(&mut p, &c, 0, &reference);
     for grouped in [true, false] {
         if !grouped {
             key(&mut p, &c, K::Char('o'));
@@ -233,11 +258,10 @@ fn branch_tracking_counts_reserve_upstream_space_even_when_their_folder_is_folde
     run(repo, &["branch", name]);
     run(repo, &["branch", "--set-upstream-to=origin/release", name]);
     reload(&mut p, &c);
-    expand_branch_path(&mut p, &c, 0, &reference);
     let row = row_text(&mut p, &c, &reference, 120, 36);
     assert!(row.contains("branch-with-counts ^2 v3"), "{row}");
     assert!(row.contains("-> B origin/release"), "{row}");
-    let column = p.upstream_column(p.viewport.area.width);
+    let column = p.branch_columns(p.viewport.area.width).upstream;
     key(&mut p, &c, K::Char('h'));
     key(&mut p, &c, K::Char('h'));
     assert!(!p
@@ -246,7 +270,7 @@ fn branch_tracking_counts_reserve_upstream_space_even_when_their_folder_is_folde
         .iter()
         .any(|row| row.id == format!("0:{reference}")));
     screen(&mut p, &c, 120, 36);
-    assert_eq!(p.upstream_column(p.viewport.area.width), column);
+    assert_eq!(p.branch_columns(p.viewport.area.width).upstream, column);
 
     key(&mut p, &c, K::Char('o'));
     key(&mut p, &c, K::Enter);

@@ -28,6 +28,11 @@ const SEARCH_MATCH: Style = Style::new()
 /// Each sequence is executable and represents exactly one action.
 pub(crate) type Binding = (&'static str, &'static str);
 
+pub(crate) const PREVIEW_SCROLL_BINDINGS: &[Binding] = &[
+    ("J", "Scroll file preview down"),
+    ("K", "Scroll file preview up"),
+];
+
 #[derive(Clone, Debug)]
 pub(crate) struct HelpSection {
     pub title: &'static str,

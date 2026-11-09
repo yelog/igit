@@ -21,7 +21,6 @@ fn text_selection_push_details_wrap_scroll_and_close_keep_push_scope() {
             "long wrapped original text ".repeat(15)
         );
         p.preview.body = text.clone();
-        p.preview.is_patch = true;
         let checked = p.checked.clone();
         draw(&mut p, &c, w, h);
         let area = pane("", true).inner(p.panes.rect(PaneId::PushDetails).unwrap());

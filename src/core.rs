@@ -1,4 +1,5 @@
 pub(crate) mod loading;
+pub(crate) mod revision;
 mod state;
 
 use anyhow::{bail, Context as _, Result};

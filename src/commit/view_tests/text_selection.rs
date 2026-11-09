@@ -31,7 +31,7 @@ fn drag(p: &mut CommitPanel, c: &Context, x: u16, y: u16, end: u16) -> Action {
 }
 
 #[test]
-fn text_selection_message_mouse_keyboard_replace_save_and_cancel_preserve_index_and_checks() {
+fn text_selection_message_mouse_keyboard_replace_and_save_preserve_index_and_checks() {
     let (_d, c) = fixture();
     let before = git(&c.repos[0].path, &["ls-files", "--stage"]).unwrap();
     for (w, h) in [(120, 36), (80, 24), (44, 12)] {
@@ -78,13 +78,12 @@ fn text_selection_message_mouse_keyboard_replace_save_and_cancel_preserve_index_
         assert!(p.edit.is_none());
         assert_eq!(p.saved.message.as_deref().unwrap(), "Replace\ngy");
         p.edit_message(&c);
-        p.event(&Event::Paste("discard me".into()), &c);
+        p.event(&Event::Paste(" updated".into()), &c);
         press(&mut p, &c, K::Char('a'), Mod::CONTROL);
         press(&mut p, &c, K::Esc, Mod::NONE);
-        assert!(p.edit.is_some() && p.selected_text().is_none());
-        press(&mut p, &c, K::Esc, Mod::NONE);
-        assert!(p.edit.is_none());
-        assert_eq!(p.saved.message.as_deref().unwrap(), "Replace\ngy");
+        assert!(p.edit.is_none() && p.selected_text().is_none());
+        assert_eq!(p.focused_pane(), PaneId::Message);
+        assert_eq!(p.saved.message.as_deref().unwrap(), "Replace\ngy updated");
         assert_eq!(p.checks, checks);
     }
     assert_eq!(

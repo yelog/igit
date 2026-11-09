@@ -19,20 +19,21 @@ mod view;
 #[cfg(test)]
 mod view_tests;
 use crate::{
-    core::{branch_label, Context},
+    core::Context,
     ui::{
         icons::{Icon, IconMode},
         idea::{BLUE, DIM as MUTED, INK as FG, PANEL, SELECT as SEL},
         inside,
         panes::{PaneId, PaneLayout},
+        preview_scroll_key,
         selection::{self, TextLayout, TextSelection, Wrap as TextWrap},
         Action, Panel,
     },
 };
 use anyhow::{bail, Result};
-use backend::{Change, Plan};
+use backend::Change;
 use crossterm::event::{
-    Event, KeyCode as K, KeyModifiers as Mod, MouseButton, MouseEventKind as M,
+    Event, KeyCode as K, KeyEventKind, KeyModifiers as Mod, MouseButton, MouseEventKind as M,
 };
 use ratatui::{
     layout::Rect,
@@ -83,6 +84,26 @@ enum Focus {
     Diff,
     Message,
 }
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum MessageAction {
+    #[default]
+    Commit,
+    CommitAndPush,
+    Generate,
+}
+
+impl MessageAction {
+    fn step(self, right: bool) -> Self {
+        match (self, right) {
+            (Self::Commit, true) | (Self::Generate, false) => Self::CommitAndPush,
+            (Self::CommitAndPush, true) => Self::Generate,
+            (Self::CommitAndPush, false) => Self::Commit,
+            (action, _) => action,
+        }
+    }
+}
+
 #[derive(Clone)]
 enum Edit {
     Message,
@@ -108,10 +129,9 @@ enum Hit {
     New,
     Move,
     Msg,
-    Submit(bool),
+    MessageAction(MessageAction),
     StageHunks,
     Amend,
-    Ai,
     Settings,
     EditSave,
     EditCancel,
@@ -132,7 +152,7 @@ impl Hit {
             Self::Expand(true) => "Expand all  Z",
             Self::Expand(false) => "Collapse all  z",
             Self::Amend => "Amend the highlighted repository's last commit  M",
-            Self::Ai => "Generate an AI commit message  A",
+            Self::MessageAction(MessageAction::Generate) => "Generate an AI commit message  A",
             Self::Settings => "AI settings  S",
             Self::StageHunks => "Stage or unstage individual hunks  Ctrl-G",
             _ => return None,
@@ -158,6 +178,7 @@ pub struct CommitPanel {
     cursor: usize,
     offset: usize,
     focus: Focus,
+    message_action: MessageAction,
     edit: Option<Edit>,
     buf: String,
     caret: usize,
@@ -175,11 +196,9 @@ pub struct CommitPanel {
     diff_scroll: u16,
     diff_selection: TextSelection,
     message_selection: TextSelection,
-    plans: Vec<Plan>,
     add: add::State,
     stash: stash::State,
     rollback: Option<Box<Rollback>>,
-    push: bool,
     move_to: usize,
     move_names: Vec<String>,
     pub(crate) ai_config: Option<crate::config::AiConfig>,
@@ -212,6 +231,7 @@ impl Default for CommitPanel {
             cursor: Default::default(),
             offset: Default::default(),
             focus: Default::default(),
+            message_action: Default::default(),
             edit: Default::default(),
             buf: Default::default(),
             caret: Default::default(),
@@ -229,11 +249,9 @@ impl Default for CommitPanel {
             diff_scroll: Default::default(),
             diff_selection: Default::default(),
             message_selection: Default::default(),
-            plans: Default::default(),
             add: Default::default(),
             stash: Default::default(),
             rollback: Default::default(),
-            push: Default::default(),
             move_to: Default::default(),
             move_names: Default::default(),
             ai_pending: Default::default(),
@@ -282,18 +300,30 @@ impl CommitPanel {
     }
 
     pub(crate) fn focus_pane(&mut self, pane: PaneId) {
-        self.focus = match pane {
+        let focus = match pane {
             PaneId::Changes => Focus::Tree,
             PaneId::Preview if self.preview_open => Focus::Diff,
             PaneId::Message => Focus::Message,
             _ => return,
         };
+        self.set_focus(focus);
+    }
+
+    fn set_focus(&mut self, focus: Focus) {
+        if focus == Focus::Message && self.focus != Focus::Message {
+            self.message_action = MessageAction::Commit;
+        }
+        self.focus = focus;
     }
 
     fn pane_focused(&self, pane: PaneId) -> bool {
         self.panes.active
             && (!self.editing() || self.message_editing())
             && self.focused_pane() == pane
+    }
+
+    fn file_preview_visible(&self) -> bool {
+        self.preview_open && !self.diff.is_empty() && self.active().and_then(Row::file).is_some()
     }
 
     pub(crate) fn message_editing(&self) -> bool {
@@ -454,7 +484,7 @@ impl CommitPanel {
         self.edit_view = (self.edit_view.0, 0, 0);
         self.edit_follow = true;
         self.edit = Some(Edit::Message);
-        self.focus = Focus::Message
+        self.set_focus(Focus::Message);
     }
     fn move_menu(&mut self) {
         if self
@@ -531,81 +561,6 @@ impl CommitPanel {
         self.sync(c);
         Ok(())
     }
-    fn review(&mut self, c: &Context, push: bool) -> Result<Action> {
-        if self.add_running() {
-            bail!("Adding files to Git; wait before committing");
-        }
-        if self.execution_running() {
-            bail!("Wait for the current commit batch to finish");
-        }
-        let mut plans = vec![];
-        let rs = self.checked_repos(c);
-        if rs.is_empty() {
-            bail!("Select files first")
-        }
-        let msg = self.saved.message.clone().unwrap_or_default();
-        if msg.trim().is_empty() {
-            self.edit_message(c);
-            bail!("Enter a commit message for the selected files")
-        }
-        for r in rs {
-            let fs = self
-                .selection(c)
-                .into_iter()
-                .filter(|f| f.root == r)
-                .map(|f| f.change.clone())
-                .collect();
-            plans.push(
-                backend::plan(
-                    r,
-                    &c.repos[r].path,
-                    fs,
-                    msg.clone(),
-                    self.amend.contains(&r),
-                )
-                .map_err(|e| anyhow::anyhow!("{}: {e}", c.repos[r].name))?,
-            );
-        }
-        plans.sort_by_key(|p| std::cmp::Reverse(p.repo.components().count()));
-        let mut body = String::new();
-        for p in &plans {
-            body.push_str(&format!(
-                "{} / {} · {}{}\n  {}\n",
-                c.repos[p.root].name,
-                branch_label(&p.branch, p.head.as_deref()),
-                &p.tree[..8],
-                if p.amend { " · AMEND" } else { "" },
-                p.msg.trim()
-            ));
-            for f in &p.files {
-                body.push_str(&format!(
-                    "    {}  {}\n",
-                    if f.staged() { "INDEX" } else { "WORK " },
-                    f.label()
-                ));
-            }
-        }
-        for p in &plans {
-            body.push_str(&format!(
-                "\n{} / reviewed patch\n{}",
-                c.repos[p.root].name, p.preview
-            ));
-        }
-        self.plans = plans;
-        self.push = push;
-        Ok(Action::Confirm {
-            title: format!(
-                "Review commits · {} repo{}",
-                self.plans.len(),
-                if self.plans.len() == 1 { "" } else { "s" }
-            ),
-            body,
-            token: "commit".into(),
-        })
-    }
-    fn submit(&mut self, c: &Context) -> Action {
-        self.execute_submission(c)
-    }
     pub(crate) fn hover_at(&mut self, x: u16, y: u16) -> bool {
         if self.edit.is_some() {
             return false;
@@ -635,8 +590,7 @@ impl CommitPanel {
         changed
     }
     fn launch(&mut self, h: Hit, c: &Context) -> Action {
-        if self.add_running()
-            && matches!(h, Hit::Submit(_) | Hit::Ai | Hit::StageHunks | Hit::Refresh)
+        if self.add_running() && matches!(h, Hit::MessageAction(_) | Hit::StageHunks | Hit::Refresh)
         {
             return err("Adding files to Git; browsing and message editing remain available");
         }
@@ -702,14 +656,19 @@ impl CommitPanel {
                     self.amend.insert(root);
                 }
             }
-            Hit::Submit(p) => return self.review(c, p).unwrap_or_else(err),
-            Hit::Ai => {
-                if self.ai_running() {
-                    return err("AI request in progress. Please wait");
+            Hit::MessageAction(action) => {
+                self.message_action = action;
+                if action == MessageAction::Generate {
+                    if self.ai_running() {
+                        return err("AI request in progress. Please wait");
+                    }
+                    return self
+                        .start_ai(c)
+                        .unwrap_or_else(|error| self.show_ai_error(error));
                 }
                 return self
-                    .start_ai(c)
-                    .unwrap_or_else(|error| self.show_ai_error(error));
+                    .submit(c, action == MessageAction::CommitAndPush)
+                    .unwrap_or_else(err);
             }
             Hit::Settings => {
                 self.buf = format!(
@@ -739,7 +698,7 @@ impl CommitPanel {
                 }
             }
             Hit::Show(focus) => {
-                self.focus = focus;
+                self.set_focus(focus);
                 self.preview_open = focus == Focus::Diff;
             }
             Hit::Row(_) => {}
@@ -810,33 +769,36 @@ impl Panel for CommitPanel {
     }
     fn help(&self) -> &'static str {
         if self.message_editing() {
-            "F2/Ctrl-S Save · Esc Cancel · Enter Newline · F1 Help"
+            "Esc Save and exit editing · Enter Newline · F1 Help"
         } else if matches!(self.edit, Some(Edit::Stash)) {
             "Enter Review · Esc Cancel · F1 Help"
+        } else if self.focus == Focus::Message {
+            "Left/Right Select action · Enter Run · i Edit message · F1 Help"
         } else {
-            "Space check · Enter/v preview · e edit file · s stash · d discard · i message · c review · ? keys"
+            "Space check · Enter/v preview · e edit file · s stash · d discard · c Edit message · ? keys"
         }
     }
     fn confirm(&mut self, t: &str, c: &Context) -> Action {
         match t {
-            "commit" => self.submit(c),
             "commit-stash" => self.submit_stash(c),
             "commit-hunk" => self.confirm_staging(c),
             _ => Action::None,
         }
     }
     fn event(&mut self, e: &Event, c: &Context) -> Action {
-        if matches!(e, Event::Key(k) if k.kind == crossterm::event::KeyEventKind::Release) {
+        if matches!(e, Event::Key(k) if k.kind == KeyEventKind::Release) {
             return Action::None;
         }
         if let Some(action) = self.staging_event(e, c) {
             return action;
         }
+        let scroll_key = preview_scroll_key(e);
         if self.execution_running() {
             match e {
                 Event::Key(k) if k.code == K::Char('x') && k.modifiers == Mod::CONTROL => {
                     return self.stop_execution();
                 }
+                Event::Key(_) if scroll_key.is_some() => {}
                 Event::Key(k)
                     if matches!(
                         k.code,
@@ -945,6 +907,11 @@ impl Panel for CommitPanel {
             self.last_click = None;
         }
         self.hover = None;
+        if let Some(key) = scroll_key.filter(|_| self.file_preview_visible()) {
+            let step = if key == K::Down { 1 } else { -1 };
+            self.diff_scroll = self.diff_scroll.saturating_add_signed(step);
+            return Action::None;
+        }
         match e {
             Event::Mouse(m) => {
                 if m.kind == M::Drag(MouseButton::Left) {
@@ -1145,10 +1112,16 @@ impl Panel for CommitPanel {
                 K::Char('u') => return self.launch(Hit::UndoCheck, c),
                 K::Char('z') => return self.launch(Hit::Expand(false), c),
                 K::Char('Z') => return self.launch(Hit::Expand(true), c),
+                K::Left | K::Right if self.focus == Focus::Message && k.modifiers.is_empty() => {
+                    self.message_action = self.message_action.step(k.code == K::Right);
+                }
+                K::Enter if self.focus == Focus::Message => {
+                    if k.modifiers.is_empty() && k.kind == KeyEventKind::Press {
+                        return self.launch(Hit::MessageAction(self.message_action), c);
+                    }
+                }
                 K::Enter => {
-                    if self.focus == Focus::Message {
-                        self.edit_message(c)
-                    } else if self.focus == Focus::Diff {
+                    if self.focus == Focus::Diff {
                         return self.launch(Hit::Show(Focus::Tree), c);
                     } else if self.active().is_some_and(|row| row.kind == Kind::Conflicts) {
                         return self.launch(Hit::ResolveConflicts, c);
@@ -1165,21 +1138,26 @@ impl Panel for CommitPanel {
                         &[Focus::Tree, Focus::Message][..]
                     };
                     let i = fs.iter().position(|s| *s == self.focus).unwrap_or(0);
-                    self.focus =
+                    self.set_focus(
                         fs[(i + if k.modifiers.contains(Mod::SHIFT) || k.code == K::BackTab {
                             fs.len() - 1
                         } else {
                             1
-                        }) % fs.len()];
+                        }) % fs.len()],
+                    );
                 }
                 K::Char('i') => self.edit_message(c),
                 K::Char('n') => return self.launch(Hit::New, c),
                 K::Char('m') => self.move_menu(),
                 K::Char('M') => return self.launch(Hit::Amend, c),
-                K::Char('A') => return self.launch(Hit::Ai, c),
+                K::Char('A') => return self.launch(Hit::MessageAction(MessageAction::Generate), c),
                 K::Char('S') => return self.launch(Hit::Settings, c),
-                K::Char('c') => return self.launch(Hit::Submit(false), c),
-                K::Char('P') => return self.launch(Hit::Submit(true), c),
+                K::Char('c') if self.focus != Focus::Message && k.modifiers.is_empty() => {
+                    self.edit_message(c);
+                }
+                K::Char('P') if (k.modifiers - Mod::SHIFT).is_empty() => {
+                    return self.launch(Hit::MessageAction(MessageAction::CommitAndPush), c);
+                }
                 K::Char(']') | K::Char('[') => self.browse_repo(k.code == K::Char(']'), c),
                 K::Esc => return self.launch(Hit::Show(Focus::Tree), c),
                 _ => {}
@@ -1373,7 +1351,11 @@ impl CommitPanel {
         self.draw_input_cursor(f, cursor);
     }
     fn edit_event(&mut self, e: &Event, c: &Context) -> Action {
-        if matches!(self.edit, Some(Edit::Message)) {
+        if self.message_editing() {
+            // Esc saves and returns to the actions even with text selected.
+            if matches!(e, Event::Key(k) if k.code == K::Esc) {
+                return self.launch(Hit::EditSave, c);
+            }
             self.message_selection.sync_source(&self.buf);
             if matches!(e, Event::Key(_) | Event::Paste(_)) {
                 self.edit_follow = true;
@@ -1640,7 +1622,7 @@ mod flow_tests {
     use ratatui::{backend::TestBackend, Terminal};
 
     #[test]
-    fn external_branch_switch_review_names_the_target_that_is_checked() {
+    fn submission_rejects_a_branch_switch_after_preparing_at_the_same_head() {
         let d = tempfile::tempdir().unwrap();
         let repo = d.path().join("app");
         fs::create_dir(&repo).unwrap();
@@ -1653,40 +1635,29 @@ mod flow_tests {
         ] {
             git(&repo, &["config", k, v]).unwrap();
         }
-        let mut c = Context::discover(&repo).unwrap();
-        c.state_dir = d.path().join("state");
         fs::write(repo.join("file"), "base\n").unwrap();
         git(&repo, &["add", "--", "file"]).unwrap();
-        let mut panel = CommitPanel::default();
-        panel.refresh(&c).unwrap();
-        panel.saved.message = Some("edit".into());
-        let review = |panel: &mut CommitPanel| {
-            let Action::Confirm { body, .. } = panel.review(&c, false).unwrap() else {
-                panic!("missing commit review");
-            };
-            body.lines().next().unwrap().to_owned()
-        };
-
-        // Before the first commit HEAD already names a branch, even without an OID.
-        git(&repo, &["symbolic-ref", "HEAD", "refs/heads/feature/first"]).unwrap();
-        assert!(review(&mut panel).starts_with("app / feature/first · "));
         git(&repo, &["commit", "-qm", "base"]).unwrap();
         let base = git(&repo, &["rev-parse", "HEAD"]).unwrap();
         fs::write(repo.join("file"), "pending\n").unwrap();
+        let mut c = Context::discover(&repo).unwrap();
+        c.state_dir = d.path().join("state");
+        let mut panel = CommitPanel::default();
         panel.refresh(&c).unwrap();
-        git(&repo, &["switch", "-qc", "reviewed"]).unwrap();
-        assert!(review(&mut panel).starts_with("app / reviewed · "));
+        panel.saved.message = Some("edit".into());
+        git(&repo, &["switch", "-qc", "target"]).unwrap();
+        let plans = panel.prepare_submission(&c).unwrap();
 
-        // Moving to another branch at the same commit after review must refuse the write.
-        git(&repo, &["switch", "-q", "feature/first"]).unwrap();
-        let Action::Committed { repos, message, .. } = panel.confirm("commit", &c) else {
+        git(&repo, &["switch", "-q", "main"]).unwrap();
+        let Action::Committed { repos, message, .. } = panel.execute_submission(&c, plans, false)
+        else {
             panic!("missing commit result");
         };
         assert!(
             repos.is_empty() && message.contains("Branch or HEAD changed"),
             "{message}"
         );
-        for rev in ["reviewed", "feature/first"] {
+        for rev in ["target", "main"] {
             assert_eq!(git(&repo, &["rev-parse", rev]).unwrap(), base);
         }
         assert!(git(&repo, &["diff", "--cached", "--name-only"])
@@ -1694,19 +1665,14 @@ mod flow_tests {
             .is_empty());
         assert_eq!(fs::read_to_string(repo.join("file")).unwrap(), "pending\n");
 
-        git(&repo, &["switch", "-q", "--detach", &base]).unwrap();
-        assert!(review(&mut panel).starts_with(&format!("app / detached@{} · ", &base[..8])));
-
-        // A fresh review commits to the branch it names, leaving the former target untouched.
-        git(&repo, &["switch", "-q", "reviewed"]).unwrap();
-        assert!(review(&mut panel).starts_with("app / reviewed · "));
-        let Action::Committed { repos, message, .. } = panel.confirm("commit", &c) else {
+        git(&repo, &["switch", "-q", "target"]).unwrap();
+        let Action::Committed { repos, message, .. } = panel.submit(&c, false).unwrap() else {
             panic!("missing commit result");
         };
         assert_eq!(repos, [0], "{message}");
-        assert_eq!(git(&repo, &["rev-parse", "reviewed^"]).unwrap(), base);
-        assert_eq!(git(&repo, &["rev-parse", "feature/first"]).unwrap(), base);
-        assert_eq!(git(&repo, &["show", "reviewed:file"]).unwrap(), "pending");
+        assert_eq!(git(&repo, &["rev-parse", "target^"]).unwrap(), base);
+        assert_eq!(git(&repo, &["rev-parse", "main"]).unwrap(), base);
+        assert_eq!(git(&repo, &["show", "target:file"]).unwrap(), "pending");
     }
 
     #[test]
@@ -1789,11 +1755,7 @@ mod flow_tests {
         panel.event(&key('i'), &c);
         panel.event(&Event::Paste("API only".into()), &c);
         panel.event(&Event::Key(KeyEvent::new(K::F(2), Mod::NONE)), &c);
-        let Action::Confirm { body, token, .. } = panel.event(&key('P'), &c) else {
-            panic!("missing review")
-        };
-        assert!(body.contains("api") && !body.contains("web"));
-        let Action::Committed { repos, push, .. } = panel.confirm(&token, &c) else {
+        let Action::Committed { repos, push, .. } = panel.event(&key('P'), &c) else {
             panic!("missing result")
         };
         assert_eq!(repos, vec![1]);

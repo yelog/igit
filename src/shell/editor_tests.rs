@@ -48,7 +48,7 @@ fn edit_file_uses_highlight_not_checked_paths_and_keeps_index_head_and_draft() {
 }
 
 #[test]
-fn edit_file_respects_container_scope_remapping_help_and_reviews() {
+fn edit_file_respects_container_scope_remapping_help_and_message_editing() {
     let (_dir, mut app) = fixture();
     send(&mut app, "g e");
     assert!(app.pending_edit.is_none());
@@ -60,8 +60,9 @@ fn edit_file_respects_container_scope_remapping_help_and_reviews() {
     send(&mut app, "F8");
     assert!(app.pending_edit.take().unwrap().path.ends_with("other.txt"));
     send(&mut app, "c F8");
+    assert!(app.commit.message_editing());
     assert!(app.pending_edit.is_none());
-    send(&mut app, "Esc F1");
+    send(&mut app, "Esc Tab F1");
     for ch in "Edit highlighted working file".chars() {
         app.dispatch(&key(KeyCode::Char(ch)));
     }

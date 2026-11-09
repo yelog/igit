@@ -1,3 +1,4 @@
+mod diff;
 mod display;
 mod files;
 mod keymap;
@@ -91,7 +92,6 @@ struct Preview {
     tree: FileTree,
     summary: String,
     body: String,
-    is_patch: bool,
 }
 enum Report {
     Row(usize, Result<PushOutcome, String>),
@@ -144,6 +144,7 @@ pub struct PushPanel {
     offset: usize,
     focus: usize,
     preview: Preview,
+    diff: Option<diff::Diff>,
     grouping: Grouping,
     group_menu: Option<Group>,
     show_details: bool,
@@ -431,7 +432,7 @@ impl PushPanel {
     fn selected(&self) -> Option<(usize, Option<usize>)> {
         self.rows().get(self.pos).copied()
     }
-    fn inspect_file(&mut self, c: &Context) {
+    fn update_details(&mut self) {
         if self.preview_load.loading()
             && self
                 .preview_request
@@ -441,28 +442,21 @@ impl PushPanel {
             return;
         }
         self.detail_selection.reset();
-        if self.preview.tree.file_index().is_some() {
-            self.open_file(c);
-        } else {
-            self.preview_load.cancel();
-            self.preview_request = None;
-            self.preview.is_patch = false;
-            self.detail_off = 0;
-            self.preview.body = match self.preview.tree.selected() {
-                Some(files::Node {
-                    kind: Kind::Directory { path, .. },
-                    count,
-                    ..
-                }) => {
-                    format!(
-                        "{}\n\n{count} changed files\n\n{}",
-                        label(path),
-                        self.preview.summary
-                    )
-                }
-                _ => self.preview.summary.clone(),
-            };
-        }
+        self.detail_off = 0;
+        self.preview.body = match self.preview.tree.selected() {
+            Some(files::Node {
+                kind: Kind::Directory { path, .. },
+                count,
+                ..
+            }) => {
+                format!(
+                    "{}\n\n{count} changed files\n\n{}",
+                    label(path),
+                    self.preview.summary
+                )
+            }
+            _ => self.preview.summary.clone(),
+        };
     }
     fn activate_file(&mut self, row: usize, fold: bool, c: &Context) {
         if row >= self.preview.tree.visible.len() {
@@ -472,16 +466,21 @@ impl PushPanel {
         if fold {
             self.preview.tree.toggle();
         } else if self.preview.tree.file_index().is_some() {
-            self.show_details = true;
+            self.open_file(c);
+            return;
         }
         if self.show_details {
-            self.inspect_file(c);
+            self.update_details();
         }
     }
     fn toggle_details(&mut self, c: &Context) {
+        if !self.show_details && self.focus == 1 && self.preview.tree.file_index().is_some() {
+            self.open_file(c);
+            return;
+        }
         self.show_details = !self.show_details;
         if self.show_details {
-            self.inspect_file(c);
+            self.update_details();
         } else if self.focus == 2 {
             self.focus = 1;
         }
@@ -734,7 +733,9 @@ impl PushPanel {
 }
 impl Panel for PushPanel {
     fn help(&self) -> &'static str {
-        if self.target_edit.is_some() {
+        if self.diff.is_some() {
+            "F1 Help   Esc Back"
+        } else if self.target_edit.is_some() {
             "Type remote:branch · Tab tracking · Enter save · Esc cancel"
         } else if self.group_menu.is_some() {
             "Group By · j/k select · Space/Enter toggle · Esc close"
@@ -743,10 +744,12 @@ impl Panel for PushPanel {
         }
     }
     fn editing(&self) -> bool {
-        self.target_edit.is_some() || self.group_menu.is_some()
+        self.diff.is_some() || self.target_edit.is_some() || self.group_menu.is_some()
     }
     fn selected_text(&self) -> Option<&str> {
-        if !self.editing() && self.show_details && self.focus == 2 {
+        if let Some(diff) = &self.diff {
+            diff.selected_text()
+        } else if !self.editing() && self.show_details && self.focus == 2 {
             self.detail_selection.selected_text()
         } else {
             None
@@ -779,10 +782,13 @@ impl Panel for PushPanel {
         if matches!(e, Event::Key(k) if k.kind == crossterm::event::KeyEventKind::Release) {
             return Action::None;
         }
+        if self.diff.is_some() {
+            return self.diff_event(e, c);
+        }
         if matches!(e, Event::FocusLost) {
             self.detail_selection.clear();
         }
-        if self.group_menu_event(e, c) {
+        if self.group_menu_event(e) {
             return Action::None;
         }
         if let Some(action) = self.target_event(e, c) {
@@ -853,7 +859,7 @@ impl Panel for PushPanel {
                     self.focus = 1;
                     self.preview.tree.fold_all(close);
                     if self.show_details {
-                        self.inspect_file(c);
+                        self.update_details();
                     }
                 }
                 Hit::Details => self.toggle_details(c),
@@ -916,7 +922,7 @@ impl Panel for PushPanel {
                             self.preview.tree.cursor =
                                 mv(self.preview.tree.cursor, self.preview.tree.visible.len());
                             if self.show_details {
-                                self.inspect_file(c);
+                                self.update_details();
                             }
                         }
                         _ => {
@@ -942,7 +948,7 @@ impl Panel for PushPanel {
                 KeyCode::Char('[' | ']') if self.focus == 1 => {
                     self.preview.tree.fold_all(k == KeyCode::Char('['));
                     if self.show_details {
-                        self.inspect_file(c);
+                        self.update_details();
                     }
                 }
                 KeyCode::Char('h' | 'l') | KeyCode::Left | KeyCode::Right if self.focus == 1 => {
@@ -950,7 +956,7 @@ impl Panel for PushPanel {
                         .tree
                         .horizontal(matches!(k, KeyCode::Char('h') | KeyCode::Left));
                     if self.show_details {
-                        self.inspect_file(c);
+                        self.update_details();
                     }
                 }
                 _ => {
@@ -985,13 +991,11 @@ impl Panel for PushPanel {
                             }
                             KeyCode::Enter if self.focus == 1 => {
                                 if self.preview.tree.file_index().is_some() {
-                                    self.show_details = true;
-                                    self.inspect_file(c);
-                                    self.focus = 2;
+                                    self.open_file(c);
                                 } else {
                                     self.preview.tree.toggle();
                                     if self.show_details {
-                                        self.inspect_file(c);
+                                        self.update_details();
                                     }
                                 }
                             }
@@ -1174,11 +1178,15 @@ mod tests {
         g(&repo, &["mv", "old.ts", "src/renamed.ts"]);
         g(&repo, &["add", "--all"]);
         g(&repo, &["commit", "-qm", "feat: preview all change kinds"]);
+        let reviewed_commit = g(&repo, &["rev-parse", "HEAD"]);
+        fs::write(repo.join("src/a/index.vue"), "first final\n").unwrap();
+        g(&repo, &["commit", "-qam", "follow-up on the first file"]);
 
         // The read-only preview must use committed content, even with dirty index/worktree.
         fs::write(repo.join("a"), "already staged\n").unwrap();
-        g(&repo, &["add", "a"]);
-        fs::write(repo.join("a"), "unstaged after staging\n").unwrap();
+        fs::write(repo.join("src/a/index.vue"), "staged revision\n").unwrap();
+        g(&repo, &["add", "a", "src/a/index.vue"]);
+        fs::write(repo.join("src/a/index.vue"), "unstaged after staging\n").unwrap();
         let snapshot = || {
             [
                 g(&repo, &["rev-parse", "HEAD"]),
@@ -1209,7 +1217,16 @@ mod tests {
                 ("src/renamed.ts".into(), b'R'),
             ])
         );
+        let key = |p: &mut PushPanel, code| {
+            p.event(
+                &Event::Key(crossterm::event::KeyEvent::new(code, KeyModifiers::NONE)),
+                &c,
+            )
+        };
         let select = |p: &mut PushPanel, path: &str| {
+            if p.diff.is_some() {
+                key(p, KeyCode::Esc);
+            }
             let row = p
                 .preview
                 .tree
@@ -1223,36 +1240,24 @@ mod tests {
             p.activate_file(row, false, &c);
             p.finish_loading(&c);
         };
-        for (path, included, excluded) in [
-            ("src/a/index.vue", "+first updated", "second updated"),
-            ("src/b/index.vue", "+second updated", "first updated"),
-            ("dev/old.conf", "-legacy config", "updated"),
+        for (path, old, new) in [
+            ("src/a/index.vue", "first base\n", "first final\n"),
+            ("src/b/index.vue", "second base\n", "second updated\n"),
+            ("dev/old.conf", "legacy config\n", ""),
+            ("dev/compose.yaml", "", "services: {}\n"),
+            (
+                "src/renamed.ts",
+                "export const renamed = true;\n",
+                "export const renamed = true;\n",
+            ),
         ] {
             select(&mut p, path);
-            assert!(p.show_details && p.preview.is_patch);
-            assert!(p.preview.body.contains(included), "{}", p.preview.body);
-            assert!(!p.preview.body.contains(excluded));
+            assert_eq!(compared_revisions(&mut p, &c), [old, new], "{path}");
         }
-        select(&mut p, "src/renamed.ts");
-        assert!(p.preview.body.contains("rename from old.ts"));
-        assert!(p.preview.body.contains("rename to src/renamed.ts"));
-        p.preview.tree.fold_all(true);
-        p.inspect_file(&c);
-        p.finish_loading(&c);
-        assert!(!p.preview.is_patch);
-        assert_eq!(p.preview.body, p.preview.summary);
-        assert!(!p.preview.body.contains("rename from"));
 
-        p.preview.tree.fold_all(false);
         select(&mut p, "src/b/index.vue");
-        let patch = p.preview.body.clone();
-        p.detail_off = 3;
-        let key = |p: &mut PushPanel, code| {
-            p.event(
-                &Event::Key(crossterm::event::KeyEvent::new(code, KeyModifiers::NONE)),
-                &c,
-            );
-        };
+        key(&mut p, KeyCode::Esc);
+        assert!(!p.editing());
         key(&mut p, KeyCode::Char('o'));
         for group in Group::ALL {
             if p.grouping.enabled(group) {
@@ -1266,23 +1271,21 @@ mod tests {
             p.preview.files[p.preview.tree.file_index().unwrap()].path,
             Path::new("src/b/index.vue")
         );
-        assert_eq!((p.preview.body.as_str(), p.detail_off), (patch.as_str(), 3));
-        select(&mut p, "src/a/index.vue");
-        assert!(
-            p.preview.body.contains("+first updated") && !p.preview.body.contains("second updated")
-        );
 
-        p.pos = 1; // The individual outgoing commit has the same five statuses.
+        p.pos = 1 + p.entries[0]
+            .logs
+            .iter()
+            .position(|h| h.id == reviewed_commit)
+            .unwrap();
         p.inspect(&c);
         p.finish_loading(&c);
         assert_eq!(p.preview.files.len(), 5);
         assert_eq!(p.preview.tree.visible.len(), 5);
-        assert!(p
-            .preview
-            .body
-            .contains("diff --git a/dev/compose.yaml b/dev/compose.yaml"));
-        select(&mut p, "src/renamed.ts");
-        assert!(p.preview.body.contains("rename from old.ts"));
+        select(&mut p, "src/a/index.vue");
+        assert_eq!(
+            compared_revisions(&mut p, &c),
+            ["first base\n", "first updated\n"]
+        );
         assert_eq!(p.checked, BTreeSet::from([0]));
 
         p.pos = 0;
@@ -1298,21 +1301,37 @@ mod tests {
         assert!(p.preview.files.iter().all(|f| f.status == b'A'));
         assert_eq!(p.preview.tree.visible.len(), p.preview.files.len());
         select(&mut p, "src/a/index.vue");
-        assert!(p
-            .preview
-            .body
-            .contains("New target: src/a/index.vue\n\nfirst updated"));
+        assert_eq!(compared_revisions(&mut p, &c), ["", "first final\n"]);
         let root = g(&repo, &["rev-list", "--max-parents=0", "HEAD"]);
         p.pos = 1 + p.entries[0].logs.iter().position(|h| h.id == root).unwrap();
         p.inspect(&c);
         p.finish_loading(&c);
         assert_eq!(p.preview.files.len(), 1);
         assert_eq!(p.preview.files[0].status, b'A');
+        select(&mut p, "a");
+        assert_eq!(compared_revisions(&mut p, &c), ["", "base"]);
         assert_eq!(snapshot(), before);
     }
 
+    fn compared_revisions(p: &mut PushPanel, c: &Context) -> [String; 2] {
+        assert!(matches!(
+            p.diff.as_ref().and_then(|d| d.content.as_ref()),
+            Some(preview::FileDiff::Split(_))
+        ));
+        let event = |code| Event::Key(crossterm::event::KeyEvent::new(code, KeyModifiers::NONE));
+        let copy = |p: &mut PushPanel| match p.event(&event(KeyCode::Char('y')), c) {
+            Action::Copy { text, .. } => text,
+            _ => panic!("expected revision contents"),
+        };
+        let after = copy(p);
+        p.event(&event(KeyCode::Tab), c);
+        let before = copy(p);
+        p.event(&event(KeyCode::Tab), c);
+        [before, after]
+    }
+
     #[test]
-    fn merge_commit_preview_matches_its_first_parent_patch() {
+    fn merge_commit_preview_compares_against_its_first_parent() {
         let td = tempfile::tempdir().unwrap();
         let repo = make(td.path(), "app");
         g(&repo, &["switch", "-qc", "topic"]);
@@ -1342,8 +1361,10 @@ mod tests {
             .unwrap();
         p.open_file(&c);
         p.finish_loading(&c);
-        assert!(p.preview.body.contains("+side branch content"));
-        assert!(!p.preview.body.contains("main branch content"));
+        assert_eq!(
+            compared_revisions(&mut p, &c),
+            ["", "side branch content\n"]
+        );
     }
 
     #[test]

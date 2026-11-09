@@ -1,4 +1,5 @@
 use super::*;
+use crossterm::event::KeyEvent;
 use std::sync::mpsc;
 
 fn fixture() -> (tempfile::TempDir, Context, PushPanel) {
@@ -118,7 +119,7 @@ fn refresh_preserves_current_commit_by_oid_and_user_checks() {
 }
 
 #[test]
-fn unchanged_refresh_retains_file_diff_scroll_and_checks() {
+fn unchanged_refresh_retains_focused_revision_and_checks() {
     let (_dir, c, mut panel) = fixture();
     let row = panel
         .preview
@@ -129,23 +130,16 @@ fn unchanged_refresh_retains_file_diff_scroll_and_checks() {
         .unwrap();
     panel.activate_file(row, false, &c);
     panel.finish_loading(&c);
-    panel.detail_off = 7;
-    let before = (
-        panel.preview.body.clone(),
-        panel.preview.tree.cursor,
-        panel.checked.clone(),
-    );
+    let event = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+    panel.event(&event(KeyCode::Tab), &c); // Focus Before.
+    let checked = panel.checked.clone();
     panel.refresh(&c).unwrap();
     panel.finish_loading(&c);
-    assert_eq!(
-        (
-            panel.preview.body.clone(),
-            panel.preview.tree.cursor,
-            panel.checked.clone()
-        ),
-        before
+    assert!(
+        matches!(panel.event(&event(KeyCode::Char('y')), &c), Action::Copy { text, .. } if text == "base")
     );
-    assert_eq!(panel.detail_off, 7);
+    assert_eq!(panel.preview.tree.cursor, row);
+    assert_eq!(panel.checked, checked);
 }
 
 #[test]
@@ -174,17 +168,17 @@ fn stale_file_and_patch_reads_cannot_replace_the_latest_selection() {
         .unwrap();
     panel.activate_file(row, false, &c);
     let send = panel.preview_load.hold();
-    panel.preview.tree.cursor = 0; // Repository summary, while the patch is still reading.
-    panel.inspect_file(&c);
-    send.send(preview::Loaded::Patch {
-        body: "obsolete diff".into(),
-        is_patch: true,
-    })
+    let escape = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    panel.event(&escape, &c); // Close while the worker is still reading.
+    send.send(preview::Loaded::Diff(preview::FileDiff::Patch(
+        "obsolete diff".into(),
+    )))
     .ok()
     .unwrap();
     panel.finish_loading(&c);
     assert_eq!(panel.preview.body, panel.preview.summary);
-    assert!(!panel.preview.is_patch);
+    assert!(panel.diff.is_none());
+    assert_eq!(panel.preview.tree.cursor, row);
 }
 
 #[test]

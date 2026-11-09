@@ -250,7 +250,7 @@ impl CommitPanel {
                 }
                 self.message_selection.clear();
                 self.edit_view = (self.edit_view.0, 0, 0);
-                self.focus = Focus::Message;
+                self.set_focus(Focus::Message);
                 Action::Notice("AI commit message generated".into())
             }
             Err(error) => self.show_ai_error(error),

@@ -1,6 +1,6 @@
 //! Push presentation uses shared column geometry for text and mouse controls.
 use super::*;
-use crate::ui::idea::{button_style, clipped, clipped_path, diff_line, repo_tint, CONFLICT};
+use crate::ui::idea::{button_style, clipped, clipped_path, repo_tint, CONFLICT};
 use ratatui::widgets::{Block, Borders};
 use unicode_width::UnicodeWidthStr;
 
@@ -172,16 +172,13 @@ impl PushPanel {
         }
     }
 
-    fn push_count(&self, c: &Context) -> usize {
-        self.entries
-            .iter()
-            .filter(|e| {
-                c.scope.contains(&e.idx)
-                    && self.checked.contains(&e.idx)
-                    && e.n > 0
-                    && e.error.is_empty()
-            })
-            .count()
+    fn has_push_candidate(&self, c: &Context) -> bool {
+        self.entries.iter().any(|e| {
+            c.scope.contains(&e.idx)
+                && self.checked.contains(&e.idx)
+                && e.n > 0
+                && e.error.is_empty()
+        })
     }
 
     fn footer_options(&self) -> [(String, Hit); 2] {
@@ -197,20 +194,46 @@ impl PushPanel {
         ]
     }
 
-    fn footer_wraps(&self, width: u16, c: &Context) -> bool {
+    fn footer_actions(&self) -> [(&'static str, Hit); 2] {
+        [
+            (" Push ", Hit::Send),
+            (
+                if self.busy() { " Close " } else { " Cancel " },
+                Hit::Cancel,
+            ),
+        ]
+    }
+
+    fn footer_wraps(&self, width: u16) -> bool {
         let options = self
             .footer_options()
             .iter()
             .map(|(label, _)| label.width() + 2)
             .sum::<usize>();
-        options + format!(" Cancel   Push {} ", self.push_count(c)).width() + 2 > usize::from(width)
+        let actions = self
+            .footer_actions()
+            .iter()
+            .map(|(label, _)| label.width())
+            .sum::<usize>();
+        options + actions + 3 > usize::from(width)
     }
 
     pub(super) fn draw_panel(&mut self, f: &mut Frame, area: Rect, c: &Context) {
         self.hits.clear();
         self.panes.begin();
+        if let Some(diff) = &mut self.diff {
+            let name = self
+                .preview
+                .tree
+                .file_index()
+                .and_then(|i| self.preview.files.get(i))
+                .map(|file| label(&file.path))
+                .unwrap_or_default();
+            diff.draw(f, area, self.icons, &name);
+            return;
+        }
         let hidden = self.checked.iter().any(|i| !c.scope.contains(i));
-        let footer_height = 2 + u16::from(self.footer_wraps(area.width, c)) + u16::from(hidden);
+        let footer_height = 2 + u16::from(self.footer_wraps(area.width)) + u16::from(hidden);
         let [body, controls] = Layout::vertical([C::Min(2), C::Length(footer_height)]).areas(area);
         let [outgoing, files, details] = if self.panes.maximized {
             Self::PANES.map(|id| {
@@ -255,25 +278,14 @@ impl PushPanel {
         if self.show_details && !details.is_empty() {
             let block = pane(
                 format!(
-                    "Details / Diff · {} / Esc close",
+                    "Details · {} / Esc close",
                     self.shortcut_labels.get("d").map_or("d", String::as_str)
                 ),
                 self.active_pane(PaneId::PushDetails),
             );
             let inner = block.inner(details);
             f.render_widget(block, details);
-            let mut layout = TextLayout::default();
-            for line in self.preview.body.split('\n') {
-                layout.push(
-                    if self.preview.is_patch {
-                        diff_line(line)
-                    } else {
-                        Line::raw(line)
-                    },
-                    inner.width,
-                    TextWrap::Word,
-                );
-            }
+            let layout = TextLayout::plain(&self.preview.body, inner.width, TextWrap::Word);
             self.detail_off = usize::from(self.detail_off)
                 .min(layout.rows.len().saturating_sub(usize::from(inner.height)))
                 .min(u16::MAX as usize) as u16;
@@ -758,9 +770,9 @@ impl PushPanel {
                 .border_style(Style::new().fg(LINE)),
             Rect::new(area.x, area.y, area.width, 1),
         );
-        let n = self.push_count(c);
+        let ready = self.has_push_candidate(c) && !self.busy() && self.read_status().is_none();
         let hidden = self.checked.iter().filter(|i| !c.scope.contains(i)).count();
-        let wrap = self.footer_wraps(area.width, c);
+        let wrap = self.footer_wraps(area.width);
         let y = area.y + 1;
         let mut x = area.x;
         for (label, hit) in self.footer_options() {
@@ -777,19 +789,12 @@ impl PushPanel {
             x = row.right().saturating_add(2);
         }
         let action_y = (y + u16::from(wrap)).min(area.bottom() - 1);
-        let actions = [
-            (format!(" Push {n} "), Hit::Send),
-            (
-                if self.busy() { " Close " } else { " Cancel " }.into(),
-                Hit::Cancel,
-            ),
-        ];
         let mut right = area.right();
-        for (label, hit) in actions {
+        for (label, hit) in self.footer_actions() {
             let width = (label.width() as u16).min(right - area.x);
             let row = Rect::new(right - width, action_y, width, 1);
             let primary = matches!(hit, Hit::Send);
-            let enabled = !primary || n > 0 && !self.busy() && self.read_status().is_none();
+            let enabled = !primary || ready;
             let style = if enabled {
                 button_style(primary)
             } else {

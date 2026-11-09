@@ -55,15 +55,7 @@ pub(super) fn fixture() -> (tempfile::TempDir, Context, CommitPanel) {
 fn shared_message_commits_each_repo_and_preserves_unselected_index_and_worktree() {
     let (_dir, c, mut panel) = fixture();
     let message = panel.saved.message.clone().unwrap();
-    let Action::Confirm { body, .. } = panel.review(&c, false).unwrap() else {
-        panic!("review");
-    };
-    assert_eq!(body.matches("Shared body 中文").count(), 2);
-    assert!(panel
-        .plans
-        .iter()
-        .all(|plan| plan.msg == message && plan.files.len() == 1));
-    let Action::Committed { repos, .. } = panel.submit(&c) else {
+    let Action::Committed { repos, .. } = panel.submit(&c, false).unwrap() else {
         panic!("commit");
     };
     assert_eq!(repos, [0, 1]);
@@ -108,9 +100,9 @@ fn shared_message_commits_each_repo_and_preserves_unselected_index_and_worktree(
 fn partial_failure_keeps_shared_message_and_retry_skips_successful_repository() {
     let (_dir, c, mut panel) = fixture();
     let message = panel.saved.message.clone();
-    panel.review(&c, true).unwrap();
-    git(&c.repos[1].path, &["add", "mixed.txt"]).unwrap(); // Invalidate only the second review.
-    let Action::Committed { repos, .. } = panel.submit(&c) else {
+    let plans = panel.prepare_submission(&c).unwrap();
+    git(&c.repos[1].path, &["add", "mixed.txt"]).unwrap(); // Invalidate only the second snapshot.
+    let Action::Committed { repos, .. } = panel.execute_submission(&c, plans, true) else {
         panic!("commit");
     };
     assert_eq!(repos, [0]);
@@ -118,13 +110,14 @@ fn partial_failure_keeps_shared_message_and_retry_skips_successful_repository() 
     let successful_head = git(&c.repos[0].path, &["rev-parse", "HEAD"]).unwrap();
     panel.refresh(&c).unwrap();
     assert_eq!(panel.checked_repos(&c), [1]);
-    panel.review(&c, false).unwrap();
-    assert_eq!(panel.plans.len(), 1);
-    assert_eq!(panel.plans[0].msg, message.unwrap());
-    let Action::Committed { repos, .. } = panel.submit(&c) else {
+    let Action::Committed { repos, .. } = panel.submit(&c, false).unwrap() else {
         panic!("retry");
     };
     assert_eq!(repos, [1]);
+    assert_eq!(
+        git(&c.repos[1].path, &["log", "-1", "--format=%B"]).unwrap(),
+        message.unwrap()
+    );
     assert_eq!(
         git(&c.repos[0].path, &["rev-parse", "HEAD"]).unwrap(),
         successful_head
@@ -142,9 +135,9 @@ fn shared_message_scope_excludes_hidden_repository_and_preserves_its_selection()
     let (_dir, mut c, mut panel) = fixture();
     let hidden_head = git(&c.repos[1].path, &["rev-parse", "HEAD"]).unwrap();
     c.scope = [0].into();
-    panel.review(&c, false).unwrap();
-    assert_eq!(panel.plans.len(), 1);
-    panel.submit(&c);
+    assert!(
+        matches!(panel.submit(&c, false).unwrap(), Action::Committed { repos, .. } if repos == [0])
+    );
     assert_eq!(
         git(&c.repos[1].path, &["rev-parse", "HEAD"]).unwrap(),
         hidden_head
@@ -188,6 +181,6 @@ fn amend_requires_an_unambiguous_highlighted_repository() {
     assert_eq!(panel.checks, checks);
     panel.launch(Hit::Amend, &c);
     assert_eq!(panel.amend, [1].into());
-    panel.review(&c, false).unwrap();
-    assert!(!panel.plans[0].amend && panel.plans[1].amend);
+    let plans = panel.prepare_submission(&c).unwrap();
+    assert!(!plans[0].amend && plans[1].amend);
 }

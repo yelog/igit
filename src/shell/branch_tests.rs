@@ -161,18 +161,20 @@ fn branch_refresh_keeps_cached_browsing_and_the_latest_fold_but_gates_actions() 
     let release = app.branch.hold_loading(&app.ctx);
     let cached = screen(&mut app, 120, 36);
     assert!(cached.contains("Refreshing branches") && cached.contains("main (current)"));
+    assert!(cached.contains("seen"));
     assert!(!cached.contains("new-since-last-visit"));
     app.dispatch(&key(KeyCode::Char('a')));
     assert!(!app.branch.editing() && app.pop.is_none());
     assert!(app.msg.contains("Refreshing branches"));
     app.dispatch(&key(KeyCode::Char('j'))); // main -> Remote Branches
-    app.dispatch(&key(KeyCode::Char('l')));
-    assert!(screen(&mut app, 120, 36).contains("Remote Branches  1 branches"));
+    app.dispatch(&key(KeyCode::Char('h')));
+    let folded = screen(&mut app, 120, 36);
+    assert!(folded.contains("Remote Branches  1 branches") && !folded.contains("seen"));
     release();
     assert!(app.poll());
     let fresh = screen(&mut app, 120, 36);
     assert!(fresh.contains("new-since-last-visit"));
-    assert!(fresh.contains("origin") && fresh.contains("Remote Branches  1 branches"));
+    assert!(fresh.contains("Remote Branches  1 branches") && !fresh.contains("seen"));
     assert!(!fresh.contains("Refreshing branches"));
     assert_eq!(snapshot(&repo), before);
 }
@@ -494,11 +496,7 @@ fn branch_refresh_reads_external_refs_without_refreshing_unopened_history() {
     git(repo, &["update-ref", "refs/remotes/origin/fetched", "HEAD"]).unwrap();
     app.dispatch(&Event::FocusGained);
     ready(&mut app);
-    assert!(screen(&mut app, 120, 36).contains("Remote Branches  1"));
-    app.dispatch(&key(KeyCode::Char('j'))); // current branch -> closed remote group
-    app.dispatch(&key(KeyCode::Char('l'))); // open Remote Branches
-    app.dispatch(&key(KeyCode::Char('l'))); // move to origin
-    app.dispatch(&key(KeyCode::Char('l'))); // open origin
-    assert!(screen(&mut app, 120, 36).contains("fetched"));
+    let fresh = screen(&mut app, 120, 36);
+    assert!(fresh.contains("Remote Branches  1") && fresh.contains("fetched"));
     assert!(matches!(app.log_load, startup::LogLoad::Dormant));
 }

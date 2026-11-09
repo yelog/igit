@@ -27,19 +27,19 @@ impl PushPanel {
             .map(|(_, h)| *h)
     }
 
-    fn toggle_group(&mut self, group: Group, c: &Context) {
+    fn toggle_group(&mut self, group: Group) {
         self.group_menu = Some(group);
         let tree = &mut self.preview.tree;
         let selected = tree.visible.get(tree.cursor).copied();
         self.grouping.toggle(group);
         tree.regroup(&self.preview.files, self.grouping);
-        // A retained file keeps its already loaded patch and scroll position.
+        // A retained selection keeps its summary and scroll position.
         if self.show_details && selected != tree.visible.get(tree.cursor).copied() {
-            self.inspect_file(c);
+            self.update_details();
         }
     }
 
-    pub(super) fn group_menu_event(&mut self, event: &Event, c: &Context) -> bool {
+    pub(super) fn group_menu_event(&mut self, event: &Event) -> bool {
         let Some(current) = self.group_menu else {
             return false;
         };
@@ -56,7 +56,7 @@ impl PushPanel {
                 }
                 KeyCode::Home | KeyCode::Char('g') => self.group_menu = Some(Group::Directory),
                 KeyCode::End | KeyCode::Char('G') => self.group_menu = Some(Group::Module),
-                KeyCode::Char(' ') | KeyCode::Enter => self.toggle_group(current, c),
+                KeyCode::Char(' ') | KeyCode::Enter => self.toggle_group(current),
                 KeyCode::Esc | KeyCode::Char('o' | 'h') | KeyCode::Left => {
                     self.dismiss_group_menu()
                 }
@@ -64,7 +64,7 @@ impl PushPanel {
             },
             Event::Mouse(m) => match (m.kind, self.hit_at(m.column, m.row)) {
                 (MouseEventKind::Down(MouseButton::Left), Some(Hit::Group(item))) => {
-                    self.toggle_group(item, c)
+                    self.toggle_group(item)
                 }
                 (MouseEventKind::Moved, _) => {
                     self.hover_group_at(m.column, m.row);

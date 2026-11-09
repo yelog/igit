@@ -1,5 +1,7 @@
 use super::*;
-use crate::ui::help::{HelpContent, HelpSection as Section};
+use crate::ui::help::{HelpContent, HelpSection as Section, PREVIEW_SCROLL_BINDINGS};
+
+const HISTORY_SCROLL: Section = Section::new("Log / File History Preview", PREVIEW_SCROLL_BINDINGS);
 
 impl LogPanel {
     pub(crate) fn keymap(&self) -> HelpContent {
@@ -24,7 +26,7 @@ impl LogPanel {
                         ("Esc", "Clear selection; otherwise focus history"),
                     ],
                 ),
-                vec![],
+                vec![HISTORY_SCROLL],
             );
         }
         let modal = if let Some(dialog) = &self.commit_dialog {
@@ -325,7 +327,7 @@ impl LogPanel {
                 ],
             ),
         };
-        HelpContent::new(
+        let mut content = HelpContent::new(
             current,
             vec![Section::new(
                 "Log / General",
@@ -348,7 +350,10 @@ impl LogPanel {
                     ("Esc", "Focus commit list"),
                 ],
             )],
-        )
-        .with_selection(self.selected_text().is_some(), true)
+        );
+        if self.filter.file_history.is_some() {
+            content.sections.insert(1, HISTORY_SCROLL);
+        }
+        content.with_selection(self.selected_text().is_some(), true)
     }
 }

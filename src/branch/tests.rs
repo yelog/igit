@@ -9,20 +9,13 @@ mod navigation;
 mod presentation;
 mod tracking;
 
-fn expand_group(panel: &mut BranchPanel, c: &Context, id: &str) {
-    panel.tree.cursor = panel.tree.rows.iter().position(|r| r.id == id).unwrap();
-    if matches!(
-        panel.tree.rows[panel.tree.cursor].kind,
-        Kind::Folder { open: false, .. }
-    ) {
-        key(panel, c, K::Char('l'));
-    }
-}
-
-fn expand_branch_path(panel: &mut BranchPanel, c: &Context, root: usize, reference: &str) {
-    for (slash, _) in reference.match_indices('/').skip(1) {
-        expand_group(panel, c, &format!("{root}:{}", &reference[..=slash]));
-    }
+fn folder_index(panel: &BranchPanel, id: &str) -> usize {
+    panel
+        .tree
+        .rows
+        .iter()
+        .position(|r| r.id == id && matches!(r.kind, Kind::Folder { .. }))
+        .unwrap_or_else(|| panic!("Missing folder: {id}"))
 }
 
 fn run(path: &Path, args: &[&str]) -> String {
@@ -85,21 +78,35 @@ fn key(panel: &mut BranchPanel, c: &Context, code: K) -> Action {
     panel.event(&Event::Key(KeyEvent::new(code, Mods::NONE)), c)
 }
 
-fn screen(panel: &mut BranchPanel, c: &Context, width: u16, height: u16) -> String {
+fn render(panel: &mut BranchPanel, c: &Context, width: u16, height: u16) -> Terminal<TestBackend> {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal.draw(|f| panel.draw(f, f.area(), c)).unwrap();
+    terminal
+}
+
+fn hit_rect(p: &BranchPanel, matches: impl Fn(&Hit) -> bool) -> Rect {
+    p.hits
+        .iter()
+        .find_map(|(rect, hit)| matches(hit).then_some(*rect))
+        .unwrap()
+}
+
+fn row_cells(terminal: &Terminal<TestBackend>, rect: Rect) -> String {
     let buffer = terminal.backend().buffer();
+    let mut line = String::new();
+    let mut x = rect.x;
+    while x < rect.right() {
+        let symbol = buffer[(x, rect.y)].symbol();
+        line.push_str(symbol);
+        x += symbol.width().max(1) as u16;
+    }
+    line
+}
+
+fn screen(panel: &mut BranchPanel, c: &Context, width: u16, height: u16) -> String {
+    let terminal = render(panel, c, width, height);
     (0..height)
-        .map(|y| {
-            let mut line = String::new();
-            let mut x = 0;
-            while x < width {
-                let symbol = buffer[(x, y)].symbol();
-                line.push_str(symbol);
-                x += symbol.width().max(1) as u16;
-            }
-            line
-        })
+        .map(|y| row_cells(&terminal, Rect::new(0, y, width, 1)))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -139,7 +146,7 @@ fn tracking(c: &Context, local: &str, remote: &str) {
 }
 
 #[test]
-fn branch_opens_current_and_default_paths() {
+fn branch_prioritizes_current_and_default_paths_with_all_groups_open() {
     let (_temp, c, mut p) = fixture();
     let repo = &c.repos[0].path;
     run(repo, &["switch", "-c", "team/active/current"]);
@@ -147,6 +154,7 @@ fn branch_opens_current_and_default_paths() {
     run(repo, &["branch", "release/stable"]);
     run(repo, &["branch", "topic/other"]);
     tracking(&c, "release/stable", "release/stable");
+    run(repo, &["update-ref", "refs/remotes/origin/aaa", "HEAD"]);
     run(
         repo,
         &[
@@ -167,23 +175,26 @@ fn branch_opens_current_and_default_paths() {
     };
 
     reload(&mut p, &c);
-    let visible = leaves(&p);
-    assert!(visible.contains(&"team/active/current".to_owned()));
-    assert!(visible.contains(&"release/stable".to_owned()));
-    assert!(
-        !visible.iter().any(|name| name.ends_with("/other")),
-        "{visible:?}"
+    assert_eq!(
+        leaves(&p),
+        [
+            "team/active/current",
+            "team/pending/other",
+            "release/stable",
+            "main",
+            "topic/other",
+            "origin/aaa",
+            "origin/release/stable",
+        ]
     );
-    assert!(!visible.contains(&"origin/release/stable".to_owned()));
 
     run(repo, &["branch", "-d", "release/stable"]);
     reload(&mut p, &c);
     let visible = leaves(&p);
-    assert!(
-        visible.contains(&"origin/release/stable".to_owned()),
-        "{visible:?}"
+    assert_eq!(
+        &visible[visible.len() - 2..],
+        ["origin/release/stable", "origin/aaa"]
     );
-    assert!(!visible.contains(&"origin/HEAD".to_owned()));
 }
 
 #[test]
@@ -276,6 +287,9 @@ fn empty_unborn_and_detached_repositories_are_browsable() {
     let branch = source(&c, "refs/heads/feature/first");
     assert!(branch.current && branch.oid.is_empty());
     assert!(screen(&mut p, &c, 44, 12).contains("[no commits]"));
+    let t = render(&mut p, &c, 120, 36);
+    let row = hit_rect(&p, |hit| matches!(hit, Hit::Row(i) if *i == p.tree.cursor));
+    assert!(row_cells(&t, row).trim_end().ends_with("[no commits]"));
     assert!(Review::prepare(&c, 0, &branch, Operation::Create, "new").is_err());
 }
 
@@ -485,7 +499,6 @@ fn remote_checkout_creates_tracking_branch_and_reuses_it_without_remote_writes()
     tracking(&c, "main", "feature/remote");
     let remote = run(repo, &["rev-parse", "refs/remotes/origin/feature/remote"]);
     reload(&mut p, &c);
-    expand_branch_path(&mut p, &c, 0, "refs/remotes/origin/feature/remote");
     select(&mut p, 0, "refs/remotes/origin/feature/remote");
     key(&mut p, &c, K::Enter);
     assert_eq!(p.input.as_ref().unwrap().name, "feature/remote");

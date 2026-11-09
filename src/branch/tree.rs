@@ -1,5 +1,5 @@
 use super::model::{Branch, Repository};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) enum Kind {
     Folder { open: bool, count: usize },
@@ -20,7 +20,7 @@ pub(super) struct Tree {
     pub rows: Vec<Row>,
     pub cursor: usize,
     flat: bool,
-    expanded: BTreeMap<String, bool>,
+    collapsed: BTreeSet<String>,
     remembered: BTreeMap<usize, (String, usize)>,
 }
 
@@ -80,7 +80,7 @@ impl Tree {
     pub fn for_refresh(&self) -> Self {
         Self {
             flat: self.flat,
-            expanded: self.expanded.clone(),
+            collapsed: self.collapsed.clone(),
             ..Self::default()
         }
     }
@@ -96,7 +96,7 @@ impl Tree {
 
     pub fn install(&mut self, prepared: Self, repo: Option<&Repository>) {
         if self.flat != prepared.flat
-            || self.expanded != prepared.expanded
+            || self.collapsed != prepared.collapsed
             || prepared.rows.first().map(|row| row.root) != repo.map(|repo| repo.root)
         {
             // Keep any selection, grouping, or fold change made while Git was reading.
@@ -126,8 +126,7 @@ impl Tree {
                     let id = format!("{root}:{}", namespace(remote));
                     let branches = state.branches.values().filter(|b| b.remote == remote);
                     let count = branches.clone().count();
-                    let open = !remote || default.is_some_and(|r| r.starts_with(namespace(true)));
-                    if !self.folder(root, &id, label, 0, count, open) {
+                    if !self.folder(root, &id, label, 0, count) {
                         continue;
                     }
                     if count == 0 {
@@ -187,16 +186,8 @@ impl Tree {
         };
     }
 
-    fn folder(
-        &mut self,
-        root: usize,
-        id: &str,
-        label: &str,
-        depth: usize,
-        count: usize,
-        default_open: bool,
-    ) -> bool {
-        let open = self.expanded.get(id).copied().unwrap_or(default_open);
+    fn folder(&mut self, root: usize, id: &str, label: &str, depth: usize, count: usize) -> bool {
+        let open = !self.collapsed.contains(id);
         self.rows.push(Row {
             id: id.into(),
             root,
@@ -224,14 +215,7 @@ impl Tree {
                     self.branch(root, depth, name, branch);
                 } else {
                     let id = format!("{prefix}{name}/");
-                    if self.folder(
-                        root,
-                        &id,
-                        name,
-                        depth,
-                        child.count,
-                        priority != Priority::Other,
-                    ) {
+                    if self.folder(root, &id, name, depth, child.count) {
                         self.children(root, &id, child, depth + 1);
                     }
                 }
@@ -255,8 +239,8 @@ impl Tree {
                 let prefix = format!("{root}:{}", namespace(branch.remote));
                 // Keep the selected ref visible when restoring prefix folders.
                 for (slash, _) in branch.name.match_indices('/') {
-                    self.expanded
-                        .insert(format!("{prefix}{}", &branch.name[..=slash]), true);
+                    self.collapsed
+                        .remove(&format!("{prefix}{}", &branch.name[..=slash]));
                 }
             }
         }
@@ -268,7 +252,11 @@ impl Tree {
             return;
         };
         if let Kind::Folder { open, .. } = row.kind {
-            self.expanded.insert(row.id.clone(), !open);
+            if open {
+                self.collapsed.insert(row.id.clone());
+            } else {
+                self.collapsed.remove(&row.id);
+            }
             self.rebuild(repo);
         }
     }

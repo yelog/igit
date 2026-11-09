@@ -9,10 +9,36 @@ pub(super) struct Entry {
     pub subject: String,
 }
 
+impl Entry {
+    pub(super) fn message(&self) -> &str {
+        // `git stash push -m` prefixes a custom message with its source branch.
+        // Keep the original reflog subject for details and reviewed operations.
+        self.subject
+            .strip_prefix("On ")
+            .and_then(|rest| rest.split_once(": "))
+            .filter(|(branch, message)| {
+                !branch.is_empty()
+                    && !branch.chars().any(char::is_whitespace)
+                    && !message.is_empty()
+            })
+            .map_or(&self.subject, |(_, message)| message)
+    }
+
+    pub(super) fn number(&self) -> Option<&str> {
+        self.selector.strip_prefix("stash@{")?.strip_suffix('}')
+    }
+}
+
 pub(super) struct Repository {
     pub root: usize,
     pub entries: Vec<Entry>,
     pub error: Option<String>,
+}
+
+impl Repository {
+    pub(super) fn is_empty(&self) -> bool {
+        self.entries.is_empty() && self.error.is_none()
+    }
 }
 
 pub(super) fn label(text: &str) -> String {

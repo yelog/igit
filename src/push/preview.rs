@@ -1,5 +1,9 @@
 //! Immutable committed objects are read on a worker; UI selection stays on the terminal thread.
 use super::*;
+use crate::{
+    core::revision::{self, Source},
+    merge::RevisionDiff,
+};
 
 #[derive(Clone)]
 pub(super) struct Request {
@@ -14,12 +18,20 @@ pub(super) struct Request {
 
 pub(super) enum Loaded {
     Files { files: Vec<Change>, summary: String },
-    Patch { body: String, is_patch: bool },
+    Diff(FileDiff),
+}
+
+pub(super) enum FileDiff {
+    Split(Box<RevisionDiff>),
+    Patch(String),
 }
 
 pub(super) fn read(request: Request) -> Loaded {
     if let Some(file) = &request.file {
-        return patch(&request.path, &request.entry, request.commit.as_ref(), file);
+        return Loaded::Diff(
+            file_diff(&request.path, &request.entry, request.commit.as_ref(), file)
+                .unwrap_or_else(|e| FileDiff::Patch(format!("Unable to load diff: {e:#}"))),
+        );
     }
     let p = &request.path;
     let e = &request.entry;
@@ -122,86 +134,98 @@ fn with_result(desc: &str, result: Option<&Result<PushOutcome, String>>) -> Stri
     }
 }
 
-fn patch(p: &Path, x: &Entry, commit: Option<&Out>, file: &Change) -> Loaded {
-    let path = &file.path;
-    let mut cmd = command(p);
-    cmd.arg("--literal-pathspecs");
-    if let Some(h) = commit {
-        cmd.args([
-            "show",
-            "--diff-merges=first-parent",
-            "--format=",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--find-renames",
+fn file_diff(p: &Path, x: &Entry, commit: Option<&Out>, file: &Change) -> Result<FileDiff> {
+    let (before, after, empty_note) = if let Some(h) = commit {
+        let parents = git(
+            p,
+            &[
+                "show",
+                "-s",
+                "--no-show-signature",
+                "--no-notes",
+                "--format=%P",
+                &h.id,
+                "--",
+            ],
+        )?;
+        (
+            parents.split_whitespace().next().map(str::to_owned),
             &h.id,
-        ]);
-    } else if let Some(base) = &x.tracking {
-        cmd.args([
-            "diff",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--find-renames",
-            base,
-            &x.head,
-        ]);
+            "No parent · initial commit",
+        )
     } else {
-        let item = cmd
-            .args(["ls-tree", "-z", &x.head, "--"])
-            .arg(path)
-            .output()
-            .ok();
-        let oid = item
-            .as_ref()
-            .and_then(|o| o.stdout.split(|v| *v == b'\t').next())
-            .and_then(|s| std::str::from_utf8(s).ok())
-            .and_then(|s| s.split_whitespace().nth(2));
-        let body = match oid {
-            Some(id)
-                if git(p, &["cat-file", "-s", id])
-                    .ok()
-                    .and_then(|s| s.parse::<usize>().ok())
-                    .is_some_and(|n| n <= 1_048_576) =>
-            {
-                match git_bytes(p, &["cat-file", "blob", id]) {
-                    Ok(b) if !b.contains(&0) => format!(
-                        "New target: {}\n\n{}",
-                        label(path),
-                        String::from_utf8_lossy(&b)
-                            .chars()
-                            .take(30000)
-                            .collect::<String>()
-                    ),
-                    _ => "Binary or non-blob entry".into(),
-                }
+        (x.tracking.clone(), &x.head, "New target · no tracking ref")
+    };
+    let sources = (|| -> Result<[Source; 2]> {
+        let mut old = if let Some(oid) = &before {
+            revision::source(p, oid, file.previous.as_deref().unwrap_or(&file.path))?
+        } else {
+            Source {
+                text: String::new(),
+                description: empty_note.into(),
             }
-            _ => "Preview unavailable: large file or not a blob".into(),
         };
-        return Loaded::Patch {
-            body,
-            is_patch: false,
-        };
+        if let Some(previous) = &file.previous {
+            old.description.push_str(&format!(" · {}", label(previous)));
+        }
+        Ok([old, revision::source(p, after, &file.path)?])
+    })();
+    match sources {
+        Ok(sources) => {
+            let [old, new] = sources;
+            Ok(FileDiff::Split(Box::new(RevisionDiff::two_way(
+                label(&file.path),
+                [before.unwrap_or_else(|| "Empty tree".into()), after.clone()],
+                [old.text, new.text],
+                [old.description, new.description],
+            ))))
+        }
+        Err(error) => {
+            let body = match patch(p, before.as_deref(), after, file) {
+                Ok(body) => format!("{error}\n\n{body}"),
+                Err(patch_error) => format!("{error}\n\nUnable to load Git patch: {patch_error}"),
+            };
+            Ok(FileDiff::Patch(body))
+        }
     }
-    cmd.arg("--").arg(path);
+}
+
+fn patch(p: &Path, before: Option<&str>, after: &str, file: &Change) -> Result<String> {
+    let empty;
+    let before = match before {
+        Some(oid) => oid,
+        None => {
+            // Git recognizes its empty tree ID without writing an object.
+            empty = git(p, &["hash-object", "-t", "tree", "--stdin"])?;
+            &empty
+        }
+    };
+    let mut cmd = command(p);
+    cmd.args([
+        "--literal-pathspecs",
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--find-renames",
+        before,
+        after,
+        "--",
+    ])
+    .arg(&file.path);
     if let Some(previous) = &file.previous {
         cmd.arg(previous);
     }
-    let (body, is_patch) = match cmd.output() {
-        Ok(o) if o.status.success() => (
-            String::from_utf8_lossy(&o.stdout)
-                .chars()
-                .take(30000)
-                .collect(),
-            true,
-        ),
-        Ok(o) => (String::from_utf8_lossy(&o.stderr).into_owned(), false),
-        Err(e) => (e.to_string(), false),
-    };
-    Loaded::Patch { body, is_patch }
+    let (raw, cut) = revision::read_patch(cmd)?;
+    let mut body = String::from_utf8_lossy(&raw).into_owned();
+    if cut {
+        body.push_str("\n… Diff limited to 512 KiB · Use Git for the full patch");
+    }
+    Ok(body)
 }
 
 impl PushPanel {
-    fn preview_request(&self, c: &Context, file: Option<Change>) -> Option<Request> {
+    pub(super) fn preview_request(&self, c: &Context, file: Option<Change>) -> Option<Request> {
         let (i, sub) = self.selected()?;
         let entry = self.entries.iter().find(|e| e.idx == i)?.clone();
         Some(Request {
@@ -218,6 +242,7 @@ impl PushPanel {
     pub(super) fn inspect(&mut self, c: &Context) {
         self.preview_load.cancel();
         self.preview_request = None;
+        self.diff = None;
         self.detail_selection.reset();
         self.preview = Preview::default();
         self.detail_off = 0;
@@ -229,26 +254,6 @@ impl PushPanel {
             self.preview.body = self.preview.summary.clone();
         } else if request.commit.is_some() || request.entry.n > 0 || request.result.is_some() {
             self.preview.body = "Loading changed files…".into();
-            self.preview_request = Some(request);
-            self.preview_load.request();
-        }
-    }
-
-    pub(super) fn open_file(&mut self, c: &Context) {
-        let Some(file) = self
-            .preview
-            .tree
-            .file_index()
-            .and_then(|i| self.preview.files.get(i))
-            .cloned()
-        else {
-            return;
-        };
-        if let Some(request) = self.preview_request(c, Some(file)) {
-            self.detail_selection.reset();
-            self.detail_off = 0;
-            self.preview.body = "Loading diff…".into();
-            self.preview.is_patch = false;
             self.preview_request = Some(request);
             self.preview_load.request();
         }

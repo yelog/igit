@@ -1,4 +1,7 @@
-use super::{backend, rows::CONFLICT_SELECTION, slice, word, CommitPanel, Focus, Hit, Kind, Row};
+use super::{
+    backend, rows::CONFLICT_SELECTION, slice, word, CommitPanel, Focus, Hit, Kind, MessageAction,
+    Row,
+};
 use crate::{
     core::Context,
     ui::icons::{Icon, IconMode},
@@ -30,7 +33,7 @@ fn count(n: usize, noun: &str) -> String {
     format!("{n} {noun}{}", if n == 1 { "" } else { "s" })
 }
 fn file_line(icons: IconMode, change: &backend::Change, width: usize) -> Line<'static> {
-    // Keep both porcelain columns (e.g. MM), and use the version being committed for the tint.
+    // Use the version being committed for the tint.
     let color = if change.ignored() {
         DIM
     } else if change.conflict {
@@ -47,22 +50,18 @@ fn file_line(icons: IconMode, change: &backend::Change, width: usize) -> Line<'s
             _ => BLUE,
         }
     };
-    let xy = String::from_utf8_lossy(&change.xy[..width.min(2)]);
-    let mut line = Line::from(Span::styled(xy.into_owned(), bold(color).bg(TAG)));
-    if width > 3 {
+    let name = change.label();
+    let (glyph, tint) = if change.directory() {
+        (icons.folder(false), DIM)
+    } else {
+        icons.file(&change.path)
+    };
+    let mut line = Line::default();
+    if name.width() + glyph.width() < width {
+        line.push_span(Span::styled(glyph, fg(tint)));
         line.push_span(" ");
-        let name = change.label();
-        let (glyph, tint) = if change.directory() {
-            (icons.folder(false), DIM)
-        } else {
-            icons.file(&change.path)
-        };
-        if width - 3 > name.width() + glyph.width() {
-            line.push_span(Span::styled(glyph, fg(tint)));
-            line.push_span(" ");
-        }
-        line.push_span(Span::styled(fit(&name, width - line.width()), fg(color)));
     }
+    line.push_span(Span::styled(fit(&name, width - line.width()), fg(color)));
     line
 }
 impl CommitPanel {
@@ -80,16 +79,21 @@ impl CommitPanel {
         }
         let area = Rect::new(*x, bar.y, w as u16, 1);
         let disabled = self.add_running()
-            && matches!(
-                hit,
-                Hit::Submit(_) | Hit::Ai | Hit::StageHunks | Hit::Refresh
-            );
+            && matches!(hit, Hit::MessageAction(_) | Hit::StageHunks | Hit::Refresh);
         let style = if disabled {
             button_style(false).fg(Color::DarkGray)
         } else {
             match hit {
-                Hit::Submit(false) | Hit::EditSave => button_style(true),
-                Hit::Submit(true) | Hit::EditCancel | Hit::Ai => button_style(false),
+                Hit::MessageAction(action) => {
+                    let primary = if self.pane_focused(PaneId::Message) && !self.message_editing() {
+                        self.message_action
+                    } else {
+                        MessageAction::Commit
+                    };
+                    button_style(action == primary)
+                }
+                Hit::EditSave => button_style(true),
+                Hit::EditCancel => button_style(false),
                 Hit::TogglePreview if self.preview_open => fg(BLUE).bg(TAG),
                 Hit::ViewOptions if self.view_menu.is_some() => fg(BLUE).bg(TAG),
                 Hit::Directories if self.options.directories => fg(BLUE).bg(TAG),
@@ -286,30 +290,39 @@ impl CommitPanel {
         self.hits.push((draft, Hit::Msg));
 
         let compact_actions = composer.width < 52 && !wrap_actions;
+        let short_actions = compact_actions && composer.width < 42;
         let mut action_row = slice(actions, 0);
         let mut x = action_row.x;
-        self.hit_button(f, action_row, &mut x, "Commit", Hit::Submit(false));
         self.hit_button(
             f,
             action_row,
             &mut x,
-            if compact_actions {
+            "Commit",
+            Hit::MessageAction(MessageAction::Commit),
+        );
+        self.hit_button(
+            f,
+            action_row,
+            &mut x,
+            if short_actions {
+                "Commit+Push"
+            } else if compact_actions {
                 "Commit & Push…"
             } else {
                 "Commit and Push..."
             },
-            Hit::Submit(true),
+            Hit::MessageAction(MessageAction::CommitAndPush),
         );
         if wrap_actions {
             action_row = slice(actions, 1);
             x = action_row.x;
         }
-        let ai = if self.ai_pending.is_some() {
-            "Generating…"
-        } else if compact_actions {
-            "Generate"
-        } else {
-            "Generate message"
+        let ai = match (short_actions, compact_actions, self.ai_pending.is_some()) {
+            (true, _, true) => "AI…",
+            (_, _, true) => "Generating…",
+            (true, _, false) => "AI",
+            (_, true, false) => "Generate",
+            _ => "Generate message",
         };
         let glyph = if self.ai_running() {
             self.ai_spinner().to_string()
@@ -317,7 +330,13 @@ impl CommitPanel {
             self.icons.glyph(Icon::AutoResolve).to_string()
         };
         let ai = format!("{glyph} {ai}");
-        self.hit_button(f, action_row, &mut x, &ai, Hit::Ai);
+        self.hit_button(
+            f,
+            action_row,
+            &mut x,
+            &ai,
+            Hit::MessageAction(MessageAction::Generate),
+        );
         if self.add_running() {
             if !rule.is_empty() {
                 let progress = self.add_progress(usize::from(rule.width));

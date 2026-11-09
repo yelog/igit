@@ -17,6 +17,58 @@ fn saved(app: &Shell, message: &str) {
 }
 
 #[test]
+fn inline_message_keyboard_edits_saves_and_commits_only_on_enter() {
+    let (_dir, mut app) = fixture();
+    let repo = app.ctx.repos[0].path.clone();
+    let before = snapshot(&repo);
+    screen(&mut app, 120, 36);
+    for code in [KeyCode::End, KeyCode::Char(' '), KeyCode::Char('i')] {
+        app.dispatch(&key(code));
+    }
+    app.dispatch(&Event::Paste("Keyboard subject".into()));
+    for code in [KeyCode::F(2), KeyCode::Tab] {
+        app.dispatch(&key(code));
+    }
+    assert_eq!(app.commit.focused_pane(), PaneId::Changes);
+
+    app.dispatch(&key(KeyCode::Char('c')));
+    assert!(app.commit.message_editing(), "c must open the editor");
+    assert_eq!(app.commit.focused_pane(), PaneId::Message);
+    app.dispatch(&key(KeyCode::Enter));
+    app.dispatch(&Event::Paste("Body 中文".into()));
+    app.dispatch(&Event::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL,
+    )));
+    app.dispatch(&key(KeyCode::Esc));
+    assert!(!app.commit.message_editing());
+    assert_eq!(app.commit.focused_pane(), PaneId::Message);
+    saved(&app, "Keyboard subject\nBody 中文");
+
+    app.dispatch(&key(KeyCode::Char('c')));
+    assert!(!app.commit.message_editing());
+    app.dispatch(&key(KeyCode::Char('i')));
+    assert!(app.commit.message_editing());
+    app.dispatch(&Event::Paste(" updated".into()));
+    app.dispatch(&key(KeyCode::Esc));
+    assert_eq!(snapshot(&repo), before);
+
+    app.dispatch(&key(KeyCode::Enter));
+    assert!(app.pop.is_none());
+    assert_eq!(git(&repo, &["rev-parse", "HEAD^"]).unwrap(), before[0]);
+    assert_eq!(
+        git(&repo, &["log", "-1", "--format=%B"]).unwrap(),
+        "Keyboard subject\nBody 中文 updated"
+    );
+    assert_eq!(git(&repo, &["show", "HEAD:mixed.txt"]).unwrap(), "staged");
+    assert_eq!(
+        git(&repo, &["show", ":other.txt"]).unwrap(),
+        "unselected staged"
+    );
+    assert_eq!(git(&repo, &["diff", "--binary"]).unwrap(), before[2]);
+}
+
+#[test]
 fn inline_message_mouse_and_tab_leave_the_field_with_a_saved_draft() {
     let (_dir, mut app) = fixture();
     let before = snapshot(&app.ctx.repos[0].path);
@@ -68,9 +120,11 @@ fn inline_message_mouse_and_tab_leave_the_field_with_a_saved_draft() {
 }
 
 #[test]
-fn inline_message_mouse_review_preserves_mixed_and_unselected_staging() {
+fn inline_message_click_commits_directly_and_preserves_unselected_staging() {
     let (_dir, mut app) = fixture();
-    let before = snapshot(&app.ctx.repos[0].path);
+    app.commit.enable_background_execution();
+    let repo = app.ctx.repos[0].path.clone();
+    let before = snapshot(&repo);
     app.go(Commit);
     screen(&mut app, 120, 36);
     // Last row is other.txt: leave its independently staged contents unchecked.
@@ -80,20 +134,28 @@ fn inline_message_mouse_review_preserves_mixed_and_unselected_staging() {
     let text = screen(&mut app, 120, 36);
     let (x, y) = position(&text, "Commit message…");
     app.dispatch(&mouse(MouseEventKind::Down(MouseButton::Left), x, y));
-    app.dispatch(&Event::Paste("Reviewed inline ＵＩ\n\nBody".into()));
+    let message = "Commit inline ＵＩ\n\nBody";
+    app.dispatch(&Event::Paste(message.into()));
     let text = screen(&mut app, 120, 36);
     let (x, y) = position(&text, "Commit   Commit and Push...");
     app.dispatch(&mouse(MouseEventKind::Down(MouseButton::Left), x, y));
-    let Some(Popup::Confirm { body, .. }) = &app.pop else {
-        panic!("expected commit review");
-    };
-    assert!(body.contains("Reviewed inline ＵＩ") && body.contains("mixed.txt"));
-    assert!(body.contains("+staged") && !body.contains("working tree"));
-    assert!(!body.contains("other.txt") && !body.contains("unselected staged"));
-    assert_eq!(snapshot(&app.ctx.repos[0].path), before);
-    app.dispatch(&key(KeyCode::Esc));
+    assert!(app.pop.is_none(), "Commit should not open a confirmation");
+    finish_commit(&mut app);
     assert!(app.pop.is_none());
-    assert_eq!(snapshot(&app.ctx.repos[0].path), before);
+    assert_eq!(app.tab, Commit);
+    assert_eq!(git(&repo, &["rev-parse", "HEAD^"]).unwrap(), before[0]);
+    assert_eq!(git(&repo, &["log", "-1", "--format=%B"]).unwrap(), message);
+    assert_eq!(git(&repo, &["show", "HEAD:mixed.txt"]).unwrap(), "staged");
+    assert_eq!(git(&repo, &["show", "HEAD:other.txt"]).unwrap(), "base");
+    assert_eq!(
+        git(&repo, &["show", ":other.txt"]).unwrap(),
+        "unselected staged"
+    );
+    assert_eq!(
+        git(&repo, &["diff", "--cached", "--name-only"]).unwrap(),
+        "other.txt"
+    );
+    assert_eq!(git(&repo, &["diff", "--binary"]).unwrap(), before[2]);
 }
 
 #[test]

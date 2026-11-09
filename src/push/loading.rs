@@ -142,18 +142,18 @@ impl PushPanel {
                         files,
                         body: summary.clone(),
                         summary,
-                        is_patch: false,
                     };
                     if self.show_details {
-                        self.inspect_file(c);
+                        self.update_details();
                     }
                 }
-                Ok(preview::Loaded::Patch { body, is_patch }) => {
-                    self.preview.body = body;
-                    self.preview.is_patch = is_patch;
+                Ok(preview::Loaded::Diff(content)) => {
+                    if let Some(diff) = &mut self.diff {
+                        diff.content = Some(content);
+                    }
                 }
                 Err(error) => {
-                    self.preview.body = error.to_string();
+                    self.preview_error(error.to_string());
                     return Err(error);
                 }
             }
@@ -166,12 +166,21 @@ impl PushPanel {
                     .start("igit-push-read", move |_| preview::read(request))
                 {
                     self.preview_request = None;
-                    self.preview.body = format!("Unable to load preview: {error}");
+                    self.preview_error(format!("Unable to load preview: {error}"));
                     return Err(error);
                 }
             }
         }
         Ok(changed)
+    }
+
+    fn preview_error(&mut self, message: String) {
+        if let Some(diff) = &mut self.diff {
+            diff.content = Some(preview::FileDiff::Patch(message));
+        } else {
+            self.preview.summary = message.clone();
+            self.preview.body = message;
+        }
     }
 
     #[cfg(test)]

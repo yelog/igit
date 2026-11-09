@@ -32,7 +32,7 @@ demo_workspace="$(sh examples/demo-workspace.sh)"
 cargo run --locked --bin igit -- "$demo_workspace"
 ```
 
-Interactive smoke check: start on Commit. Browse files and select groups with both the mouse and `j/k`, confirming that browsing does not change checkboxes. Write one shared message for two checked repositories, press `r` to hide one, then `c` to open review. Check that review includes only visible, selected items, then cancel with `Esc`. When changing write operations, verify the practice repositories with `git status`, `git diff --cached`, `git log`, or remote refs.
+Interactive smoke check: start on Commit. Browse files and select groups with both the mouse and `j/k`, confirming that browsing does not change checkboxes. Write one shared message for two checked repositories, press `r` to hide one, then click Commit in the practice workspace. For the keyboard path, press `c` from Changes or Preview to edit, `Esc` to save, and `Enter` with Commit selected. Verify that only the visible repository received a commit and that restoring Roots restores the other repository's selection. When changing write operations, verify the practice repositories with `git status`, `git diff --cached`, `git log`, or remote refs.
 
 Choose checks appropriate to the change: `cargo test --locked commit::` targets Commit; use `cargo test --locked` for changes across panels or shared Git logic. Common pre-commit checks are `cargo fmt --all --check` and `cargo clippy --locked --all-targets -- -D warnings`. For documentation-only changes, verify relative links, commands, and claims about the implementation.
 

@@ -238,7 +238,7 @@ commands! {
         "amend" => "M", COMMIT;
         "ai-draft" => "A", COMMIT;
         "ai-settings" => "S", COMMIT;
-        "review" => "c", COMMIT;
+        "review" => "c", CHANGES | PREVIEW;
         "review-and-push" => "P", COMMIT;
     }
     "push" {

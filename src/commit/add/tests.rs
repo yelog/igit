@@ -403,7 +403,7 @@ fn add_to_git_slow_filter_keeps_first_frame_browsing_and_draft_editing_responsiv
             assert!(!panel
                 .hits
                 .iter()
-                .any(|(_, hit)| matches!(hit, Hit::Submit(_) | Hit::Ai | Hit::StageHunks)));
+                .any(|(_, hit)| matches!(hit, Hit::MessageAction(_) | Hit::StageHunks)));
         }
     }
     let cursor = panel.cursor;
@@ -415,7 +415,7 @@ fn add_to_git_slow_filter_keeps_first_frame_browsing_and_draft_editing_responsiv
         Action::Notice(_)
     ));
     assert!(panel
-        .review(&ctx, false)
+        .submit(&ctx, false)
         .err()
         .unwrap()
         .to_string()

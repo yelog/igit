@@ -18,11 +18,10 @@ fn finish(panel: &mut CommitPanel, c: &Context) -> Action {
 fn background_commits_preserve_mixed_staging_and_shared_message_behavior() {
     let (_dir, c, mut panel) = super::super::message_tests::fixture();
     panel.enable_background_execution();
-    panel.review(&c, false).unwrap();
-    let action = panel.submit(&c);
+    let action = panel.submit(&c, false).unwrap();
     assert!(matches!(action, Action::Notice(_)));
     assert!(panel.execution_running());
-    assert!(panel.review(&c, false).is_err());
+    assert!(panel.submit(&c, false).is_err());
     let Action::Committed { repos, .. } = finish(&mut panel, &c) else {
         unreachable!()
     };
@@ -81,8 +80,10 @@ fn slow_hook_keeps_browsing_responsive_and_stop_skips_only_unstarted_repositorie
     let second_head = git(&c.repos[1].path, &["rev-parse", "HEAD"]).unwrap();
     let message = panel.saved.message.clone();
     panel.enable_background_execution();
-    panel.review(&c, false).unwrap();
-    assert!(matches!(panel.submit(&c), Action::Notice(_)));
+    assert!(matches!(
+        panel.submit(&c, false).unwrap(),
+        Action::Notice(_)
+    ));
     let deadline = Instant::now() + Duration::from_secs(10);
     while !marker.exists() {
         panel.poll_execution(&c);

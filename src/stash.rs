@@ -25,16 +25,18 @@ use std::{collections::BTreeSet, time::Duration};
 
 pub(crate) const REVIEW_TOKEN: &str = "stash-operation";
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Row {
-    root: usize,
-    entry: Option<usize>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Row {
+    Repository(usize),
+    Stash { root: usize, entry: usize },
+    EmptyGroup,
 }
 
 pub struct StashPanel {
     repos: Vec<Repository>,
     rows: Vec<Row>,
     folded: BTreeSet<usize>,
+    empty_expanded: bool,
     cursor: usize,
     top: usize,
     focus: PaneId,
@@ -53,6 +55,7 @@ impl Default for StashPanel {
             repos: vec![],
             rows: vec![],
             folded: BTreeSet::new(),
+            empty_expanded: false,
             cursor: 0,
             top: 0,
             focus: PaneId::Stashes,
@@ -73,11 +76,10 @@ impl StashPanel {
     }
 
     fn selection(&self) -> Option<(usize, &Entry)> {
-        let row = self.rows.get(self.cursor)?;
-        Some((
-            row.root,
-            self.repository(row.root)?.entries.get(row.entry?)?,
-        ))
+        let Row::Stash { root, entry } = *self.rows.get(self.cursor)? else {
+            return None;
+        };
+        Some((root, self.repository(root)?.entries.get(entry)?))
     }
 
     fn identity(&self) -> Option<(usize, String)> {
@@ -87,19 +89,77 @@ impl StashPanel {
 
     fn rebuild(&mut self) {
         self.rows.clear();
-        for repo in &self.repos {
-            self.rows.push(Row {
-                root: repo.root,
-                entry: None,
-            });
+        self.hits.clear();
+        for repo in self.repos.iter().filter(|repo| !repo.entries.is_empty()) {
+            self.rows.push(Row::Repository(repo.root));
             if !self.folded.contains(&repo.root) {
-                self.rows.extend((0..repo.entries.len()).map(|entry| Row {
-                    root: repo.root,
-                    entry: Some(entry),
-                }));
+                self.rows
+                    .extend((0..repo.entries.len()).map(|entry| Row::Stash {
+                        root: repo.root,
+                        entry,
+                    }));
+            }
+        }
+        self.rows.extend(
+            self.repos
+                .iter()
+                .filter(|repo| repo.error.is_some())
+                .map(|repo| Row::Repository(repo.root)),
+        );
+        if self.repos.iter().any(Repository::is_empty) {
+            self.rows.push(Row::EmptyGroup);
+            if self.empty_expanded {
+                self.rows.extend(
+                    self.repos
+                        .iter()
+                        .filter(|repo| repo.is_empty())
+                        .map(|repo| Row::Repository(repo.root)),
+                );
             }
         }
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
+    }
+
+    fn row_index(&self, row: Row) -> Option<usize> {
+        self.rows.iter().position(|&candidate| candidate == row)
+    }
+
+    fn repository_row(&self, root: usize) -> Option<usize> {
+        let repo = self.repository(root)?;
+        self.row_index(if repo.is_empty() && !self.empty_expanded {
+            Row::EmptyGroup
+        } else {
+            Row::Repository(root)
+        })
+    }
+
+    fn restore_cursor(&self, row: Row) -> Option<usize> {
+        match row {
+            Row::Stash { root, entry } => self
+                .repository(root)?
+                .entries
+                .len()
+                .checked_sub(1)
+                .and_then(|last| {
+                    self.row_index(Row::Stash {
+                        root,
+                        entry: entry.min(last),
+                    })
+                })
+                .or_else(|| self.repository_row(root)),
+            Row::Repository(root) => self.repository_row(root),
+            Row::EmptyGroup => self.row_index(row),
+        }
+    }
+
+    fn group_open(&self, row: Row) -> Option<bool> {
+        match row {
+            Row::EmptyGroup => Some(self.empty_expanded),
+            Row::Repository(root) if !self.repository(root)?.entries.is_empty() => {
+                Some(!self.folded.contains(&root))
+            }
+            _ => None,
+        }
     }
 
     fn select(&mut self, row: usize) {
@@ -114,14 +174,17 @@ impl StashPanel {
         let Some(row) = self.rows.get(self.cursor).copied() else {
             return;
         };
-        if row.entry.is_some() {
-            return;
-        }
-        if !self.folded.remove(&row.root) {
-            self.folded.insert(row.root);
+        match row {
+            Row::Repository(root) if self.group_open(row).is_some() => {
+                if !self.folded.remove(&root) {
+                    self.folded.insert(root);
+                }
+            }
+            Row::EmptyGroup => self.empty_expanded = !self.empty_expanded,
+            _ => return,
         }
         self.rebuild();
-        self.cursor = self.rows.iter().position(|r| *r == row).unwrap_or(0);
+        self.cursor = self.row_index(row).unwrap_or(0);
         self.request_preview(Duration::ZERO);
     }
 
@@ -129,27 +192,29 @@ impl StashPanel {
         let Some(row) = self.rows.get(self.cursor).copied() else {
             return;
         };
-        if row.entry.is_some() {
-            if left {
-                if let Some(parent) = self
-                    .rows
-                    .iter()
-                    .position(|r| r.root == row.root && r.entry.is_none())
-                {
-                    self.select(parent);
-                }
-            } else {
-                self.focus = PaneId::Files;
+        if let Some(open) = self.group_open(row) {
+            if open == left {
+                self.toggle();
+            } else if !left {
+                self.select(self.cursor + 1);
             }
-        } else if self.folded.contains(&row.root) != left {
-            self.toggle();
-        } else if !left
-            && self
-                .rows
-                .get(self.cursor + 1)
-                .is_some_and(|r| r.root == row.root)
-        {
-            self.select(self.cursor + 1);
+            return;
+        }
+        let parent = match row {
+            Row::Stash { root, .. } if left => Row::Repository(root),
+            Row::Stash { .. } => {
+                self.focus = PaneId::Files;
+                return;
+            }
+            Row::Repository(root)
+                if left && self.repository(root).is_some_and(Repository::is_empty) =>
+            {
+                Row::EmptyGroup
+            }
+            _ => return,
+        };
+        if let Some(index) = self.row_index(parent) {
+            self.select(index);
         }
     }
 
@@ -281,10 +346,10 @@ impl StashPanel {
             &[
                 ("j", "Select next stash or repository"),
                 ("k", "Select previous stash or repository"),
-                ("h", "Collapse repository or move to parent"),
-                ("l", "Expand repository or focus files"),
-                ("Space", "Toggle repository"),
-                ("Enter", "Focus saved files or toggle repository"),
+                ("h", "Collapse group or move to parent"),
+                ("l", "Expand group or focus files"),
+                ("Space", "Toggle group"),
+                ("Enter", "Focus saved files or toggle group"),
                 ("g", "Select first row"),
                 ("G", "Select last row"),
                 ("PgDn", "Move down one page"),
@@ -333,26 +398,20 @@ impl Panel for StashPanel {
         self.rebuild();
         self.cursor = keep
             .and_then(|(root, oid)| {
-                self.rows.iter().position(|r| {
-                    r.root == root
-                        && r.entry
-                            .and_then(|i| self.repository(root)?.entries.get(i))
-                            .is_some_and(|e| e.oid == oid)
-                })
+                let entry = self
+                    .repository(root)?
+                    .entries
+                    .iter()
+                    .position(|entry| entry.oid == oid)?;
+                self.row_index(Row::Stash { root, entry })
             })
+            .or_else(|| self.restore_cursor(previous?))
             .or_else(|| {
-                let previous = previous?;
-                let repo = self.repository(previous.root)?;
-                let entry = previous.entry.and_then(|index| {
-                    (!repo.entries.is_empty()).then(|| index.min(repo.entries.len() - 1))
-                });
                 self.rows
                     .iter()
-                    .position(|r| r.root == previous.root && r.entry == entry)
+                    .position(|row| matches!(row, Row::Stash { .. }))
             })
-            .or_else(|| self.rows.iter().position(|r| r.entry.is_some()))
             .unwrap_or(0);
-        self.hits.clear();
         self.request_preview(Duration::ZERO);
         Ok(())
     }

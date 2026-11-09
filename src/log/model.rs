@@ -9,13 +9,11 @@ pub(super) use graph::{graph_color, Graph, GraphWindow, NodeGlyphs};
 #[cfg(test)]
 mod tests;
 
-use crate::core::{git, git_bytes, Context};
+use crate::core::{git, git_bytes, revision, Context};
 use anyhow::{anyhow, bail, Context as _, Result};
 use std::{
     collections::{BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque},
-    io::Read,
     path::Path,
-    process::Stdio,
 };
 
 pub(super) fn plain(v: &[u8]) -> String {
@@ -764,32 +762,8 @@ pub(super) fn patch(path: &Path, r: &Rev, file: &File) -> Result<Vec<String>> {
     if combined {
         cmd.arg("-c");
     }
-    const LIMIT: usize = 512 * 1024;
-    let mut child = cmd
-        .arg("--")
-        .arg(file)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .stdin(Stdio::null())
-        .spawn()
-        .context("git diff")?;
-    let mut raw = vec![];
-    let result = child
-        .stdout
-        .take()
-        .unwrap()
-        .take((LIMIT + 1) as u64)
-        .read_to_end(&mut raw);
-    let cut = raw.len() > LIMIT;
-    if cut || result.is_err() {
-        let _ = child.kill();
-    }
-    let status = child.wait()?;
-    result?;
-    if !cut && !status.success() {
-        bail!("git diff failed ({status})")
-    }
-    raw.truncate(LIMIT);
+    cmd.arg("--").arg(file);
+    let (raw, cut) = revision::read_patch(cmd)?;
     let mut lines: Vec<_> = raw.split(|b| *b == b'\n').map(plain).collect();
     if cut {
         lines.push("… Diff limited to 512 KiB · Use git show for the full patch".into())

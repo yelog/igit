@@ -313,7 +313,10 @@ impl Shell {
         let before = self.key_sequence();
         let action = match self.tab {
             Log => self.log.event(ev, &self.ctx),
-            Commit => self.commit.event(ev, &self.ctx),
+            Commit => {
+                self.commit.block_submissions(self.push.busy());
+                self.commit.event(ev, &self.ctx)
+            }
             Push => self.push.event(ev, &self.ctx),
             Conflicts => self.merge.event(ev, &self.ctx),
             Branch => self.branch.event(ev, &self.ctx),

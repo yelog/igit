@@ -5,12 +5,6 @@ use crate::ui::{
 };
 use ratatui::style::Modifier;
 
-fn render(p: &mut BranchPanel, c: &Context, width: u16, height: u16) -> Terminal<TestBackend> {
-    let mut t = Terminal::new(TestBackend::new(width, height)).unwrap();
-    t.draw(|f| p.draw(f, f.area(), c)).unwrap();
-    t
-}
-
 fn branch_rect(p: &BranchPanel, reference: &str) -> Rect {
     p.hits.iter().find_map(|(rect, hit)| match hit {
         Hit::Row(i) if matches!(&p.tree.rows[*i].kind, Kind::Branch(b) if b.reference == reference) => Some(*rect),
@@ -21,13 +15,6 @@ fn branch_rect(p: &BranchPanel, reference: &str) -> Rect {
 fn symbol_x(t: &Terminal<TestBackend>, rect: Rect, symbol: &str) -> u16 {
     (rect.x..rect.right())
         .find(|&x| t.backend().buffer()[(x, rect.y)].symbol() == symbol)
-        .unwrap()
-}
-
-fn hit_rect(p: &BranchPanel, matches: impl Fn(&Hit) -> bool) -> Rect {
-    p.hits
-        .iter()
-        .find_map(|(rect, hit)| matches(hit).then_some(*rect))
         .unwrap()
 }
 
@@ -44,6 +31,74 @@ fn click(p: &mut BranchPanel, c: &Context, column: u16, row: u16) {
 }
 
 #[test]
+fn branch_last_commit_column_shows_local_and_remote_tip_times_and_refreshes() {
+    let (_temp, c, mut p) = fixture();
+    let repo = &c.repos[0].path;
+    let commit = |date: &str, message: &str| {
+        let out = crate::core::command(repo)
+            .args(["commit", "--allow-empty", "-qm", message])
+            .env("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z")
+            .env("GIT_COMMITTER_DATE", date)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let tip_time = |reference| {
+        run(
+            repo,
+            &[
+                "show",
+                "-s",
+                "--format=%cd",
+                "--date=format-local:%Y/%m/%d, %H:%M",
+                reference,
+            ],
+        )
+    };
+    let local = "refs/heads/main";
+    let remote = "refs/remotes/origin/release";
+    commit("2024-03-14T08:35:00Z", "upstream tip");
+    tracking(&c, "main", "release");
+    commit("2025-04-15T09:47:00Z", "local tip");
+    reload(&mut p, &c);
+    let remote_time = tip_time(remote);
+    let original = tip_time(local);
+    let check = |p: &mut BranchPanel, width, local_time: &str| {
+        let t = render(p, &c, width, 25);
+        let list = p.viewport.area;
+        let heading = row_cells(&t, Rect::new(list.x, list.y - 1, list.width, 1));
+        let offset = heading
+            .find("Last Commit")
+            .unwrap_or_else(|| panic!("Missing Last Commit heading: {heading}"))
+            as u16;
+        for (reference, date) in [(local, local_time), (remote, &remote_time)] {
+            let row = branch_rect(p, reference);
+            let time = Rect::new(row.x + offset, row.y, row.width - offset, 1);
+            assert_eq!(row_cells(&t, time).trim(), date);
+        }
+        let folder = hit_rect(p, |hit| matches!(hit, Hit::Row(0)));
+        let time = Rect::new(folder.x + offset, folder.y, folder.width - offset, 1);
+        assert!(row_cells(&t, time).trim().is_empty());
+    };
+    check(&mut p, 120, &original);
+    check(&mut p, 80, &original);
+    select(&mut p, 0, local);
+    let t = render(&mut p, &c, 44, 12);
+    let row = row_cells(&t, branch_rect(&p, local));
+    assert!(row.contains("main") && !row.contains(&original), "{row}");
+
+    commit("2026-05-16T10:58:00Z", "new local tip");
+    reload(&mut p, &c);
+    let latest = tip_time(local);
+    assert_ne!(latest, original);
+    check(&mut p, 120, &latest);
+}
+
+#[test]
 fn branch_glyphs_colors_counts_and_upstream_columns_survive_unicode_and_icon_modes() {
     let (_temp, mut c, mut p) = fixture();
     c.repos[1].submodule = true;
@@ -55,8 +110,6 @@ fn branch_glyphs_colors_counts_and_upstream_columns_survive_unicode_and_icon_mod
     }
     run(repo, &["branch", "untracked"]);
     reload(&mut p, &c);
-    expand_branch_path(&mut p, &c, 0, "refs/heads/feature/deep/longer-branch-name");
-    expand_branch_path(&mut p, &c, 0, "refs/remotes/origin/main");
     for mode in [IconMode::Ascii, IconMode::Unicode, IconMode::NerdFont] {
         p.icons = mode;
         select(&mut p, 0, "refs/heads/feature/中文");
@@ -70,13 +123,20 @@ fn branch_glyphs_colors_counts_and_upstream_columns_survive_unicode_and_icon_mod
             "feature/deep/longer-branch-name",
         ] {
             let r = branch_rect(&p, &format!("refs/heads/{name}"));
-            let icon_x = symbol_x(&t, r, mode.glyph(Icon::Branch));
+            let marker = mode.glyph(if name == "main" {
+                Icon::Tag
+            } else {
+                Icon::Branch
+            });
+            let icon_x = symbol_x(&t, r, marker);
             icons.push(icon_x);
-            assert_eq!(t.backend().buffer()[(icon_x, r.y)].fg, LOCAL_REF);
+            let buffer = t.backend().buffer();
+            assert_eq!(buffer[(icon_x, r.y)].fg, LOCAL_REF);
+            assert_eq!(buffer[(icon_x + marker.width() as u16 + 1, r.y)].fg, FG);
             let upstream_icon = (icon_x + 1..r.right())
-                .find(|&x| t.backend().buffer()[(x, r.y)].symbol() == mode.glyph(Icon::Branch))
+                .find(|&x| buffer[(x, r.y)].symbol() == mode.glyph(Icon::Branch))
                 .unwrap();
-            assert_eq!(t.backend().buffer()[(upstream_icon, r.y)].fg, REMOTE_REF);
+            assert_eq!(buffer[(upstream_icon, r.y)].fg, REMOTE_REF);
             columns.push(upstream_icon);
         }
         assert!(columns.iter().all(|x| *x == columns[0]), "{columns:?}");
@@ -108,6 +168,15 @@ fn branch_glyphs_colors_counts_and_upstream_columns_survive_unicode_and_icon_mod
             assert!(buffer[(x + icon.width() as u16 + 1, row.y)]
                 .modifier
                 .contains(Modifier::BOLD));
+            let arrow = mode.glyph(Icon::Next);
+            let arrow_x = row.right() - arrow.width() as u16;
+            assert_eq!(buffer[(arrow_x, row.y)].symbol(), arrow);
+            assert_eq!(buffer[(arrow_x, row.y)].fg, MUTED);
+            let tag = mode.glyph(Icon::Tag);
+            let tag_x = symbol_x(&t, row, tag);
+            assert_eq!(buffer[(tag_x, row.y)].fg, LOCAL_REF);
+            assert_eq!(buffer[(tag_x + tag.width() as u16 + 1, row.y)].fg, FG);
+            assert!(row_cells(&t, row).ends_with(&format!("{tag} main {arrow}")));
         }
         let selected = branch_rect(&p, "refs/heads/feature/中文");
         assert_eq!(
@@ -138,6 +207,8 @@ fn eye_groups_prefixes_and_keeps_the_selected_ref_through_refresh() {
         key(&mut p, &c, K::Esc);
         assert!(!p.editing());
     }
+    p.tree.cursor = folder_index(&p, "0:refs/heads/topic/");
+    key(&mut p, &c, K::Char('h'));
     assert!(!p.tree.rows.iter().any(|r| r.label == "nested"));
     p.refresh(&c).unwrap();
     let release = p.hold_loading(&c);
@@ -180,7 +251,6 @@ fn long_names_keep_gone_status_and_narrow_details_and_clicks_target_the_same_bra
     );
     reload(&mut p, &c);
     let reference = format!("refs/heads/{name}");
-    expand_branch_path(&mut p, &c, 0, &reference);
     select(&mut p, 0, &reference);
     for (w, h) in [(120, 36), (80, 25), (44, 18)] {
         let t = render(&mut p, &c, w, h);
@@ -189,7 +259,7 @@ fn long_names_keep_gone_status_and_narrow_details_and_clicks_target_the_same_bra
         assert!(text.contains("(current)"));
         let rect = branch_rect(&p, &reference);
         if w >= 120 {
-            let offset = p.upstream_column(rect.width).unwrap();
+            let offset = p.branch_columns(rect.width).upstream.unwrap();
             let x = symbol_x(
                 &t,
                 Rect {
@@ -241,7 +311,6 @@ fn action_buttons_only_offer_operations_for_the_focused_branch() {
     assert_eq!(operations(&mut p), [Operation::Create, Operation::Rename]);
     p.tree.cursor = 0;
     assert!(operations(&mut p).is_empty());
-    expand_branch_path(&mut p, &c, 0, "refs/remotes/origin/main");
     select(&mut p, 0, "refs/remotes/origin/main");
     assert_eq!(
         operations(&mut p),
