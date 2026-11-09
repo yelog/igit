@@ -1,5 +1,5 @@
-//! Read committed file revisions without involving the working tree or index.
-use super::{command, git_bytes};
+//! Read bounded text revisions without filters or writes.
+use super::command;
 use anyhow::{bail, Context as _, Result};
 use std::{
     io::Read,
@@ -7,13 +7,16 @@ use std::{
     process::{Command, Stdio},
 };
 
+pub(crate) const LIMIT: usize = 512 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Source {
     pub text: String,
     pub description: String,
 }
 
 pub(crate) fn source(repo: &Path, oid: &str, path: &Path) -> Result<Source> {
-    let output = command(repo)
+    let output = reader(repo)
         .args(["--literal-pathspecs", "ls-tree", "-z", oid, "--"])
         .arg(path)
         .output()?;
@@ -39,12 +42,39 @@ pub(crate) fn source(repo: &Path, oid: &str, path: &Path) -> Result<Source> {
     if kind != "blob" {
         bail!("Split preview is unavailable for {kind} entries; showing the Git patch");
     }
-    let size = git_bytes(repo, &["cat-file", "-s", blob])?;
-    let size: usize = std::str::from_utf8(&size)?.trim().parse()?;
-    if size > 512 * 1024 {
+    self::blob(repo, blob, mode)
+}
+
+fn reader(repo: &Path) -> Command {
+    let mut cmd = command(repo);
+    cmd.env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_NO_LAZY_FETCH", "1");
+    cmd
+}
+
+pub(crate) fn blob(repo: &Path, oid: &str, mode: &str) -> Result<Source> {
+    mode_supported(mode)?;
+    let mut cmd = reader(repo);
+    cmd.args(["cat-file", "blob", oid]);
+    let (bytes, cut) = read_output(cmd, "git cat-file")?;
+    if cut {
         bail!("Split preview is limited to 512 KiB per revision; showing the Git patch");
     }
-    let bytes = git_bytes(repo, &["cat-file", "blob", blob])?;
+    text(bytes, mode)
+}
+
+fn mode_supported(mode: &str) -> Result<()> {
+    if !matches!(mode, "100644" | "100755" | "120000") {
+        bail!("Split preview is unavailable for mode {mode} (submodule or special entry); showing the Git patch");
+    }
+    Ok(())
+}
+
+pub(crate) fn text(bytes: Vec<u8>, mode: &str) -> Result<Source> {
+    mode_supported(mode)?;
+    if bytes.len() > LIMIT {
+        bail!("Split preview is limited to 512 KiB per revision; showing the Git patch");
+    }
     if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
         bail!("Binary or non-UTF-8 content; showing the Git patch");
     }
@@ -58,20 +88,28 @@ pub(crate) fn source(repo: &Path, oid: &str, path: &Path) -> Result<Source> {
     } else {
         "LF"
     };
+    let link = if mode == "120000" {
+        " · Symlink (link text)"
+    } else {
+        ""
+    };
     Ok(Source {
         text,
-        description: format!("{mode} · {ending}"),
+        description: format!("{mode}{link} · {ending}"),
     })
 }
 
-pub(crate) fn read_patch(mut cmd: Command) -> Result<(Vec<u8>, bool)> {
-    const LIMIT: usize = 512 * 1024;
+pub(crate) fn read_patch(cmd: Command) -> Result<(Vec<u8>, bool)> {
+    read_output(cmd, "git diff")
+}
+
+fn read_output(mut cmd: Command, operation: &str) -> Result<(Vec<u8>, bool)> {
     let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .stdin(Stdio::null())
         .spawn()
-        .context("git diff")?;
+        .with_context(|| operation.to_owned())?;
     let mut raw = vec![];
     let result = child
         .stdout
@@ -86,7 +124,7 @@ pub(crate) fn read_patch(mut cmd: Command) -> Result<(Vec<u8>, bool)> {
     let status = child.wait()?;
     result?;
     if !cut && !status.success() {
-        bail!("git diff failed ({status})")
+        bail!("{operation} failed ({status})")
     }
     raw.truncate(LIMIT);
     Ok((raw, cut))

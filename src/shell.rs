@@ -521,10 +521,6 @@ impl Shell {
     fn confirm(&mut self, owner: Tab, token: &str) {
         self.push
             .block_writes(self.commit.execution_running() || self.commit.add_running());
-        if token == "__quit" {
-            self.quit = true;
-            return;
-        }
         if self.git_busy() {
             self.notice("Wait for the Git operation to finish".into());
             return;
@@ -539,7 +535,7 @@ impl Shell {
         };
         self.action(a)
     }
-    fn quit_box(&mut self) {
+    fn request_quit(&mut self) {
         self.cancel_key_sequences();
         if self.software_update.installing() {
             self.notice("Wait for the software update to finish before quitting".into());
@@ -549,14 +545,7 @@ impl Shell {
             self.notice("A Git operation is running. Wait for it to finish before quitting".into());
             return;
         }
-        self.pop = Some(Popup::Confirm {
-            title: "Quit IGit?".into(),
-            body: "Close the workbench? Unsaved edits may be lost. Completed Git operations will be kept.".into(),
-            token: "__quit".into(),
-            owner: self.tab,
-            scroll: 0,
-            yes: false,
-        })
+        self.quit = true;
     }
     fn review_update(&mut self, kind: update::Kind) {
         self.cancel_key_sequences();
@@ -591,7 +580,7 @@ impl Shell {
             }
             1 => self.open_help(),
             2 => self.pop = Some(Popup::Menu { row: 0 }),
-            3 => self.quit_box(),
+            3 => self.request_quit(),
             4 => self.pop = Some(Popup::Journal),
             5 => {
                 self.refresh();
@@ -709,6 +698,8 @@ impl Shell {
                             "Pane Search",
                             if search.visible() {
                                 crate::ui::search::BINDINGS
+                            } else if self.tab == Commit && self.commit.file_comparison_focused() {
+                                &crate::ui::search::BINDINGS[..1]
                             } else {
                                 &crate::ui::search::BINDINGS[..3]
                             },
@@ -1045,6 +1036,13 @@ impl Shell {
             Commit | Log | Branch | Stash => false,
         }
     }
+    fn inline_diff_key(&self, event: &Event) -> bool {
+        match self.tab {
+            Commit => self.commit.inline_diff_key(event),
+            Log => self.log.inline_diff_key(event),
+            _ => false,
+        }
+    }
     fn dispatch(&mut self, ev: &Event) {
         // Keep the reviewed focus/input context stable while synchronizing Kitty.
         // Resize and focus notifications still run; the worker has a short deadline.
@@ -1061,12 +1059,11 @@ impl Shell {
         if self.smart_pane_event(ev) {
             return;
         }
-        if self.tab == Log
-            && self.pop.is_none()
+        if self.pop.is_none()
             && self.pending_keys.is_none()
             && self.window_prefix.is_none()
             && self.key_sequence().is_none()
-            && self.log.inline_diff_key(ev)
+            && self.inline_diff_key(ev)
         {
             self.panel_event(ev);
             return;
@@ -1165,7 +1162,7 @@ impl Shell {
         if let Event::Key(k) = ev {
             // Help and configured actions may replay directly through this
             // route, bypassing dispatch's raw-key preview guard.
-            if self.tab == Log && self.window_prefix.is_none() && self.log.inline_diff_key(ev) {
+            if self.window_prefix.is_none() && self.inline_diff_key(ev) {
                 self.panel_event(ev);
                 return;
             }
@@ -1235,7 +1232,7 @@ impl Shell {
                 && !editing
                 && self.panel().selected_text().is_none()
             {
-                self.quit_box();
+                self.request_quit();
                 return;
             }
         }

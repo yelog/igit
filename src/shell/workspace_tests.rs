@@ -3,32 +3,57 @@ use crate::core::git;
 use crate::ui::panes::PaneId;
 use crossterm::event::MouseEvent;
 use std::fs;
+mod commit_preview;
 mod inline_message;
 mod refresh;
 
 #[test]
 fn push_entry_renders_loading_before_reads_and_keeps_navigation_and_quit_available() {
-    let (_dir, mut app) = fixture();
-    let before = snapshot(&app.ctx.repos[0].path);
-    app.go(Push);
-    assert!(app.push.reads_pending());
-    assert!(
-        !app.push.busy(),
-        "read loading must not acquire the remote write guard"
-    );
-    assert!(screen(&mut app, 120, 36).contains("Loading outgoing commits"));
-    assert!(app.poll_timeout() <= Duration::from_millis(16));
-    app.dispatch(&key(KeyCode::Char('P')));
-    assert!(app.pop.is_none());
-    app.dispatch(&key(KeyCode::Char('F')));
-    assert!(!app.push.busy());
-    app.go(Commit);
-    assert_eq!(app.tab, Commit);
-    app.quit_box();
-    assert!(matches!(&app.pop, Some(Popup::Confirm { token, .. }) if token == "__quit"));
-    app.dispatch(&key(KeyCode::Esc));
-    app.push.finish_loading(&app.ctx);
-    assert_eq!(snapshot(&app.ctx.repos[0].path), before);
+    for (width, height, shortcut) in [
+        (32, 10, "q"),
+        (44, 12, "q"),
+        (80, 24, "Ctrl-c"),
+        (120, 36, "Actions"),
+    ] {
+        let (_dir, mut app) = fixture();
+        let before = snapshot(&app.ctx.repos[0].path);
+        app.go(Push);
+        assert!(app.push.reads_pending());
+        assert!(
+            !app.push.busy(),
+            "read loading must not acquire the remote write guard"
+        );
+        assert!(screen(&mut app, 120, 36).contains("Loading outgoing commits"));
+        assert!(app.poll_timeout() <= Duration::from_millis(16));
+        app.dispatch(&key(KeyCode::Char('P')));
+        assert!(app.pop.is_none());
+        app.dispatch(&key(KeyCode::Char('F')));
+        assert!(!app.push.busy());
+        app.go(Commit);
+        assert_eq!(app.tab, Commit);
+        screen(&mut app, width, height);
+        match shortcut {
+            "q" => app.dispatch(&key(KeyCode::Char('q'))),
+            "Ctrl-c" => app.dispatch(&Event::Key(KeyEvent::new(
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL,
+            ))),
+            "Actions" => {
+                app.dispatch(&key(KeyCode::Char(':')));
+                let row = app
+                    .menu_actions()
+                    .position(|action| matches!(action, MenuAction::Quit))
+                    .unwrap();
+                for _ in 0..row {
+                    app.dispatch(&key(KeyCode::Down));
+                }
+                app.dispatch(&key(KeyCode::Enter));
+            }
+            _ => unreachable!(),
+        }
+        assert!(app.quit && app.pop.is_none(), "{shortcut}");
+        assert_eq!(snapshot(&app.ctx.repos[0].path), before);
+    }
 }
 
 #[test]

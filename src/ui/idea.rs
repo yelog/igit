@@ -10,6 +10,7 @@ pub(crate) const INK: Color = Color::Rgb(207, 210, 219);
 pub(crate) const DIM: Color = Color::Rgb(139, 143, 154);
 pub(crate) const EDGE: Color = Color::Rgb(53, 55, 63);
 pub(crate) const BLUE: Color = Color::Rgb(116, 164, 248);
+pub(crate) const GOLD: Color = Color::Rgb(238, 190, 85);
 pub(crate) const SELECT: Color = Color::Rgb(49, 70, 117);
 pub(crate) const TAG: Color = Color::Rgb(48, 49, 56);
 pub(crate) const CHECK: Color = Color::Rgb(98, 157, 255);

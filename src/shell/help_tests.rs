@@ -184,11 +184,8 @@ fn text_selection_ctrl_c_copies_before_quit_and_help_preserves_the_editor_select
     let details = app.panel().selected_text().unwrap().to_owned();
     assert!(details.contains("base"));
     app.dispatch(&ctrl(KeyCode::Char('c')));
-    assert!(app.pop.is_none());
+    assert!(app.pop.is_none() && !app.quit);
     assert_eq!(capture.texts(), [details]);
-    app.dispatch(&key(KeyCode::Esc));
-    app.dispatch(&ctrl(KeyCode::Char('c')));
-    assert!(matches!(app.pop, Some(Popup::Confirm { .. })));
     app.dispatch(&key(KeyCode::Esc));
 
     app.go(Commit);
@@ -222,6 +219,8 @@ fn text_selection_ctrl_c_copies_before_quit_and_help_preserves_the_editor_select
     assert_eq!(capture.texts().last().unwrap(), text);
     app.dispatch(&key(KeyCode::Esc));
     app.dispatch(&key(KeyCode::Esc));
+    app.dispatch(&ctrl(KeyCode::Char('c')));
+    assert!(app.quit && app.pop.is_none());
     assert_eq!(snapshot(&repo), before);
 }
 
@@ -343,7 +342,7 @@ fn help_restores_roots_review_and_workspace_input_exactly_after_closing() {
             Popup::Confirm {
                 title: "Keep review".into(),
                 body: "Pending review body".into(),
-                token: "__quit".into(),
+                token: "test-review".into(),
                 owner: Commit,
                 scroll: 7,
                 yes: true,
@@ -607,7 +606,7 @@ fn help_enter_commits_directly_and_cancel_leaves_git_unchanged() {
 }
 
 #[test]
-fn help_executes_against_the_restored_roots_and_confirmation_dialogs() {
+fn help_executes_restored_dialog_controls_and_quits_without_confirmation() {
     let (_dir, mut app) = fixture();
     let before = snapshot(&app.ctx.repos[0].path);
     let scope = app.ctx.scope.clone();
@@ -621,12 +620,14 @@ fn help_executes_against_the_restored_roots_and_confirmation_dialogs() {
     run_help(&mut app, "Discard scope changes");
     assert!(app.pop.is_none());
     assert_eq!(app.ctx.scope, scope);
-    app.quit_box();
+    open_review(&mut app);
     run_help(&mut app, "Confirm reviewed action");
     assert!(
-        app.quit,
+        app.pop.is_none() && !app.quit,
         "the explicitly selected y command reaches the original review"
     );
+    run_help(&mut app, "Quit IGit");
+    assert!(app.quit && app.pop.is_none());
     assert_eq!(snapshot(&app.ctx.repos[0].path), before);
 }
 

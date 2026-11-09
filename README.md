@@ -157,6 +157,25 @@ open while focus returns to the source editing window. Save the file normally;
 IGit's file watcher updates the working-copy status and preview. The plugin and
 native executable must both contain this integration.
 
+## Review a file before committing
+
+Select a file in Commit's Changes tree to show a read-only **Before / After**
+comparison beside it. The preview uses the same syntax highlighting, line
+numbers, aligned changes, context folding, and synchronized scrolling as file
+history. Staged files compare **HEAD → Index**; files without staged changes
+compare **Index → Working tree**. Later unstaged edits stay outside a staged
+file's preview and commit candidate. Added and deleted files have an empty side.
+Selecting a group or directory shows its Overview.
+
+Focus Preview with `Enter`, `Tab`, or a click. Use `[` / `]` to focus Before /
+After, `n/p` for differences, `f` to fold context, `z` to zoom a revision, and
+`h/l` to scroll horizontally. `/` searches the focused revision, including folded
+lines; `n/N` visits matches. Drag to copy, or use `Ctrl-A` then `Ctrl-C` to copy
+that revision's exact text. `Tab/F6` still switches workspace panes and `Esc`
+returns to Changes after clearing search/selection. Below 48 preview columns,
+one revision is visible at a time; `[` / `]` switches sides. Binary, oversized,
+or unsupported content falls back to an explained patch.
+
 ## Stage and unstage hunks
 
 In Commit, highlight a tracked file and press `Ctrl-G`, or click **Hunks** in
@@ -233,10 +252,14 @@ The single header row shows Log's filter tabs and `+` on the left, with **Commit
 | Resize panes | After `Ctrl-W`, use `>` / `<` to increase/decrease width, `+` / `-` for height, or `=` to restore defaults | Drag the divider between adjacent panes in the active tab. |
 | Maximize or restore a pane | `Ctrl-W f`; optional Kitty synchronization uses `smart-toggle-pane-maximized` | In maximized mode, only the focused pane is shown; Tab still switches panes. |
 | Actions and help | `:` action list; `?` / `F1` help for the current area | Once open, click an action or select a help entry. |
-| Refresh and quit | `F5` refreshes; `q` or normal-mode `Ctrl-C` opens quit confirmation | Open Actions with `:`, then click Refresh workspace or Quit. |
+| Refresh and quit | `F5` refreshes; `q` or normal-mode `Ctrl-C` quits immediately | Open Actions with `:`, then click Refresh workspace or Quit; quitting needs no confirmation. |
 | Review writes | `Tab` switches buttons, `Enter` activates the focused button, and `Esc` cancels; scroll long content with `j/k` or arrow keys | Click Confirm / Cancel; use the wheel to scroll. |
 
 In normal mode, Tab cycles panes within the active workspace tab and skips hidden sidebars. Log keeps its enabled panes tiled at every supported terminal size. Log's filter tabs share the header row with the workspace tabs. At the root of Push or Conflicts, Esc returns to the last Commit, Log, Branch or Stash tab. Resizing defaults to one cell at a time; specify a count after the prefix, such as `Ctrl-W 8 >` to widen by eight columns. Sizes last only for the current run.
+
+Running Git writes and software installation prevent quitting; retry after
+completion. Editors, dialogs, and pending key sequences retain their own input
+and cancellation keys.
 
 In Commit, Branch, Stash, Push, and Conflicts, `Ctrl-W f` maximizes the focused pane and restores its saved split sizes on the next press. Tab switches the focused pane. Local resizing and divider dragging are suspended while maximized. Log stays tiled when you switch to it. To sync with Kitty's stack layout using `Cmd+Ctrl+F`, see [pane maximize configuration](docs/configuration.md#pane-maximize-and-kitty-synchronization).
 
@@ -264,13 +287,13 @@ Search is literal, ignores case, and stays within the loaded content and Roots.
 It moves the cursor without checking rows or changing Git. Log's commit list
 still uses `/` to filter commit text or hashes; `S` still filters the branch
 tree. In Commit, `Ctrl-N` creates a changelist, and `h/l` or Left/Right scrolls
-a focused file patch horizontally. See [search bindings](docs/configuration.md#pane-search).
+the focused revision or patch fallback horizontally. See [search bindings](docs/configuration.md#pane-search).
 
 **Pull and Fetch:** Both reviews use Push-style title bars, colored repository icons, aligned targets and statuses, and a separated action footer. They list every repository in global Roots, regardless of the current Log tab or Push checkboxes. Branch names show the same green `↗N` (ahead) and blue `↙N` (behind) counts as Branch; ASCII uses `^N` / `vN`. Counts compare the current branch with its configured upstream using locally available refs. Opening review does not fetch; zero or unavailable counts stay hidden, and results refresh them after the operation. Pull uses each current branch's upstream. Choose **Merge incoming changes** (the default, allowing fast-forward) or **Rebase current branches** in the toolbar with `m/r` or a click. Fetch lists all configured remotes and updates remote refs without integrating changes. Browse with `j/k`, arrows, PageUp/PageDown, Home/End, row clicks, or the wheel; highlighting a row only changes Details. Complete branch/upstream names, counts, and errors wrap there; `J/K` or the wheel over Details scrolls them. **Pull** / **Fetch** starts focused when available; otherwise Cancel has focus. A blue background marks the focused button. Use `h/l`, `Tab`, or `Shift-Tab` to switch between **Cancel** and **Pull** / **Fetch**, then `Enter` to activate the focused button. Action labels have no repository count; ready and Roots counts remain visible separately. `Esc` cancels before Git runs. Results retain the repository list, color successes/failures/skips, and select the first failure for inspection. If Pull stops with conflicts, close results and select the highlighted **Conflicts** tab or press `6`.
 
 **Select and copy text:** Log's lower-right commit details and file Diff, Commit's inline message editor and Diff preview, and Push's Details / Diff support left-button drag selection with a blue highlight. **Releasing the left button immediately copies the text and clears the selection; no shortcut is needed.** A normal click or empty selection does not copy. Clicking a parent commit link still navigates; dragging does not. Copy preserves original indentation, blank lines, and line breaks, without soft wraps, borders, or terminal padding. You can scroll while dragging; changing the commit/file or hiding the area clears stale selections.
 
-Keyboard selection still supports `Ctrl-A` to select all and `Ctrl-C` / `Ctrl-Insert` to copy; read-only areas also accept `y`. Keyboard selections survive scrolling; `Esc` clears a selection first in read-only panes. In the commit editor, use `Shift+Arrow` or `Shift+Home/End` to select text for replacement. Typing, pasting, Backspace, and Delete replace or delete the keyboard selection. After a mouse selection is copied on release, the caret stays at the drag endpoint. Scroll long messages with the wheel; keyboard movement keeps the caret visible. `Ctrl-W` deletes the preceding word (including trailing whitespace); `Ctrl-U` deletes back to the current line's start. Either deletes a keyboard selection first. `Esc`, `F2`, and `Ctrl-S` save the draft and return to the message actions. With a selection, `Ctrl-C` copies first; in normal mode without a selection, it still opens quit confirmation. Clipboard handling uses the system commands listed below and reports failures explicitly.
+Keyboard selection still supports `Ctrl-A` to select all and `Ctrl-C` / `Ctrl-Insert` to copy; read-only areas also accept `y`. Keyboard selections survive scrolling; `Esc` clears a selection first in read-only panes. In the commit editor, use `Shift+Arrow` or `Shift+Home/End` to select text for replacement. Typing, pasting, Backspace, and Delete replace or delete the keyboard selection. After a mouse selection is copied on release, the caret stays at the drag endpoint. Scroll long messages with the wheel; keyboard movement keeps the caret visible. `Ctrl-W` deletes the preceding word (including trailing whitespace); `Ctrl-U` deletes back to the current line's start. Either deletes a keyboard selection first. `Esc`, `F2`, and `Ctrl-S` save the draft and return to the message actions. With a selection, `Ctrl-C` copies first; in normal mode without a selection, it quits immediately. Clipboard handling uses the system commands listed below and reports failures explicitly.
 
 **Inspect commit files:** Log opens **Parent 1 / committed Result / Parent 2** for files in every group of a two-parent merge, including `Changes to <parent>` groups. Ordinary commits open **Before / After**; initial commits and absent file versions have an empty side. Both read-only views align lines, highlight changed characters and fold unchanged context. Use `n/p` for changes, `Tab` for panes, `h/l` for horizontal scrolling, `f` to fold, `z` to zoom and `[/]` for files. Drag to select and copy, `Ctrl-A` to select the focused revision, or `y` to copy the selection/full revision. Narrow terminals show one pane at a time. Unsupported binary/large files show a patch with an explanation. Historical viewing never modifies the index or working tree.
 
@@ -320,7 +343,7 @@ left and only the selected repository's branches appear on the right. Click a
 repository or use `j/k` in the left pane to switch. `Tab` moves between panes;
 `Enter` or `l` in the repository list focuses the branch tree. Repository icons
 use the same colors and submodule markers as Push. The right edge of each
-repository row shows the current branch with a green tag, its ahead/behind
+repository row shows the current branch with a yellow tag, its ahead/behind
 counts, and a gray chevron pointing toward the branch tree. Detached
 repositories show a short commit ID in place of the branch name.
 
@@ -341,8 +364,8 @@ and blue `↙3` means three commits behind. Diverged branches show both; zero
 counts, branches without an upstream, and missing upstreams show no counters.
 ASCII mode uses `^2` / `v3`. Counts use the locally recorded upstream ref;
 Fetch updates remote refs, and `F5` refreshes the displayed counts.
-The current branch uses Log's green tag in both panes. Other branches use
-the branch icon, colored green for local and purple for remote.
+The current branch uses a yellow tag in both panes, matching Log's HEAD color.
+Other branches use the branch icon, colored green for local and purple for remote.
 Group counts and indentation distinguish tree levels. Upstreams align in a
 separate column when the branch pane is wide enough; narrow panes show the
 focused upstream in the details area. Long names clip before the counters,

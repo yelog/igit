@@ -444,22 +444,8 @@ impl CommitPanel {
         let [header, body] =
             Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
         self.diff = body;
+        self.ensure_preview(c);
         let file = self.active().and_then(Row::file);
-        let key = self.active().map_or("", |r| r.id.as_str());
-        if key != self.diff_key {
-            self.diff_key = key.to_owned();
-            self.diff_selection.reset();
-            self.invalidate_diff_search();
-            self.diff_scroll = 0;
-            self.diff_left = 0;
-            self.diff_text = file
-                .map(|i| {
-                    let v = &self.files[i];
-                    backend::diff(&c.repos[v.root].path, &v.change)
-                        .unwrap_or_else(|e| e.to_string())
-                })
-                .unwrap_or_default();
-        }
         let title = if file.is_some() {
             "Diff preview"
         } else {
@@ -526,7 +512,22 @@ impl CommitPanel {
                 Span::styled(format!("{file_icon} "), fg(tint)),
                 Span::styled(v.change.label(), fg(INK)),
             ])];
-            self.draw_patch(f, body, details);
+            if let Some(comparison) = self.diff_comparison.as_mut() {
+                let mut layout = preview_layout(body.width, details);
+                let height = (layout.rows.len() as u16).min(body.height.saturating_sub(4));
+                let [details, comparison_area] =
+                    Layout::vertical([Constraint::Length(height), Constraint::Min(0)]).areas(body);
+                // File identity stays visible above both source revisions.
+                for (offset, row) in layout.rows.drain(..usize::from(height)).enumerate() {
+                    f.render_widget(
+                        Paragraph::new(row.line),
+                        Rect::new(details.x, details.y + offset as u16, details.width, 1),
+                    );
+                }
+                comparison.draw_inline(f, comparison_area, self.icons);
+            } else {
+                self.draw_patch(f, body, details);
+            }
         } else {
             let (checked, _) = self.check_counts(row);
             let conflicts = row

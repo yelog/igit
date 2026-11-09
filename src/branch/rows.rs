@@ -2,7 +2,7 @@
 use super::*;
 use crate::ui::{
     icons::Icon,
-    idea::{clipped, repo_tint, tracking_spans, CONFLICT, LOCAL_REF, REMOTE_REF, TAG},
+    idea::{clipped, repo_tint, tracking_spans, CONFLICT, GOLD, LOCAL_REF, REMOTE_REF, TAG},
 };
 use ratatui::{
     style::{Color, Style, Stylize},
@@ -90,7 +90,7 @@ impl BranchPanel {
     fn current_marker(&self) -> Span<'static> {
         Span::styled(
             format!("{} ", self.icons.glyph(Icon::Tag)),
-            Style::new().fg(LOCAL_REF),
+            Style::new().fg(GOLD),
         )
     }
 

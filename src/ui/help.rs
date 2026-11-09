@@ -99,7 +99,7 @@ pub(crate) fn global_section(show_conflicts: bool, show_roots: bool) -> HelpSect
         ("F9", "Open Update Center"),
         ("F1", "Open help for current pane"),
         ("?", "Open help for current pane"),
-        ("q", "Review and quit IGit"),
+        ("q", "Quit IGit"),
         ("6", "Switch to Conflicts tab"),
     ];
     let count = BINDINGS.len() - usize::from(!show_conflicts);
@@ -1093,7 +1093,7 @@ mod tests {
             help.event(&key(K::Up));
             let text = draw(&mut help, width, height);
             assert!(text.contains("> q"), "{text}");
-            assert!(text.contains("Review and quit IGit"), "{text}");
+            assert!(text.contains("Quit IGit"), "{text}");
             assert!(
                 help.selected >= help.scroll
                     && help.selected < help.scroll + help.viewport.height as usize

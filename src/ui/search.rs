@@ -244,6 +244,13 @@ impl<K: Eq> Search<K> {
         self.prompt.position = None;
     }
 
+    /// Retain session input when replacing a model or changing search row keys.
+    /// Hit positions belong to the destination's current rows.
+    pub fn inherit_query(&mut self, prompt: &Prompt) {
+        self.prompt.clone_from(prompt);
+        self.invalidate();
+    }
+
     pub fn event(&mut self, event: &Event) -> Input {
         if matches!(event, Event::Key(k) if k.kind == KeyEventKind::Release) {
             return Input::Pass;
@@ -583,5 +590,52 @@ mod tests {
         assert!(!search.prompt.editing());
         search.event(&key(KeyCode::Esc));
         assert!(!search.prompt.visible());
+    }
+
+    #[test]
+    fn pane_search_inherits_query_across_row_keys_without_old_hit_positions() {
+        let mut original: Search<(usize, usize)> = Search::default();
+        original.event(&key(KeyCode::Char('/')));
+        original.event(&Event::Paste("名".into()));
+        original.event(&key(KeyCode::Enter));
+        original.jump(Jump::First, None, [((1, 80), ["old 名 名"])]);
+        assert!(original.current.is_some());
+        assert_eq!(original.prompt.position, Some((1, 2)));
+
+        let mut patch: Search<usize> = Search::default();
+        patch.inherit_query(original.prompt());
+        assert!(patch.prompt.visible());
+        assert!(patch.current.is_none());
+        assert!(patch.prompt.position.is_none());
+        let first = patch.jump(Jump::First, None, [(0, ["名 new"]), (1, ["no match"])]);
+        assert_eq!(first.unwrap().row, 0);
+        assert_eq!(patch.prompt.position, Some((1, 1)));
+        assert_eq!(
+            original.current.as_ref().unwrap().row,
+            (1, 80),
+            "transferring input leaves the source search untouched"
+        );
+
+        original.event(&key(KeyCode::Char('/')));
+        original.event(&Event::Paste("new".into()));
+        patch.inherit_query(original.prompt());
+        assert!(patch.prompt.editing());
+        assert!(patch.current.is_none());
+        assert!(patch.prompt.position.is_none());
+        let spans = patch.field(&0, 0).spans("名 new", Style::default());
+        assert!(spans
+            .iter()
+            .any(|span| span.content == "new" && span.style != Style::default()));
+        patch.event(&key(KeyCode::Esc));
+        assert_eq!(patch.prompt.query.text, "名");
+        assert!(!patch.prompt.editing());
+        assert!(original.prompt.editing());
+
+        let mut empty: Search<String> = Search::default();
+        empty.inherit_query(patch.prompt());
+        patch.event(&key(KeyCode::Esc));
+        empty.inherit_query(patch.prompt());
+        assert!(!empty.prompt.visible());
+        assert!(empty.current.is_none());
     }
 }

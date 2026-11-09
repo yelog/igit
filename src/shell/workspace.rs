@@ -131,7 +131,7 @@ impl Shell {
             self.layout_mut(self.tab).begin();
             f.render_widget(
                 Paragraph::new(format!(
-                    "IGit · Terminal too small\nMinimum 44 × 12; recommended 120 × 36.\n{} Quit, y Confirm.",
+                    "IGit · Terminal too small\nMinimum 44 × 12; recommended 120 × 36.\n{} Quit.",
                     self.config.label("global", "quit")
                 ))
                 .wrap(Wrap { trim: false }),
@@ -246,7 +246,9 @@ impl Shell {
                 ),
                 MUTED,
             )
-        } else if self.config.changed() {
+        } else if self.config.changed()
+            || self.tab == Commit && self.commit.file_comparison_focused()
+        {
             (self.configured_footer(), MUTED)
         } else if matches!(self.tab, Push | Conflicts | Branch | Stash) {
             (self.panel().help().into(), MUTED)

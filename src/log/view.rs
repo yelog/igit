@@ -4,8 +4,7 @@ use crate::ui::idea::{LOCAL_REF as GREEN, REMOTE_REF as PURPLE};
 use display::Column;
 use unicode_width::UnicodeWidthStr;
 
-pub(crate) use crate::ui::idea::{clipped, repo_tint, BLUE, DIM, EDGE, INK, PANEL, SELECT};
-pub(super) const GOLD: Color = Color::Rgb(238, 190, 85);
+pub(crate) use crate::ui::idea::{clipped, repo_tint, BLUE, DIM, EDGE, GOLD, INK, PANEL, SELECT};
 const REACHABLE: Color = Color::Rgb(32, 37, 58);
 const INPUT: Color = Color::Rgb(35, 36, 43);
 const TAB: Color = Color::Rgb(40, 56, 88);

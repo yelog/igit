@@ -23,7 +23,7 @@ pub(super) struct Refresh {
 struct Snapshot {
     statuses: BTreeMap<usize, Status>,
     branches: BTreeMap<usize, String>,
-    preview: Option<(String, Change, String)>,
+    preview: Option<(String, Change, preview::Loaded)>,
 }
 
 fn statuses(c: &Context, ignored: bool, roots: &BTreeSet<usize>) -> BTreeMap<usize, Status> {
@@ -59,8 +59,8 @@ impl Snapshot {
                 .ok()?
                 .iter()
                 .find(|f| f.path == path)?;
-            let text = backend::diff(&c.repos[root].path, change).unwrap_or_else(|e| e.to_string());
-            Some((key, change.clone(), text))
+            let loaded = preview::Loaded::read(&c.repos[root].path, change);
+            Some((key, change.clone(), loaded))
         });
         let branches = roots
             .into_iter()
@@ -115,9 +115,7 @@ impl CommitPanel {
         self.last_check.clear();
         self.last_click = None;
         self.dragged = None;
-        self.diff_key.clear();
-        self.diff_selection.reset();
-        self.invalidate_diff_search();
+        self.invalidate_preview();
         self.changes_search.invalidate();
         self.refresh.report_error()
     }
@@ -191,9 +189,7 @@ impl CommitPanel {
             .active()
             .map(|r| (r.id.clone(), r.file().map(|i| self.files[i].clone())));
         if target != old_target {
-            self.diff_key.clear();
-            self.diff_selection.reset();
-            self.invalidate_diff_search();
+            self.invalidate_preview();
         }
         changed
     }
@@ -207,6 +203,10 @@ impl CommitPanel {
             || self.dragged.is_some()
             || self.panes.dragging()
             || self.diff_selection.mouse_active()
+            || self
+                .diff_comparison
+                .as_ref()
+                .is_some_and(|view| view.mouse_active())
             || self.message_selection.mouse_active()
         {
             return Ok(false);
@@ -232,23 +232,14 @@ impl CommitPanel {
                             repo.branch = branch;
                         }
                         changed |= self.apply_statuses(c, snapshot.statuses);
-                        if let Some((key, change, text)) = snapshot.preview {
+                        if let Some((key, change, loaded)) = snapshot.preview {
                             if self.preview_open
                                 && self.active().is_some_and(|r| {
                                     r.id == key
                                         && r.file().is_some_and(|i| self.files[i].change == change)
                                 })
-                                && (self.diff_key != key || self.diff_text != text)
                             {
-                                self.diff_selection.reset();
-                                self.invalidate_diff_search();
-                                if self.diff_key != key {
-                                    self.diff_scroll = 0;
-                                    self.diff_left = 0;
-                                }
-                                self.diff_key = key;
-                                self.diff_text = text;
-                                changed = true;
+                                changed |= self.set_preview(key, loaded);
                             }
                         }
                     }

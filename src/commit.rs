@@ -9,6 +9,7 @@ mod execution;
 mod keymap;
 #[cfg(test)]
 mod message_tests;
+mod preview;
 mod refresh;
 mod rollback;
 mod rows;
@@ -195,6 +196,8 @@ pub struct CommitPanel {
     edit_follow: bool,
     diff_key: String,
     diff_text: String,
+    diff_sources: Option<backend::preview::Comparison>,
+    diff_comparison: Option<Box<crate::merge::RevisionDiff>>,
     diff_scroll: usize,
     diff_left: usize,
     diff_line_at_top: Option<usize>,
@@ -254,6 +257,8 @@ impl Default for CommitPanel {
             edit_follow: Default::default(),
             diff_key: Default::default(),
             diff_text: Default::default(),
+            diff_sources: None,
+            diff_comparison: None,
             diff_scroll: Default::default(),
             diff_left: 0,
             diff_line_at_top: None,
@@ -640,7 +645,7 @@ impl CommitPanel {
                 self.preview_open =
                     !self.preview_open || (self.stacked && self.focus != Focus::Diff);
                 if !self.preview_open {
-                    self.diff_selection.reset();
+                    self.clear_preview_selection();
                 }
                 self.focus = if self.preview_open && self.stacked {
                     Focus::Diff
@@ -716,6 +721,9 @@ impl CommitPanel {
             Hit::Show(focus) => {
                 self.set_focus(focus);
                 self.preview_open = focus == Focus::Diff;
+                if !self.preview_open {
+                    self.clear_preview_selection();
+                }
             }
             Hit::Row(_) => {}
         }
@@ -781,7 +789,10 @@ impl Panel for CommitPanel {
             && self.focus == Focus::Diff
             && self.active().is_some_and(|r| r.id == self.diff_key)
         {
-            self.diff_selection.selected_text()
+            self.diff_comparison.as_ref().map_or_else(
+                || self.diff_selection.selected_text(),
+                |view| view.selected_text(),
+            )
         } else {
             None
         }
@@ -811,6 +822,9 @@ impl Panel for CommitPanel {
         if let Some(action) = self.staging_event(e, c) {
             return action;
         }
+        if self.edit.is_none() && self.view_menu.is_none() && !self.diff.is_empty() {
+            self.ensure_preview(c);
+        }
         if self.search_event(e, c) {
             self.dragged = None;
             self.last_click = None;
@@ -823,6 +837,7 @@ impl Panel for CommitPanel {
                     return self.stop_execution();
                 }
                 Event::Key(_) if scroll_key.is_some() => {}
+                Event::Key(_) if self.comparison_key(e) => {}
                 Event::Key(k)
                     if matches!(
                         k.code,
@@ -870,7 +885,7 @@ impl Panel for CommitPanel {
         }
         if matches!(e, Event::FocusLost) {
             self.dragged = None;
-            self.diff_selection.clear();
+            self.clear_preview_selection();
             self.message_selection.clear();
         }
         if let Some(action) = self.view_menu_event(e, c) {
@@ -897,9 +912,9 @@ impl Panel for CommitPanel {
             return self.edit_event(e, c);
         }
         if self.active().is_none_or(|r| r.id != self.diff_key) {
-            self.diff_selection.reset();
+            self.clear_preview_selection();
         }
-        if self.focus == Focus::Diff && self.preview_open {
+        if self.focus == Focus::Diff && self.preview_open && !self.comparison_visible() {
             if let Some(action) = self.diff_selection.key(e, true) {
                 return action;
             }
@@ -915,6 +930,9 @@ impl Panel for CommitPanel {
                     self.focus_pane(pane);
                 }
             }
+            if let Some(action) = self.comparison_event(e, c) {
+                return action;
+            }
             if let Some(action) = self
                 .preview_open
                 .then(|| self.diff_selection.mouse(m))
@@ -923,6 +941,11 @@ impl Panel for CommitPanel {
                 self.focus = Focus::Diff;
                 self.dragged = None;
                 self.last_click = None;
+                return action;
+            }
+        }
+        if !matches!(e, Event::Mouse(_)) {
+            if let Some(action) = self.comparison_event(e, c) {
                 return action;
             }
         }
@@ -1216,7 +1239,7 @@ impl CommitPanel {
     pub(crate) fn draw_content(&mut self, f: &mut Frame, a: Rect, c: &Context) {
         self.draw_workbench(f, a, c);
         if self.diff.is_empty() {
-            self.diff_selection.reset();
+            self.clear_preview_selection();
         }
     }
     pub(crate) fn draw_overlays(&mut self, f: &mut Frame, a: Rect, c: &Context, cursor: bool) {

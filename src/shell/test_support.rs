@@ -7,6 +7,14 @@ pub(super) fn key(code: KeyCode) -> Event {
     Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
 }
 
+pub(super) fn open_review(app: &mut Shell) {
+    app.action(Action::Confirm {
+        title: "Review action".into(),
+        body: "Pending review body".into(),
+        token: "test-review".into(),
+    });
+}
+
 pub(super) fn fixture() -> (tempfile::TempDir, Shell) {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");

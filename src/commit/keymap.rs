@@ -10,10 +10,31 @@ impl CommitPanel {
             );
         }
         if self.file_preview_visible() && self.focus == Focus::Diff {
-            content.sections.push(Section::new(
-                "Commit / Patch",
-                &[("h", "Scroll patch left"), ("l", "Scroll patch right")],
-            ));
+            content.sections.insert(
+                1,
+                Section::new(
+                    if self.comparison_visible() {
+                        "Commit / Revisions"
+                    } else {
+                        "Commit / Patch"
+                    },
+                    if self.comparison_visible() {
+                        &[
+                            ("[", "Focus previous revision"),
+                            ("]", "Focus next revision"),
+                            ("n", "Next difference or search match"),
+                            ("p", "Previous difference"),
+                            ("f", "Fold or unfold unchanged lines"),
+                            ("z", "Zoom or split focused revision"),
+                            ("h", "Scroll revision left"),
+                            ("l", "Scroll revision right"),
+                            ("y", "Copy selection or complete revision"),
+                        ]
+                    } else {
+                        &[("h", "Scroll patch left"), ("l", "Scroll patch right")]
+                    },
+                ),
+            );
         }
         content
     }
@@ -227,7 +248,10 @@ impl CommitPanel {
                         "Ctrl-g",
                         "Inspect staged / unstaged hunks and review Stage / Unstage",
                     ),
-                    ("Ctrl-a", "Select all preview text"),
+                    (
+                        "Ctrl-a",
+                        "Select all text in the focused revision or summary",
+                    ),
                     ("Esc", "Clear selection; otherwise return to changes"),
                     ("j", "Scroll diff or scope summary down"),
                     ("k", "Scroll diff or scope summary up"),
@@ -235,7 +259,7 @@ impl CommitPanel {
                     ("G", "Go to preview end"),
                     ("PgDn", "Page down"),
                     ("PgUp", "Page up"),
-                    ("Enter", "Return to current change"),
+                    ("Enter", "Toggle unchanged context or return from summary"),
                     ("c", "Focus and edit commit message"),
                     ("v", "Close preview"),
                 ],

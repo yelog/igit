@@ -94,8 +94,10 @@ source line. Searching does not filter a Git snapshot or fetch more data. Jumps
 use existing selection and preview paths and reveal only the matched row's
 ancestors. Stash reuses Log's inspector search through `SnapshotPreview`.
 Queries are session state; replacing a snapshot clears old match positions
-without changing the query. Commit's patch uses the existing selectable text
-layout so colors and automatic scrolling do not change clipboard bytes.
+without changing the query. Commit's split file preview searches the focused
+source revision using the revision renderer's line mapping; jumps expand hidden
+context and pan horizontally. Its patch fallback retains the existing selectable
+text layout. Neither presentation changes clipboard bytes.
 
 Smart focus is a typed command rather than a synthetic key sequence. Shell
 consumes its configured chords before editor/review handlers, moving only in
@@ -166,7 +168,25 @@ repositories that have not started. Explicit patch opening, commit snapshot
 preparation, and Merge reads/writes remain synchronous. The panels use
 standard threads and `mpsc`, without a general asynchronous scheduler.
 
-[ui/selection.rs](../src/ui/selection.rs) provides shared text layout/selection for Log details/Diff, Commit message editing/preview, and Push Details / Diff. Each display line retains its original UTF-8 byte range. Cell hit testing, soft wrapping, scrolling, and highlighting share one projection; copy slices original text directly, while decorative rows have no source. Shared mouse handling returns `Action::Copy` on left-button release and collapses selection to its endpoint; the panel forwards the action to Shell. Clicks return no action; repeated releases do not copy again. Panels own selection lifetimes/focus. Log links reuse the same line layout and activate on release only without copying/dragging. `Panel::selected_text` exposes only valid selection in the current context, letting Shell send Ctrl-C to keyboard selection before quit confirmation. Copy still uses `Action::Copy` → [ui/clipboard.rs](../src/ui/clipboard.rs); failures show reasons without logging text. The Commit editor keeps the post-copy caret endpoint and synchronizes source between consecutive events so input before redraw cannot misalign selection. Selection/viewport state stays in memory, outside draft files and Git plans. Shell tests capture copying through a thread-local receiver without modifying the system clipboard.
+[ui/selection.rs](../src/ui/selection.rs) provides shared text layout/selection for Log details/Diff, Commit message editing/preview, and Push Details / Diff. Each display line retains its original UTF-8 byte range. Cell hit testing, soft wrapping, scrolling, and highlighting share one projection; copy slices original text directly, while decorative rows have no source. Shared mouse handling returns `Action::Copy` on left-button release and collapses selection to its endpoint; the panel forwards the action to Shell. Clicks return no action; repeated releases do not copy again. Panels own selection lifetimes/focus. Log links reuse the same line layout and activate on release only without copying/dragging. `Panel::selected_text` exposes only valid selection in the current context, letting Shell send Ctrl-C to keyboard selection before quitting. Copy still uses `Action::Copy` → [ui/clipboard.rs](../src/ui/clipboard.rs); failures show reasons without logging text. The Commit editor keeps the post-copy caret endpoint and synchronizes source between consecutive events so input before redraw cannot misalign selection. Selection/viewport state stays in memory, outside draft files and Git plans. Shell tests capture copying through a thread-local receiver without modifying the system clipboard.
+
+Shell routes quit shortcuts, Actions, and help through `request_quit`. It checks
+software installation and running Git writes, then sets the event-loop exit flag
+directly. Quitting has no confirmation token or popup; existing terminal cleanup
+restores the user's terminal on return.
+
+Commit's [preview adapter](../src/commit/preview.rs) feeds the same
+[read-only revision renderer](../src/merge/view/revision.rs) as file history.
+The [source reader](../src/commit/backend/preview.rs) uses literal native paths,
+stage-0 index entries, bounded blobs, and bounded working-file reads. Staged
+files compare HEAD (or an empty unborn tree) to Index; other files compare
+Index to Working tree. Missing sides stay explicit. Git conversions and
+unsupported content use an explained patch fallback. Source reads never stage
+files or create Git objects. The existing background refresh worker returns
+the selected file's comparison only for its scanned repository, checks the
+current target, and preserves the viewer when its sources are unchanged.
+Commit keeps its own workspace pane cycle while `[` / `]` selects the revision;
+focused difference/fold controls take priority over workspace Pull/Fetch.
 
 When help opens, Shell captures the original area's `HelpContent` without extending the public `Panel` trait. Panels provide only single-action shortcuts available in context. Internal ordering remains area, panel-wide, then global; the UI deduplicates them into a compact lazydb-style list. Search always receives text, ↑/↓ changes candidates, and Enter returns `HelpCommand`. Shell restores the covered dialog, validates original context, then sends the candidate's statically registered key sequence back through `dispatch`. Sequences/modifiers use the original event path. Search text never becomes an executable sequence; the original panel still produces review/validation for commit, push, and merge writes. F1 is handled before ordinary dispatch and does not cancel input. Canceling help leaves drafts, checkboxes, buttons, and scroll positions in their original objects. Search/candidate/scroll state stays in memory.
 

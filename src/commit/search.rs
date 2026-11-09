@@ -13,7 +13,10 @@ impl CommitPanel {
                     && (self.diff_search.prompt().editing()
                         || self.active().and_then(Row::file).is_some()) =>
             {
-                Some(self.diff_search.prompt())
+                Some(
+                    self.comparison_search()
+                        .unwrap_or_else(|| self.diff_search.prompt()),
+                )
             }
             _ => None,
         }
@@ -22,6 +25,9 @@ impl CommitPanel {
     pub(super) fn search_event(&mut self, event: &Event, c: &Context) -> bool {
         if self.focused_search().is_none() {
             return false;
+        }
+        if self.focus == Focus::Diff && self.comparison_visible() {
+            return self.diff_comparison.as_mut().unwrap().search_event(event);
         }
         let input = match self.focus {
             Focus::Tree => self.changes_search.event(event),

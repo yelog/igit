@@ -11,6 +11,7 @@ use tempfile::TempDir;
 
 pub(super) mod add;
 pub(super) mod discard;
+pub(super) mod preview;
 pub(super) mod staging;
 pub(super) mod stash;
 mod working;

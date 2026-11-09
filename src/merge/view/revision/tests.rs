@@ -485,3 +485,522 @@ fn inline_rendering_stays_inside_its_area_even_when_tiny() {
         assert!(!text(&terminal).contains("Close"));
     }
 }
+
+fn search_key(view: &mut RevisionDiff, code: K) -> bool {
+    view.search_event(&Event::Key(KeyEvent::new(code, M::NONE)))
+}
+
+fn find(view: &mut RevisionDiff, query: &str) {
+    assert!(search_key(view, K::Char('/')));
+    assert!(view.search_prompt().editing());
+    assert!(view.search_event(&Event::Paste(query.into())));
+    assert!(search_key(view, K::Enter));
+    assert!(!view.search_prompt().editing());
+}
+
+fn highlighted(cell: &ratatui::buffer::Cell, current: bool) -> bool {
+    if std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
+        cell.modifier.contains(if current {
+            ratatui::style::Modifier::REVERSED
+        } else {
+            ratatui::style::Modifier::UNDERLINED
+        })
+    } else {
+        let style = if current {
+            crate::ui::search::CURRENT
+        } else {
+            crate::ui::search::MATCH
+        };
+        Some(cell.bg) == style.bg && Some(cell.fg) == style.fg
+    }
+}
+
+#[test]
+fn revision_pane_search_wraps_repeated_unicode_matches_and_pans_after_resize() {
+    let line = format!("\tconst 名 = '{} É[.] É[.]';", "界".repeat(80));
+    let after = format!("after\r\n{line}\r\ntail É[.]\r\n");
+    let mut view = RevisionDiff::two_way(
+        "sample.js".into(),
+        ["old".into(), "new".into()],
+        ["before\r\nno match\r\n".into(), after.clone()],
+        Default::default(),
+    );
+    draw_inline(&mut view, 180, 12, IconMode::Unicode);
+    find(&mut view, "é[.]");
+    let first = view.search_hit.clone().unwrap();
+    assert_eq!(first.row, (1, 1));
+    assert_eq!(&line[first.bytes.clone()], "É[.]");
+    assert_eq!(first.bytes.start, line.find("É[.]").unwrap());
+    let start = rows::cell_width(&line[..first.bytes.start]);
+    let end = rows::cell_width(&line[..first.bytes.end]);
+    for (width, height) in [(180, 12), (44, 8), (16, 4), (120, 24)] {
+        let terminal = draw_inline(&mut view, width, height, IconMode::Unicode);
+        let code = view.code_areas[view.side()];
+        let left = view.view.hscroll[view.side()];
+        assert!(left > 0 && left <= start, "{width}: {left} > {start}");
+        assert!(
+            end <= left + usize::from(code.width),
+            "{width}: {left}..{end}"
+        );
+        assert!(text(&terminal).contains("É[.]"));
+        let x = code.x + (start - left) as u16;
+        let map = RowMap::new(&view.chunks, &view.view, None);
+        let source_row = map
+            .sections
+            .iter()
+            .find_map(|section| {
+                (0..section.height)
+                    .find(|&row| {
+                        section.line_at(row).is_some_and(|line| {
+                            section.numbers[1] + line == first.row.1
+                                && line < section.lines[1].len()
+                        })
+                    })
+                    .map(|row| section.first + row)
+            })
+            .unwrap();
+        assert!(highlighted(
+            &terminal.backend().buffer()[(x, code.y + (source_row - view.scroll) as u16)],
+            true
+        ));
+    }
+
+    let first_left = view.view.hscroll[1];
+    assert!(search_key(&mut view, K::Char('n')));
+    let second = view.search_hit.clone().unwrap();
+    assert_eq!(second.row, first.row);
+    assert_eq!(second.bytes.start, line.rfind("É[.]").unwrap());
+    draw_inline(&mut view, 120, 24, IconMode::Unicode);
+    assert_eq!(
+        view.view.hscroll[1], first_left,
+        "nearby repeated matches stay together in the viewport"
+    );
+    assert!(search_key(&mut view, K::Char('n')));
+    assert_eq!(view.search_hit.as_ref().unwrap().row, (1, 2));
+    assert!(search_key(&mut view, K::Char('n')));
+    assert!(view.search_hit.as_ref() == Some(&first));
+    assert!(search_key(&mut view, K::Char('N')));
+    assert_eq!(view.search_hit.as_ref().unwrap().row, (1, 2));
+    assert!(search_key(&mut view, K::Char('N')));
+    assert!(view.search_hit.as_ref() == Some(&second));
+    draw(&mut view, 120, 12, IconMode::Ascii);
+    assert!(!search_key(&mut view, K::Char('j')));
+    assert!(!search_key(&mut view, K::Char('y')));
+    assert!(matches!(key(&mut view, K::Char('y')), RevisionEvent::Copy(s) if s == after));
+}
+
+#[test]
+fn revision_pane_search_reveals_only_the_matching_context_with_alignment_padding() {
+    let first_context = (0..48)
+        .map(|i| {
+            if i == 31 {
+                "\t// hidden needle 名\r\n".into()
+            } else {
+                format!("// first context {i}\r\n")
+            }
+        })
+        .collect::<String>();
+    let second_context = (0..48)
+        .map(|i| format!("// second context {i}\r\n"))
+        .collect::<String>();
+    let before = format!("old start\r\n{first_context}old middle\r\n{second_context}old end\r\n");
+    let after = format!(
+        "new start\r\ninserted\r\n{first_context}new middle\r\n{second_context}new end\r\n"
+    );
+    let mut view = RevisionDiff::two_way(
+        "sample.js".into(),
+        ["old".into(), "new".into()],
+        [before, after.clone()],
+        Default::default(),
+    );
+    draw_inline(&mut view, 100, 12, IconMode::Unicode);
+    let source_line = after
+        .lines()
+        .position(|line| line.contains("needle"))
+        .unwrap();
+    let map = RowMap::new(&view.chunks, &view.view, None);
+    let context = map
+        .sections
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| (0..s.height).any(|row| s.line_at(row).is_none()))
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
+    assert_eq!(context.len(), 2);
+    let matching = map
+        .sections
+        .iter()
+        .position(|s| (s.numbers[1]..s.numbers[1] + s.lines[1].len()).contains(&source_line))
+        .unwrap();
+    assert!(view.view.expanded.is_empty());
+
+    find(&mut view, "needle");
+    let terminal = draw_inline(&mut view, 80, 10, IconMode::Ascii);
+    assert!(text(&terminal).contains("hidden needle 名"));
+    assert_eq!(view.view.expanded, BTreeSet::from([matching]));
+    assert_eq!(view.selected, matching);
+    let map = RowMap::new(&view.chunks, &view.view, None);
+    let section = &map.sections[matching];
+    let row = (0..section.height)
+        .find(|&row| section.line_at(row) == Some(source_line - section.numbers[1]))
+        .unwrap()
+        + section.first;
+    assert!((view.scroll..view.scroll + view.page).contains(&row));
+    assert_eq!(view.search_hit.as_ref().unwrap().row, (1, source_line));
+    assert!(context
+        .iter()
+        .filter(|&&i| i != matching)
+        .all(|i| !view.view.expanded.contains(i)));
+    view.event(&Event::Key(KeyEvent::new(K::Char('a'), M::CONTROL)));
+    assert_eq!(view.selected_text(), Some(after.as_str()));
+    assert!(matches!(
+        view.event(&Event::Key(KeyEvent::new(K::Char('c'), M::CONTROL))),
+        RevisionEvent::Copy(s) if s == after
+    ));
+}
+
+#[test]
+fn revision_pane_search_switches_scope_with_tab_backtab_and_mouse() {
+    let mut view = RevisionDiff::two_way(
+        "sample.js".into(),
+        ["old".into(), "new".into()],
+        ["名 before 名\r\n".into(), "名 after 名 名\r\n".into()],
+        Default::default(),
+    );
+    draw_inline(&mut view, 120, 12, IconMode::Unicode);
+    find(&mut view, "名");
+    assert_eq!(view.search_hit.as_ref().unwrap().row.0, 1);
+    key(&mut view, K::BackTab); // The embedding maps '[' to this operation.
+    assert_eq!(view.side(), 0);
+    assert!(view.search_hit.is_none());
+    assert!(view.search_prompt().visible());
+    let terminal = draw_inline(&mut view, 120, 12, IconMode::Unicode);
+    let before = view.code_areas[0];
+    let after = view.code_areas[1];
+    assert!(highlighted(
+        &terminal.backend().buffer()[(before.x, before.y)],
+        false
+    ));
+    assert!(!highlighted(
+        &terminal.backend().buffer()[(after.x, after.y)],
+        false
+    ));
+    assert!(search_key(&mut view, K::Char('n')));
+    assert_eq!(view.search_hit.as_ref().unwrap().row, (0, 0));
+    assert_eq!(view.search_hit.as_ref().unwrap().bytes, 0.."名".len());
+    assert!(search_key(&mut view, K::Char('n')));
+    assert_eq!(
+        view.search_hit.as_ref().unwrap().bytes.start,
+        view.texts[0].rfind('名').unwrap()
+    );
+    key(&mut view, K::Tab); // The embedding maps ']' to this operation.
+    assert_eq!(view.side(), 1);
+    assert!(view.search_hit.is_none());
+    draw_inline(&mut view, 44, 12, IconMode::Unicode);
+    assert!(search_key(&mut view, K::Char('N')));
+    assert_eq!(view.search_hit.as_ref().unwrap().row, (1, 0));
+    assert_eq!(
+        view.search_hit.as_ref().unwrap().bytes.start,
+        view.texts[1].rfind('名').unwrap()
+    );
+    draw_inline(&mut view, 120, 12, IconMode::Unicode);
+    let heading = view
+        .hits
+        .iter()
+        .find(|(_, target)| matches!(target, Target::Pane(0)))
+        .unwrap()
+        .0;
+    let event = Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: heading.x,
+        row: heading.y,
+        modifiers: M::NONE,
+    });
+    assert!(!view.search_event(&event));
+    view.event(&event);
+    assert_eq!(view.side(), 0);
+    assert!(view.search_hit.is_none());
+    assert!(matches!(
+        key(&mut view, K::Char('[')),
+        RevisionEvent::File(-1)
+    ));
+}
+
+#[test]
+fn revision_pane_search_overlays_keep_syntax_selection_and_source_copying() {
+    let after = "\tconst 名 = 'É[.] É[.]';\r\n// original bytes\r\n";
+    let mut view = RevisionDiff::two_way(
+        "sample.js".into(),
+        ["old".into(), "new".into()],
+        [
+            "\tconst 名 = 'old';\r\n// original bytes\r\n".into(),
+            after.into(),
+        ],
+        Default::default(),
+    );
+    let baseline = draw_inline(&mut view, 180, 12, IconMode::Unicode);
+    assert!(search_key(&mut view, K::Char('/')));
+    view.search_event(&Event::Paste("é[.]".into()));
+    let draft = draw_inline(&mut view, 180, 12, IconMode::Unicode);
+    assert_eq!(text(&draft), text(&baseline));
+    let code = view.code_areas[1];
+    let line = after.lines().next().unwrap();
+    let matches = line
+        .match_indices("É[.]")
+        .map(|(byte, matched)| {
+            rows::cell_width(&line[..byte])..rows::cell_width(&line[..byte + matched.len()])
+        })
+        .collect::<Vec<_>>();
+    for x in 0..code.width {
+        let cell = &draft.backend().buffer()[(code.x + x, code.y)];
+        if matches.iter().any(|range| range.contains(&usize::from(x))) {
+            assert!(highlighted(cell, false));
+        } else {
+            assert_eq!(cell, &baseline.backend().buffer()[(code.x + x, code.y)]);
+        }
+    }
+    assert!(search_key(&mut view, K::Enter));
+    let matched = draw_inline(&mut view, 180, 12, IconMode::Unicode);
+    assert!(highlighted(
+        &matched.backend().buffer()[(code.x + matches[0].start as u16, code.y)],
+        true
+    ));
+    assert!(highlighted(
+        &matched.backend().buffer()[(code.x + matches[1].start as u16, code.y)],
+        false
+    ));
+    view.event(&Event::Key(KeyEvent::new(K::Char('a'), M::CONTROL)));
+    assert!(search_key(&mut view, K::Char('n')));
+    let selected = draw_inline(&mut view, 180, 12, IconMode::Unicode);
+    assert_eq!(view.selected_text(), Some(after));
+    assert_eq!(
+        selected.backend().buffer()[(code.x + matches[1].start as u16, code.y)].bg,
+        crate::ui::idea::SELECT
+    );
+    view.clear_selection();
+    assert!(view.selected_text().is_none());
+    assert!(view.search_prompt().visible());
+    draw_inline(&mut view, 180, 12, IconMode::Unicode);
+    assert_eq!(
+        drag_text(
+            &mut view,
+            (code.x, code.y),
+            (code.x + rows::cell_width(line) as u16, code.y)
+        ),
+        line
+    );
+    assert!(matches!(key(&mut view, K::Char('y')), RevisionEvent::Copy(s) if s == after));
+}
+
+#[test]
+fn revision_pane_search_pans_complete_combining_graphemes_with_four_cell_tabs() {
+    let line = format!("{}\tconst 名 = 'e\u{301} e\u{301}';", "界".repeat(41));
+    let mut view = RevisionDiff::two_way(
+        "sample.js".into(),
+        ["old".into(), "new".into()],
+        ["old\n".into(), format!("{line}\r\n")],
+        Default::default(),
+    );
+    draw_inline(&mut view, 120, 12, IconMode::Unicode);
+    find(&mut view, "\u{301}");
+    for (width, height) in [(44, 12), (16, 4), (80, 24), (180, 32)] {
+        let terminal = draw_inline(&mut view, width, height, IconMode::Unicode);
+        let code = view.code_areas[1];
+        let left = view.view.hscroll[1];
+        let start = rows::cell_width(&line[..line.find("e\u{301}").unwrap()]);
+        assert!(start >= left && start < left + usize::from(code.width));
+        let cell = &terminal.backend().buffer()[(code.x + (start - left) as u16, code.y)];
+        assert_eq!(cell.symbol(), "e\u{301}");
+        assert!(highlighted(cell, true));
+    }
+    assert!(search_key(&mut view, K::Char('n')));
+    assert_eq!(
+        view.search_hit.as_ref().unwrap().bytes.start,
+        line.rfind('\u{301}').unwrap()
+    );
+    draw_inline(&mut view, 10, 3, IconMode::Ascii);
+    draw_inline(&mut view, 44, 12, IconMode::Ascii);
+    assert!(matches!(
+        key(&mut view, K::Char('y')),
+        RevisionEvent::Copy(s) if s == format!("{line}\r\n")
+    ));
+}
+
+#[test]
+fn revision_embedding_helpers_track_selection_and_scroll_drags() {
+    let mut view = fixture();
+    key(&mut view, K::Char('f'));
+    draw_inline(&mut view, 120, 12, IconMode::Unicode);
+    assert!(!view.mouse_active());
+    let code = view.code_areas[1];
+    let mouse = |kind, column, row| {
+        Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: M::NONE,
+        })
+    };
+    view.event(&mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        code.x,
+        code.y,
+    ));
+    assert!(view.mouse_active());
+    view.event(&mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        code.x + 5,
+        code.y,
+    ));
+    assert_eq!(view.selected_text(), Some("funct"));
+    assert!(view.mouse_active());
+    view.clear_selection();
+    assert!(!view.mouse_active());
+    assert!(view.selected_text().is_none());
+
+    let track = *view
+        .view
+        .tracks
+        .iter()
+        .find(|track| matches!(track.axis, Scroll::Vertical))
+        .unwrap();
+    for cancel in [false, true] {
+        view.event(&mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            track.area.x,
+            track.area.y,
+        ));
+        assert!(
+            view.mouse_active(),
+            "scrollbar capture must stay in the viewer"
+        );
+        view.event(&mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            track.area.x,
+            track.area.bottom() + 2,
+        ));
+        assert!(view.scroll > 0);
+        assert!(view.mouse_active());
+        if cancel {
+            view.clear_selection();
+        } else {
+            view.event(&mouse(
+                MouseEventKind::Up(MouseButton::Left),
+                track.area.x,
+                track.area.bottom() + 2,
+            ));
+        }
+        assert!(!view.mouse_active());
+    }
+    view.event(&mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        track.area.x,
+        track.area.y,
+    ));
+    assert!(view.mouse_active());
+    view.event(&Event::FocusLost);
+    assert!(!view.mouse_active());
+}
+
+#[test]
+fn revision_search_events_are_opt_in_and_escape_cancels_then_clears_search() {
+    let mut view = fixture();
+    draw_inline(&mut view, 180, 24, IconMode::Ascii);
+    assert!(!search_key(&mut view, K::Char('n')));
+    assert!(!search_key(&mut view, K::Esc));
+    key(&mut view, K::Char('/'));
+    assert!(!view.search_prompt().visible());
+    key(&mut view, K::Char('n'));
+    assert_eq!(view.selected, *view.changes.last().unwrap());
+    find(&mut view, "unchanged");
+    let hit = view.search_hit.clone();
+    assert!(search_key(&mut view, K::Char('/')));
+    assert!(view.search_event(&Event::Paste("not present".into())));
+    assert!(search_key(&mut view, K::Esc));
+    assert!(!view.search_prompt().editing());
+    assert!(view.search_prompt().visible());
+    assert!(view.search_hit == hit);
+    assert!(search_key(&mut view, K::Esc));
+    assert!(!view.search_prompt().visible());
+    assert!(view.search_hit.is_none());
+    assert!(!search_key(&mut view, K::Esc));
+    assert!(matches!(key(&mut view, K::Esc), RevisionEvent::Close));
+    let released = Event::Key(KeyEvent::new_with_kind(
+        K::Char('/'),
+        M::NONE,
+        crossterm::event::KeyEventKind::Release,
+    ));
+    assert!(!view.search_event(&released));
+}
+
+#[test]
+fn revision_replacement_inherits_session_search_without_old_source_or_view_state() {
+    let mut previous = fixture();
+    find(&mut previous, "unchanged 12");
+    draw_inline(&mut previous, 180, 12, IconMode::Unicode);
+    find(&mut previous, "unchanged");
+    assert!(search_key(&mut previous, K::Char('n')));
+    key(&mut previous, K::Char('z'));
+    previous.view.hscroll[1] = 4;
+    previous.event(&Event::Key(KeyEvent::new(K::Char('a'), M::CONTROL)));
+    assert!(previous.search_hit.is_some());
+    assert!(!previous.view.expanded.is_empty());
+    assert!(previous.selected_text().is_some());
+
+    let before = "\tunchanged Before 名\r\n";
+    let after = "\tunchanged After 名\r\nunchanged again\r\n";
+    let mut replacement = RevisionDiff::two_way(
+        "replacement.js".into(),
+        ["before".into(), "after".into()],
+        [before.into(), after.into()],
+        Default::default(),
+    );
+    let mut patch: Search<usize> = Search::default();
+    patch.inherit_query(previous.search_prompt());
+    replacement.inherit_query(patch.prompt());
+    assert!(replacement.search_prompt().visible());
+    assert!(replacement.search_hit.is_none());
+    assert!(!replacement.reveal_search);
+    assert!(!replacement.zoom);
+    assert!(replacement.view.expanded.is_empty());
+    assert_eq!(replacement.view.hscroll, [0; 3]);
+    assert_eq!(replacement.scroll, 0);
+    assert!(replacement.selected_text().is_none());
+    assert!(!replacement.mouse_active());
+
+    // Focus and copy can change twice before the replacement's first frame.
+    for (side, source) in [(1, after), (0, before)] {
+        assert_eq!(replacement.side(), side);
+        replacement.event(&Event::Key(KeyEvent::new(K::Char('a'), M::CONTROL)));
+        assert_eq!(replacement.selected_text(), Some(source));
+        assert!(matches!(
+            replacement.event(&Event::Key(KeyEvent::new(K::Char('c'), M::CONTROL))),
+            RevisionEvent::Copy(text) if text == source
+        ));
+        key(&mut replacement, K::BackTab);
+        assert!(replacement.selected_text().is_none());
+    }
+
+    assert!(search_key(&mut replacement, K::Char('n')));
+    assert_eq!(replacement.search_hit.as_ref().unwrap().row, (1, 0));
+    let terminal = draw_inline(&mut replacement, 100, 8, IconMode::Unicode);
+    let code = replacement.code_areas[1];
+    assert!(highlighted(
+        &terminal.backend().buffer()[(code.x + 4, code.y)],
+        true
+    ));
+    assert_eq!(replacement.texts[1], after);
+    assert!(matches!(
+        key(&mut replacement, K::Char('y')),
+        RevisionEvent::Copy(text) if text == after
+    ));
+
+    assert!(search_key(&mut previous, K::Char('/')));
+    previous.search_event(&Event::Paste("After".into()));
+    replacement.inherit_search(&previous);
+    assert!(replacement.search_prompt().editing());
+    assert!(search_key(&mut replacement, K::Enter));
+    assert_eq!(replacement.search_hit.as_ref().unwrap().row, (1, 0));
+    let hit = replacement.search_hit.as_ref().unwrap();
+    assert_eq!(&after[hit.bytes.clone()], "After");
+}

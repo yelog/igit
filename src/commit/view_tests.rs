@@ -1,5 +1,6 @@
 use super::*;
 mod inline_message;
+mod preview;
 mod search;
 mod text_selection;
 use crate::core::{git, Repo};
@@ -490,7 +491,7 @@ fn narrow_preview_wraps_the_actual_path_and_never_checks_a_browsed_file() {
     draw(&mut p, &mut t, &c);
     let preview = read(t.backend().buffer(), p.diff);
     assert!(
-        preview.contains("tail.txt") && preview.contains("+only in this draft"),
+        preview.contains("tail.txt") && preview.contains("only in this draft"),
         "{preview}"
     );
     assert!(p.tree.is_empty());
@@ -545,7 +546,7 @@ fn flat_layout_and_mouse_preview_resolve_identical_filenames_to_the_right_patch(
     click(&mut p, &c, target.x + 22, target.y);
     draw(&mut p, &mut t, &c);
     let diff = read(t.backend().buffer(), p.diff);
-    assert!(diff.contains("view/page.rs") && diff.contains("+view body"));
+    assert!(diff.contains("view/page.rs") && diff.contains("view body"));
     assert!(!diff.contains("model body") && !p.tree.is_empty());
     key(&mut p, &c, K::Esc);
     draw(&mut p, &mut t, &c);

@@ -50,6 +50,10 @@ fn draw(p: &mut CommitPanel, c: &Context) {
     t.draw(|f| p.draw(f, f.area(), c)).unwrap();
 }
 
+fn after(p: &CommitPanel) -> &str {
+    &p.diff_sources.as_ref().unwrap().sources[1].text
+}
+
 fn select(p: &mut CommitPanel, path: &str) {
     p.cursor = p
         .view
@@ -81,7 +85,7 @@ fn background_changes_refresh_status_and_same_status_diff_without_touching_index
     let head = git(&repo, &["rev-parse", "HEAD"]).unwrap();
     select(&mut p, "working.txt");
     draw(&mut p, &c);
-    assert!(p.diff_text.contains("+working v1"));
+    assert_eq!(after(&p), "working v1\n");
     let target = p.active().unwrap().id.clone();
     let checks = p.checks.clone();
     p.fold.insert("unrelated-fold".into());
@@ -104,18 +108,18 @@ fn background_changes_refresh_status_and_same_status_diff_without_touching_index
         .files
         .iter()
         .any(|f| f.change.path == Path::new("deleted.txt") && f.change.xy == *b" D"));
-    assert!(p.diff_text.contains("+working v2"));
+    assert_eq!(after(&p), "working v2\n");
     assert_eq!(git(&repo, &["ls-files", "--stage"]).unwrap(), index);
     assert_eq!(git(&repo, &["rev-parse", "HEAD"]).unwrap(), head);
     // A second content change has exactly the same paths and XY status.
     fs::write(repo.join("working.txt"), "working v3\n").unwrap();
     assert!(scan(&mut p, &mut c));
-    assert!(p.diff_text.contains("+working v3") && !p.diff_text.contains("+working v2"));
+    assert_eq!(after(&p), "working v3\n");
     git(&repo, &["add", "working.txt"]).unwrap();
     fs::write(repo.join("working.txt"), "working v4\n").unwrap();
     let staged = git(&repo, &["ls-files", "--stage"]).unwrap();
     assert!(scan(&mut p, &mut c));
-    assert!(p.diff_text.contains("+working v3") && !p.diff_text.contains("+working v4"));
+    assert_eq!(after(&p), "working v3\n");
     fs::remove_file(repo.join("new.txt")).unwrap();
     assert!(scan(&mut p, &mut c));
     assert!(!p
@@ -139,14 +143,20 @@ fn unchanged_scan_keeps_preview_selection_scroll_and_checkbox_undo() {
     select(&mut p, "mixed.txt");
     draw(&mut p, &c);
     p.focus = Focus::Diff;
-    p.diff_selection.select_all();
+    p.event(
+        &Event::Key(crossterm::event::KeyEvent::new(K::Char('a'), Mod::CONTROL)),
+        &c,
+    );
     let text = p.selected_text().unwrap().to_owned();
-    p.diff_scroll = 3;
+    let comparison = &**p.diff_comparison.as_ref().unwrap() as *const _;
     p.last_check = vec![(p.files[0].key.clone(), false)];
     let undo = p.last_check.clone();
     assert!(!scan(&mut p, &mut c));
     assert_eq!(p.selected_text(), Some(text.as_str()));
-    assert_eq!(p.diff_scroll, 3);
+    assert!(std::ptr::eq(
+        comparison,
+        &**p.diff_comparison.as_ref().unwrap()
+    ));
     assert_eq!(p.last_check, undo);
 }
 
@@ -286,7 +296,7 @@ fn native_watching_stays_idle_and_scans_only_the_changed_repository() {
     }
     select(&mut p, "working.txt");
     draw(&mut p, &c);
-    let preview = p.diff_text.clone();
+    let preview = p.diff_sources.clone();
     let files = p
         .files
         .iter()
@@ -301,7 +311,7 @@ fn native_watching_stays_idle_and_scans_only_the_changed_repository() {
         .any(|f| f.root == 1 && f.change.path == Path::new("native.txt")));
     assert!(p.files.iter().filter(|f| f.root == 0).eq(files.iter()));
     assert_eq!(
-        p.diff_text, preview,
+        p.diff_sources, preview,
         "another repository must not reload this Diff"
     );
 }
@@ -317,7 +327,7 @@ fn native_edit_atomic_save_delete_and_index_changes_update_current_diff() {
     for body in ["v2\n", "v3\n"] {
         fs::write(repo.join("working.txt"), body).unwrap();
         assert_eq!(next_scan(&mut p, &mut c), [0].into());
-        assert!(p.diff_text.contains(&format!("+{}", body.trim())));
+        assert_eq!(after(&p), body);
     }
     fs::write(repo.join("temporary"), "atomic\n").unwrap();
     fs::rename(repo.join("temporary"), repo.join("atomic.txt")).unwrap();
@@ -340,7 +350,7 @@ fn native_edit_atomic_save_delete_and_index_changes_update_current_diff() {
     fs::write(repo.join("working.txt"), "unstaged v4\n").unwrap();
     let index = git(&repo, &["ls-files", "--stage"]).unwrap();
     assert_eq!(next_scan(&mut p, &mut c), [0].into());
-    assert!(p.diff_text.contains("+v3") && !p.diff_text.contains("unstaged v4"));
+    assert_eq!(after(&p), "v3\n");
     assert_eq!(git(&repo, &["ls-files", "--stage"]).unwrap(), index);
     assert_eq!(git(&repo, &["rev-parse", "HEAD"]).unwrap(), head);
     assert!(!p

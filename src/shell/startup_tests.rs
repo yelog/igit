@@ -176,17 +176,19 @@ fn log_loads_only_on_entry_and_keeps_workspace_navigation_available() {
     app.go(Commit);
     assert_eq!(app.tab, Commit);
     assert!(screen(&mut app, 120, 36).contains("mixed.txt"));
-    app.dispatch(&key(KeyCode::Char('q')));
-    assert!(matches!(app.pop, Some(Popup::Confirm { .. })));
+    app.dispatch(&key(KeyCode::F(1)));
+    assert!(matches!(app.pop, Some(Popup::Help { .. })));
     wait_log(&mut app);
     assert!(app.log_load.ready());
-    assert!(matches!(app.pop, Some(Popup::Confirm { .. })));
+    assert!(matches!(app.pop, Some(Popup::Help { .. })));
     app.dispatch(&key(KeyCode::Esc));
     app.go(Log);
     assert!(app.log_load.ready());
     let text = screen(&mut app, 120, 36);
     assert!(text.contains("base"));
     assert!(!text.contains("Loading history..."));
+    app.dispatch(&key(KeyCode::Char('q')));
+    assert!(app.quit && app.pop.is_none());
 }
 
 #[test]
@@ -446,12 +448,6 @@ fn inline_file_diff_keys_do_not_open_workspace_pull_or_fetch_reviews() {
         );
     }
     assert!(app.configured_footer().contains("n/p Changes"));
-    app.dispatch(&Event::Key(KeyEvent::new(
-        KeyCode::Char('c'),
-        KeyModifiers::CONTROL,
-    )));
-    assert!(matches!(app.pop, Some(Popup::Confirm { .. })));
-    app.dispatch(&key(KeyCode::Esc));
     app.dispatch(&key(KeyCode::Tab));
     assert_eq!(app.log.focused_pane(), PaneId::Graph);
     app.dispatch(&key(KeyCode::Char('p')));
@@ -460,4 +456,11 @@ fn inline_file_diff_keys_do_not_open_workspace_pull_or_fetch_reviews() {
     app.log.focus_pane(PaneId::Info);
     app.dispatch(&key(KeyCode::Char('1')));
     assert_eq!(app.tab, Commit);
+    app.go(Log);
+    app.log.focus_pane(PaneId::Info);
+    app.dispatch(&Event::Key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(app.quit && app.pop.is_none());
 }

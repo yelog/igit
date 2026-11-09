@@ -1,7 +1,7 @@
 use super::*;
 use crate::ui::{
     icons::Icon,
-    idea::{repo_tint, CONFLICT, LOCAL_REF, REMOTE_REF, TAG},
+    idea::{repo_tint, CONFLICT, GOLD, LOCAL_REF, REMOTE_REF, TAG},
 };
 use ratatui::style::Modifier;
 
@@ -131,7 +131,10 @@ fn branch_glyphs_colors_counts_and_upstream_columns_survive_unicode_and_icon_mod
             let icon_x = symbol_x(&t, r, marker);
             icons.push(icon_x);
             let buffer = t.backend().buffer();
-            assert_eq!(buffer[(icon_x, r.y)].fg, LOCAL_REF);
+            assert_eq!(
+                buffer[(icon_x, r.y)].fg,
+                if name == "main" { GOLD } else { LOCAL_REF }
+            );
             assert_eq!(buffer[(icon_x + marker.width() as u16 + 1, r.y)].fg, FG);
             let upstream_icon = (icon_x + 1..r.right())
                 .find(|&x| buffer[(x, r.y)].symbol() == mode.glyph(Icon::Branch))
@@ -174,7 +177,7 @@ fn branch_glyphs_colors_counts_and_upstream_columns_survive_unicode_and_icon_mod
             assert_eq!(buffer[(arrow_x, row.y)].fg, MUTED);
             let tag = mode.glyph(Icon::Tag);
             let tag_x = symbol_x(&t, row, tag);
-            assert_eq!(buffer[(tag_x, row.y)].fg, LOCAL_REF);
+            assert_eq!(buffer[(tag_x, row.y)].fg, GOLD);
             assert_eq!(buffer[(tag_x + tag.width() as u16 + 1, row.y)].fg, FG);
             assert!(row_cells(&t, row).ends_with(&format!("{tag} main {arrow}")));
         }

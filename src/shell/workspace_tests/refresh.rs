@@ -41,12 +41,12 @@ fn commit_auto_refresh_runs_while_typing_and_resumes_after_dialog_closes() {
     assert!(app.commit.message_editing());
     assert!(screen(&mut app, 120, 36).contains("saved draft"));
     app.dispatch(&key(KeyCode::F(2)));
-    app.dispatch(&key(KeyCode::Char('q')));
-    assert!(matches!(&app.pop, Some(Popup::Confirm { token, .. }) if token == "__quit"));
+    open_review(&mut app);
+    assert!(matches!(&app.pop, Some(Popup::Confirm { token, .. }) if token == "test-review"));
     fs::write(repo.join("after-dialog.txt"), "after dialog\n").unwrap();
     app.dispatch(&Event::FocusGained);
     app.poll();
-    assert!(matches!(&app.pop, Some(Popup::Confirm { token, .. }) if token == "__quit"));
+    assert!(matches!(&app.pop, Some(Popup::Confirm { token, .. }) if token == "test-review"));
     app.dispatch(&key(KeyCode::Esc));
     wait_for(&mut app, "after-dialog.txt");
     assert_eq!(git(&repo, &["ls-files", "--stage"]).unwrap(), index);

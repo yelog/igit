@@ -12,6 +12,26 @@ Product-owned interface text, help, errors, examples, and documentation use Engl
 
 ## Requirements and Delivery Status
 
+**Commit split file preview (R1/R4/R7/R8, 2026-11-09).** Highlighting a file
+shows file history's read-only Before/After comparison in the existing preview
+pane, with syntax, line numbers, aligned changes, folded context, synchronized
+scrolling, source-text copying, and focused-revision search. Staged files compare
+HEAD with Index; otherwise Index compares with Working tree. Empty sources
+represent additions/deletions and unborn HEAD. Containers retain Overview.
+Narrow panes show one revision with a side switch; unsupported content retains
+an explained patch fallback. Refresh preserves unchanged comparison navigation.
+Acceptance uses disposable mixed-staging, untracked, deleted, Unicode-path,
+binary, and oversized fixtures and verifies unchanged HEAD, index bytes,
+unchecked staged siblings, working bytes, checks, and shared drafts.
+
+**Immediate quit (R7/R8, 2026-11-09).** Normal-mode `q`, `Ctrl-C` without a
+text selection, and Actions → Quit close the workspace without confirmation.
+Configured quit bindings and contextual help execute the same guarded exit.
+Running Git writes and software installation still prevent quitting; retry
+after completion. Text copying, editor input, and overlay/sequence cancellation
+keep priority. Acceptance covers built-in and remapped keys, Actions, narrow
+terminals, background reads, and unchanged HEAD, index, and working files.
+
 **Pane search (R7/R8 extension).** `/` finds literal text in Commit Changes and
 the file Diff preview, Log's branch and Diff file trees, Push's outgoing and
 changed file trees, Branch's repositories and branches, and Stash's list and

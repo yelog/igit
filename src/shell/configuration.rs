@@ -300,6 +300,12 @@ impl Shell {
     }
 
     pub(super) fn configured_footer(&self) -> String {
+        if self.tab == Commit && self.commit.file_comparison_focused() {
+            return format!(
+                "[/] Revisions  n/p Changes  f Fold  z Zoom  {} Panes  Esc Back  F1 Help",
+                self.config.label("panes", "focus-next"),
+            );
+        }
         if self.tab == Log && self.log.file_history_preview_focused() {
             return "[/] Revisions  n/p Changes  f Fold  z Zoom  Tab History  Esc Back  F1 Help"
                 .into();

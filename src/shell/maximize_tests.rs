@@ -189,7 +189,8 @@ fn smart_maximize_falls_back_locally_and_preserves_input_and_reviews() {
     let input = screen(&mut app, 120, 36);
     send(&mut app, "Cmd+Ctrl+f");
     assert_eq!(screen(&mut app, 120, 36), input);
-    send(&mut app, "Esc q");
+    send(&mut app, "Esc");
+    open_review(&mut app);
     assert!(app.pop.is_some());
     send(&mut app, "Cmd+Ctrl+f");
     assert!(app.pop.is_some() && app.pane_maximized);

@@ -93,7 +93,7 @@ fn text_selection_message_mouse_keyboard_replace_and_save_preserve_index_and_che
 }
 
 #[test]
-fn text_selection_commit_preview_copies_patch_and_keeps_file_dragging_separate() {
+fn text_selection_commit_preview_copies_revision_and_keeps_file_dragging_separate() {
     let (_d, c) = fixture();
     for (w, h) in [(120, 36), (80, 24), (44, 12)] {
         let mut p = CommitPanel::default();
@@ -103,9 +103,9 @@ fn text_selection_commit_preview_copies_patch_and_keeps_file_dragging_separate()
         p.launch(Hit::Show(Focus::Diff), &c);
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
         draw(&mut p, &mut t, &c);
-        p.diff_scroll = usize::MAX;
+        key(&mut p, &c, K::Char('G'));
         draw(&mut p, &mut t, &c);
-        let expected = "+model body";
+        let expected = "model body";
         let (x, y) = (p.diff.y..p.diff.bottom())
             .find_map(|y| {
                 let row = read(
@@ -124,7 +124,7 @@ fn text_selection_commit_preview_copies_patch_and_keeps_file_dragging_separate()
         assert!(p.dragged.is_none());
         press(&mut p, &c, K::Char('a'), Mod::CONTROL);
         let all = copy(press(&mut p, &c, K::Insert, Mod::CONTROL));
-        assert!(all.contains(expected) && !all.contains('─'));
+        assert_eq!(all, expected);
         key(&mut p, &c, K::Char('v'));
         draw(&mut p, &mut t, &c);
         assert!(p.diff_selection.selected_text().is_none());

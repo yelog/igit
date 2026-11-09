@@ -2,7 +2,7 @@ use super::*;
 use crate::ui::search::CURRENT;
 
 #[test]
-fn pane_search_commit_reveals_changes_and_pans_staged_patch_without_touching_git() {
+fn pane_search_commit_reveals_changes_and_pans_staged_revision_without_touching_git() {
     let (_dir, c) = fixture();
     let repo = &c.repos[0].path;
     git(
@@ -84,7 +84,6 @@ fn pane_search_commit_reveals_changes_and_pans_staged_patch_without_touching_git
     key(&mut p, &c, K::Esc);
     find(&mut p, "匹配");
     draw(&mut p, &mut t, &c);
-    assert!(p.diff_left > 0);
     let at = |p: &CommitPanel, t: &Terminal<TestBackend>| {
         let buffer = t.backend().buffer();
         (p.diff.y..p.diff.bottom())
@@ -98,18 +97,21 @@ fn pane_search_commit_reveals_changes_and_pans_staged_patch_without_touching_git
             })
             .expect("the current hit is visible")
     };
-    at(&p, &t);
-    let first = p.diff_anchor;
+    let prompt = |p: &CommitPanel| {
+        let mut t = Terminal::new(TestBackend::new(80, 1)).unwrap();
+        t.draw(|f| p.focused_search().unwrap().draw(f, f.area()))
+            .unwrap();
+        read(t.backend().buffer(), Rect::new(0, 0, 80, 1))
+    };
+    let first = at(&p, &t);
+    assert!(prompt(&p).contains("1/3"));
     key(&mut p, &c, K::Char('n'));
     draw(&mut p, &mut t, &c);
-    assert_eq!(
-        p.diff_anchor, first,
-        "n visits the second occurrence in one line"
-    );
-    at(&p, &t);
+    let second = at(&p, &t);
+    assert_eq!(second.1, first.1, "n visits the same source line");
+    assert!(prompt(&p).contains("2/3"), "n visits its second occurrence");
     key(&mut p, &c, K::Char('n'));
     draw(&mut p, &mut t, &c);
-    assert_ne!(p.diff_anchor, first);
     assert!(read(t.backend().buffer(), p.diff).contains("最后匹配"));
     at(&p, &t);
     p.event(&select_all, &c);
@@ -117,7 +119,7 @@ fn pane_search_commit_reveals_changes_and_pans_staged_patch_without_touching_git
     key(&mut p, &c, K::Esc);
     assert_eq!(p.focused_pane(), PaneId::Preview);
     assert!(p.changes_search.prompt().visible());
-    assert!(!p.diff_search.prompt().visible());
+    assert!(!p.focused_search().unwrap().visible());
 
     assert_eq!(p.checks, checks);
     assert_eq!(git(repo, &["ls-files", "--stage"]).unwrap(), index);

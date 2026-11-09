@@ -1,6 +1,9 @@
 //! A historical comparison has no writable Document, stage state, or apply path.
 use super::*;
-use crate::ui::selection::{TextLayout, TextSelection};
+use crate::ui::{
+    search::{Hit as SearchHit, Input, Jump, Prompt, Search},
+    selection::{TextLayout, TextSelection},
+};
 use std::ops::Range;
 
 pub(crate) enum RevisionEvent {
@@ -42,6 +45,9 @@ pub(crate) struct RevisionDiff {
     selections: [TextSelection; 3],
     code_areas: [Rect; 3],
     line_ranges: [Vec<Range<usize>>; 3],
+    search: Search<(usize, usize)>,
+    search_hit: Option<SearchHit<(usize, usize)>>,
+    reveal_search: bool,
 }
 
 impl RevisionDiff {
@@ -90,6 +96,9 @@ impl RevisionDiff {
             selections: Default::default(),
             code_areas: Default::default(),
             line_ranges,
+            search: Search::default(),
+            search_hit: None,
+            reveal_search: false,
         }
     }
 
@@ -122,11 +131,169 @@ impl RevisionDiff {
         self.selections[self.side].selected_text()
     }
 
+    pub(crate) fn clear_selection(&mut self) {
+        self.selections.iter_mut().for_each(TextSelection::clear);
+        self.view.cancel_scroll_drag();
+    }
+
+    pub(crate) fn mouse_active(&self) -> bool {
+        self.view.drag.is_some() || self.selections.iter().any(TextSelection::mouse_active)
+    }
+
+    pub(crate) fn side(&self) -> usize {
+        self.side
+    }
+
+    pub(crate) fn search_prompt(&self) -> &Prompt {
+        self.search.prompt()
+    }
+
+    /// Carry session input to new sources without retaining old hit positions,
+    /// selections, folds, or viewport state.
+    pub(crate) fn inherit_search(&mut self, previous: &Self) {
+        self.inherit_query(previous.search_prompt());
+    }
+
+    pub(crate) fn inherit_query(&mut self, prompt: &Prompt) {
+        self.search.inherit_query(prompt);
+        self.search_hit = None;
+        self.reveal_search = false;
+    }
+
+    /// Embedded panes opt into search before forwarding ordinary viewer events.
+    /// Historical Log/Push viewers keep their existing change navigation.
+    pub(crate) fn search_event(&mut self, event: &Event) -> bool {
+        match self.search.event(event) {
+            Input::Pass => false,
+            Input::Handled => {
+                if !self.search.prompt().visible() {
+                    self.search_hit = None;
+                    self.reveal_search = false;
+                }
+                true
+            }
+            Input::Jump(direction) => {
+                let side = self.side();
+                let direction = if direction == Jump::Next && self.search_hit.is_none() {
+                    Jump::First
+                } else {
+                    direction
+                };
+                let anchor = self.search_hit.as_ref().map(|hit| hit.row).or_else(|| {
+                    let map = RowMap::new(&self.chunks, &self.view, None);
+                    map.sections
+                        .iter()
+                        .find(|section| section.first + section.height > self.scroll)
+                        .map(|section| {
+                            let local = self.scroll.saturating_sub(section.first);
+                            let line = section
+                                .line_at(local)
+                                .or_else(|| section.line_at(local.saturating_sub(1)))
+                                .unwrap_or(0);
+                            (
+                                side,
+                                (section.numbers[side] + line)
+                                    .min(self.line_ranges[side].len().saturating_sub(1)),
+                            )
+                        })
+                });
+                self.search_hit = self.search.jump(
+                    direction,
+                    anchor.as_ref(),
+                    self.line_ranges[side]
+                        .iter()
+                        .enumerate()
+                        .map(|(line, bytes)| ((side, line), [&self.texts[side][bytes.clone()]])),
+                );
+                self.reveal_search = self.search_hit.is_some();
+                true
+            }
+        }
+    }
+
     fn pane_count(&self) -> usize {
         if self.three_way {
             3
         } else {
             2
+        }
+    }
+
+    fn select_side(&mut self, side: usize) {
+        if side != self.side {
+            self.selections[self.side].clear();
+            self.side = side;
+            self.search.invalidate();
+            self.search_hit = None;
+            self.reveal_search = false;
+            self.view.cancel_scroll_drag();
+        }
+    }
+
+    fn glyph_width(symbol: &str, column: usize) -> usize {
+        if symbol == "\t" {
+            4 - column % 4
+        } else {
+            symbol.width().max(1)
+        }
+    }
+
+    fn match_cells(text: &str, bytes: &Range<usize>) -> Range<usize> {
+        let mut byte = 0;
+        let mut column = 0;
+        let mut first = None;
+        for glyph in Span::raw(text).styled_graphemes(Style::default()) {
+            byte += glyph.symbol.len();
+            if byte > bytes.start && first.is_none() {
+                first = Some(column);
+            }
+            column += Self::glyph_width(glyph.symbol, column);
+            if byte >= bytes.end {
+                break;
+            }
+        }
+        first.unwrap_or(column)..column
+    }
+
+    fn overlay_search(
+        &self,
+        f: &mut Frame,
+        pane: usize,
+        code: Rect,
+        projected: &[(Range<usize>, bool, usize)],
+    ) {
+        if pane != self.side || code.is_empty() || !self.search.prompt().visible() {
+            return;
+        }
+        let left = self.view.hscroll[pane];
+        let right = left + usize::from(code.width);
+        for (y, (bytes, decoration, line)) in
+            projected.iter().take(usize::from(code.height)).enumerate()
+        {
+            if *decoration {
+                continue;
+            }
+            let spans = self
+                .search
+                .field(&(pane, *line), 0)
+                .spans(&self.texts[pane][bytes.clone()], Style::default());
+            let mut column = 0;
+            for glyph in spans
+                .iter()
+                .flat_map(|span| span.styled_graphemes(Style::default()))
+            {
+                let width = Self::glyph_width(glyph.symbol, column);
+                if glyph.style != Style::default() {
+                    for x in column.max(left)..(column + width).min(right) {
+                        f.buffer_mut()[(code.x + (x - left) as u16, code.y + y as u16)]
+                            .set_style(glyph.style);
+                    }
+                }
+                column += width;
+                if column >= right {
+                    break;
+                }
+            }
         }
     }
 
@@ -178,6 +345,7 @@ impl RevisionDiff {
     ) {
         let inline = files.is_none();
         self.hits.clear();
+        let previous_code = self.code_areas;
         self.code_areas.fill(Rect::default());
         self.view.tracks.clear();
         f.render_widget(Clear, area);
@@ -283,9 +451,34 @@ impl RevisionDiff {
             cols[self.side] = body;
             cols
         };
-        let map = RowMap::new(&self.chunks, &self.view, None);
-        self.total = map.total;
+        let mut map = RowMap::new(&self.chunks, &self.view, None);
         self.page = body.height.saturating_sub(if inline { 2 } else { 3 }) as usize;
+        let position_search =
+            self.reveal_search || usize::from(previous_code[self.side].height) != self.page;
+        let search_line = self
+            .search_hit
+            .as_ref()
+            .filter(|_| position_search)
+            .and_then(|hit| {
+                let (side, line) = hit.row;
+                map.sections.iter().enumerate().find_map(|(i, section)| {
+                    (section.numbers[side]..section.numbers[side] + section.lines[side].len())
+                        .contains(&line)
+                        .then(|| (i, line - section.numbers[side]))
+                })
+            });
+        if self.reveal_search {
+            if let Some((i, line)) = search_line {
+                let section = &map.sections[i];
+                if !(0..section.height).any(|row| section.line_at(row) == Some(line)) {
+                    self.view.expanded.insert(i);
+                    map = RowMap::new(&self.chunks, &self.view, None);
+                }
+                self.selected = i;
+                self.follow = false;
+            }
+        }
+        self.total = map.total;
         if self.follow {
             let section = &map.sections[self.selected];
             self.scroll = keep_visible(
@@ -295,6 +488,12 @@ impl RevisionDiff {
                 self.page,
             );
             self.follow = false;
+        }
+        if let Some((i, line)) = search_line {
+            let section = &map.sections[i];
+            if let Some(row) = (0..section.height).find(|&row| section.line_at(row) == Some(line)) {
+                self.scroll = keep_visible(self.scroll, section.first + row, 1, self.page);
+            }
         }
         self.scroll = self.scroll.min(self.total.saturating_sub(self.page));
         for (pane, col) in cols.into_iter().enumerate().filter(|(_, c)| !c.is_empty()) {
@@ -371,6 +570,24 @@ impl RevisionDiff {
             let width = metrics.code.width as usize;
             self.view.limits[pane] = map.widths[pane].saturating_sub(width);
             self.view.hscroll[pane] = self.view.hscroll[pane].min(self.view.limits[pane]);
+            if pane == self.side
+                && width > 0
+                && (self.reveal_search || previous_code[pane].width != metrics.code.width)
+            {
+                if let Some(hit) = &self.search_hit {
+                    let text = &self.texts[pane][self.line_ranges[pane][hit.row.1].clone()];
+                    let cells = Self::match_cells(text, &hit.bytes);
+                    let left = &mut self.view.hscroll[pane];
+                    if cells.start < *left {
+                        *left = cells.start.saturating_sub(width / 4);
+                    } else if cells.end > left.saturating_add(width) {
+                        *left = (cells.end + width / 4)
+                            .saturating_sub(width)
+                            .min(cells.start);
+                    }
+                    *left = (*left).min(self.view.limits[pane]);
+                }
+            }
             let mut row_hits = Vec::new();
             Rows {
                 chunks: &self.chunks,
@@ -388,7 +605,7 @@ impl RevisionDiff {
             .draw(f, pane, col, metrics, &mut row_hits);
             self.code_areas[pane] = metrics.code;
             let visible = self.scroll..self.scroll + self.page;
-            let projected = map
+            let projected: Vec<_> = map
                 .sections
                 .iter()
                 .filter(|s| s.first < visible.end && s.first + s.height > visible.start)
@@ -405,8 +622,9 @@ impl RevisionDiff {
                                     true,
                                 ),
                             };
+                            let source_line = section.numbers[pane] + line;
                             let range = self.line_ranges[pane]
-                                .get(section.numbers[pane] + line)
+                                .get(source_line)
                                 .cloned()
                                 .unwrap_or(self.texts[pane].len()..self.texts[pane].len());
                             (
@@ -416,10 +634,18 @@ impl RevisionDiff {
                                     range
                                 },
                                 decoration,
+                                source_line,
                             )
                         })
-                });
-            let layout = TextLayout::projected(&self.texts[pane], projected);
+                })
+                .collect();
+            self.overlay_search(f, pane, metrics.code, &projected);
+            let layout = TextLayout::projected(
+                &self.texts[pane],
+                projected
+                    .into_iter()
+                    .map(|(bytes, decoration, _)| (bytes, decoration)),
+            );
             self.selections[pane].overlay(f, metrics.code, layout, self.view.hscroll[pane]);
             self.hits
                 .extend(row_hits.into_iter().filter_map(|(r, hit)| match hit {
@@ -460,6 +686,7 @@ impl RevisionDiff {
                 );
             }
         }
+        self.reveal_search = false;
         if let Some(footer) = footer {
             fill(f, footer, CHROME);
             let hint = if footer.width >= 105 {
@@ -508,18 +735,10 @@ impl RevisionDiff {
                 self.follow = true;
             }
             Target::Zoom => self.zoom = !self.zoom,
-            Target::Pane(side) => {
-                if side != self.side {
-                    self.selections[self.side].clear();
-                }
-                self.side = side;
-            }
+            Target::Pane(side) => self.select_side(side),
             Target::Row(i, side) => {
-                if side != self.side {
-                    self.selections[self.side].clear();
-                }
                 self.selected = i;
-                self.side = side;
+                self.select_side(side);
             }
         }
         RevisionEvent::None
@@ -527,8 +746,9 @@ impl RevisionDiff {
 
     pub(crate) fn event(&mut self, event: &Event) -> RevisionEvent {
         if matches!(event, Event::FocusLost) {
-            self.selections.iter_mut().for_each(TextSelection::clear);
+            self.clear_selection();
         }
+        self.selections[self.side].sync_source(&self.texts[self.side]);
         if let Some(action) = self.selections[self.side].key(event, true) {
             return Self::selection_event(action);
         }

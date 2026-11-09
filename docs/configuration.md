@@ -309,8 +309,10 @@ context; in the Commit message editor it saves and returns to the actions.
 Text selection keeps `Ctrl-a`, `Ctrl-c`, `Ctrl-Insert`, and read-only `y`;
 selection copy takes precedence over normal commands. The configurable
 `global.help` command controls the normal-mode `?` shortcut. The configurable
-`global.quit` command includes `Ctrl-c` by default, but never overrides copying
-or cancellation of a pending sequence.
+`global.quit` command includes `q` and `Ctrl-c` by default and quits without
+confirmation. Copying and cancellation of a pending sequence keep priority.
+Running Git writes and software installation still prevent quitting until
+completion.
 
 Exact duplicates and complete-key/prefix conflicts in overlapping contexts are
 errors. For example, binding `commit.review` to `i` also requires changing or

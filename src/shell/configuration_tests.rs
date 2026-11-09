@@ -57,7 +57,7 @@ fn running_commit_blocks_push_fetch_roots_workspace_replacement_and_quit() {
     send(&mut app, "F");
     assert!(!app.push.busy());
     assert!(app.msg.contains("Git write"), "{}", app.msg);
-    for command in ["r", "f", "p", "q"] {
+    for command in ["r", "f", "p", "q", "Ctrl-c"] {
         send(&mut app, command);
         assert!(
             app.pop.is_none(),
@@ -236,13 +236,14 @@ fn configuration_smart_resize_preserves_drafts_and_selection() {
     );
     assert_eq!(app.panel().selected_text(), Some("Resize draft 中文"));
     assert_eq!(app.regions.body, body);
-    send(&mut app, "Esc q");
+    send(&mut app, "Esc");
+    open_review(&mut app);
     send(
         &mut app,
         "Cmd+Ctrl+Shift+h Cmd+Ctrl+Shift+j Cmd+Ctrl+Shift+k Cmd+Ctrl+Shift+l",
     );
     assert!(
-        matches!(&app.pop, Some(Popup::Confirm { token, yes: false, .. }) if token == "__quit")
+        matches!(&app.pop, Some(Popup::Confirm { token, yes: false, .. }) if token == "test-review")
     );
     send(&mut app, "Esc");
     for chord in [
@@ -315,7 +316,8 @@ fn configuration_smart_focus_preserves_editors_help_and_confirmations() {
     app.dispatch(&Event::Paste("Kitty".into()));
     send(&mut app, "Cmd+Ctrl+j");
     assert!(screen(&mut app, 120, 36).contains("No matching shortcuts"));
-    send(&mut app, "Esc Esc q");
+    send(&mut app, "Esc Esc");
+    open_review(&mut app);
     assert!(matches!(app.pop, Some(Popup::Confirm { yes: false, .. })));
     send(&mut app, "Cmd+Ctrl+h Cmd+Ctrl+j Cmd+Ctrl+k Cmd+Ctrl+l");
     assert!(matches!(app.pop, Some(Popup::Confirm { yes: false, .. })));
@@ -702,7 +704,13 @@ fn configuration_prefix_cancel_context_changes_and_mouse_picker() {
         assert!(!app.quit);
         assert!(app.pop.is_none());
     }
+    send(&mut app, "q");
+    assert!(!app.quit && app.pop.is_none());
+    send(&mut app, "Q Q");
+    assert!(app.quit && app.pop.is_none());
     for (w, h) in [(44, 12), (80, 24), (120, 36)] {
+        let (_dir, mut app) = fixture();
+        configure(&mut app, "[keybindings.global]\nquit=['Q Q']");
         send(&mut app, "Q");
         app.key_picker
             .poll(Instant::now() + Duration::from_millis(200));
@@ -710,10 +718,7 @@ fn configuration_prefix_cancel_context_changes_and_mouse_picker() {
         let (x, y) = text
             .lines()
             .enumerate()
-            .find_map(|(y, line)| {
-                line.find(" Q  Review and quit")
-                    .map(|x| (x as u16, y as u16))
-            })
+            .find_map(|(y, line)| line.find(" Q  Quit IGit").map(|x| (x as u16, y as u16)))
             .unwrap();
         app.dispatch(&Event::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -721,8 +726,7 @@ fn configuration_prefix_cancel_context_changes_and_mouse_picker() {
             row: y,
             modifiers: KeyModifiers::NONE,
         }));
-        assert!(matches!(app.pop, Some(Popup::Confirm { .. })));
-        send(&mut app, "Esc");
+        assert!(app.quit && app.pop.is_none());
     }
 }
 

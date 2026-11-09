@@ -274,7 +274,7 @@ fn update_shortcut_respects_remapping_and_other_reviews() {
     app.dispatch(&key(KeyCode::Char('U')));
     assert!(matches!(app.pop, Some(Popup::SoftwareUpdate)));
     app.dispatch(&key(KeyCode::Esc));
-    app.global(3);
+    open_review(&mut app);
     app.dispatch(&key(KeyCode::F(9)));
     assert!(matches!(app.pop, Some(Popup::Confirm { .. })));
     app.dispatch(&key(KeyCode::Esc));
@@ -294,8 +294,8 @@ fn worker_results_stay_available_after_closing_and_failures_are_quiet_only_when_
     app.open_software_update();
     app.dispatch(&key(KeyCode::Esc));
     assert!(app.pop.is_none() && app.software_update.installing());
-    app.quit_box();
-    assert!(app.pop.is_none());
+    app.request_quit();
+    assert!(app.pop.is_none() && !app.quit);
     complete(
         &mut app.software_update,
         State::Installing(report(Status::UpdateAvailable), Progress::Preparing),
