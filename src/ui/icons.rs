@@ -80,8 +80,8 @@ glyphs! {
     Move        => cod::COD_ARROW_SWAP, "⇄", "<>";
     Add         => cod::COD_ADD, "+", "+";
     Preview     => cod::COD_EYE, "◉", "V";
-    ExpandAll   => cod::COD_EXPAND_ALL, "⊞", "[+]";
-    CollapseAll => cod::COD_COLLAPSE_ALL, "⊟", "[-]";
+    ExpandAll   => md::MD_UNFOLD_MORE_HORIZONTAL, "‹›", "^v";
+    CollapseAll => md::MD_UNFOLD_LESS_HORIZONTAL, "›‹", "v^";
     Previous    => cod::COD_CHEVRON_LEFT, "‹", "<";
     Next        => cod::COD_CHEVRON_RIGHT, "›", ">";
     Back        => cod::COD_ARROW_LEFT, "←", "<";

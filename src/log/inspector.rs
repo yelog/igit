@@ -357,17 +357,8 @@ impl LogPanel {
         };
         let bar = Rect::new(area.x, area.y, area.width, 1);
         let diff = format!(" {} Diff ", self.icons.glyph(Icon::Diff));
-        let expand = self.icons.glyph(Icon::ExpandAll);
-        let collapse = self.icons.glyph(Icon::CollapseAll);
-        let full = (
-            format!(" {expand} Expand "),
-            format!(" {collapse} Collapse "),
-        );
-        let (expand, collapse) = if cells(&diff) + cells(&full.0) + cells(&full.1) <= bar.width {
-            full
-        } else {
-            (format!(" {expand} "), format!(" {collapse} "))
-        };
+        let expand = format!(" {} ", self.icons.glyph(Icon::ExpandAll));
+        let collapse = format!(" {} ", self.icons.glyph(Icon::CollapseAll));
         let controls = cells(&expand) + cells(&collapse);
         let diff_width = cells(&diff).min(bar.width);
         self.inspector_button(
@@ -832,7 +823,7 @@ mod tests {
         let raw = b"ui/invalid-\xff.ts";
         let (mut panel, c) = fixture(&[raw]);
         panel.icons = IconMode::Ascii;
-        let mut terminal = Terminal::new(TestBackend::new(26, 9)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 9)).unwrap();
         let draw = |p: &mut LogPanel, t: &mut Terminal<TestBackend>| {
             p.hits.clear();
             t.draw(|f| p.draw_files(f, f.area(), &c)).unwrap();
@@ -851,7 +842,7 @@ mod tests {
                 .ends_with("TS invalid-�.ts"));
         }
         assert_eq!(panel.details.files[panel.file_index().unwrap()].raw, raw);
-        for (close, icon) in [(true, "[-]"), (false, "[+]")] {
+        for (close, icon) in [(true, "v^"), (false, "^v")] {
             let hit = panel
                 .hits
                 .iter()

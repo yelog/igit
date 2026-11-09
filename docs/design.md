@@ -97,6 +97,8 @@ message appears only after discovery completes.
 
 **Icons and fonts.** All panels and Roots share repository, submodule, file, and selection markers. Default `nerd-font` uses named glyphs; `--icons unicode` uses standard symbols; `--icons ascii` uses text markers. Icon widths are not fixed: ASCII `[x]` occupies three cells, all of which form its hit area. When a file marker cannot fit, preserve the filename first. The input caret, current row, and committable state each have independent meanings. Exact glyphs in diagrams vary by mode.
 
+Tree toolbars in Commit, Rollback Changes, Log, Stash, and Push use the same pair of icon buttons: outward chevrons on the left expand all, and inward chevrons on the right collapse all. Nerd Font stacks the chevrons vertically. Unicode uses `‹›` / `›‹`, and ASCII uses `^v` / `v^`.
+
 File lists and existing file-preview titles share the [file type mapping](../src/ui/icons.rs). Icon color indicates type, while filename color still indicates Git status. Java uses a coffee cup, Python its language marker, and React JSX / TSX a React marker (cyan/blue respectively); ordinary JS / TS retain their own icons. Common JVM, systems, scripting, and mobile languages, XML, and build files have dedicated markers. Detection checks filenames and compound suffixes such as `pom.xml` and `build.gradle.kts` before extensions. Matching generally ignores ASCII case, while preserving the `.C` / `.H` convention for C++. Detection uses paths only, without reading content. Unknown types use a generic file icon; Unicode / ASCII modes retain readable abbreviations.
 
 ### Update Project and Fetch
@@ -264,7 +266,7 @@ With unmerged files in Roots, **Changes** counts them and shows one expanded **M
 | Browse and check | Row names browse, arrows expand/collapse, boxes check, and the wheel scrolls. Toolbar hover shows action/shortcut. Each target has its own hit area. | `j/k` browses, `PgUp/PgDn` pages, `h/l` collapses/expands or visits parent/child, `Space` checks; `u` undoes only the last checkbox change. |
 | Open conflict resolution | Click the blue, underlined **Resolve** link on Merge Conflicts. Clicking the label browses; clicking the arrow folds. | `Enter` on Merge Conflicts opens the Conflicts tab. Use `h/l` to fold or expand the group. |
 | Preview a patch or scope | Double-click a file; the toolbar preview button opens the current row. In wide mode, keep clicking other left-side rows. Use close/back-to-list to return. | `Enter` on a file opens Diff; `v` toggles preview. `J/K` scrolls a visible file preview down/up without moving focus or selection. Groups, repositories, and directories preview their visible scope. At 92+ columns, preview is side by side; below that, it fills the tool window. `Esc` returns to the original row; `Tab/F6` switches available areas. |
-| Change layout or inspect raw status | The eye opens View Options; final two buttons expand/collapse all; Diff previews the current row. | `o` opens the menu, `t` toggles directories, `T` toggles Git XY status, and `z/Z` collapses/expands all. Layout does not change identity or checkboxes. |
+| Change layout or inspect raw status | The eye opens View Options; the paired chevron buttons expand/collapse all; Diff previews the current row. | `o` opens the menu, `t` toggles directories, `T` toggles Git XY status, and `z/Z` collapses/expands all. Layout does not change identity or checkboxes. |
 | Manage groups | Add creates a group; Move, right-click, or dragging tracked files moves them. | `n/m` creates/moves groups. Untracked files remain separate; regrouping does not run git add. |
 | Add untracked files to Git | Highlight a file or container in Changes. | `a` or `Insert` immediately starts adding the highlighted untracked file or the untracked members of its group, repository, or directory, including folded children, without confirmation. An inline `Adding N files…` indicator appears in existing Changes/footer space before background Git work. Wider layouts show Checking / Staging / Updating, the current repository, and actual completed repository counts. Browsing, Help, tab switching, and message editing remain available; write controls are disabled and repeated Add requests reuse the current job. No percentage or staged file color is invented while waiting. Completion updates affected Changes rows and reports separate results; checkboxes and the message are retained. Failed files remain available for retry, with full errors in Console. `M` toggles Amend. |
 | Write messages and commit | Click the message area to edit directly in the bottom Commit pane. The composer has one shared message and no repository tabs. Its action area contains Commit, Commit and Push..., and a secondary Generate message button with the Resolve Automatically wand icon; narrow panes wrap actions or shorten labels. Clicking another control saves the shared draft first. **Commit** starts the local commit immediately. **Commit and Push...** does the same, then opens Push for a separate review. Amend remains available through `M` and is indicated in the selection summary. | `[/]` browses repositories in Changes in normal mode. From Changes or Preview, `c` focuses Message and starts editing. In the editor, Enter adds a newline, `Ctrl-W` deletes the previous word and trailing whitespace, and `Ctrl-U` deletes to the logical line start. Both deletion keys remove a selection first. `Esc` and `F2/Ctrl-S` save and leave Message focused. `Tab/Shift-Tab/F6` saves and moves focus. In Message, Left/Right moves the blue selection between Commit, Commit and Push..., and Generate message. Commit starts selected when focus enters the pane. Enter runs the selected action; `i` reopens the editor. `M` toggles Amend for the highlighted file/group's repository (a group spanning repositories requires a more specific row); `P` commits and opens Push. `A` generates and fills the shared message; `S` opens AI settings. |
@@ -341,7 +343,7 @@ workspace replacement, Roots changes, and quitting wait for batch completion.
 ```text
  Push Commits · 2 repositories
  Outgoing commits                         │ Changed files · 3
- Target  Fetch                            │ Group By  Details          [+] [-]
+ Target  Fetch                            │ Group By  Details            ‹› ›‹
  ▸ [ ] api   main → origin:main ↑1        │ ▾ web 3 files
  ▾ [x] web   main → origin:main ↑2        │   ▾ src 2 files
        Commit message                     │       App.vue
@@ -381,7 +383,7 @@ viewed file highlighted.
 | --- | --- | --- |
 | Select and inspect | Boxes check repositories, triangles expand/collapse, rows update the right side, and files open Diff. | `j/k` browses; `h/l` or left/right collapses/expands; `h` in files can visit the parent. `Space` checks the owning repository; `Enter` expands/collapses containers or opens files; `Tab/F6` changes area. |
 | Change file grouping | Click Group By on the right, then options; the menu stays open for further changes. | `o` opens, `j/k` or ↑/↓ selects, `Space/Enter` toggles, and `Esc/o` closes. Space in the menu changes only grouping. |
-| File tree and details | Toolbar Expand / Collapse changes all nodes. Details opens Diff on a selected file or toggles the scope summary. | `[/]` collapses/expands all in files; `d` runs Details. |
+| File tree and details | The paired chevron buttons expand or collapse all nodes. Details opens Diff on a selected file or toggles the scope summary. | `[/]` collapses/expands all in files; `d` runs Details. |
 | Inspect a Diff | Use the toolbar to navigate changes and files, fold context, zoom, or close. | `n/p` moves between changes, `[/]` moves between visible files, `f` folds context, `z` zooms, and `Esc` closes after clearing any text selection. |
 | Review target and options | Click the blue target or outgoing toolbar's Target to edit; Follow tags / Hooks toggles options; Fetch updates Push targets in scope. | `t` edits remote:branch; Enter saves and Esc cancels. `v/x` toggles Follow tags/hooks; `F` fetches Push targets. |
 | Execute and handle failures | Push → review each source SHA and target → Confirm; inspect failed rows and click Retry. | `P` opens review with Confirm focused; `Enter` confirms and `Esc` cancels. `R` reviews only failed repositories still in scope with outgoing work. |
@@ -563,9 +565,10 @@ Selection is retained by repository and object ID after a refresh, even when a
 newer stash changes the selector number.
 
 The right pane shows the selected repository and full stash selector above
-Log's **Diff / Expand / Collapse** toolbar and directory tree. Narrow panes
-can put the repository and selector on separate lines; roomier panes also
-show the original subject and timestamp with its recorded UTC offset.
+the directory tree. It shares Log's toolbar with **Diff** and the paired
+chevron buttons. Narrow panes can put the repository and selector on separate
+lines; roomier panes also show the original subject and timestamp with its
+recorded UTC offset.
 Selecting a stash loads the tree in the background after navigation settles.
 Moving to another stash clears the previous files immediately;
 results from older selections or Roots are discarded. `Tab` cycles the two
