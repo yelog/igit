@@ -1,4 +1,5 @@
 /target/
+/target-serial/
 /dist/
 __pycache__/
 .DS_Store

@@ -81,13 +81,15 @@ Runner labels follow [GitHub's hosted runner reference](https://docs.github.com/
 
 ## Local verification
 
+On macOS/Linux use the serial entry point; on Windows use the equivalent native Cargo commands. Local artifacts live in `target-serial/`; CI explicitly keeps `target/`. Do not mix concurrent raw Cargo commands with the local entry point.
+
 ```sh
 python3 -B -m unittest discover -s scripts/release -p 'test_*.py'
 python3 -B -m unittest discover -s scripts/install -p 'test_*.py'
-cargo fmt --all --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked --all-targets
-cargo build --release --locked --bins
+python3 scripts/cargo_serial.py fmt --all --check
+python3 scripts/cargo_serial.py clippy --locked --all-targets -- -D warnings
+python3 scripts/cargo_serial.py test --locked --all-targets
+python3 scripts/cargo_serial.py build --release --locked --bins
 ```
 
 For a native macOS smoke test (choose the matching target for Intel):
@@ -95,14 +97,14 @@ For a native macOS smoke test (choose the matching target for Intel):
 ```sh
 release_dist="$(mktemp -d)"
 release_version="$(python3 scripts/release/metadata.py version)"
-release_archive="$(python3 scripts/release/distribution.py package aarch64-apple-darwin --bin-dir target/release --output "$release_dist")"
+release_archive="$(python3 scripts/release/distribution.py package aarch64-apple-darwin --bin-dir target-serial/release --output "$release_dist")"
 python3 scripts/release/distribution.py smoke "$release_archive" "$release_version" aarch64-apple-darwin
 python3 scripts/install/smoke.py --archive "$release_archive" --version "$release_version" --target aarch64-apple-darwin
 ```
 
 On Linux, install the native musl target and linker, then build with `--target
 x86_64-unknown-linux-musl` or `--target aarch64-unknown-linux-musl`; pass
-`target/TARGET/release` to packaging. On Windows use the MSVC target and the
+`target-serial/TARGET/release` to packaging. On Windows use the MSVC target and the
 matching `.exe` files. Do not label a host GNU binary as a musl build.
 
 The smoke helper reads the final archive, runs both commands with `--version`,

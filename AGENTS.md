@@ -29,11 +29,17 @@ Run from the repository root. The practice script creates a new temporary worksp
 
 ```sh
 demo_workspace="$(sh examples/demo-workspace.sh)"
-cargo run --locked --bin igit -- "$demo_workspace"
+python3 scripts/cargo_serial.py run --locked --bin igit -- "$demo_workspace"
 ```
 
 Interactive smoke check: start on Commit. Browse files and select groups with both the mouse and `j/k`, confirming that browsing does not change checkboxes. Write one shared message for two checked repositories, press `r` to hide one, then click Commit in the practice workspace. For the keyboard path, press `c` from Changes or Preview to edit, `Esc` to save, and `Enter` with Commit selected. Verify that only the visible repository received a commit and that restoring Roots restores the other repository's selection. When changing write operations, verify the practice repositories with `git status`, `git diff --cached`, `git log`, or remote refs.
 
-Choose checks appropriate to the change: `cargo test --locked commit::` targets Commit; use `cargo test --locked` for changes across panels or shared Git logic. Common pre-commit checks are `cargo fmt --all --check` and `cargo clippy --locked --all-targets -- -D warnings`. For documentation-only changes, verify relative links, commands, and claims about the implementation.
+Choose checks appropriate to the change: `python3 scripts/cargo_serial.py test --locked --lib commit::` targets Commit; use `python3 scripts/cargo_serial.py test --locked` for changes across panels or shared Git logic. Common pre-commit checks are `python3 scripts/cargo_serial.py fmt --all --check` and `python3 scripts/cargo_serial.py clippy --locked --all-targets -- -D warnings`. For documentation-only changes, verify relative links, commands, and claims about the implementation.
 
 Update the PRD when product scope or delivery status changes; update interaction design and README when focus, shortcuts, or panel behavior changes; update architecture when module responsibilities, persistence, or Git execution boundaries change. Historical prototypes remain design references, not runtime dependencies.
+
+## Local Cargo execution (macOS/Linux)
+
+Use `python3 scripts/cargo_serial.py <command> ...` for every local build, check, test, Clippy, format or run command. It queues whole commands behind a shared per-user lock, uses `target-serial/`, and forces one build job and one test thread. Do not run raw Cargo in another terminal/agent concurrently: Cargo's own build lock does not serialize running tests against another command. Interactive `run` holds the lock until the app exits; launch an already-built binary separately when needed.
+
+Keep the existing `target/` intact for the macOS freeze investigation. Do not clean, delete, copy artifacts from it, override the new target directory, or raise concurrency without an explicit request. Start with one focused test; do not automatically run the full suite while investigating freezes. Native Cargo also defaults to `target-serial/`, one build job and one test thread, but bypasses the whole-command lock. CI explicitly retains `target/` for archive compatibility; the POSIX wrapper is not used on Windows.
