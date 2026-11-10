@@ -73,7 +73,7 @@ fn branch_layout_tracks_roots_and_keeps_actions_on_the_selected_repository() {
     app.dispatch(&Event::Paste("from-tools".into()));
     app.dispatch(&key(KeyCode::Enter));
     let Some(Popup::Confirm { body, .. }) = app.pop.as_ref() else {
-        panic!("Expected review: {}", app.msg);
+        panic!("Expected review: {}", app.notifications.latest_body());
     };
     assert!(body.contains(&format!("Path: {}", second.display())));
     app.dispatch(&key(KeyCode::Char('y')));
@@ -165,13 +165,18 @@ fn branch_refresh_keeps_cached_browsing_and_the_latest_fold_but_gates_actions() 
     assert!(!cached.contains("new-since-last-visit"));
     app.dispatch(&key(KeyCode::Char('a')));
     assert!(!app.branch.editing() && app.pop.is_none());
-    assert!(app.msg.contains("Refreshing branches"));
+    assert!(app
+        .notifications
+        .latest_body()
+        .contains("Refreshing branches"));
     app.dispatch(&key(KeyCode::Char('j'))); // main -> Remote Branches
     app.dispatch(&key(KeyCode::Char('h')));
     let folded = screen(&mut app, 120, 36);
     assert!(folded.contains("Remote Branches  1 branches") && !folded.contains("seen"));
     release();
     assert!(app.poll());
+    app.notifications
+        .expire(Instant::now() + Duration::from_secs(9));
     let fresh = screen(&mut app, 120, 36);
     assert!(fresh.contains("new-since-last-visit"));
     assert!(fresh.contains("Remote Branches  1 branches") && !fresh.contains("seen"));
@@ -272,7 +277,7 @@ fn branch_gg_hint_cancels_on_context_changes_and_completes_without_git_writes() 
 fn branch_navigation_remapping_updates_help_and_executes_sequences() {
     let (_temp, fixture) = fixture();
     let config = AppConfig::from_toml(
-        "[keybindings.global]\nupdate=[]\n[keybindings.branch]\nfirst-item=['F9']\nhalf-page-down=['J']\nscreen-middle=['F8']",
+        "[keybindings.global]\nupdate=[]\nnotification-history=[]\n[keybindings.branch]\nfirst-item=['F9']\nhalf-page-down=['J']\nscreen-middle=['F8']",
     )
     .unwrap();
     let mut app = Shell::with_config(fixture.ctx.clone(), config);
@@ -391,6 +396,8 @@ fn branch_review_cancel_and_confirm_refresh_current_branch_without_staging_chang
     app.dispatch(&key(KeyCode::Char('y')));
     assert_eq!(app.ctx.repos[0].branch, "feature/renamed");
     ready(&mut app);
+    app.notifications
+        .expire(Instant::now() + Duration::from_secs(9));
     assert!(screen(&mut app, 80, 25).contains("renamed (current)"));
     assert_eq!(
         snapshot(&repo),
@@ -406,7 +413,7 @@ fn branch_review_cancel_and_confirm_refresh_current_branch_without_staging_chang
 fn branch_commands_can_be_remapped_without_leaking_into_name_input_or_roots() {
     let (_temp, fixture) = fixture();
     let config = AppConfig::from_toml(
-        "[keybindings.global]\nupdate=[]\nfocus-branch=['F8']\n[keybindings.branch]\nrename=['R']\ncreate=['n']\nnext-match=['F7']\nview-options=['F9']",
+        "[keybindings.global]\nupdate=[]\nnotification-history=[]\nfocus-branch=['F8']\n[keybindings.branch]\nrename=['R']\ncreate=['n']\nnext-match=['F7']\nview-options=['F9']",
     )
     .unwrap();
     let mut app = Shell::with_config(fixture.ctx.clone(), config);
@@ -464,6 +471,7 @@ fn branch_merge_conflicts_refresh_the_conflicts_tab_and_return_to_branch() {
     let Some(Popup::Confirm {
         body,
         owner: Branch,
+        yes: true,
         ..
     }) = &app.pop
     else {
@@ -473,15 +481,194 @@ fn branch_merge_conflicts_refresh_the_conflicts_tab_and_return_to_branch() {
         );
     };
     assert!(body.contains("Merge source: incoming") && body.contains("Into current branch: main"));
-    app.dispatch(&key(KeyCode::Char('y')));
+    app.dispatch(&key(KeyCode::Enter));
     assert_eq!(app.tab, Branch);
     assert!(app.tab_available(Conflicts));
-    assert!(app.msg.contains("CONFLICT"), "{}", app.msg);
+    assert!(
+        app.notifications.latest_body().contains("CONFLICT"),
+        "{}",
+        app.notifications.latest_body()
+    );
     assert!(!git(&repo, &["ls-files", "--unmerged"]).unwrap().is_empty());
     app.dispatch(&key(KeyCode::Char('6')));
     assert_eq!(app.tab, Conflicts);
     app.dispatch(&key(KeyCode::Esc));
     assert_eq!(app.tab, Branch);
+}
+
+#[test]
+fn branch_merge_review_focus_letters_and_cancel_preserve_git_state() {
+    let (_temp, mut app) = fixture();
+    let repo = app.ctx.repos[0].path.clone();
+    merge_conflict(&repo);
+    git(&repo, &["merge", "--abort"]).unwrap();
+    let before = snapshot(&repo);
+    app.go(Branch);
+    ready(&mut app);
+    app.dispatch(&key(KeyCode::Char('j')));
+    app.dispatch(&key(KeyCode::Char('m')));
+    assert!(matches!(app.pop, Some(Popup::Confirm { yes: true, .. })));
+    for letter in ['n', 'y'] {
+        app.dispatch(&key(KeyCode::Char(letter)));
+        assert!(matches!(app.pop, Some(Popup::Confirm { yes: true, .. })));
+        assert_eq!(snapshot(&repo), before);
+    }
+    app.dispatch(&key(KeyCode::F(1)));
+    let help = screen(&mut app, 120, 36);
+    assert!(!help.contains("Review shortcuts"), "{help}");
+    app.dispatch(&key(KeyCode::Esc));
+    for navigation in [
+        KeyCode::Tab,
+        KeyCode::BackTab,
+        KeyCode::Left,
+        KeyCode::Right,
+    ] {
+        app.dispatch(&key(navigation));
+        assert!(matches!(app.pop, Some(Popup::Confirm { yes: false, .. })));
+        app.dispatch(&key(navigation));
+        assert!(matches!(app.pop, Some(Popup::Confirm { yes: true, .. })));
+    }
+    app.dispatch(&key(KeyCode::Tab));
+    app.dispatch(&key(KeyCode::Enter));
+    assert!(app.pop.is_none());
+    assert_eq!(snapshot(&repo), before);
+    app.dispatch(&key(KeyCode::Char('m')));
+    assert!(matches!(app.pop, Some(Popup::Confirm { yes: true, .. })));
+    app.dispatch(&key(KeyCode::Esc));
+    assert!(app.pop.is_none());
+    assert_eq!(snapshot(&repo), before);
+}
+
+#[test]
+fn branch_merge_review_layout_focus_and_mouse_targets() {
+    let (_temp, fixture) = fixture();
+    let repo = fixture.ctx.repos[0].path.clone();
+    merge_conflict(&repo);
+    git(&repo, &["merge", "--abort"]).unwrap();
+    let before = snapshot(&repo);
+    for icons in [IconMode::Ascii, IconMode::Unicode, IconMode::NerdFont] {
+        let mut app = Shell::with_config(
+            fixture.ctx.clone(),
+            AppConfig {
+                icons,
+                ..AppConfig::default()
+            },
+        );
+        app.go(Branch);
+        ready(&mut app);
+        app.dispatch(&key(KeyCode::Char('j')));
+        for (width, height) in [(44, 12), (80, 24), (120, 36), (184, 48)] {
+            app.dispatch(&key(KeyCode::Char('m')));
+            let text = screen(&mut app, width, height);
+            assert!(
+                text.contains("From  incoming") && text.contains("Into  main"),
+                "{text}"
+            );
+            assert!(
+                !text.contains("n Cancel") && !text.contains("y Confirm"),
+                "{text}"
+            );
+            if height >= 24 {
+                assert!(
+                    text.contains("Repository") && text.contains("What happens"),
+                    "{text}"
+                );
+            }
+            for focused in [true, false] {
+                let mut terminal =
+                    Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                for (id, label) in [(0, " Cancel "), (1, " Confirm ")] {
+                    let rect = app.pop_hits.iter().find(|(_, hit)| *hit == id).unwrap().0;
+                    assert_eq!(rect.width, label.len() as u16);
+                    assert!(rect.right() <= width && rect.bottom() <= height);
+                    let buffer = terminal.backend().buffer();
+                    assert_eq!(
+                        buffer[(rect.x, rect.y)].bg,
+                        if (id == 1) == focused { SEL } else { TAG }
+                    );
+                    assert!(!buffer[(rect.x, rect.y)]
+                        .modifier
+                        .contains(ratatui::style::Modifier::UNDERLINED));
+                }
+                if focused {
+                    app.dispatch(&key(KeyCode::Tab));
+                }
+            }
+            let cancel = app.pop_hits.iter().find(|(_, id)| *id == 0).unwrap().0;
+            app.dispatch(&Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: cancel.x + 1,
+                row: cancel.y,
+                modifiers: KeyModifiers::NONE,
+            }));
+            assert!(app.pop.is_none());
+            assert_eq!(snapshot(&repo), before);
+        }
+    }
+}
+
+#[test]
+fn branch_merge_review_wraps_unicode_and_scrolls_without_hiding_buttons() {
+    let (_temp, mut app) = fixture();
+    let repo = app.ctx.repos[0].path.clone();
+    merge_conflict(&repo);
+    git(&repo, &["merge", "--abort"]).unwrap();
+    let source = format!("feature-{}", "合并测试".repeat(12));
+    git(&repo, &["branch", "-m", "incoming", &source]).unwrap();
+    let before = snapshot(&repo);
+    app.go(Branch);
+    ready(&mut app);
+    app.dispatch(&key(KeyCode::Char('j')));
+    app.dispatch(&key(KeyCode::Char('m')));
+    let text = screen(&mut app, 44, 12);
+    assert!(
+        text.contains("From") && text.contains("feature-合并测试"),
+        "{text}"
+    );
+    for _ in 0..40 {
+        app.dispatch(&key(KeyCode::Char('j')));
+    }
+    let text = screen(&mut app, 44, 12);
+    assert!(
+        text.contains("What happens") && text.contains("tab."),
+        "{text}"
+    );
+    assert!(
+        text.contains("Cancel") && text.contains("Confirm"),
+        "{text}"
+    );
+    for _ in 0..40 {
+        app.dispatch(&key(KeyCode::Char('k')));
+    }
+    let text = screen(&mut app, 44, 12);
+    assert!(
+        text.contains("From") && text.contains("feature-合并测试"),
+        "{text}"
+    );
+    assert!(matches!(
+        app.pop,
+        Some(Popup::Confirm {
+            scroll: 0,
+            yes: true,
+            ..
+        })
+    ));
+    screen(&mut app, 80, 24);
+    let close = app
+        .pop_hits
+        .iter()
+        .find(|(_, id)| *id == usize::MAX)
+        .unwrap()
+        .0;
+    app.dispatch(&Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: close.x,
+        row: close.y,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert!(app.pop.is_none());
+    assert_eq!(snapshot(&repo), before);
 }
 
 #[test]

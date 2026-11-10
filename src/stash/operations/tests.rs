@@ -114,7 +114,8 @@ fn stash_apply_restores_saved_content_and_preserves_entry_and_unrelated_local_ch
     fs::write(repo.join("ignored.txt"), "ignored\n").unwrap();
     let entries = model::entries(repo).unwrap();
     let index = git_bytes(repo, &["ls-files", "--stage", "-z"]).unwrap();
-    let result = prepare(&c, 0, Operation::Apply).execute(&c).unwrap();
+    let (level, result) = prepare(&c, 0, Operation::Apply).execute(&c).unwrap();
+    assert_eq!(level, NoticeLevel::Success);
     assert!(result.starts_with("Applied stash"));
     assert_eq!(
         fs::read_to_string(repo.join("mixed.txt")).unwrap(),
@@ -160,7 +161,8 @@ fn stash_pop_applies_and_drops_only_the_selected_older_entry() {
     let (_dir, c) = fixture();
     let repo = &c.repos[0].path;
     let before = model::entries(repo).unwrap();
-    let result = prepare(&c, 1, Operation::Pop).execute(&c).unwrap();
+    let (level, result) = prepare(&c, 1, Operation::Pop).execute(&c).unwrap();
+    assert_eq!(level, NoticeLevel::Success);
     assert!(result.starts_with("Popped stash"));
     assert_eq!(
         fs::read_to_string(repo.join("mixed.txt")).unwrap(),
@@ -363,7 +365,8 @@ fn stash_pop_does_not_repeat_successful_apply_after_drop_failure() {
     let review = prepare(&c, 0, Operation::Pop);
     let entries = model::entries(repo).unwrap();
     fs::write(repo.join(".git/refs/stash.lock"), "held").unwrap();
-    let result = review.execute(&c).unwrap();
+    let (level, result) = review.execute(&c).unwrap();
+    assert_eq!(level, NoticeLevel::Warning);
     assert!(
         result.contains("Applied stash") && result.contains("Do not apply again"),
         "{result}"
@@ -386,7 +389,8 @@ fn stash_pop_keeps_entries_when_a_hook_changes_the_reflog_during_apply() {
     let hook = repo.join(".git/hooks/post-index-change");
     fs::write(&hook, format!("#!/bin/sh\nif [ ! -e .git/stash-hook-ran ]; then\n: > .git/stash-hook-ran\ngit stash store -m concurrent {}\nfi\n", entries[1].oid)).unwrap();
     fs::set_permissions(hook, fs::Permissions::from_mode(0o755)).unwrap();
-    let result = review.execute(&c).unwrap();
+    let (level, result) = review.execute(&c).unwrap();
+    assert_eq!(level, NoticeLevel::Warning);
     assert!(
         result.contains("Applied stash") && result.contains("Do not apply again"),
         "{result}"

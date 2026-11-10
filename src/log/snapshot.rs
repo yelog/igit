@@ -64,6 +64,10 @@ pub(crate) struct SnapshotPreview {
 }
 
 impl SnapshotPreview {
+    pub(crate) fn cancel_mouse(&mut self) {
+        self.panel.cancel_mouse();
+    }
+
     pub(crate) fn clear(&mut self) {
         let mut search = std::mem::take(&mut self.panel.file_search);
         search.invalidate();

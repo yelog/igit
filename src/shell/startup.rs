@@ -5,7 +5,6 @@ use ratatui::{
     layout::{Constraint, Layout},
 };
 use std::{
-    path::Path,
     sync::mpsc::{self, Receiver, Sender, TryRecvError},
     thread,
 };
@@ -13,6 +12,7 @@ use std::{
 pub(super) const DISCOVERING: &str = "Discovering repositories...";
 
 enum Message {
+    Discovered(usize),
     Stage(&'static str),
     Ready(Result<Box<Shell>>),
 }
@@ -20,6 +20,7 @@ enum Message {
 pub(super) struct WorkspaceLoad {
     receiver: Receiver<Message>,
     pub(super) stage: &'static str,
+    pub(super) roots: Option<usize>,
 }
 
 impl WorkspaceLoad {
@@ -34,12 +35,14 @@ impl WorkspaceLoad {
         Ok(Self {
             receiver,
             stage: DISCOVERING,
+            roots: None,
         })
     }
 
     pub(super) fn poll(&mut self) -> Result<Option<Shell>> {
         loop {
             match self.receiver.try_recv() {
+                Ok(Message::Discovered(roots)) => self.roots = Some(roots),
                 Ok(Message::Stage(stage)) => self.stage = stage,
                 Ok(Message::Ready(result)) => return result.map(|app| Some(*app)),
                 Err(TryRecvError::Empty) => return Ok(None),
@@ -56,6 +59,9 @@ fn load_workspace(
 ) -> Result<Shell> {
     let ctx = Context::discover(&launch.workspace)?;
     sender
+        .send(Message::Discovered(ctx.repos.len()))
+        .map_err(|_| anyhow::anyhow!("Workspace loading cancelled"))?;
+    sender
         .send(Message::Stage("Loading changes..."))
         .map_err(|_| anyhow::anyhow!("Workspace loading cancelled"))?;
     let mut app = Shell::unloaded(ctx, config);
@@ -64,7 +70,7 @@ fn load_workspace(
     }
     // Discovery already supplied current branch labels. Log is deferred until opened.
     if let Err(error) = app.commit.refresh(&app.ctx) {
-        app.notice(format!("Commit: {error:#}"));
+        app.notify(NoticeLevel::Error, "Commit", format!("{error:#}"));
     }
     app.commit.enable_background_execution();
     sender
@@ -83,26 +89,102 @@ pub(super) fn cancelled(event: &Event) -> bool {
             || (key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c'))))
 }
 
-pub(super) fn draw_loading(f: &mut Frame, path: &Path, stage: &str) {
-    let area = f.area();
-    f.render_widget(Block::default().style(Style::new().bg(BG).fg(FG)), area);
-    let [header, body, footer] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Fill(1),
-        Constraint::Length(1),
-    ])
-    .areas(area);
-    f.render_widget(Paragraph::new(" IGit").style(button_style(true)), header);
-    f.render_widget(
-        Paragraph::new(format!("{stage}\n\n{}", path.display()))
-            .wrap(Wrap { trim: false })
-            .block(pane("Workspace", true)),
-        body,
-    );
-    f.render_widget(
-        Paragraph::new(" Esc / q Quit").style(Style::new().fg(MUTED)),
-        footer,
-    );
+pub(super) struct LoadingView {
+    pub(super) commit: CommitPanel,
+    pub(super) tab: Tab,
+    icons: IconMode,
+    path: PathBuf,
+}
+
+impl LoadingView {
+    pub(super) fn new(launch: &cli::Launch, config: &AppConfig) -> Self {
+        let mut commit = CommitPanel::default();
+        commit.icons = config.icons;
+        Self {
+            commit,
+            tab: launch.tab,
+            icons: config.icons,
+            path: launch.workspace.clone(),
+        }
+    }
+
+    pub(super) fn draw(
+        &mut self,
+        f: &mut Frame,
+        stage: &str,
+        roots: Option<usize>,
+        elapsed: Duration,
+    ) {
+        let area = f.area();
+        f.render_widget(Block::default().style(Style::new().bg(BG).fg(FG)), area);
+        if area.width < 44 || area.height < 12 {
+            self.commit.panes.begin();
+            f.render_widget(
+                Paragraph::new(
+                    "IGit · Terminal too small\nMinimum 44 × 12; recommended 120 × 36.\nEsc / q Quit.",
+                )
+                .wrap(Wrap { trim: false }),
+                area,
+            );
+            return;
+        }
+        let [header, body, footer] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+        let context = workspace::Regions::default()
+            .draw_header(f, header, self.tab, self.icons, false, false);
+        let title = if context.width >= 18 {
+            " Opening workspace"
+        } else if context.width >= 8 {
+            " Loading"
+        } else {
+            ""
+        };
+        f.render_widget(
+            Paragraph::new(title).style(Style::new().fg(MUTED)),
+            context,
+        );
+        let frames: &[&str] = if self.icons == IconMode::Ascii {
+            &["|", "/", "-", "\\"]
+        } else {
+            &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        };
+        let spinner = frames[(elapsed.as_millis() / 120 % frames.len() as u128) as usize];
+        let status = format!("{spinner} {stage}");
+        let detail = match roots {
+            Some(count) => format!("{count} root{} found", if count == 1 { "" } else { "s" }),
+            None => "Looking for Git worktrees".into(),
+        };
+        let detail = if elapsed.as_secs() >= 5 {
+            format!("{detail} · {}s elapsed", elapsed.as_secs())
+        } else {
+            detail
+        };
+        if self.tab == Commit {
+            self.commit
+                .draw_loading(f, body, &self.path, &status, &detail);
+        } else {
+            f.render_widget(
+                Paragraph::new(format!("{status}\n\n{}\n{detail}", self.path.display()))
+                    .wrap(Wrap { trim: false })
+                    .block(pane(self.tab.name(), true)),
+                body,
+            );
+        }
+        let [brand, version] = workspace::footer_identity();
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                brand,
+                version,
+                Span::styled("  Esc / q Quit · Ctrl-C Cancel", Style::new().fg(MUTED)),
+            ]))
+            .style(Style::new().bg(TAG)),
+            footer,
+        );
+    }
 }
 
 pub(super) fn open<B: Backend>(
@@ -110,10 +192,11 @@ pub(super) fn open<B: Backend>(
     launch: cli::Launch,
     config: AppConfig,
 ) -> Result<Option<Shell>> {
-    // This draw must precede even discovery: filesystem traversal can also be slow.
-    terminal.draw(|f| draw_loading(f, &launch.workspace, DISCOVERING))?;
-    let path = launch.workspace.clone();
+    let started = Instant::now();
+    let mut view = LoadingView::new(&launch, &config);
+    terminal.draw(|f| view.draw(f, DISCOVERING, None, Duration::ZERO))?;
     let mut loading = WorkspaceLoad::start(launch, config)?;
+    let mut last_draw = Instant::now();
     loop {
         let mut dirty = false;
         if event::poll(Duration::from_millis(16))? {
@@ -123,12 +206,21 @@ pub(super) fn open<B: Backend>(
             }
             dirty = matches!(event, Event::Resize(_, _));
         }
-        let previous = loading.stage;
+        let previous = (loading.stage, loading.roots);
         if let Some(app) = loading.poll()? {
+            while event::poll(Duration::ZERO)? {
+                if cancelled(&event::read()?) {
+                    return Ok(None);
+                }
+            }
             return Ok(Some(app));
         }
-        if dirty || loading.stage != previous {
-            terminal.draw(|f| draw_loading(f, &path, loading.stage))?;
+        if dirty
+            || (loading.stage, loading.roots) != previous
+            || last_draw.elapsed() >= Duration::from_millis(120)
+        {
+            terminal.draw(|f| view.draw(f, loading.stage, loading.roots, started.elapsed()))?;
+            last_draw = Instant::now();
         }
     }
 }
@@ -170,7 +262,7 @@ impl Shell {
             Ok(_) => self.log_load = LogLoad::Pending(receiver),
             Err(error) => {
                 self.log_load = LogLoad::Ready;
-                self.notice(format!("Log loader: {error}"));
+                self.notify(NoticeLevel::Error, "Log", format!("Log loader: {error}"));
             }
         }
     }
@@ -184,13 +276,17 @@ impl Shell {
                 self.log = log;
                 self.log_load = LogLoad::Ready;
                 if let Err(error) = result {
-                    self.notice(format!("Log: {error:#}"));
+                    self.notify(NoticeLevel::Error, "Log", format!("{error:#}"));
                 }
             }
             Err(TryRecvError::Empty) => return false,
             Err(TryRecvError::Disconnected) => {
                 self.log_load = LogLoad::Ready;
-                self.notice("Log loader stopped unexpectedly; press F5 to retry".into());
+                self.notify(
+                    NoticeLevel::Error,
+                    "Log",
+                    "Log loader stopped unexpectedly; press F5 to retry".into(),
+                );
             }
         }
         true
@@ -205,6 +301,7 @@ pub(super) fn pending_workspace() -> (impl FnOnce(), WorkspaceLoad) {
         WorkspaceLoad {
             receiver,
             stage: DISCOVERING,
+            roots: None,
         },
     )
 }

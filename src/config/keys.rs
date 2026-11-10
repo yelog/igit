@@ -96,6 +96,7 @@ commands! {
         "pull" => "p", ALL;
         "fetch" => "f", ALL;
         "update" => "F9", ALL;
+        "notification-history" => "F8", ALL;
         "roots" => "r", ALL & !BRANCH;
         "actions" => ":", ALL;
         "refresh" => "F5", ALL;
@@ -194,6 +195,7 @@ commands! {
         "copy-author" => "ya", LOG_GRAPH;
         "commit-actions" => "a", LOG_GRAPH;
         "edit-message" => "F2", LOG_GRAPH;
+        "show-file-at-revision" => "e", LOG_GRAPH | LOG_INFO;
         "open" => "Enter", LOG;
         "search" => "/", LOG_GRAPH | LOG_INFO;
         "find" => "/", LOG_REFS | LOG_FILES;
@@ -258,6 +260,9 @@ commands! {
         "review-and-push" => "P", COMMIT;
     }
     "push" {
+        "copy-id" => "yy", PUSH_REPOS;
+        "copy-message" => "ym", PUSH_REPOS;
+        "copy-author" => "ya", PUSH_REPOS;
         "find" => "/", PUSH_REPOS | PUSH_FILES;
         "next-match" => "n", PUSH_REPOS | PUSH_FILES;
         "previous-match" => "N", PUSH_REPOS | PUSH_FILES;

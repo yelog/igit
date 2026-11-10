@@ -17,7 +17,7 @@ use crate::{
         key_sequence::KeySequence,
         pane,
         panes::{Axis, PaneId, PaneLayout, SplitId},
-        Action, Panel, ACCENT, FG, MUTED,
+        Action, NoticeLevel, Panel, ACCENT, FG, MUTED,
     },
 };
 use anyhow::Result;
@@ -293,10 +293,13 @@ impl MergePanel {
     fn selected_continue(&mut self, c: &Context) -> Action {
         self.recovery_plan = None;
         let Some(i) = self.selected_root() else {
-            return Action::Notice("No operation selected".into());
+            return Action::Notice(NoticeLevel::Warning, "No operation selected".into());
         };
         if !c.scope.contains(&i) {
-            return Action::Notice("Repository is outside Roots scope".into());
+            return Action::Notice(
+                NoticeLevel::Warning,
+                "Repository is outside Roots scope".into(),
+            );
         }
         match continue_plan(&c.repos[i].path) {
             Ok((op, tree, files)) => {
@@ -304,20 +307,26 @@ impl MergePanel {
                 self.plan = Some((i, op, tree));
                 Action::Confirm{title:format!("Continue {} · {}",name,c.repos[i].name),body:format!("git {} --continue (accept the existing message). Hooks are enabled. All currently staged changes participate.\n{}",name,files),token:"merge:continue".into()}
             }
-            Err(e) => Action::Notice(format!("{e:#}")),
+            Err(e) => Action::Notice(NoticeLevel::Error, format!("{e:#}")),
         }
     }
     fn selected_recovery(&mut self, c: &Context, action: RecoveryAction) -> Action {
         self.plan = None;
         self.recovery_plan = None;
         let Some(root) = self.selected_root() else {
-            return Action::Notice("No operation selected".into());
+            return Action::Notice(NoticeLevel::Warning, "No operation selected".into());
         };
         if !c.scope.contains(&root) {
-            return Action::Notice("Repository is outside Roots scope".into());
+            return Action::Notice(
+                NoticeLevel::Warning,
+                "Repository is outside Roots scope".into(),
+            );
         }
         let Some(repo) = c.repos.get(root) else {
-            return Action::Notice("Repository is no longer available".into());
+            return Action::Notice(
+                NoticeLevel::Warning,
+                "Repository is no longer available".into(),
+            );
         };
         match RecoveryPlan::review(&repo.path, action) {
             Ok((plan, body)) => {
@@ -332,7 +341,7 @@ impl MergePanel {
                 self.recovery_plan = Some((root, plan, token.clone()));
                 Action::Confirm { title, body, token }
             }
-            Err(error) => Action::Notice(format!("{error:#}")),
+            Err(error) => Action::Notice(NoticeLevel::Error, format!("{error:#}")),
         }
     }
     fn act(&mut self, hit: Hit, c: &Context) -> Action {
@@ -369,7 +378,7 @@ impl MergePanel {
                 Hit::Open => {
                     if let Some(file) = self.list.selected_file().cloned() {
                         if let Err(e) = self.choose_file(c, file) {
-                            return Action::Notice(format!("{e:#}"));
+                            return Action::Notice(NoticeLevel::Error, format!("{e:#}"));
                         }
                     }
                 }
@@ -387,7 +396,10 @@ impl MergePanel {
             Hit::List | Hit::Save => {
                 self.close_document();
                 if matches!(hit, Hit::Save) {
-                    return Action::Notice("Merge draft saved for this session".into());
+                    return Action::Notice(
+                        NoticeLevel::Success,
+                        "Merge draft saved for this session".into(),
+                    );
                 }
             }
             Hit::Auto(source) => {
@@ -427,7 +439,10 @@ impl MergePanel {
                     .collect::<Vec<_>>();
                 let count = resolved.len();
                 if count == 0 {
-                    return Action::Notice("No changes can be resolved automatically".into());
+                    return Action::Notice(
+                        NoticeLevel::Info,
+                        "No changes can be resolved automatically".into(),
+                    );
                 }
                 let previous = snap(d, resolved.iter().map(|(i, _)| *i));
                 for (i, result) in resolved {
@@ -442,10 +457,13 @@ impl MergePanel {
                 let pending = d.pending();
                 self.store(previous);
                 let noun = if count == 1 { "change" } else { "changes" };
-                return Action::Notice(format!(
-                    "Automatically resolved {count} {noun}; {pending} pending. Undo [{}]",
-                    self.key_label("u")
-                ));
+                return Action::Notice(
+                    NoticeLevel::Success,
+                    format!(
+                        "Automatically resolved {count} {noun}; {pending} pending. Undo [{}]",
+                        self.key_label("u")
+                    ),
+                );
             }
             Hit::Choice(i, side) | Hit::Decide(i, side, _) => {
                 let b = &d.chunks[i];
@@ -477,7 +495,10 @@ impl MergePanel {
             Hit::Both => {
                 let i = self.idx;
                 if d.chunks[i].kind != Kind::Conflict {
-                    return Action::Notice("Select a conflict block first".into());
+                    return Action::Notice(
+                        NoticeLevel::Warning,
+                        "Select a conflict block first".into(),
+                    );
                 }
                 let s = snap(d, std::iter::once(i));
                 d.chunks[i].both();
@@ -569,13 +590,16 @@ impl MergePanel {
             }
             Hit::Apply => {
                 if !c.scope.contains(&d.file.root) {
-                    return Action::Notice("Repository is outside Roots scope".into());
+                    return Action::Notice(
+                        NoticeLevel::Warning,
+                        "Repository is outside Roots scope".into(),
+                    );
                 }
                 if d.pending() > 0 {
-                    return Action::Notice(format!(
-                        "{} changes still require a decision",
-                        d.pending()
-                    ));
+                    return Action::Notice(
+                        NoticeLevel::Warning,
+                        format!("{} changes still require a decision", d.pending()),
+                    );
                 }
                 return Action::Confirm{title:format!("Stage resolved file · {}",c.repos[d.file.root].name),body:format!("Write the previewed result to {} and stage ONLY this path. This does not continue the repository operation.",d.file.label()),token:"merge:apply".into()};
             }
@@ -614,6 +638,11 @@ impl MergePanel {
 }
 
 impl Panel for MergePanel {
+    fn cancel_mouse(&mut self) {
+        self.list.reset_click();
+        self.view.cancel_scroll_drag();
+    }
+
     fn refresh(&mut self, c: &Context) -> Result<()> {
         self.cancel_key_sequence();
         let refreshed = self.list.refresh(c);
@@ -657,16 +686,19 @@ impl Panel for MergePanel {
     fn confirm(&mut self, token: &str, c: &Context) -> Action {
         if token.starts_with("merge:recovery:") {
             let Some((root, plan, expected)) = self.recovery_plan.take() else {
-                return Action::Notice("Review expired".into());
+                return Action::Notice(NoticeLevel::Warning, "Review expired".into());
             };
             if token != expected {
-                return Action::Notice("Review expired".into());
+                return Action::Notice(NoticeLevel::Warning, "Review expired".into());
             }
             if !c.scope.contains(&root) {
-                return Action::Notice("Repository out of scope".into());
+                return Action::Notice(NoticeLevel::Warning, "Repository out of scope".into());
             }
             let Some(repo) = c.repos.get(root) else {
-                return Action::Notice("Repository is no longer available".into());
+                return Action::Notice(
+                    NoticeLevel::Warning,
+                    "Repository is no longer available".into(),
+                );
             };
             return match plan.execute(&repo.path) {
                 Ok(message) => {
@@ -676,9 +708,11 @@ impl Panel for MergePanel {
                         self.hist.clear();
                         self.view.reset_document();
                     }
-                    Action::Refresh(format!("{}: {message}", repo.name))
+                    Action::Refresh(NoticeLevel::Success, format!("{}: {message}", repo.name))
                 }
-                Err(error) => Action::Refresh(format!("{}: {error:#}", repo.name)),
+                Err(error) => {
+                    Action::Refresh(NoticeLevel::Error, format!("{}: {error:#}", repo.name))
+                }
             };
         }
         match token {
@@ -687,7 +721,7 @@ impl Panel for MergePanel {
                     return Action::None;
                 };
                 if !c.scope.contains(&d.file.root) {
-                    return Action::Notice("Repository out of scope".into());
+                    return Action::Notice(NoticeLevel::Warning, "Repository out of scope".into());
                 }
                 match d.apply() {
                     Ok(()) => {
@@ -715,24 +749,27 @@ impl Panel for MergePanel {
                         self.view.reset_document();
                         if let Some(next) = next {
                             if let Err(error) = self.choose_file(c, next) {
-                                return Action::Refresh(format!("{msg} Next file: {error:#}"));
+                                return Action::Refresh(
+                                    NoticeLevel::Warning,
+                                    format!("{msg} Next file: {error:#}"),
+                                );
                             }
                         }
-                        Action::Refresh(msg)
+                        Action::Refresh(NoticeLevel::Success, msg)
                     }
-                    Err(e) => Action::Notice(format!("{e:#}")),
+                    Err(e) => Action::Notice(NoticeLevel::Error, format!("{e:#}")),
                 }
             }
             "merge:continue" => {
                 let Some((i, op, tree)) = self.plan.take() else {
-                    return Action::Notice("Review expired".into());
+                    return Action::Notice(NoticeLevel::Warning, "Review expired".into());
                 };
                 if !c.scope.contains(&i) {
-                    return Action::Notice("Repository out of scope".into());
+                    return Action::Notice(NoticeLevel::Warning, "Repository out of scope".into());
                 }
                 match continue_op(&c.repos[i].path, &op, &tree) {
-                    Ok(msg) => Action::Refresh(msg),
-                    Err(e) => Action::Refresh(format!("{e:#}")),
+                    Ok(msg) => Action::Refresh(NoticeLevel::Success, msg),
+                    Err(e) => Action::Refresh(NoticeLevel::Error, format!("{e:#}")),
                 }
             }
             _ => Action::None,

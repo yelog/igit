@@ -39,6 +39,34 @@ fn copied(p: &mut CommitPanel, c: &Context) -> String {
 }
 
 #[test]
+fn escape_keeps_changes_and_message_focus_without_hiding_preview() {
+    let (_dir, c) = fixture();
+    let mut p = CommitPanel::default();
+    p.refresh(&c).unwrap();
+    select_file(&mut p, "src/ｕｉ/model/page.rs");
+    p.saved.message = Some("Keep the shared draft".into());
+    let checks = p.checks.clone();
+    let cursor = p.cursor;
+    for width in [44, 80, 120] {
+        let mut terminal = Terminal::new(TestBackend::new(width, 36)).unwrap();
+        for preview_open in [false, true] {
+            p.preview_open = preview_open;
+            for pane in [PaneId::Changes, PaneId::Message] {
+                p.focus_pane(pane);
+                draw(&mut p, &mut terminal, &c);
+                key(&mut p, &c, K::Esc);
+                draw(&mut p, &mut terminal, &c);
+                assert_eq!(p.focused_pane(), pane);
+                assert_eq!(p.preview_open, preview_open);
+                assert_eq!(p.cursor, cursor);
+                assert_eq!(p.checks, checks);
+                assert_eq!(p.saved.message.as_deref(), Some("Keep the shared draft"));
+            }
+        }
+    }
+}
+
+#[test]
 fn file_preview_shares_history_split_rendering_and_preserves_commit_candidates() {
     let (_dir, c) = fixture();
     commit_base(&c);
@@ -205,7 +233,7 @@ fn running_commit_allows_revision_controls_and_keeps_message_and_write_guards() 
     for code in ['c', 'i', 'd', 'P', 'M'] {
         let action = p.event(&Event::Key(KeyEvent::new(K::Char(code), Mod::NONE)), &c);
         assert!(
-            matches!(action, Action::Notice(message) if message.contains("Commit running")),
+            matches!(action, Action::Notice(NoticeLevel::Warning, message) if message.contains("Commit running")),
             "{code} passed a running commit guard"
         );
         assert!(p.edit.is_none());

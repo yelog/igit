@@ -1,3 +1,5 @@
+mod view;
+
 use super::model::{Branch, Snapshot};
 use super::sync::Sync;
 use crate::core::{command, git, revpath, Context, Repo};
@@ -33,6 +35,7 @@ impl Operation {
 
 pub(super) struct Review {
     root: usize,
+    repository: String,
     path: PathBuf,
     snapshot: Snapshot,
     source: Branch,
@@ -167,6 +170,7 @@ impl Review {
         );
         Ok(Self {
             root,
+            repository: repo.name.clone(),
             path: repo.path.clone(),
             snapshot,
             source: source.clone(),

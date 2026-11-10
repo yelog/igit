@@ -65,6 +65,26 @@ impl Target {
 }
 
 impl LogPanel {
+    pub(super) fn show_file_at_revision(&mut self, c: &Context) -> Result<Action> {
+        self.require_current_history(c)?;
+        let target = self
+            .filter
+            .file_history
+            .as_ref()
+            .context("Open a File History tab first")?;
+        let rev = self.rev().context("No commit selected")?;
+        ensure!(
+            rev.root == target.root && c.scope.contains(&rev.root),
+            "The file history repository is outside the current scope"
+        );
+        let file = rev.file.as_ref().context("No historical file selected")?;
+        Ok(Action::ShowFileRevision {
+            repo: c.repos[rev.root].path.clone(),
+            path: model::path_from_bytes(&file.raw)?.to_path_buf(),
+            revision: rev.oid.clone(),
+        })
+    }
+
     /// Set startup intent without reading history on the terminal thread.
     pub(crate) fn set_file_history(&mut self, c: &Context, file: &Path) -> Result<()> {
         let target = Target::resolve(c, file)?;

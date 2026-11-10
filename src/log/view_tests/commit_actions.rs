@@ -76,7 +76,10 @@ fn right_click_targets_the_actual_row_even_when_another_root_has_the_same_oid() 
     assert_eq!(title, "New Tag");
     assert!(body.contains("Repository: right") && body.contains("Create lightweight tag: 归档"));
     assert!(git(&right, &["tag"]).is_empty());
-    assert!(matches!(panel.confirm(&token, &c), Action::Refresh(_)));
+    assert!(matches!(
+        panel.confirm(&token, &c),
+        Action::Refresh(NoticeLevel::Success, _)
+    ));
     assert!(matches!(panel.confirm(&token, &c), Action::None));
     assert!(git(&left, &["tag"]).is_empty());
     assert_eq!(
@@ -203,17 +206,19 @@ fn cherry_pick_mouse_confirmation_refreshes_after_success_or_native_conflict() {
         assert_eq!(title, "Cherry-pick 1 commit");
         assert!(body.contains(&picked[..8]));
         assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]), head);
-        let Action::Refresh(message) = panel.confirm(&token, &c) else {
+        let Action::Refresh(level, message) = panel.confirm(&token, &c) else {
             panic!("Every attempted cherry-pick must refresh workspace and Conflicts");
         };
         assert!(matches!(panel.confirm(&token, &c), Action::None));
         if conflict {
+            assert_eq!(level, NoticeLevel::Error);
             assert!(message.contains("0 applied · 1 conflicted · 0 remaining"));
             assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]), head);
             assert_eq!(git(dir.path(), &["rev-parse", "CHERRY_PICK_HEAD"]), picked);
             assert!(!git(dir.path(), &["ls-files", "--unmerged"]).is_empty());
             git(dir.path(), &["cherry-pick", "--abort"]);
         } else {
+            assert_eq!(level, NoticeLevel::Success);
             assert!(message.contains("Cherry-picked 1 onto"));
             assert_eq!(git(dir.path(), &["rev-parse", "HEAD^"]), head);
             assert_eq!(
@@ -254,7 +259,7 @@ fn multi_pick_reviews_hidden_commits_in_application_order_and_leaves_native_queu
     }
     panel.visible.retain(|&i| panel.hist.revs[i].oid == third);
     assert!(panel
-        .pick_hint(&c)
+        .pick_hint(&c, "e")
         .unwrap()
         .starts_with("3 selected · 2 hidden"));
     let Action::Confirm { title, body, token } = key(&mut panel, K::Char('C'), Mods::SHIFT, &c)
@@ -268,9 +273,10 @@ fn multi_pick_reviews_hidden_commits_in_application_order_and_leaves_native_queu
         assert!(list[i].starts_with(&format!("{}  {}", i + 1, &oid[..8])));
     }
     assert_eq!(git(repo, &["rev-parse", "HEAD"]), head);
-    let Action::Refresh(message) = panel.confirm(&token, &c) else {
+    let Action::Refresh(level, message) = panel.confirm(&token, &c) else {
         panic!("expected a batch result");
     };
+    assert_eq!(level, NoticeLevel::Warning);
     assert!(
         message.contains("1 applied · 1 conflicted · 1 remaining"),
         "{message}"

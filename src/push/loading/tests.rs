@@ -26,9 +26,18 @@ fn refresh_keeps_cached_rows_but_blocks_remote_actions_and_rejects_old_roots() {
     panel.refresh(&c).unwrap();
     let release = hold_entries(&mut panel);
     assert_eq!(panel.entries, old);
-    assert!(matches!(panel.review(&c, false), Action::Notice(_)));
-    assert!(matches!(panel.review(&c, true), Action::Notice(_)));
-    assert!(matches!(panel.start(&c, true), Action::Notice(_)));
+    assert!(matches!(
+        panel.review(&c, false),
+        Action::Notice(NoticeLevel::Warning, _)
+    ));
+    assert!(matches!(
+        panel.review(&c, true),
+        Action::Notice(NoticeLevel::Warning, _)
+    ));
+    assert!(matches!(
+        panel.start(&c, true),
+        Action::Notice(NoticeLevel::Warning, _)
+    ));
     assert!(!panel.busy());
 
     // Roots may change while Push is inactive, without calling its refresh first.
@@ -44,7 +53,10 @@ fn refresh_keeps_cached_rows_but_blocks_remote_actions_and_rejects_old_roots() {
         BTreeSet::from([0]),
         "hidden checks must not select another root"
     );
-    assert!(matches!(panel.review(&c, false), Action::Notice(_)));
+    assert!(matches!(
+        panel.review(&c, false),
+        Action::Notice(NoticeLevel::Warning, _)
+    ));
 
     panel.reseed = Some(vec![1]);
     panel.refresh(&c).unwrap();
@@ -241,8 +253,14 @@ fn failed_reader_retains_snapshot_disables_writes_and_can_refresh_again() {
     assert!(panel.poll_loading(&c).is_err());
     assert_eq!(panel.entries, before);
     assert!(panel.read_status().unwrap().contains("refresh to retry"));
-    assert!(matches!(panel.review(&c, false), Action::Notice(_)));
-    assert!(matches!(panel.start(&c, true), Action::Notice(_)));
+    assert!(matches!(
+        panel.review(&c, false),
+        Action::Notice(NoticeLevel::Error, _)
+    ));
+    assert!(matches!(
+        panel.start(&c, true),
+        Action::Notice(NoticeLevel::Error, _)
+    ));
     panel.refresh(&c).unwrap();
     panel.finish_loading(&c);
     assert!(panel.read_status().is_none());

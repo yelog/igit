@@ -7,6 +7,7 @@ mod discard_tests;
 mod display;
 mod execution;
 mod keymap;
+mod loading;
 #[cfg(test)]
 mod message_tests;
 mod preview;
@@ -31,7 +32,7 @@ use crate::{
         preview_scroll_key,
         search::Search,
         selection::{self, TextLayout, TextSelection, Wrap as TextWrap},
-        Action, Panel,
+        Action, NoticeLevel, Panel,
     },
 };
 use anyhow::{bail, Result};
@@ -43,7 +44,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Style},
     text::Line,
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 pub(crate) use rollback::{Rollback, RollbackEvent};
@@ -115,7 +116,6 @@ enum Edit {
     Group,
     Move,
     AISettings,
-    AIError,
 }
 #[derive(Clone)]
 enum Hit {
@@ -186,7 +186,6 @@ pub struct CommitPanel {
     edit: Option<Edit>,
     buf: String,
     caret: usize,
-    ai_scroll: u16,
     amend: BTreeSet<usize>,
     view: Vec<Row>,
     hits: Vec<(Rect, Hit)>,
@@ -247,7 +246,6 @@ impl Default for CommitPanel {
             edit: Default::default(),
             buf: Default::default(),
             caret: Default::default(),
-            ai_scroll: Default::default(),
             amend: Default::default(),
             view: Default::default(),
             hits: Default::default(),
@@ -307,8 +305,38 @@ fn slice(r: Rect, y: u16) -> Rect {
 fn word(f: &mut Frame, r: Rect, s: &str, st: Style) {
     f.render_widget(Paragraph::new(s.to_owned()).style(st), r)
 }
-fn err(e: impl ToString) -> Action {
-    Action::Notice(e.to_string())
+#[derive(Debug)]
+struct Constraint(&'static str);
+
+impl std::fmt::Display for Constraint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for Constraint {}
+
+fn err(error: anyhow::Error) -> Action {
+    let level = if error.is::<Constraint>() {
+        NoticeLevel::Warning
+    } else {
+        NoticeLevel::Error
+    };
+    Action::Notice(level, format!("{error:#}"))
+}
+
+fn warning(message: impl ToString) -> Action {
+    Action::Notice(NoticeLevel::Warning, message.to_string())
+}
+
+fn result_level(succeeded: usize, issues: bool) -> NoticeLevel {
+    if succeeded == 0 {
+        NoticeLevel::Error
+    } else if issues {
+        NoticeLevel::Warning
+    } else {
+        NoticeLevel::Success
+    }
 }
 impl CommitPanel {
     pub(crate) fn focused_pane(&self) -> PaneId {
@@ -544,7 +572,7 @@ impl CommitPanel {
         let previous = self.saved.clone();
         let previous_ai = self.ai_settings.clone();
         match self.edit.clone() {
-            Some(Edit::Stash) => bail!("Review the stash before creating it"),
+            Some(Edit::Stash) => bail!(Constraint("Review the stash before creating it")),
             Some(Edit::Message) => {
                 self.saved.message = Some(self.buf.clone());
             }
@@ -556,7 +584,7 @@ impl CommitPanel {
                     || n == IGNORED
                     || self.saved.groups.iter().any(|v| v == n)
                 {
-                    bail!("Enter a unique changelist name")
+                    bail!(Constraint("Enter a unique changelist name"))
                 }
                 self.saved.groups.push(n.to_string());
             }
@@ -585,10 +613,6 @@ impl CommitPanel {
                 self.saved.model = settings.model.clone();
                 self.saved.prompt = settings.prompt.clone();
                 self.ai_settings = settings;
-            }
-            Some(Edit::AIError) => {
-                self.edit = None;
-                return Ok(());
             }
             None => {}
         }
@@ -633,7 +657,7 @@ impl CommitPanel {
     fn launch(&mut self, h: Hit, c: &Context) -> Action {
         if self.add_running() && matches!(h, Hit::MessageAction(_) | Hit::StageHunks | Hit::Refresh)
         {
-            return err("Adding files to Git; browsing and message editing remain available");
+            return warning("Adding files to Git; browsing and message editing remain available");
         }
         if self.execution_running()
             && !matches!(
@@ -648,11 +672,13 @@ impl CommitPanel {
                     | Hit::Expand(_)
             )
         {
-            return err("Wait for the commit batch to finish");
+            return warning("Wait for the commit batch to finish");
         }
         match h {
             Hit::StageHunks => return self.open_staging(c).unwrap_or_else(err),
-            Hit::Refresh => return Action::Refresh("Changes refreshed".into()),
+            Hit::Refresh => {
+                return Action::Refresh(NoticeLevel::Success, "Changes refreshed".into())
+            }
             Hit::ResolveConflicts => return Action::OpenConflicts,
             Hit::UndoCheck => {
                 for (key, was) in self.last_check.drain(..) {
@@ -691,7 +717,9 @@ impl CommitPanel {
             Hit::Msg => self.edit_message(c),
             Hit::Amend => {
                 let Some(root) = self.highlighted_repo() else {
-                    return err("Highlight a file or group from one repository to toggle Amend");
+                    return warning(
+                        "Highlight a file or group from one repository to toggle Amend",
+                    );
                 };
                 if !self.amend.remove(&root) {
                     self.amend.insert(root);
@@ -701,11 +729,15 @@ impl CommitPanel {
                 self.message_action = action;
                 if action == MessageAction::Generate {
                     if self.ai_running() {
-                        return err("AI request in progress. Please wait");
+                        return warning("AI request in progress. Please wait");
                     }
-                    return self
-                        .start_ai(c)
-                        .unwrap_or_else(|error| self.show_ai_error(error));
+                    return self.start_ai(c).unwrap_or_else(|error| {
+                        if error.is::<Constraint>() {
+                            err(error)
+                        } else {
+                            self.show_ai_error(error)
+                        }
+                    });
                 }
                 return self
                     .submit(c, action == MessageAction::CommitAndPush)
@@ -751,6 +783,15 @@ impl CommitPanel {
     }
 }
 impl Panel for CommitPanel {
+    fn cancel_mouse(&mut self) {
+        self.dragged = None;
+        self.diff_selection.cancel_mouse();
+        self.message_selection.cancel_mouse();
+        if let Some(view) = &mut self.diff_comparison {
+            view.cancel_mouse();
+        }
+    }
+
     fn refresh(&mut self, c: &Context) -> Result<()> {
         if self.execution_running() || self.add_running() {
             self.request_refresh();
@@ -896,13 +937,13 @@ impl Panel for CommitPanel {
                             | K::Esc
                     ) => {}
                 Event::Key(_) | Event::Paste(_) => {
-                    return err("Commit running; browse changes or use Ctrl-X to stop remaining repositories");
+                    return warning("Commit running; browse changes or use Ctrl-X to stop remaining repositories");
                 }
                 Event::Mouse(m)
                     if m.kind == M::Down(MouseButton::Left)
                         && inside(self.edit_view.0, m.column, m.row) =>
                 {
-                    return err("Wait for the commit batch before editing its message");
+                    return warning("Wait for the commit batch before editing its message");
                 }
                 Event::Mouse(m) if matches!(m.kind, M::Drag(_) | M::Up(_)) => {
                     self.dragged = None;
@@ -1016,7 +1057,7 @@ impl Panel for CommitPanel {
                         });
                         if let Some(g) = target {
                             if g == NEW || g == IGNORED || !file.movable() {
-                                return err("Only tracked files without conflicts can move between changelists");
+                                return warning("Only tracked files without conflicts can move between changelists");
                             }
                             self.saved.membership.insert(file.key.clone(), g.clone());
                             self.files[i].group = g;
@@ -1140,10 +1181,10 @@ impl Panel for CommitPanel {
                 {
                     let Some(file) = self.active().and_then(Row::file).map(|i| &self.files[i])
                     else {
-                        return Action::Notice("Select a file in Changes to edit".into());
+                        return warning("Select a file in Changes to edit");
                     };
                     if !c.scope.contains(&file.root) {
-                        return Action::Notice("File is outside the current Roots".into());
+                        return warning("File is outside the current Roots");
                     }
                     let repo = c.repos[file.root].path.clone();
                     return Action::EditFile {
@@ -1254,7 +1295,9 @@ impl Panel for CommitPanel {
                     return self.launch(Hit::MessageAction(MessageAction::CommitAndPush), c);
                 }
                 K::Char(']') | K::Char('[') => self.browse_repo(k.code == K::Char(']'), c),
-                K::Esc => return self.launch(Hit::Show(Focus::Tree), c),
+                K::Esc if self.focus == Focus::Diff => {
+                    return self.launch(Hit::Show(Focus::Tree), c);
+                }
                 _ => {}
             },
             _ => {}
@@ -1292,7 +1335,6 @@ impl CommitPanel {
             Edit::Group => "New changelist".into(),
             Edit::Move => "Move to changelist".into(),
             Edit::AISettings => "AI settings".into(),
-            Edit::AIError => "AI message failed".into(),
         };
         let block = Block::default()
             .borders(Borders::ALL)
@@ -1319,7 +1361,6 @@ impl CommitPanel {
             Edit::Move => "j/k Select · Enter Apply · Esc Cancel",
             Edit::AISettings if inn.width >= 62 => &key_hint,
             Edit::AISettings => "Lines: API URL, model, prompt",
-            Edit::AIError => "Commit message preserved · Enter/Esc Close",
         };
         word(f, slice(inn, 0), hint, Style::default().fg(MUTED));
         let text = Rect::new(inn.x, inn.y + 1, inn.width, inn.height - 2);
@@ -1345,22 +1386,11 @@ impl CommitPanel {
                 );
                 self.hits.push((r, Hit::MoveTo(s.clone())))
             }
-        } else if matches!(ed, Edit::AIError) {
-            f.render_widget(
-                Paragraph::new(self.ai_error.as_str())
-                    .wrap(Wrap { trim: false })
-                    .scroll((self.ai_scroll, 0)),
-                text,
-            )
         } else {
             self.draw_input(f, text, cursor);
         }
         let foot = slice(inn, inn.height - 1);
         let mut x = foot.x;
-        if matches!(ed, Edit::AIError) {
-            self.hit_button(f, foot, &mut x, "Close Enter/Esc", Hit::EditCancel);
-            return;
-        }
         let save_key = if matches!(ed, Edit::Message | Edit::AISettings) {
             "F2"
         } else {
@@ -1536,12 +1566,6 @@ impl CommitPanel {
                     }
                     self.caret = self.buf.len()
                 }
-            } else if matches!(self.edit, Some(Edit::AIError)) {
-                match m.kind {
-                    M::ScrollDown => self.ai_scroll = self.ai_scroll.saturating_add(2),
-                    M::ScrollUp => self.ai_scroll = self.ai_scroll.saturating_sub(2),
-                    _ => {}
-                }
             }
             return Action::None;
         }
@@ -1572,10 +1596,7 @@ impl CommitPanel {
         if k.code == K::F(2)
             || (matches!(k.code, K::Char('s') | K::Enter) && k.modifiers.contains(Mod::CONTROL))
             || k.code == K::Enter
-                && matches!(
-                    self.edit,
-                    Some(Edit::Move | Edit::Group | Edit::AIError | Edit::Stash)
-                )
+                && matches!(self.edit, Some(Edit::Move | Edit::Group | Edit::Stash))
         {
             return self.launch(Hit::EditSave, c);
         }
@@ -1585,14 +1606,6 @@ impl CommitPanel {
                     self.move_to = (self.move_to + 1).min(self.move_names.len().saturating_sub(1))
                 }
                 K::Char('k') | K::Up => self.move_to = self.move_to.saturating_sub(1),
-                _ => {}
-            }
-            return Action::None;
-        }
-        if matches!(self.edit, Some(Edit::AIError)) {
-            match k.code {
-                K::Char('j') | K::Down => self.ai_scroll = self.ai_scroll.saturating_add(1),
-                K::Char('k') | K::Up => self.ai_scroll = self.ai_scroll.saturating_sub(1),
                 _ => {}
             }
             return Action::None;
@@ -1717,6 +1730,19 @@ mod flow_tests {
     use ratatui::{backend::TestBackend, Terminal};
 
     #[test]
+    fn notice_severity_comes_from_error_type_not_message_text() {
+        assert!(matches!(
+            err(Constraint("Select files first").into()),
+            Action::Notice(NoticeLevel::Warning, _)
+        ));
+        let error = anyhow::anyhow!("Select files first").context("Could not load changes");
+        let Action::Notice(NoticeLevel::Error, message) = err(error) else {
+            panic!("An operation error must remain an error");
+        };
+        assert_eq!(message, "Could not load changes: Select files first");
+    }
+
+    #[test]
     fn submission_rejects_a_branch_switch_after_preparing_at_the_same_head() {
         let d = tempfile::tempdir().unwrap();
         let repo = d.path().join("app");
@@ -1744,7 +1770,12 @@ mod flow_tests {
         let plans = panel.prepare_submission(&c).unwrap();
 
         git(&repo, &["switch", "-q", "main"]).unwrap();
-        let Action::Committed { repos, message, .. } = panel.execute_submission(&c, plans, false)
+        let Action::Committed {
+            repos,
+            message,
+            level: NoticeLevel::Error,
+            ..
+        } = panel.execute_submission(&c, plans, false)
         else {
             panic!("missing commit result");
         };
@@ -1761,7 +1792,13 @@ mod flow_tests {
         assert_eq!(fs::read_to_string(repo.join("file")).unwrap(), "pending\n");
 
         git(&repo, &["switch", "-q", "target"]).unwrap();
-        let Action::Committed { repos, message, .. } = panel.submit(&c, false).unwrap() else {
+        let Action::Committed {
+            repos,
+            message,
+            level: NoticeLevel::Success,
+            ..
+        } = panel.submit(&c, false).unwrap()
+        else {
             panic!("missing commit result");
         };
         assert_eq!(repos, [0], "{message}");

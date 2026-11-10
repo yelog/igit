@@ -44,10 +44,18 @@ fn wait_log(app: &mut Shell) {
 #[test]
 fn pending_discovery_can_render_resize_and_cancel_without_a_context() {
     let (disconnect, mut loading) = pending_workspace();
+    let mut view = LoadingView::new(
+        &cli::Launch {
+            workspace: "/workspace/模块".into(),
+            tab: Commit,
+            file_history: None,
+        },
+        &AppConfig::default(),
+    );
     for (width, height) in [(120, 36), (80, 24), (44, 12), (20, 5), (1, 1)] {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
-            .draw(|f| draw_loading(f, Path::new("/workspace/模块"), loading.stage))
+            .draw(|f| view.draw(f, loading.stage, None, Duration::ZERO))
             .unwrap();
         if width >= 44 {
             let text: String = terminal
@@ -61,6 +69,13 @@ fn pending_discovery_can_render_resize_and_cancel_without_a_context() {
             assert!(text.contains(DISCOVERING));
             assert!(text.contains("Esc / q Quit"));
             assert!(!text.contains("No Git working trees"));
+            assert!(text.contains("Changes"));
+            assert!(text.contains("Commit message"));
+            assert!(!text.contains("0 files"));
+            if width >= 92 {
+                assert!(text.contains("Diff preview"));
+                assert!(text.contains("Waiting for changes"));
+            }
         }
         assert!(loading.poll().unwrap().is_none());
     }
@@ -90,6 +105,69 @@ fn pending_discovery_can_render_resize_and_cancel_without_a_context() {
         .unwrap()
         .to_string()
         .contains("stopped"));
+}
+
+#[test]
+fn startup_skeleton_reuses_commit_geometry_and_animates_without_stage_changes() {
+    let (_dir, mut app) = fixture();
+    let launch = cli::Launch {
+        workspace: app.ctx.workspace.clone(),
+        tab: Commit,
+        file_history: None,
+    };
+    let mut view = LoadingView::new(&launch, &app.config);
+    for (width, height) in [(160, 40), (120, 36), (92, 24), (91, 24), (44, 12)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|f| view.draw(f, DISCOVERING, None, Duration::ZERO))
+            .unwrap();
+        let first = terminal.backend().buffer().clone();
+        screen(&mut app, width, height);
+        assert_eq!(view.commit.panes.nodes(), app.commit.panes.nodes());
+        terminal
+            .draw(|f| view.draw(f, DISCOVERING, None, Duration::from_millis(120)))
+            .unwrap();
+        assert_ne!(&first, terminal.backend().buffer());
+        assert!(view
+            .commit
+            .panes
+            .nodes()
+            .iter()
+            .all(|(_, rect)| { rect.right() <= width && rect.bottom() <= height }));
+    }
+}
+
+#[test]
+fn startup_reports_real_counts_and_preserves_direct_panel_identity() {
+    for tab in [Commit, Log, Push, Branch, Stash] {
+        let mut view = LoadingView::new(
+            &cli::Launch {
+                workspace: "/workspace/模块".into(),
+                tab,
+                file_history: None,
+            },
+            &AppConfig {
+                icons: IconMode::Ascii,
+                ..AppConfig::default()
+            },
+        );
+        let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+        terminal
+            .draw(|f| view.draw(f, "Loading changes...", Some(11), Duration::from_secs(6)))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert_eq!(view.tab, tab);
+        assert!(text.contains("11 roots"));
+        assert!(text.contains("6s"));
+        assert!(text.contains("Esc / q Quit"));
+        assert!(!text.contains("No Git working trees"));
+    }
 }
 
 #[test]
@@ -128,6 +206,7 @@ fn startup_loads_all_repositories_and_preserves_index_and_worktree() {
     let head = git(repo, &["rev-parse", "HEAD"]).unwrap();
     let mut loading = start_workspace(dir.path().into(), previous.config.clone()).unwrap();
     let mut app = wait_workspace(&mut loading).unwrap();
+    assert_eq!(loading.roots, Some(2));
     assert_eq!(app.ctx.repos.len(), 2);
     assert_eq!(app.ctx.scope.len(), 2);
     assert!(app.ctx.repos.iter().all(|repo| repo.branch == "main"));
@@ -222,7 +301,10 @@ fn disconnected_log_worker_reports_error_and_allows_retry() {
     drop(sender);
     assert!(app.poll_log_load());
     assert!(app.log_load.ready());
-    assert!(app.msg.contains("Log loader stopped"));
+    assert!(app
+        .notifications
+        .latest_body()
+        .contains("Log loader stopped"));
     app.refresh_log();
     app.go(Log);
     assert!(screen(&mut app, 120, 36).contains("base"));

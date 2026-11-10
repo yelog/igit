@@ -65,7 +65,7 @@ fn finish(panel: &mut CommitPanel, ctx: &Context) -> String {
     loop {
         let action = panel.poll_add(ctx);
         if !panel.add_running() {
-            let Action::Notice(results) = action else {
+            let Action::Notice(_, results) = action else {
                 panic!("Addition must report its result")
             };
             return results;
@@ -77,7 +77,7 @@ fn finish(panel: &mut CommitPanel, ctx: &Context) -> String {
 
 fn add_files(panel: &mut CommitPanel, ctx: &Context, code: K) -> String {
     assert!(
-        matches!(press(panel, ctx, code), Action::Notice(message) if message.contains("Adding"))
+        matches!(press(panel, ctx, code), Action::Notice(NoticeLevel::Info, message) if message.contains("Adding"))
     );
     assert!(panel.add_running());
     finish(panel, ctx)
@@ -265,7 +265,7 @@ fn add_to_git_rejects_tracked_rows_and_preserves_preview_and_message_input() {
     let before: Vec<_> = ctx.repos.iter().map(|repo| snapshot(&repo.path)).collect();
     select_file(&mut panel, 0, "mixed");
     assert!(
-        matches!(press(&mut panel, &ctx, K::Char('a')), Action::Notice(message) if message.contains("No untracked files"))
+        matches!(press(&mut panel, &ctx, K::Char('a')), Action::Notice(NoticeLevel::Warning, message) if message.contains("No untracked files"))
     );
     select_file(&mut panel, 0, "src/new 中文.txt");
     panel.focus = Focus::Diff;
@@ -366,7 +366,7 @@ fn add_to_git_slow_filter_keeps_first_frame_browsing_and_draft_editing_responsiv
     let started = Instant::now();
     assert!(matches!(
         press(&mut panel, &ctx, K::Char('a')),
-        Action::Notice(_)
+        Action::Notice(NoticeLevel::Info, _)
     ));
     assert!(
         started.elapsed() < Duration::from_millis(250),
@@ -412,7 +412,7 @@ fn add_to_git_slow_filter_keeps_first_frame_browsing_and_draft_editing_responsiv
     select_file(&mut panel, 0, "outside");
     assert!(matches!(
         press(&mut panel, &ctx, K::Char('a')),
-        Action::Notice(_)
+        Action::Notice(NoticeLevel::Info, _)
     ));
     assert!(panel
         .submit(&ctx, false)
@@ -460,7 +460,7 @@ fn add_to_git_disconnected_worker_reports_unknown_outcomes_without_repeating_wri
         phase: "Checking app".into(),
         completed: Vec::new(),
     });
-    let Action::Notice(message) = panel.poll_add(&ctx) else {
+    let Action::Notice(NoticeLevel::Error, message) = panel.poll_add(&ctx) else {
         panic!("A stopped worker must report an error")
     };
     assert!(!panel.add_running());
@@ -470,5 +470,52 @@ fn add_to_git_disconnected_worker_reports_unknown_outcomes_without_repeating_wri
     );
     for (repo, before) in ctx.repos.iter().zip(&before) {
         assert_eq!(&snapshot(&repo.path), before);
+    }
+}
+
+#[test]
+fn add_results_report_partial_failure_and_refresh_warnings_from_outcomes() {
+    for (succeeded, refresh_failed, expected) in [
+        (2, false, NoticeLevel::Success),
+        (1, false, NoticeLevel::Warning),
+        (0, false, NoticeLevel::Error),
+        (2, true, NoticeLevel::Warning),
+    ] {
+        let (_dir, ctx, mut panel) = fixture();
+        let (sender, receiver) = mpsc::channel();
+        for (root, repo) in ctx.repos.iter().enumerate() {
+            sender
+                .send(Report::Completed(Completed {
+                    root,
+                    path: repo.path.clone(),
+                    name: "FAILED in a repository name".into(),
+                    result: if root < succeeded {
+                        Ok(1)
+                    } else {
+                        Err("Success appears in an error message".into())
+                    },
+                    status: if refresh_failed {
+                        Err("Cannot refresh Git status".into())
+                    } else {
+                        backend::status(&repo.path).map_err(|error| error.to_string())
+                    },
+                }))
+                .unwrap();
+        }
+        sender.send(Report::Done).unwrap();
+        panel.add.pending = Some(Pending {
+            receiver,
+            started: Instant::now(),
+            total: 2,
+            repositories: 2,
+            phase: "Updating".into(),
+            completed: Vec::new(),
+        });
+        let Action::Notice(level, _) = panel.poll_add(&ctx) else {
+            panic!("Completed additions must report a result");
+        };
+        assert_eq!(level, expected);
+        assert!(!panel.add_running());
+        assert_eq!(panel.saved.message.as_deref(), Some("keep this draft"));
     }
 }

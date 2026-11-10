@@ -90,7 +90,7 @@ fn stash_eol_lf_conflicts_open_review_and_apply() {
         panel.refresh(&ctx).unwrap();
         let before = snapshot(repo);
         let unrelated_index = checked(repo, &["ls-files", "--stage", "-z", "--", OTHER]).unwrap();
-        if let Action::Notice(error) = key(&mut panel, &ctx, KeyCode::Enter) {
+        if let Action::Notice(_, error) = key(&mut panel, &ctx, KeyCode::Enter) {
             panic!("Enter refused stash {action} with {rule}: {error}");
         }
         let doc = panel.doc.as_ref().expect("Enter opens the merge editor");
@@ -117,7 +117,7 @@ fn stash_eol_lf_conflicts_open_review_and_apply() {
         };
         assert!(body.contains(FILE));
         assert_eq!(snapshot(repo), before);
-        let Action::Refresh(message) = panel.confirm(&token, &ctx) else {
+        let Action::Refresh(_, message) = panel.confirm(&token, &ctx) else {
             panic!("Confirmed Apply must succeed");
         };
         assert!(message.contains("Review in Commit"), "{message}");

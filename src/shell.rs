@@ -96,7 +96,7 @@ enum MenuAction {
     SoftwareUpdate,
     Refresh,
     Open,
-    Console,
+    Notifications,
     Quit,
 }
 const HEADER: &str = concat!(
@@ -126,7 +126,7 @@ Options may appear before or after the panel. Use igit -- log or igit ./log
 to open a directory named log; use igit log -- -file for an option-like filename.
 
 Tabs: 1 Commit / 2 Log / 3 Push / 4 Branch / 5 Stash / 6 Conflicts (when available)   p Pull / f Fetch
-r repositories (Branch: rename; use Actions for Roots)   F9 updates   ? / F1 help   q quit
+r repositories (Branch: rename; use Actions for Roots)   F8 notifications   F9 updates   ? / F1 help   q quit
 Runs Git on your local working trees; mutations require a reviewed confirmation.";
 enum Popup {
     Rollback(Box<Rollback>),
@@ -151,16 +151,32 @@ enum Popup {
         scroll: u16,
         yes: bool,
     },
-    Journal,
+    Notifications(notifications::History),
     Open {
         path: String,
     },
 }
 
+impl Popup {
+    fn clear_notification_hits(&mut self) {
+        match self {
+            Self::Notifications(history) => history.clear_hits(),
+            Self::Help {
+                origin: Some(origin),
+                ..
+            } => origin.clear_notification_hits(),
+            _ => (),
+        }
+    }
+}
+
 fn confirm_uses_letter_keys(owner: Tab, token: &str) -> bool {
     !matches!(
         (owner, token),
-        (Push, "push") | (Stash, REVIEW_TOKEN) | (Log, crate::log::REVIEW_TOKEN)
+        (Push, "push")
+            | (Stash, REVIEW_TOKEN)
+            | (Log, crate::log::REVIEW_TOKEN)
+            | (Branch, crate::branch::MERGE_REVIEW_TOKEN)
     )
 }
 
@@ -183,8 +199,7 @@ struct Shell {
     main_tab: Tab,
     remote_refs_changed: bool,
     pop: Option<Popup>,
-    msg: String,
-    journal: Vec<String>,
+    notifications: notifications::Center,
     quit: bool,
     restart: Option<PathBuf>,
     pending_edit: Option<editor::Request>,
@@ -206,6 +221,7 @@ impl Shell {
             },
         )
     }
+    #[cfg(test)]
     fn with_config(ctx: Context, config: AppConfig) -> Self {
         let mut s = Self::unloaded(ctx, config);
         s.log_load = startup::LogLoad::Ready;
@@ -233,8 +249,7 @@ impl Shell {
             main_tab: Commit,
             remote_refs_changed: false,
             pop: None,
-            msg: "".into(),
-            journal: vec![],
+            notifications: Default::default(),
             quit: false,
             restart: None,
             pending_edit: None,
@@ -282,6 +297,7 @@ impl Shell {
         }
         match self.tab {
             Log => self.log.key_sequence(),
+            Push => self.push.key_sequence(),
             Branch => self.branch.key_sequence(),
             Conflicts => self.merge.key_sequence(),
             _ => None,
@@ -349,6 +365,7 @@ impl Shell {
         self.pending_keys = None;
         self.window_prefix = None;
         self.log.cancel_key_sequence();
+        self.push.cancel_key_sequence();
         self.branch.cancel_key_sequence();
         self.merge.cancel_key_sequence();
         self.key_picker = KeySequencePicker::default();
@@ -406,7 +423,7 @@ impl Shell {
             self.ctx.repos[root].refresh_branch();
         }
         if let Err(e) = self.commit.refresh(&self.ctx) {
-            self.notice(format!("Commit: {e:#}"));
+            self.notify(NoticeLevel::Error, "Commit", format!("{e:#}"));
         }
         self.refresh_log();
         self.refresh_conflicts();
@@ -419,12 +436,12 @@ impl Shell {
     }
     fn refresh_stash(&mut self) {
         if let Err(error) = self.stash.refresh(&self.ctx) {
-            self.notice(format!("Stash: {error:#}"));
+            self.notify(NoticeLevel::Error, "Stash", format!("{error:#}"));
         }
     }
     fn refresh_branch(&mut self) {
         if let Err(error) = self.branch.refresh(&self.ctx) {
-            self.notice(format!("Branch: {error:#}"));
+            self.notify(NoticeLevel::Error, "Branch", format!("{error:#}"));
         }
     }
     fn branch_refs_changed(&mut self) {
@@ -445,12 +462,12 @@ impl Shell {
             return;
         }
         if let Err(e) = self.log.refresh(&self.ctx) {
-            self.notice(format!("Log: {e:#}"));
+            self.notify(NoticeLevel::Error, "Log", format!("{e:#}"));
         }
     }
     fn refresh_push(&mut self) {
         if let Err(e) = self.push.refresh(&self.ctx) {
-            self.notice(format!("{e:#}"))
+            self.notify(NoticeLevel::Error, "Push", format!("{e:#}"))
         }
     }
     fn refresh_conflicts(&mut self) {
@@ -459,14 +476,29 @@ impl Shell {
             self.go(self.main_tab);
         }
         if let Err(e) = result {
-            self.notice(format!("Conflicts: {e:#}"));
+            self.notify(NoticeLevel::Error, "Conflicts", format!("{e:#}"));
         }
     }
     fn notice(&mut self, s: String) {
-        self.msg = s.replace(['\n', '\r'], " · ");
-        self.journal.push(s);
-        if self.journal.len() > 100 {
-            self.journal.remove(0);
+        self.notify(NoticeLevel::Warning, "Workspace", s);
+    }
+    fn notify(&mut self, level: NoticeLevel, source: &str, message: String) {
+        self.notifications.push(level, source, message);
+    }
+    fn open_notifications(&mut self, id: Option<u64>) {
+        self.cancel_key_sequences();
+        self.cancel_notification_mouse();
+        self.pop = Some(Popup::Notifications(self.notifications.open_history(id)));
+    }
+    fn cancel_notification_mouse(&mut self) {
+        self.cancel_drags();
+        match self.tab {
+            Commit => self.commit.cancel_mouse(),
+            Log => self.log.cancel_mouse(),
+            Push => self.push.cancel_mouse(),
+            Branch => self.branch.cancel_mouse(),
+            Stash => self.stash.cancel_mouse(),
+            Conflicts => self.merge.cancel_mouse(),
         }
     }
     fn go(&mut self, tab: Tab) {
@@ -474,7 +506,6 @@ impl Shell {
         if self.tab == tab {
             return;
         }
-        self.msg.clear();
         // Commit can discover external conflicts before a full workspace refresh.
         if tab == Conflicts {
             self.refresh_conflicts();
@@ -488,7 +519,7 @@ impl Shell {
             return;
         }
         if !self.can_leave_panel() {
-            if self.msg.is_empty() {
+            if !self.commit.message_editing() {
                 self.notice("Finish or cancel the current input first (Esc)".into());
             }
             return;
@@ -519,6 +550,9 @@ impl Shell {
         }
     }
     fn action(&mut self, a: Action) {
+        self.action_from(self.tab.name(), a);
+    }
+    fn action_from(&mut self, source: &str, a: Action) {
         if self.commit.add_running()
             && matches!(&a, Action::Confirm { .. } | Action::ReviewRollback)
         {
@@ -526,23 +560,47 @@ impl Shell {
             return;
         }
         match a {
-            Action::None => (),
-            Action::Notice(s) => self.notice(s),
+            Action::None | Action::Redraw => (),
+            Action::Notice(level, message) => self.notify(level, source, message),
             Action::EditFile { repo, path } => {
                 if self.commit.execution_running() || self.commit.add_running() {
                     self.notice("Wait for the Git operation before opening an editor".into());
                     return;
                 }
                 self.cancel_key_sequences();
-                self.pending_edit = Some(editor::Request { repo, path });
+                self.pending_edit = Some(editor::Request {
+                    repo,
+                    path,
+                    revision: None,
+                });
+            }
+            Action::ShowFileRevision {
+                repo,
+                path,
+                revision,
+            } => {
+                if self.commit.execution_running() || self.commit.add_running() {
+                    self.notice("Wait for the Git operation before opening an editor".into());
+                    return;
+                }
+                self.cancel_key_sequences();
+                self.pending_edit = Some(editor::Request {
+                    repo,
+                    path,
+                    revision: Some(revision),
+                });
             }
             Action::Copy { text, label } => match clipboard::copy(&text) {
-                Ok(()) => self.notice(format!("Copied {label}")),
-                Err(e) => self.notice(format!("Copy failed: {e:#}")),
+                Ok(()) => self.notify(NoticeLevel::Success, "Clipboard", format!("Copied {label}")),
+                Err(e) => self.notify(
+                    NoticeLevel::Error,
+                    "Clipboard",
+                    format!("Copy failed: {e:#}"),
+                ),
             },
-            Action::Refresh(s) => {
+            Action::Refresh(level, message) => {
                 self.refresh();
-                self.notice(s)
+                self.notify(level, source, message)
             }
             Action::OpenConflicts => self.go(Conflicts),
             Action::CloseDialog => {
@@ -571,6 +629,7 @@ impl Shell {
                 repos,
                 push,
                 message,
+                level,
             } => {
                 if !repos.is_empty() {
                     self.push.reseed = Some(repos)
@@ -579,7 +638,7 @@ impl Shell {
                 if push {
                     self.go(Push)
                 }
-                self.notice(message)
+                self.notify(level, "Commit", message)
             }
         }
     }
@@ -599,7 +658,7 @@ impl Shell {
             Branch => self.branch.confirm(token, &self.ctx),
             Stash => self.stash.confirm(token, &self.ctx),
         };
-        self.action(a)
+        self.action_from(owner.name(), a)
     }
     fn request_quit(&mut self) {
         self.cancel_key_sequences();
@@ -647,10 +706,14 @@ impl Shell {
             1 => self.open_help(),
             2 => self.pop = Some(Popup::Menu { row: 0 }),
             3 => self.request_quit(),
-            4 => self.pop = Some(Popup::Journal),
+            4 => self.open_notifications(None),
             5 => {
                 self.refresh();
-                self.notice("Workspace refreshed".into())
+                self.notify(
+                    NoticeLevel::Success,
+                    "Workspace",
+                    "Workspace refreshed".into(),
+                )
             }
             _ => (),
         }
@@ -733,13 +796,7 @@ impl Shell {
                 ),
                 vec![],
             ),
-            Some(Popup::Journal) => HelpContent::new(
-                HelpSection::new(
-                    "Console / Session messages",
-                    &[("Enter", "Close session messages")],
-                ),
-                vec![],
-            ),
+            Some(Popup::Notifications(history)) => history.keymap(),
             Some(Popup::Help { .. }) => unreachable!("help content describes the origin"),
             None => {
                 let search = self.focused_search();
@@ -814,7 +871,7 @@ impl Shell {
                 MenuAction::Update(update::Kind::Fetch),
                 MenuAction::Refresh,
                 MenuAction::Open,
-                MenuAction::Console,
+                MenuAction::Notifications,
                 MenuAction::SoftwareUpdate,
                 MenuAction::Quit,
             ])
@@ -834,13 +891,24 @@ impl Shell {
                     path: self.ctx.workspace.display().to_string(),
                 })
             }
-            Some(MenuAction::Console) => self.global(4),
+            Some(MenuAction::Notifications) => self.global(4),
             Some(MenuAction::SoftwareUpdate) => self.open_software_update(),
             Some(MenuAction::Quit) => self.global(3),
             None => (),
         }
     }
     fn pop_event(&mut self, ev: &Event) {
+        if let Some(Popup::Notifications(history)) = self.pop.as_mut() {
+            match self.notifications.history_event(ev, history) {
+                notifications::HistoryEvent::Handled => (),
+                notifications::HistoryEvent::Close => self.pop = None,
+                notifications::HistoryEvent::Copy(text) => self.action(Action::Copy {
+                    text,
+                    label: "notification",
+                }),
+            }
+            return;
+        }
         if matches!(self.pop, Some(Popup::Help { .. })) {
             if let Some(Popup::Help { mut state, origin }) = self.pop.take() {
                 match state.event(ev) {
@@ -886,7 +954,7 @@ impl Shell {
                         unreachable!()
                     };
                     let action = dialog.apply(&self.ctx);
-                    self.action(action);
+                    self.action_from("Commit", action);
                 }
             }
             return;
@@ -930,6 +998,7 @@ impl Shell {
             Popup::Rollback(_) => unreachable!("rollback events are handled above"),
             Popup::Update(_) => unreachable!("update events are handled above"),
             Popup::SoftwareUpdate => unreachable!("software update events are handled above"),
+            Popup::Notifications(_) => unreachable!("notification events are handled above"),
             Popup::Confirm {
                 title,
                 body,
@@ -1003,7 +1072,11 @@ impl Shell {
                 {
                     self.ctx.scope = picked;
                     self.refresh();
-                    self.notice(format!("{} roots in scope", self.ctx.scope.len()));
+                    self.notify(
+                        NoticeLevel::Info,
+                        "Roots",
+                        format!("{} roots in scope", self.ctx.scope.len()),
+                    );
                     return;
                 }
                 Some(Popup::Scope { picked, row })
@@ -1051,29 +1124,32 @@ impl Shell {
                         Ok(c) => {
                             let kitty = std::mem::take(&mut self.kitty);
                             let software_update = std::mem::take(&mut self.software_update);
+                            let notifications = std::mem::take(&mut self.notifications);
                             let background = self.commit.background_execution_enabled();
-                            *self = Self::with_config(c, self.config.clone());
+                            let mut next = Self::unloaded(c, self.config.clone());
+                            next.notifications = notifications;
+                            next.log_load = startup::LogLoad::Ready;
+                            next.refresh();
+                            *self = next;
                             if background {
                                 self.commit.enable_background_execution();
                                 self.log.enable_background_loading();
                             }
                             self.kitty = kitty;
                             self.software_update = software_update;
+                            self.notify(
+                                NoticeLevel::Success,
+                                "Workspace",
+                                "Workspace opened".into(),
+                            );
                             return;
                         }
-                        Err(e) => self.notice(e.to_string()),
+                        Err(e) => self.notify(NoticeLevel::Error, "Workspace", e.to_string()),
                     }
                 }
                 Some(Popup::Open { path })
             }
             Popup::Help { .. } => unreachable!("help events are handled above"),
-            Popup::Journal => {
-                if hit.is_some() || key == Some(KeyCode::Enter) {
-                    None
-                } else {
-                    Some(Popup::Journal)
-                }
-            }
         };
     }
     fn can_leave_panel(&mut self) -> bool {
@@ -1082,7 +1158,11 @@ impl Shell {
             Commit => {
                 self.commit.dismiss_view_menu();
                 if let Err(error) = self.commit.finish_message(&self.ctx) {
-                    self.notice(format!("Commit message: {error:#}"));
+                    self.notify(
+                        NoticeLevel::Error,
+                        "Commit",
+                        format!("Commit message: {error:#}"),
+                    );
                     return false;
                 }
             }
@@ -1131,6 +1211,23 @@ impl Shell {
         }
         if matches!(ev, Event::Key(k) if k.kind == KeyEventKind::Release) {
             return;
+        }
+        if matches!(ev, Event::Resize(..)) {
+            if let Some(popup) = &mut self.pop {
+                popup.clear_notification_hits();
+            }
+        }
+        let can_open = self.pop.is_none() && !self.panel().editing();
+        match self.notifications.live_event(ev, can_open) {
+            notifications::LiveEvent::Pass => (),
+            notifications::LiveEvent::Handled => {
+                self.cancel_notification_mouse();
+                return;
+            }
+            notifications::LiveEvent::Open(id) => {
+                self.open_notifications(Some(id));
+                return;
+            }
         }
         if self.smart_pane_event(ev) {
             return;
@@ -1217,20 +1314,6 @@ impl Shell {
                 }
             }
         }
-        if (matches!(self.tab, Commit | Log | Branch | Stash | Conflicts)
-            || self.focused_search().is_some_and(|prompt| prompt.editing()))
-            && matches!(
-                ev,
-                Event::Key(_)
-                    | Event::Paste(_)
-                    | Event::Mouse(crossterm::event::MouseEvent {
-                        kind: MouseEventKind::Down(_),
-                        ..
-                    })
-            )
-        {
-            self.msg.clear();
-        }
         if let Event::Mouse(m) = ev {
             if self.window_prefix.is_some() && m.kind != MouseEventKind::Moved {
                 self.cancel_key_sequences();
@@ -1303,6 +1386,10 @@ impl Shell {
                         self.open_software_update();
                         return;
                     }
+                    KeyCode::F(8) if k.modifiers.is_empty() => {
+                        self.open_notifications(None);
+                        return;
+                    }
                     _ => (),
                 }
             }
@@ -1320,20 +1407,25 @@ impl Shell {
         }
     }
     fn poll(&mut self) -> bool {
-        let mut change = self.poll_log_load();
+        let mut change = self.notifications.expire(Instant::now());
+        change |= self.poll_log_load();
         let action = self.commit.poll_add(&self.ctx);
         if !matches!(action, Action::None) {
-            self.action(action);
+            self.action_from("Commit", action);
             change = true;
         }
         change |= self.commit.add_running();
         let action = self.commit.poll_execution(&self.ctx);
         if !matches!(action, Action::None) {
-            self.action(action);
+            self.action_from("Commit", action);
             change = true;
         }
         let update_visible = matches!(self.pop, Some(Popup::SoftwareUpdate));
         change |= self.software_update.poll(update_visible);
+        if let Some((level, message)) = self.software_update.take_notice() {
+            self.notify(level, "IGit Update", message);
+            change = true;
+        }
         if update_visible {
             change |= self.software_update.animate(Instant::now());
         }
@@ -1342,7 +1434,7 @@ impl Shell {
             match self.commit.poll_refresh(&mut self.ctx) {
                 Ok(redraw) => change |= redraw,
                 Err(error) => {
-                    self.notice(format!("Commit: {error:#}"));
+                    self.notify(NoticeLevel::Error, "Commit", format!("{error:#}"));
                     change = true;
                 }
             }
@@ -1353,7 +1445,7 @@ impl Shell {
             popup => popup,
         };
         if let Some(Popup::Update(dialog)) = popup {
-            if let Some((kind, summary)) = dialog.poll() {
+            if let Some((kind, level, summary)) = dialog.poll() {
                 if kind == update::Kind::Pull {
                     self.refresh();
                 } else {
@@ -1363,7 +1455,7 @@ impl Shell {
                         self.refresh_push();
                     }
                 }
-                self.notice(summary);
+                self.notify(level, kind.label(), summary);
                 change = true;
             }
         }
@@ -1373,40 +1465,40 @@ impl Shell {
                 Ok(kitty::Outcome::Maximized(Some(target))) => self.set_pane_maximized(target),
                 Ok(kitty::Outcome::Maximized(None)) => self.toggle_pane_maximized(),
                 Ok(kitty::Outcome::Done) => (),
-                Err(error) => self.notice(error),
+                Err(error) => self.notify(NoticeLevel::Error, "Terminal", error),
             }
             change = true;
         }
         match self.log.poll_history(&self.ctx) {
             Ok(redraw) => change |= redraw,
             Err(error) => {
-                self.notice(format!("Log: {error:#}"));
+                self.notify(NoticeLevel::Error, "Log", format!("{error:#}"));
                 change = true;
             }
         }
         match self.log.poll_preview(&self.ctx) {
             Ok(redraw) => change |= redraw,
             Err(e) => {
-                self.notice(format!("Log: {e:#}"));
+                self.notify(NoticeLevel::Error, "Log", format!("{e:#}"));
                 change = true;
             }
         }
-        if let Some(message) = self.branch.poll_sync() {
+        if let Some((level, message)) = self.branch.poll_sync() {
             self.refresh();
-            self.notice(message);
+            self.notify(level, "Branch", message);
             change = true;
         }
         let seq = self.push.progress_seq;
-        if let Some(msg) = self.push.poll(&self.ctx) {
+        if let Some((level, message)) = self.push.poll(&self.ctx) {
             self.remote_refs_changed = true;
             self.branch_refs_changed();
-            self.notice(msg);
+            self.notify(level, "Push", message);
             change = true
         }
         match self.push.poll_loading(&self.ctx) {
             Ok(redraw) => change |= redraw,
             Err(error) => {
-                self.notice(format!("Push: {error:#}"));
+                self.notify(NoticeLevel::Error, "Push", format!("{error:#}"));
                 change = true;
             }
         }
@@ -1423,24 +1515,17 @@ impl Shell {
         change |= seq != self.push.progress_seq;
         let a = self.commit.tick(&self.ctx);
         if !matches!(a, Action::None) {
-            // A background AI request can open an error dialog between two
-            // input events, even while a window command or drag is pending.
-            if self.tab == Commit && self.commit.editing() {
-                self.cancel_key_sequences();
-                self.cancel_drags();
-            }
-            self.action(a);
+            self.action_from("Commit", a);
             change = true
         }
         change |= self.tab == Commit && self.commit.ai_running();
         if self.branch.reads_pending() {
             match self.branch.poll_loading(&self.ctx) {
                 Ok(redraw) => change |= redraw && self.tab == Branch,
-                Err(error) if self.tab == Branch => {
-                    self.notice(format!("Branch: {error:#}"));
+                Err(error) => {
+                    self.notify(NoticeLevel::Error, "Branch", format!("{error:#}"));
                     change = true;
                 }
-                Err(_) => (),
             }
         }
         change
@@ -1481,6 +1566,10 @@ impl Shell {
             || self.commit.add_running()
     }
     fn draw_popup(&mut self, f: &mut Frame, a: Rect) {
+        if let Some(Popup::Notifications(history)) = self.pop.as_mut() {
+            self.notifications.draw_history(f, a, self.icons, history);
+            return;
+        }
         if matches!(self.pop, Some(Popup::SoftwareUpdate)) {
             self.software_update
                 .draw(f, a, self.icons, &mut self.pop_hits);
@@ -1497,6 +1586,22 @@ impl Shell {
         if let Some(Popup::Help { state, .. }) = self.pop.as_mut() {
             state.draw(f, a, self.icons);
             return;
+        }
+        if let Some(Popup::Confirm {
+            owner: Branch,
+            token,
+            scroll,
+            yes,
+            ..
+        }) = self.pop.as_mut()
+        {
+            if token == crate::branch::MERGE_REVIEW_TOKEN
+                && self
+                    .branch
+                    .draw_merge_review(f, a, scroll, *yes, &mut self.pop_hits)
+            {
+                return;
+            }
         }
         if let Some(Popup::Confirm {
             owner: Stash,
@@ -1526,7 +1631,7 @@ impl Shell {
         }
         .min(a.height - 2)
         .max(5);
-        let w = if matches!(pop, Popup::Confirm { .. } | Popup::Journal) {
+        let w = if matches!(pop, Popup::Confirm { .. }) {
             90
         } else {
             72
@@ -1541,7 +1646,7 @@ impl Shell {
             Popup::Help { .. } => "IGit · Keyboard shortcuts",
             Popup::Confirm { title, .. } => title,
             Popup::Menu { .. } => "Actions",
-            Popup::Journal => "Session console",
+            Popup::Notifications(_) => unreachable!("notifications are rendered above"),
             Popup::Open { .. } => "Open workspace",
         };
         f.render_widget(Clear, p);
@@ -1638,26 +1743,7 @@ impl Shell {
                 ])
             }
             Popup::Help { .. } => unreachable!("help is rendered above"),
-            Popup::Journal => {
-                let text = self
-                    .journal
-                    .iter()
-                    .rev()
-                    .take(25)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                f.render_widget(
-                    Paragraph::new(if text.is_empty() {
-                        "No messages".into()
-                    } else {
-                        text
-                    })
-                    .wrap(Wrap { trim: false }),
-                    body,
-                );
-                controls.push((" Close / Esc ", usize::MAX, true))
-            }
+            Popup::Notifications(_) => unreachable!("notifications are rendered above"),
             Popup::Menu { row } => {
                 let actions = self.menu_actions();
                 let selected = (*row).min(self.menu_actions().count() - 1);
@@ -1677,7 +1763,9 @@ impl Shell {
                         }
                         MenuAction::Refresh => "Refresh workspace".into(),
                         MenuAction::Open => "Open / rescan workspace…".into(),
-                        MenuAction::Console => "Console".into(),
+                        MenuAction::Notifications => {
+                            format!("{}  Notifications", label("notification-history"))
+                        }
                         MenuAction::SoftwareUpdate => format!("{}  Update IGit…", label("update")),
                         MenuAction::Quit => "Quit".into(),
                     };
@@ -1899,13 +1987,25 @@ pub fn run() -> Result<()> {
             }
         }
         if let Some(request) = app.pending_edit.take() {
+            let operation = if request.revision.is_some() {
+                "Show File at Revision"
+            } else {
+                "Edit file"
+            };
             match request.prepare(env::var(editor::NVIM_SESSION).ok().as_deref()) {
                 Ok(editor::Prepared::Neovim(sequence)) => {
                     if let Err(error) = editor::send_request(&mut io::stdout(), &sequence) {
-                        app.notice(format!("Edit file: {error:#}"));
+                        app.notify(
+                            NoticeLevel::Error,
+                            "Editor",
+                            format!("{operation}: {error:#}"),
+                        );
                     }
                 }
-                Ok(editor::Prepared::External(mut command)) => {
+                Ok(editor::Prepared::External {
+                    mut command,
+                    snapshot: _snapshot,
+                }) => {
                     guard.leave()?;
                     let result = editor::execute(&mut command);
                     // Always reacquire the terminal, including a failed editor launch.
@@ -1913,11 +2013,21 @@ pub fn run() -> Result<()> {
                     term.clear()?;
                     app.refresh();
                     match result {
-                        Ok(()) => app.notice("Returned from editor".into()),
-                        Err(error) => app.notice(format!("Edit file: {error:#}")),
+                        Ok(()) => {
+                            app.notify(NoticeLevel::Info, "Editor", "Returned from editor".into())
+                        }
+                        Err(error) => app.notify(
+                            NoticeLevel::Error,
+                            "Editor",
+                            format!("{operation}: {error:#}"),
+                        ),
                     }
                 }
-                Err(error) => app.notice(format!("Edit file: {error:#}")),
+                Err(error) => app.notify(
+                    NoticeLevel::Error,
+                    "Editor",
+                    format!("{operation}: {error:#}"),
+                ),
             }
             dirty = true;
         }
@@ -1964,6 +2074,8 @@ mod help_tests;
 mod log_tests;
 #[cfg(test)]
 mod maximize_tests;
+#[cfg(test)]
+mod notification_tests;
 #[cfg(test)]
 mod startup_tests;
 #[cfg(test)]

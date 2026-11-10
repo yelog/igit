@@ -244,9 +244,12 @@ impl StashPanel {
 
     fn review_operation(&mut self, c: &Context, operation: Operation) -> Result<Action> {
         self.review = None;
-        let (root, source) = self
-            .selection()
-            .ok_or_else(|| anyhow::anyhow!("Select a stash entry first"))?;
+        let Some((root, source)) = self.selection() else {
+            return Ok(Action::Notice(
+                NoticeLevel::Warning,
+                "Select a stash entry first".into(),
+            ));
+        };
         let entries = &self.repository(root).unwrap().entries;
         let review = Review::prepare(c, root, source, entries, operation)?;
         let action = Action::Confirm {
@@ -418,6 +421,10 @@ impl StashPanel {
 }
 
 impl Panel for StashPanel {
+    fn cancel_mouse(&mut self) {
+        self.files.cancel_mouse();
+    }
+
     fn refresh(&mut self, c: &Context) -> Result<()> {
         let keep = self.identity();
         let previous = self.rows.get(self.cursor).copied();
@@ -448,7 +455,7 @@ impl Panel for StashPanel {
     }
     fn event(&mut self, e: &Event, c: &Context) -> Action {
         self.handle(e, c)
-            .unwrap_or_else(|e| Action::Notice(format!("Stash: {e:#}")))
+            .unwrap_or_else(|e| Action::Notice(NoticeLevel::Error, format!("Stash: {e:#}")))
     }
     fn confirm(&mut self, token: &str, c: &Context) -> Action {
         if token != REVIEW_TOKEN {
@@ -457,12 +464,12 @@ impl Panel for StashPanel {
         let Some(review) = self.review.take() else {
             return Action::None;
         };
-        let result = review
+        let (level, result) = review
             .execute(c)
-            .unwrap_or_else(|error| format!("Stash: {error:#}"));
+            .unwrap_or_else(|error| (NoticeLevel::Error, format!("Stash: {error:#}")));
         // Native apply can leave conflicts or partial changes even on failure.
         // Shell refreshes Stash, Commit, and Conflicts for every attempted write.
-        Action::Refresh(result)
+        Action::Refresh(level, result)
     }
     fn editing(&self) -> bool {
         self.files.editing() || self.focused_search().is_some_and(|prompt| prompt.editing())

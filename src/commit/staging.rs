@@ -171,20 +171,22 @@ impl Staging {
 impl CommitPanel {
     pub(super) fn open_staging(&mut self, c: &Context) -> Result<Action> {
         if self.add_running() {
-            bail!("Adding files to Git; wait before inspecting staged hunks");
+            bail!(Constraint(
+                "Adding files to Git; wait before inspecting staged hunks"
+            ));
         }
         if self.execution_running() {
-            bail!("Wait for the current Git write to finish");
+            bail!(Constraint("Wait for the current Git write to finish"));
         }
         let file = self
             .active()
             .and_then(Row::file)
             .map(|i| &self.files[i])
-            .ok_or_else(|| {
-                anyhow::anyhow!("Select one tracked file to inspect its staged and unstaged hunks")
-            })?;
+            .ok_or(Constraint(
+                "Select one tracked file to inspect its staged and unstaged hunks",
+            ))?;
         if !c.scope.contains(&file.root) {
-            bail!("File is outside Roots");
+            bail!(Constraint("File is outside Roots"));
         }
         let side = if file.change.xy[1] != b' ' {
             Side::Unstaged
@@ -283,7 +285,7 @@ impl CommitPanel {
                         .get(snapshot.root)
                         .is_none_or(|repo| repo.path != snapshot.repo)
                 {
-                    return Some(err("Roots or workspace changed; reopen the hunk view"));
+                    return Some(warning("Roots or workspace changed; reopen the hunk view"));
                 }
                 match staging::plan(snapshot, stage.cursor) {
                     Ok(plan) => {
@@ -305,7 +307,7 @@ impl CommitPanel {
 
     pub(super) fn confirm_staging(&mut self, c: &Context) -> Action {
         let Some(plan) = self.staging_plan.take() else {
-            return err("Hunk review expired");
+            return warning("Hunk review expired");
         };
         if self.execution_running()
             || self.add_running()
@@ -314,21 +316,28 @@ impl CommitPanel {
                 .get(plan.root)
                 .is_none_or(|repo| repo.path != plan.repo)
         {
-            return err("Workspace or Roots changed; review the hunk again");
+            return warning("Workspace or Roots changed; review the hunk again");
         }
         match staging::execute(&plan) {
             Ok(()) => {
-                if let Some(stage) = self.staging.as_mut() {
-                    if stage.reload(plan.side).is_err() {
-                        self.staging = None;
-                    }
-                }
-                Action::Refresh(format!(
+                let refresh_error = self
+                    .staging
+                    .as_mut()
+                    .and_then(|stage| stage.reload(plan.side).err());
+                let mut message = format!(
                     "{} hunk: {} / {}",
                     plan.side.action(),
                     c.repos[plan.root].name,
                     display_path(&plan.path)
-                ))
+                );
+                let level = if let Some(error) = refresh_error {
+                    self.staging = None;
+                    message.push_str(&format!("\nCould not refresh hunks: {error:#}"));
+                    NoticeLevel::Warning
+                } else {
+                    NoticeLevel::Success
+                };
+                Action::Refresh(level, message)
             }
             Err(error) => err(error),
         }

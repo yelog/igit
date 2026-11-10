@@ -364,7 +364,10 @@ fn create_from_focused_commit_then_rename_delete_and_switch_preserve_other_state
     .unwrap();
     reload(&mut p, &c);
     select(&mut p, 0, "refs/heads/feature/renamed");
-    assert!(matches!(key(&mut p, &c, K::Enter), Action::Refresh(_)));
+    assert!(matches!(
+        key(&mut p, &c, K::Enter),
+        Action::Refresh(NoticeLevel::Success, _)
+    ));
     assert_eq!(run(repo, &["branch", "--show-current"]), "feature/renamed");
     assert_eq!(fs::read_to_string(repo.join("file")).unwrap(), "topic\n");
     review(
@@ -503,7 +506,10 @@ fn remote_checkout_creates_tracking_branch_and_reuses_it_without_remote_writes()
     select(&mut p, 0, "refs/remotes/origin/feature/remote");
     key(&mut p, &c, K::Enter);
     assert_eq!(p.input.as_ref().unwrap().name, "feature/remote");
-    assert!(matches!(key(&mut p, &c, K::Enter), Action::Refresh(_)));
+    assert!(matches!(
+        key(&mut p, &c, K::Enter),
+        Action::Refresh(NoticeLevel::Success, _)
+    ));
     assert_eq!(run(repo, &["branch", "--show-current"]), "feature/remote");
     assert_eq!(
         source(&c, "refs/heads/feature/remote").upstream,
@@ -512,7 +518,10 @@ fn remote_checkout_creates_tracking_branch_and_reuses_it_without_remote_writes()
     run(repo, &["switch", "main"]);
     reload(&mut p, &c);
     select(&mut p, 0, "refs/remotes/origin/feature/remote");
-    assert!(matches!(key(&mut p, &c, K::Enter), Action::Refresh(_)));
+    assert!(matches!(
+        key(&mut p, &c, K::Enter),
+        Action::Refresh(NoticeLevel::Success, _)
+    ));
     assert!(p.input.is_none());
     assert_eq!(run(repo, &["branch", "--show-current"]), "feature/remote");
     assert_eq!(
@@ -657,7 +666,10 @@ fn focused_sync_uses_configured_upstream_without_switching_or_touching_dirty_fil
     assert!(body.contains("topic") && body.contains("origin:refs/heads/upstream"));
     assert_eq!(run(repo, &["rev-parse", "topic"]), main);
     select(&mut panel, 0, "refs/heads/main");
-    assert!(matches!(panel.confirm(&token, &c), Action::Notice(_)));
+    assert!(matches!(
+        panel.confirm(&token, &c),
+        Action::Notice(NoticeLevel::Info, _)
+    ));
     let message = wait_for_branch_sync(&mut panel);
     assert!(message.contains("completed"), "{message}");
     assert_eq!(run(repo, &["rev-parse", "topic"]), upstream);
@@ -730,7 +742,8 @@ fn focused_sync_uses_configured_upstream_without_switching_or_touching_dirty_fil
 fn wait_for_branch_sync(panel: &mut BranchPanel) -> String {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        if let Some(message) = panel.poll_sync() {
+        if let Some((level, message)) = panel.poll_sync() {
+            assert_eq!(level, NoticeLevel::Success);
             return message;
         }
         assert!(
@@ -739,4 +752,19 @@ fn wait_for_branch_sync(panel: &mut BranchPanel) -> String {
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+}
+
+#[test]
+fn disconnected_branch_sync_reports_an_error_once() {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let mut panel = BranchPanel {
+        syncing: Some(receiver),
+        ..Default::default()
+    };
+    drop(sender);
+    let (level, message) = panel.poll_sync().unwrap();
+    assert_eq!(level, NoticeLevel::Error);
+    assert!(message.contains("worker stopped unexpectedly"));
+    assert!(!panel.syncing());
+    assert!(panel.poll_sync().is_none());
 }

@@ -159,7 +159,9 @@ fn generating_multi_repo_patches_fills_and_saves_the_shared_message() {
     panel.event(&key(K::Right), &c);
     panel.event(&key(K::Right), &c);
     let action = panel.event(&key(K::Enter), &c);
-    assert!(matches!(action, Action::Notice(message) if message.contains("Generating")));
+    assert!(
+        matches!(action, Action::Notice(NoticeLevel::Info, message) if message.contains("Generating"))
+    );
     assert!(panel.ai_running());
     assert!(panel.edit.is_none());
     assert!(panel.start_ai(&c).is_err());
@@ -186,7 +188,10 @@ fn generating_multi_repo_patches_fills_and_saves_the_shared_message() {
     let serialized = payload.to_string();
     assert!(!serialized.contains("private marker"));
     assert!(!serialized.contains("unselected staged marker"));
-    assert!(matches!(wait(&mut panel, &c), Action::Notice(_)));
+    assert!(matches!(
+        wait(&mut panel, &c),
+        Action::Notice(NoticeLevel::Success, _)
+    ));
     worker.join().unwrap();
     assert!(
         panel.edit.is_none(),
@@ -327,6 +332,7 @@ fn response_rejects_empty_truncated_filtered_and_invalid_messages() {
 fn failed_request_keeps_draft_and_reports_error_even_after_drawing() {
     let (_dir, c, mut panel) = fixture();
     let original = panel.saved.message.clone();
+    panel.focus = Focus::Diff;
     let tx = pending(&mut panel, &c);
     tx.send(Report::Generated(
         Err("AI service returned HTTP 401".into()),
@@ -336,9 +342,12 @@ fn failed_request_keeps_draft_and_reports_error_even_after_drawing() {
     terminal
         .draw(|frame| panel.draw(frame, frame.area(), &c))
         .unwrap();
-    assert!(matches!(panel.tick(&c), Action::Notice(message) if message.contains("HTTP 401")));
+    assert!(
+        matches!(panel.tick(&c), Action::Notice(NoticeLevel::Error, message) if message == "AI service returned HTTP 401")
+    );
     assert_eq!(panel.saved.message, original);
-    assert!(matches!(panel.edit, Some(Edit::AIError)));
+    assert!(panel.edit.is_none());
+    assert!(panel.focus == Focus::Diff);
     terminal
         .draw(|frame| panel.draw(frame, frame.area(), &c))
         .unwrap();
@@ -349,13 +358,44 @@ fn failed_request_keeps_draft_and_reports_error_even_after_drawing() {
         .iter()
         .map(|cell| cell.symbol())
         .collect();
-    assert!(screen.contains("AI message failed") && screen.contains("HTTP 401"));
-    panel.event(
-        &Event::Key(crossterm::event::KeyEvent::new(K::Enter, Mod::NONE)),
-        &c,
-    );
+    assert!(!screen.contains("AI message failed") && !screen.contains("HTTP 401"));
     assert!(panel.edit.is_none());
+    assert!(panel.focus == Focus::Diff);
     assert_eq!(panel.saved.message, original);
+}
+
+#[test]
+fn failed_request_reports_full_error_without_interrupting_current_input() {
+    for edit in [Edit::Message, Edit::AISettings, Edit::Group, Edit::Stash] {
+        let (_dir, c, mut panel) = fixture();
+        let original = panel.saved.message.clone();
+        let tx = pending(&mut panel, &c);
+        panel.focus = Focus::Message;
+        panel.edit = Some(edit.clone());
+        panel.buf = "Unsaved input 中文".into();
+        panel.caret = "Unsaved".len();
+        panel.edit_view = (Rect::new(2, 3, 40, 8), 4, 2);
+        let error = format!(
+            "AI service failed\n{}\nLast detail",
+            "Long error detail\n".repeat(100)
+        );
+        tx.send(Report::Generated(Err(error.clone()))).unwrap();
+        let Action::Notice(NoticeLevel::Error, message) = panel.tick(&c) else {
+            panic!("An AI failure must report an error during input");
+        };
+        assert_eq!(message, error);
+        assert_eq!(panel.ai_error, error);
+        assert_eq!(panel.saved.message, original);
+        assert!(panel.focus == Focus::Message);
+        assert_eq!(
+            panel.edit.as_ref().map(std::mem::discriminant),
+            Some(std::mem::discriminant(&edit))
+        );
+        assert_eq!(panel.buf, "Unsaved input 中文");
+        assert_eq!(panel.caret, "Unsaved".len());
+        assert_eq!(panel.edit_view, (Rect::new(2, 3, 40, 8), 4, 2));
+        assert!(!panel.ai_running());
+    }
 }
 
 fn pending(panel: &mut CommitPanel, c: &Context) -> mpsc::Sender<Report> {
@@ -387,13 +427,15 @@ fn checked(message: &str) -> Report {
 }
 
 #[test]
-fn missing_ai_configuration_opens_an_error_instead_of_settings() {
+fn missing_ai_configuration_reports_error_without_opening_an_editor() {
     let (_dir, c, mut panel) = fixture();
     let original = panel.saved.message.clone();
+    panel.focus = Focus::Diff;
     assert!(
-        matches!(panel.launch(Hit::MessageAction(MessageAction::Generate), &c), Action::Notice(message) if message.contains("ai.endpoint") && message.contains("ai.model"))
+        matches!(panel.launch(Hit::MessageAction(MessageAction::Generate), &c), Action::Notice(NoticeLevel::Error, message) if message.contains("ai.endpoint") && message.contains("ai.model"))
     );
-    assert!(matches!(panel.edit, Some(Edit::AIError)));
+    assert!(panel.edit.is_none());
+    assert!(panel.focus == Focus::Diff);
     assert!(!panel.ai_running());
     assert_eq!(panel.saved.message, original);
 }
@@ -413,9 +455,14 @@ fn successful_generation_preserves_a_newer_draft_or_failed_save() {
         }
         let original = panel.saved.message.clone();
         tx.send(checked("feat: generated message")).unwrap();
-        assert!(matches!(wait(&mut panel, &c), Action::Notice(_)));
+        let focus = panel.focus;
+        assert!(matches!(
+            wait(&mut panel, &c),
+            Action::Notice(NoticeLevel::Error, _)
+        ));
         assert_eq!(panel.saved.message, original);
-        assert!(matches!(panel.edit, Some(Edit::AIError)));
+        assert!(panel.edit.is_none());
+        assert!(panel.focus == focus);
         assert!(!panel.ai_running());
     }
 }
@@ -431,12 +478,16 @@ fn completion_waits_for_active_input_and_keeps_unsaved_edits() {
     assert!(panel.message_editing());
     assert!(panel.ai_running());
     panel.finish_message(&c).unwrap();
-    assert!(matches!(wait(&mut panel, &c), Action::Notice(_)));
+    assert!(matches!(
+        wait(&mut panel, &c),
+        Action::Notice(NoticeLevel::Error, _)
+    ));
     assert_eq!(
         panel.saved.message.as_deref(),
         Some("User's unsaved message 中文")
     );
-    assert!(matches!(panel.edit, Some(Edit::AIError)));
+    assert!(panel.edit.is_none());
+    assert!(panel.focus == Focus::Message);
 }
 
 #[test]
@@ -461,7 +512,10 @@ fn loading_animates_in_the_composer_and_success_fills_it_without_a_dialog() {
             .unwrap();
         assert_ne!(terminal.backend().buffer(), &before);
         tx.send(checked("feat: generated message")).unwrap();
-        assert!(matches!(panel.tick(&c), Action::Notice(_)));
+        assert!(matches!(
+            panel.tick(&c),
+            Action::Notice(NoticeLevel::Success, _)
+        ));
         terminal
             .draw(|frame| panel.draw(frame, frame.area(), &c))
             .unwrap();
@@ -537,7 +591,7 @@ fn large_multi_repo_selection_summarizes_every_patch_then_saves_one_message() {
     panel.start_ai(&c).unwrap();
     let action = wait(&mut panel, &c);
     assert!(
-        matches!(action, Action::Notice(ref message) if message.contains("generated")),
+        matches!(action, Action::Notice(NoticeLevel::Success, ref message) if message.contains("generated")),
         "{:?}",
         panel.ai_error
     );
@@ -753,8 +807,14 @@ fn deadline_expires_without_overwriting_a_draft_during_active_input() {
     panel.ai_pending.as_mut().unwrap().control = Control::new(Duration::ZERO);
     panel.edit_message(&c);
     panel.buf = "User editing after timeout".into();
-    assert!(matches!(panel.tick(&c), Action::None));
+    let original = panel.saved.message.clone();
+    assert!(
+        matches!(panel.tick(&c), Action::Notice(NoticeLevel::Error, message) if message.contains("total_timeout_seconds"))
+    );
     assert!(panel.message_editing());
+    assert_eq!(panel.saved.message, original);
+    assert_eq!(panel.buf, "User editing after timeout");
+    assert!(!panel.ai_running());
     panel.finish_message(&c).unwrap();
     panel.tick(&c);
     assert_eq!(
@@ -939,7 +999,10 @@ fn completion_preserves_search_input_and_open_panel_menus() {
             &c,
         );
         assert!(!panel.editing());
-        assert!(matches!(wait(&mut panel, &c), Action::Notice(_)));
+        assert!(matches!(
+            wait(&mut panel, &c),
+            Action::Notice(NoticeLevel::Success, _)
+        ));
         assert_eq!(
             panel.saved.message.as_deref(),
             Some("feat: deferred until input closes")

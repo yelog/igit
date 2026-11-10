@@ -242,7 +242,7 @@ fn loading_disables_keyboard_mouse_and_confirmation_actions_but_keeps_navigation
     let _reply = hold(&mut p);
     for code in [K::Char('a'), K::F(2), K::Enter] {
         assert!(
-            matches!(key(&mut p, &c, code), Action::Notice(message) if message.contains("History is not current"))
+            matches!(key(&mut p, &c, code), Action::Notice(NoticeLevel::Warning, message) if message.contains("History is not current"))
         );
         assert!(p.commit_dialog.is_none());
     }
@@ -257,10 +257,13 @@ fn loading_disables_keyboard_mouse_and_confirmation_actions_but_keeps_navigation
         }),
         &c,
     );
-    assert!(matches!(action, Action::Notice(_)));
+    assert!(matches!(action, Action::Notice(_, _)));
     assert_eq!(p.cursor, 2);
     assert!(p.commit_dialog.is_none());
-    assert!(matches!(p.confirm(REVIEW_TOKEN, &c), Action::Notice(_)));
+    assert!(matches!(
+        p.confirm(REVIEW_TOKEN, &c),
+        Action::Notice(NoticeLevel::Warning, _)
+    ));
     assert!(matches!(key(&mut p, &c, K::Char('j')), Action::None));
     assert_eq!(p.cursor, 3);
     assert!(p.preview_wakeup().is_none());
@@ -379,7 +382,10 @@ fn refresh_discards_an_existing_review_and_confirmation_never_creates_its_ref() 
     p.refresh(&c).unwrap();
     let reply = hold(&mut p);
     assert!(p.commit_review.is_none());
-    assert!(matches!(p.confirm(REVIEW_TOKEN, &c), Action::Notice(_)));
+    assert!(matches!(
+        p.confirm(REVIEW_TOKEN, &c),
+        Action::Notice(NoticeLevel::Warning, _)
+    ));
     let read = p.history_read(&c);
     reply
         .send(

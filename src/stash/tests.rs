@@ -150,7 +150,10 @@ fn stash_lists_saved_entries_on_one_row_and_groups_empty_repositories() {
     key(&mut panel, &c, K::Char('l')); // Enter the expanded group.
     for shortcut in ['a', 'P', 'd'] {
         assert!(
-            matches!(key(&mut panel, &c, K::Char(shortcut)), Action::Notice(_)),
+            matches!(
+                key(&mut panel, &c, K::Char(shortcut)),
+                Action::Notice(NoticeLevel::Warning, _)
+            ),
             "An empty repository must not target a stash"
         );
     }
@@ -342,7 +345,7 @@ fn stash_group_empty_and_stale_rows_cannot_start_operations() {
     for shortcut in ['a', 'P', 'd'] {
         assert!(matches!(
             key(&mut panel, &c, K::Char(shortcut)),
-            Action::Notice(_)
+            Action::Notice(NoticeLevel::Warning, _)
         ));
         assert!(panel.review.is_none());
     }
@@ -353,7 +356,7 @@ fn stash_group_empty_and_stale_rows_cannot_start_operations() {
     run(repo, &["stash", "drop", "stash@{0}"]);
     assert!(matches!(
         key(&mut panel, &c, K::Char('d')),
-        Action::Notice(_)
+        Action::Notice(NoticeLevel::Error, _)
     ));
     assert!(panel.review.is_none());
     assert_ne!(model::entries(repo).unwrap()[0].oid, oid);
@@ -361,7 +364,7 @@ fn stash_group_empty_and_stale_rows_cannot_start_operations() {
     panel.refresh(&c).unwrap();
     assert!(matches!(
         key(&mut panel, &c, K::Char('a')),
-        Action::Notice(_)
+        Action::Notice(NoticeLevel::Warning, _)
     ));
 }
 
@@ -377,7 +380,7 @@ fn stash_drop_refresh_keeps_a_nearby_entry_in_the_same_repository_and_consumes_r
     ));
     assert!(matches!(
         panel.confirm("stash-operation", &c),
-        Action::Refresh(_)
+        Action::Refresh(NoticeLevel::Success, _)
     ));
     assert!(matches!(panel.confirm("stash-operation", &c), Action::None));
     panel.refresh(&c).unwrap();

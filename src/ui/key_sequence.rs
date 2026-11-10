@@ -27,7 +27,7 @@ pub(crate) enum KeySequence {
     LogGoto,
     BranchGoto,
     PathCopy,
-    LogYank,
+    CommitCopy,
     LogFilters,
     MergePrevious,
     MergeNext,
@@ -38,7 +38,7 @@ impl KeySequence {
     fn prefix(self) -> &'static str {
         match self {
             Self::LogGoto | Self::BranchGoto => "g",
-            Self::LogYank | Self::PathCopy => "y",
+            Self::CommitCopy | Self::PathCopy => "y",
             Self::LogFilters => "Space",
             Self::MergePrevious => "[",
             Self::MergeNext => "]",
@@ -56,7 +56,7 @@ impl KeySequence {
                 ('n', "Copy name without extension"),
                 ('r', "Copy relative path"),
             ],
-            Self::LogYank => &[
+            Self::CommitCopy => &[
                 ('y', "Copy full commit ID"),
                 ('m', "Copy full commit message"),
                 ('a', "Copy author name and email"),

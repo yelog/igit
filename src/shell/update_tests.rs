@@ -106,7 +106,11 @@ fn finish(app: &mut Shell) -> String {
     let deadline = Instant::now() + Duration::from_secs(10);
     while app.help_content().context() != "Update / Results" {
         app.poll();
-        assert!(Instant::now() < deadline, "update timed out: {}", app.msg);
+        assert!(
+            Instant::now() < deadline,
+            "update timed out: {}",
+            app.notifications.latest_body()
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
     screen(app, 120, 30)

@@ -205,7 +205,7 @@ fn select_combines_exact_refs_regex_and_exclusions_per_repository() {
     paste(&mut p, "topic", &c);
     assert!(matches!(
         key(&mut p, K::Enter, Mods::NONE, &c),
-        Action::Notice(_)
+        Action::Notice(_, _)
     ));
     assert!(p.editing());
     assert_eq!(p.filter.single_branch(), Some("refs/tags/topic"));

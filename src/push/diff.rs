@@ -107,6 +107,13 @@ impl PushPanel {
 }
 
 impl Diff {
+    pub(super) fn cancel_mouse(&mut self) {
+        self.patch.selection.cancel_mouse();
+        if let Some(FileDiff::Split(view)) = &mut self.content {
+            view.cancel_mouse();
+        }
+    }
+
     pub(super) fn selected_text(&self) -> Option<&str> {
         match &self.content {
             Some(FileDiff::Split(view)) => view.selected_text(),

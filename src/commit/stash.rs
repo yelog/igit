@@ -18,7 +18,7 @@ pub(super) struct State {
 impl CommitPanel {
     pub(super) fn edit_stash(&mut self, c: &Context) -> Action {
         if c.scope.is_empty() {
-            return err("No repositories in Roots");
+            return warning("No repositories in Roots");
         }
         self.stash.plans.clear();
         self.stash.errors.clear();
@@ -32,7 +32,7 @@ impl CommitPanel {
     pub(super) fn review_stash(&mut self, c: &Context) -> Result<Action> {
         let message = self.buf.trim();
         if message.is_empty() {
-            bail!("Stash message is required");
+            bail!(Constraint("Stash message is required"));
         }
         self.stash.message = message.into();
         self.stash.plans.clear();
@@ -56,14 +56,10 @@ impl CommitPanel {
             }
         }
         if self.stash.plans.is_empty() {
-            bail!(
-                "{}",
-                if self.stash.errors.is_empty() {
-                    "No changes to stash in Roots".into()
-                } else {
-                    self.stash.errors.join("\n")
-                }
-            );
+            if self.stash.errors.is_empty() {
+                bail!(Constraint("No changes to stash in Roots"));
+            }
+            bail!("{}", self.stash.errors.join("\n"));
         }
         let mut body = format!(
             "Stash all staged, unstaged, and untracked changes in these repositories.\nCheckboxes do not limit this action. Ignored files stay in place.\nEach repository is saved independently, then its changes are cleaned.\n\nShared message: {}\n",
@@ -108,8 +104,11 @@ impl CommitPanel {
             .into_iter()
             .map(|error| format!("SKIP · {error}"))
             .collect();
+        let mut succeeded = 0;
+        let mut issues = !results.is_empty();
         for plan in plans {
             let Some(repo) = c.repos.get(plan.root).filter(|repo| repo.path == plan.repo) else {
+                issues = true;
                 results.push(format!(
                     "SKIP · {}: repository changed; review again",
                     display_path(&plan.repo)
@@ -117,24 +116,33 @@ impl CommitPanel {
                 continue;
             };
             if !c.scope.contains(&plan.root) {
+                issues = true;
                 results.push(format!("SKIP · {}: outside Roots", repo.name));
                 continue;
             }
             match stash::execute(&plan) {
                 Ok(outcome) => {
+                    succeeded += 1;
                     let short = &outcome.hash[..outcome.hash.len().min(12)];
                     if let Some(warning) = outcome.warning {
+                        issues = true;
                         results.push(format!("SAVED · {} · {short}: {warning}. Resolve remaining changes before retrying", repo.name));
                         self.stash.incomplete.insert(plan.repo, outcome.hash);
                     } else {
                         results.push(format!("SAVED · {} · {short}", repo.name));
                     }
                 }
-                Err(error) => results.push(format!("FAILED · {}: {error}", repo.name)),
+                Err(error) => {
+                    issues = true;
+                    results.push(format!("FAILED · {}: {error}", repo.name));
+                }
             }
         }
         self.focus = Focus::Tree;
         self.request_refresh();
-        Action::Refresh(format!("Stash results\n{}", results.join("\n")))
+        Action::Refresh(
+            result_level(succeeded, issues),
+            format!("Stash results\n{}", results.join("\n")),
+        )
     }
 }

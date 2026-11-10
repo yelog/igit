@@ -146,6 +146,13 @@ impl RevisionDiff {
         self.view.drag.is_some() || self.selections.iter().any(TextSelection::mouse_active)
     }
 
+    pub(crate) fn cancel_mouse(&mut self) {
+        self.selections
+            .iter_mut()
+            .for_each(TextSelection::cancel_mouse);
+        self.view.cancel_scroll_drag();
+    }
+
     pub(crate) fn side(&self) -> usize {
         self.side
     }

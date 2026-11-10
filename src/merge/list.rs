@@ -8,7 +8,7 @@ use crate::{
         icons::Icon,
         idea::{button_style, clipped, clipped_path, GREEN, RED, TAG},
         panes::PaneId,
-        Action, BG, FG, LINE, MUTED, SEL,
+        Action, NoticeLevel, BG, FG, LINE, MUTED, SEL,
     },
 };
 use anyhow::Result;
@@ -337,13 +337,16 @@ impl MergePanel {
         };
         let name = self.list.side_name(file.root, side);
         if let Err(error) = self.choose_file(c, file) {
-            return Action::Notice(format!("{error:#}"));
+            return Action::Notice(NoticeLevel::Error, format!("{error:#}"));
         }
         self.act(Hit::UseFile(side), c);
-        Action::Notice(format!(
-            "Previewing the entire {name} version. {} reviews Apply Changes.",
-            self.key_label("A")
-        ))
+        Action::Notice(
+            NoticeLevel::Info,
+            format!(
+                "Previewing the entire {name} version. {} reviews Apply Changes.",
+                self.key_label("A")
+            ),
+        )
     }
     pub(super) fn prepare_simple(&mut self, c: &Context) -> Action {
         let Some(root) = self.list.selected_root().filter(|r| c.scope.contains(r)) else {
@@ -382,17 +385,28 @@ impl MergePanel {
         }
         let name = &c.repos[root].name;
         if prepared == 0 {
-            return Action::Notice(match first_error {
-                Some(error) => {
-                    format!("{name}: no new simple drafts · {skipped} skipped · {error}")
-                }
-                None => format!("{name}: no new non-conflicting changes to prepare"),
-            });
+            return match first_error {
+                Some(error) => Action::Notice(
+                    NoticeLevel::Error,
+                    format!("{name}: no new simple drafts · {skipped} skipped · {error}"),
+                ),
+                None => Action::Notice(
+                    NoticeLevel::Info,
+                    format!("{name}: no new non-conflicting changes to prepare"),
+                ),
+            };
         }
         let noun = if prepared == 1 { "draft" } else { "drafts" };
-        Action::Notice(format!(
-            "{name}: prepared {prepared} {noun}, {skipped} skipped. Open a file to review."
-        ))
+        Action::Notice(
+            if skipped > 0 {
+                NoticeLevel::Warning
+            } else {
+                NoticeLevel::Success
+            },
+            format!(
+                "{name}: prepared {prepared} {noun}, {skipped} skipped. Open a file to review."
+            ),
+        )
     }
     pub(super) fn draw_list(&mut self, f: &mut Frame, area: Rect, c: &Context) {
         self.panes.add(PaneId::Conflicts, area);

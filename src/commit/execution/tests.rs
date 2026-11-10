@@ -15,14 +15,43 @@ fn finish(panel: &mut CommitPanel, c: &Context) -> Action {
 }
 
 #[test]
+fn repository_progress_redraws_without_emitting_notices() {
+    let (_dir, c, mut panel) = super::super::message_tests::fixture();
+    let (sender, receiver) = mpsc::channel();
+    panel.execution.pending = Some(Pending {
+        receiver,
+        stop: Arc::new(AtomicBool::new(false)),
+        completed: Vec::new(),
+        push: false,
+        message: panel.saved.message.clone(),
+    });
+    for label in ["Committing app · 1/2", "Committing api · 2/2"] {
+        sender.send(Report::Started(label.into())).unwrap();
+        assert!(matches!(panel.poll_execution(&c), Action::Redraw));
+        assert_eq!(panel.execution.progress, label);
+        assert!(panel.execution_running());
+        assert!(matches!(panel.poll_execution(&c), Action::None));
+    }
+    assert!(matches!(
+        panel.stop_execution(),
+        Action::Notice(NoticeLevel::Info, _)
+    ));
+}
+
+#[test]
 fn background_commits_preserve_mixed_staging_and_shared_message_behavior() {
     let (_dir, c, mut panel) = super::super::message_tests::fixture();
     panel.enable_background_execution();
     let action = panel.submit(&c, false).unwrap();
-    assert!(matches!(action, Action::Notice(_)));
+    assert!(matches!(action, Action::Notice(NoticeLevel::Info, _)));
     assert!(panel.execution_running());
     assert!(panel.submit(&c, false).is_err());
-    let Action::Committed { repos, .. } = finish(&mut panel, &c) else {
+    let Action::Committed {
+        repos,
+        level: NoticeLevel::Success,
+        ..
+    } = finish(&mut panel, &c)
+    else {
         unreachable!()
     };
     assert_eq!(repos, [0, 1]);
@@ -41,6 +70,51 @@ fn background_commits_preserve_mixed_staging_and_shared_message_behavior() {
             fs::read_to_string(repo.path.join("mixed.txt")).unwrap(),
             "unstaged private marker\n"
         );
+    }
+}
+
+#[test]
+fn completed_commits_report_warnings_for_cleanup_save_and_worker_failures() {
+    for (cleanup_warning, save_failure, interrupted) in [
+        (true, false, None),
+        (false, true, None),
+        (false, false, Some("Worker stopped")),
+    ] {
+        let (_dir, mut c, mut panel) = super::super::message_tests::fixture();
+        let original = panel.saved.message.clone();
+        let completed = panel
+            .prepare_submission(&c)
+            .unwrap()
+            .into_iter()
+            .map(|plan| Completed {
+                plan,
+                outcome: Ok(backend::Outcome {
+                    hash: "created-commit".into(),
+                    warning: cleanup_warning.then(|| "Inspect the index".into()),
+                }),
+            })
+            .collect();
+        if save_failure {
+            c.state_dir = c.workspace.join("blocked-state");
+            fs::write(&c.state_dir, "not a directory").unwrap();
+        }
+        let Action::Committed {
+            repos,
+            push,
+            level: NoticeLevel::Warning,
+            message,
+        } = panel.finish_submission(&c, completed, true, original, interrupted)
+        else {
+            panic!("Completed commits with follow-up failures must report a warning");
+        };
+        assert_eq!(repos, [0, 1]);
+        assert_eq!(push, !cleanup_warning);
+        if save_failure {
+            assert!(message.contains("Failed to save local state"), "{message}");
+        }
+        if let Some(reason) = interrupted {
+            assert!(message.contains(reason), "{message}");
+        }
     }
 }
 
@@ -82,7 +156,7 @@ fn slow_hook_keeps_browsing_responsive_and_stop_skips_only_unstarted_repositorie
     panel.enable_background_execution();
     assert!(matches!(
         panel.submit(&c, false).unwrap(),
-        Action::Notice(_)
+        Action::Notice(NoticeLevel::Info, _)
     ));
     let deadline = Instant::now() + Duration::from_secs(10);
     while !marker.exists() {
@@ -108,6 +182,7 @@ fn slow_hook_keeps_browsing_responsive_and_stop_skips_only_unstarted_repositorie
     let Action::Committed {
         repos,
         message: result,
+        level: NoticeLevel::Warning,
         ..
     } = finish(&mut panel, &c)
     else {

@@ -77,7 +77,11 @@ fn discard_confirmation_defaults_to_cancel_and_refreshes_only_after_confirmation
     send(&mut app, "Space");
     for cancel in ["Esc", "Enter", "n"] {
         send(&mut app, "d");
-        assert!(matches!(&app.pop, Some(Popup::Rollback(_))), "{}", app.msg);
+        assert!(
+            matches!(&app.pop, Some(Popup::Rollback(_))),
+            "{}",
+            app.notifications.latest_body()
+        );
         for (width, height) in [(120, 36), (80, 24), (44, 12)] {
             let rendered = screen(&mut app, width, height);
             for label in [
@@ -106,7 +110,13 @@ fn discard_confirmation_defaults_to_cancel_and_refreshes_only_after_confirmation
         "unselected staged"
     );
     assert_eq!(git(&repo, &["rev-parse", "HEAD"]).unwrap(), before[0]);
-    assert!(app.msg.contains("rolled back 1 file"), "{}", app.msg);
+    assert!(
+        app.notifications
+            .latest_body()
+            .contains("rolled back 1 file"),
+        "{}",
+        app.notifications.latest_body()
+    );
     // Refresh removed the discarded target from the live list.
     focus_commit_file(&mut app, "other.txt");
     send(&mut app, "d");
@@ -170,7 +180,13 @@ fn discard_newly_checked_sibling_uses_its_original_snapshot() {
     let before = snapshot(&repo);
     click_label(&mut app, "other.txt");
     send(&mut app, "Space Shift-Tab Enter");
-    assert!(app.msg.contains("other.txt changed"), "{}", app.msg);
+    assert!(
+        app.notifications
+            .latest_body()
+            .contains("other.txt changed"),
+        "{}",
+        app.notifications.latest_body()
+    );
     assert_eq!(snapshot(&repo), before);
 }
 
@@ -243,7 +259,7 @@ fn discard_group_mouse_checkboxes_and_help_keep_the_unchecked_index_and_worktree
     // Revalidation uses the checked snapshot; a newer unchecked edit stays.
     std::fs::write(repo.join("other.txt"), "external edit\n").unwrap();
     click_label(&mut app, " Rollback ");
-    assert!(app.pop.is_none(), "{}", app.msg);
+    assert!(app.pop.is_none(), "{}", app.notifications.latest_body());
     assert_eq!(git(&repo, &["show", ":mixed.txt"]).unwrap(), "base");
     assert_eq!(std::fs::read(repo.join("mixed.txt")).unwrap(), b"base\n");
     assert_eq!(
@@ -279,7 +295,7 @@ fn discard_added_copy_is_kept_unless_the_option_is_selected() {
             assert!(screen(&mut app, 80, 24).contains("[x] Delete local copies"));
         }
         click_label(&mut app, " Rollback ");
-        assert!(app.pop.is_none(), "{}", app.msg);
+        assert!(app.pop.is_none(), "{}", app.notifications.latest_body());
         assert_eq!(git(&repo, &["ls-files", "--", "new.txt"]).unwrap(), "");
         assert_eq!(
             git(&repo, &["show", ":other.txt"]).unwrap(),

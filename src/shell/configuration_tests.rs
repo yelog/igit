@@ -56,7 +56,11 @@ fn running_commit_blocks_push_fetch_roots_workspace_replacement_and_quit() {
     screen(&mut app, 120, 36);
     send(&mut app, "F");
     assert!(!app.push.busy());
-    assert!(app.msg.contains("Git write"), "{}", app.msg);
+    assert!(
+        app.notifications.latest_body().contains("Git write"),
+        "{}",
+        app.notifications.latest_body()
+    );
     for command in ["r", "f", "p", "q", "Ctrl-c"] {
         send(&mut app, command);
         assert!(
@@ -393,7 +397,7 @@ fn configuration_remapped_message_focus_keeps_help_and_commits_only_on_enter() {
     let before = snapshot(&repo);
     configure(
         &mut app,
-        "[keybindings.global]\nfocus-commit=['F8']\n[keybindings.commit]\nreview=['Ctrl-r']",
+        "[keybindings.global]\nnotification-history=[]\nfocus-commit=['F8']\n[keybindings.commit]\nreview=['Ctrl-r']",
     );
     send(&mut app, "2");
     assert_eq!(app.tab, Log);
@@ -603,7 +607,13 @@ fn add_to_git_slow_shell_operation_keeps_feedback_help_tabs_and_write_guards_ava
     assert!(matches!(app.pop, Some(Popup::Help { .. })) && !app.commit.add_running());
     send(&mut app, "Esc");
     assert!(app.pop.is_none());
-    assert!(app.msg.contains("1 added · 0 failed"), "{}", app.msg);
+    assert!(
+        app.notifications
+            .latest_body()
+            .contains("1 added · 0 failed"),
+        "{}",
+        app.notifications.latest_body()
+    );
     assert_eq!(
         git(&repo, &["show", ":zz-new-file.txt"]).unwrap(),
         "new file"
@@ -686,6 +696,48 @@ fn configuration_sequences_share_prefixes_and_use_custom_hints() {
 }
 
 #[test]
+fn configuration_push_commit_copy_remaps_without_affecting_file_copy() {
+    let (_dir, mut app) = fixture();
+    let repo = app.ctx.repos[0].path.clone();
+    git(&repo, &["remote", "add", "origin", repo.to_str().unwrap()]).unwrap();
+    app.go(Push);
+    app.push.finish_loading(&app.ctx);
+    send(&mut app, "j");
+    let capture = CopyCapture::start();
+    configure(
+        &mut app,
+        "[keybindings.push]\ncopy-id=['g y']\ncopy-message=['g m']\ncopy-author=['g a']",
+    );
+    send(&mut app, "g");
+    assert!(app.pending_keys.is_some());
+    app.key_picker
+        .poll(Instant::now() + Duration::from_millis(450));
+    let hints = screen(&mut app, 120, 36);
+    assert!(hints.contains("Copy author name and email"), "{hints}");
+    send(&mut app, "a");
+    assert_eq!(capture.texts(), ["Help tester <help@example.invalid>"]);
+    send(&mut app, "g y");
+    assert_eq!(
+        capture.texts().last().unwrap(),
+        &git(&repo, &["rev-parse", "HEAD"]).unwrap()
+    );
+    send(&mut app, "g m");
+    assert_eq!(
+        capture.texts().last().unwrap(),
+        &git(&repo, &["show", "-s", "--format=%B", "HEAD"]).unwrap()
+    );
+    for removed in ["y y", "y m", "y a"] {
+        send(&mut app, removed);
+        assert_eq!(capture.texts().len(), 3);
+    }
+    app.push.finish_loading(&app.ctx);
+    app.push.focus_pane(crate::ui::panes::PaneId::PushFiles);
+    send(&mut app, "y r");
+    assert_eq!(capture.texts().len(), 4);
+    assert!(app.pop.is_none());
+}
+
+#[test]
 fn configuration_prefix_cancel_context_changes_and_mouse_picker() {
     let (_dir, mut app) = fixture();
     configure(&mut app, "[keybindings.global]\nquit=['Q Q']");
@@ -735,7 +787,7 @@ fn configuration_settings_survive_rescan_and_empty_workspace() {
     let (_dir, mut app) = fixture();
     configure(
         &mut app,
-        "[terminal]\nmouse=false\n[keybindings.global]\nroots=['F8']",
+        "[terminal]\nmouse=false\n[keybindings.global]\nnotification-history=[]\nroots=['F8']",
     );
     app.pop = Some(Popup::Open {
         path: app.ctx.workspace.display().to_string(),
@@ -828,7 +880,7 @@ fn configuration_keeps_unmodified_prefix_mouse_actions_and_copy_precedence() {
 fn configuration_multistep_named_continuations_and_mouse_off() {
     let (_dir, mut app) = fixture();
     app.go(Log);
-    configure(&mut app, "[terminal]\nmouse=false\n[keybindings.global]\nupdate=[]\nroots=['F8 Enter']\nfocus-commit=['F9 x y']");
+    configure(&mut app, "[terminal]\nmouse=false\n[keybindings.global]\nupdate=[]\nnotification-history=[]\nroots=['F8 Enter']\nfocus-commit=['F9 x y']");
     screen(&mut app, 120, 36);
     let header = app.regions.tab(Commit);
     app.dispatch(&Event::Mouse(MouseEvent {
@@ -862,7 +914,7 @@ fn configuration_new_shortcuts_interrupt_default_prefixes_without_stealing_suffi
     let capture = CopyCapture::start();
     configure(
         &mut app,
-        "[keybindings.global]\nfocus-commit=['F8']\n[keybindings.log]\nsearch=['m']",
+        "[keybindings.global]\nnotification-history=[]\nfocus-commit=['F8']\n[keybindings.log]\nsearch=['m']",
     );
     send(&mut app, "y m");
     assert_eq!(capture.texts(), ["base"]); // m still completes ym while y is pending.
@@ -884,7 +936,7 @@ fn configuration_remaps_workspace_update_and_log_filter_prefixes() {
     send(&mut app, "Esc");
     configure(
         &mut app,
-        "[keybindings.global]\npull=['F8']\nfetch=[]\n[keybindings.log]\npaths-filter=['Space x']",
+        "[keybindings.global]\nnotification-history=[]\npull=['F8']\nfetch=[]\n[keybindings.log]\npaths-filter=['Space x']",
     );
     send(&mut app, "p f Space p");
     assert!(app.pop.is_none() && !app.log.editing());
@@ -906,7 +958,7 @@ fn pane_search_remaps_owns_text_input_and_keeps_other_pane_commands() {
     let (_dir, mut app) = fixture();
     configure(
         &mut app,
-        "[keybindings.commit]\nfind=['F8']\nnext-match=['F7']",
+        "[keybindings.global]\nnotification-history=[]\n[keybindings.commit]\nfind=['F8']\nnext-match=['F7']",
     );
     screen(&mut app, 80, 24);
     send(&mut app, "/");

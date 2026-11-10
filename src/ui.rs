@@ -1,8 +1,10 @@
 pub(crate) mod clipboard;
+pub(crate) mod commit_copy;
 pub(crate) mod help;
 pub(crate) mod icons;
 pub(crate) mod idea;
 pub(crate) mod key_sequence;
+pub(crate) mod notifications;
 pub(crate) mod panes;
 pub(crate) mod path_copy;
 pub(crate) mod search;
@@ -10,6 +12,7 @@ pub(crate) mod selection;
 use crate::core::Context;
 use anyhow::Result;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+pub use notifications::Level as NoticeLevel;
 use ratatui::{
     layout::Rect,
     style::{Color, Style},
@@ -20,15 +23,21 @@ use std::path::PathBuf;
 
 pub enum Action {
     None,
-    Notice(String),
+    Redraw,
+    Notice(NoticeLevel, String),
     Copy {
         text: String,
         label: &'static str,
     },
-    Refresh(String),
+    Refresh(NoticeLevel, String),
     EditFile {
         repo: PathBuf,
         path: PathBuf,
+    },
+    ShowFileRevision {
+        repo: PathBuf,
+        path: PathBuf,
+        revision: String,
     },
     OpenConflicts,
     CloseDialog,
@@ -42,9 +51,11 @@ pub enum Action {
         repos: Vec<usize>,
         push: bool,
         message: String,
+        level: NoticeLevel,
     },
 }
 pub trait Panel {
+    fn cancel_mouse(&mut self) {}
     fn refresh(&mut self, c: &Context) -> Result<()>;
     fn draw(&mut self, f: &mut Frame, area: Rect, c: &Context);
     fn event(&mut self, e: &Event, c: &Context) -> Action;

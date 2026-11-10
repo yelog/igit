@@ -52,8 +52,11 @@ fn edit_file_respects_container_scope_remapping_help_and_message_editing() {
     let (_dir, mut app) = fixture();
     send(&mut app, "g e");
     assert!(app.pending_edit.is_none());
-    assert!(app.msg.contains("Select a file"));
-    app.config = AppConfig::from_toml("[keybindings.commit]\nedit-file = ['F8']").unwrap();
+    assert!(app.notifications.latest_body().contains("Select a file"));
+    app.config = AppConfig::from_toml(
+        "[keybindings.global]\nnotification-history=[]\n[keybindings.commit]\nedit-file = ['F8']",
+    )
+    .unwrap();
     focus_file(&mut app, "other.txt");
     send(&mut app, "e E");
     assert!(app.pending_edit.is_none());
@@ -68,4 +71,41 @@ fn edit_file_respects_container_scope_remapping_help_and_message_editing() {
     }
     send(&mut app, "Enter");
     assert!(app.pending_edit.take().unwrap().path.ends_with("other.txt"));
+}
+
+#[test]
+fn show_file_at_revision_dispatches_from_both_panes_and_supports_remapping_and_help() {
+    let (_dir, mut app) = fixture();
+    let repo = app.ctx.repos[0].path.clone();
+    let before = snapshot(&repo);
+    app.log
+        .set_file_history(&app.ctx, &repo.join("mixed.txt"))
+        .unwrap();
+    app.go(Log);
+    app.log.refresh(&app.ctx).unwrap();
+    app.config =
+        AppConfig::from_toml("[keybindings.log]\nshow-file-at-revision = ['Ctrl-e']").unwrap();
+    let rendered = screen(&mut app, 140, 36);
+    assert!(rendered.contains("Show File at Revision"), "{rendered}");
+    for navigation in ["", "Tab"] {
+        if !navigation.is_empty() {
+            send(&mut app, navigation);
+        }
+        send(&mut app, "e");
+        assert!(app.pending_edit.is_none());
+        send(&mut app, "Ctrl-e");
+        let request = app.pending_edit.take().unwrap();
+        assert_eq!(request.repo, repo);
+        assert_eq!(request.path, std::path::Path::new("mixed.txt"));
+        assert_eq!(request.revision.as_deref(), Some(before[0].as_str()));
+    }
+    send(&mut app, "F1");
+    for ch in "Show File at Revision".chars() {
+        app.dispatch(&key(KeyCode::Char(ch)));
+    }
+    send(&mut app, "Enter");
+    assert!(app.pending_edit.take().unwrap().revision.is_some());
+    send(&mut app, "Esc / e");
+    assert!(app.pending_edit.is_none());
+    assert_eq!(snapshot(&repo), before);
 }

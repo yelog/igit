@@ -1,6 +1,7 @@
 //! A review binds one Git operation to one commit and working tree.
 use super::model::{plain, Rev};
 use crate::core::{command, git, git_bytes, revpath, Context, Repo};
+use crate::ui::NoticeLevel;
 use anyhow::{bail, ensure, Context as _, Result};
 use std::{
     collections::BTreeSet,
@@ -610,7 +611,7 @@ impl Review {
         ))
     }
 
-    pub fn execute(self, c: &Context) -> Result<String> {
+    pub fn execute(self, c: &Context) -> Result<(NoticeLevel, String)> {
         let repo = self.target.repo(c)?;
         let oid = self.target.oid.as_str();
         let current = Plan::read(&repo.path, oid, self.kind, &self.input)
@@ -720,7 +721,10 @@ impl Review {
                 let count = self.picks.len();
                 let destination = format!("{} / {}", repo.name, head.label());
                 if result.is_ok() {
-                    return Ok(format!("Cherry-picked {count} onto {destination}"));
+                    return Ok((
+                        NoticeLevel::Success,
+                        format!("Cherry-picked {count} onto {destination}"),
+                    ));
                 }
                 let range = format!("{}..HEAD", head.oid);
                 let applied = git(
@@ -741,18 +745,31 @@ impl Review {
                     };
                     if let Some(applied) = applied.filter(|n| *n < count) {
                         let remaining = count - applied - 1;
-                        return Ok(format!(
-                            "{applied} applied · {stopped} · {remaining} remaining · 6 Conflicts · {destination}"
+                        return Ok((
+                            if applied > 0 {
+                                NoticeLevel::Warning
+                            } else {
+                                NoticeLevel::Error
+                            },
+                            format!(
+                                "{applied} applied · {stopped} · {remaining} remaining · 6 Conflicts · {destination}"
+                            ),
                         ));
                     }
-                    return Ok(format!("Cherry-pick stopped · 6 Conflicts · {destination}"));
+                    return Ok((
+                        NoticeLevel::Warning,
+                        format!("Cherry-pick stopped · 6 Conflicts · {destination}"),
+                    ));
                 }
                 if let Some(applied) = applied.filter(|n| *n > 0 && *n <= count) {
                     // Do not offer the original selection again after Git has
                     // already created commits, even if it left no conflict marker.
                     let error = result.unwrap_err();
-                    return Ok(format!(
-                        "{applied}/{count} applied · Cherry-pick stopped in {destination} · {error:#}"
+                    return Ok((
+                        NoticeLevel::Warning,
+                        format!(
+                            "{applied}/{count} applied · Cherry-pick stopped in {destination} · {error:#}"
+                        ),
                     ));
                 }
             }
@@ -763,10 +780,9 @@ impl Review {
         } else {
             self.target.short()
         };
-        Ok(format!(
-            "{} completed in {}: {detail}",
-            self.kind.title(),
-            repo.name
+        Ok((
+            NoticeLevel::Success,
+            format!("{} completed in {}: {detail}", self.kind.title(), repo.name),
         ))
     }
 }

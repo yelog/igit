@@ -116,11 +116,14 @@ impl CommitPanel {
 
     pub(super) fn add_untracked(&mut self, c: &Context) -> Result<Action> {
         if self.add_running() {
-            return Ok(Action::Notice(self.add_progress(usize::MAX)));
+            return Ok(Action::Notice(
+                NoticeLevel::Info,
+                self.add_progress(usize::MAX),
+            ));
         }
         let row = self
             .active()
-            .ok_or_else(|| anyhow::anyhow!("Select untracked files to add"))?;
+            .ok_or(Constraint("Select untracked files to add"))?;
         let mut files = BTreeMap::<usize, Vec<Change>>::new();
         for &i in &row.files {
             let file = &self.files[i];
@@ -133,7 +136,7 @@ impl CommitPanel {
             }
         }
         if files.is_empty() {
-            bail!("No untracked files in the highlighted scope");
+            bail!(Constraint("No untracked files in the highlighted scope"));
         }
         let total = files.values().map(Vec::len).sum();
         let repositories = files.len();
@@ -163,7 +166,10 @@ impl CommitPanel {
             phase: "Starting".into(),
             completed: Vec::new(),
         });
-        Ok(Action::Notice(self.add_progress(usize::MAX)))
+        Ok(Action::Notice(
+            NoticeLevel::Info,
+            self.add_progress(usize::MAX),
+        ))
     }
 
     pub(crate) fn poll_add(&mut self, c: &Context) -> Action {
@@ -185,6 +191,8 @@ impl CommitPanel {
         let mut statuses = BTreeMap::new();
         let mut results = Vec::new();
         let mut added = 0;
+        let mut succeeded = 0;
+        let mut refresh_failed = false;
         let mut failed = pending.repositories.saturating_sub(pending.completed.len());
         for completed in pending.completed {
             if c.repos
@@ -200,6 +208,7 @@ impl CommitPanel {
             }
             match completed.result {
                 Ok(count) => {
+                    succeeded += 1;
                     added += count;
                     results.push(format!("ADDED · {} · {count} files", completed.name));
                 }
@@ -209,6 +218,7 @@ impl CommitPanel {
                 }
             }
             if let Err(error) = &completed.status {
+                refresh_failed = true;
                 results.push(format!("Refresh failed: {error}. Press F5 to refresh"));
             }
             statuses.insert(completed.root, completed.status);
@@ -218,9 +228,12 @@ impl CommitPanel {
             self.request_refresh();
             results.push("Add worker stopped. Inspect Git status before retrying; completed additions are kept".into());
         }
-        Action::Notice(format!(
-            "Add to Git: {added} added · {failed} failed\n{}",
-            results.join("\n")
-        ))
+        Action::Notice(
+            result_level(succeeded, failed > 0 || interrupted || refresh_failed),
+            format!(
+                "Add to Git: {added} added · {failed} failed\n{}",
+                results.join("\n")
+            ),
+        )
     }
 }

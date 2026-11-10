@@ -309,8 +309,11 @@ impl LogPanel {
         })
     }
 
-    pub(crate) fn pick_hint(&self, c: &Context) -> Option<String> {
+    pub(crate) fn pick_hint(&self, c: &Context, revision_key: &str) -> Option<String> {
         if !self.pick_mode {
+            if self.filter.file_history.is_some() && !self.editing() {
+                return Some(format!("{revision_key} Show File at Revision  F1 Help"));
+            }
             return (self.focus == Pane::Graph && !self.editing())
                 .then(|| "C Cherry-pick  v Select commits  F1 Help".to_owned());
         }
@@ -378,8 +381,16 @@ impl LogPanel {
     }
 
     pub(super) fn commit_dialog_event(&mut self, e: &Event, c: &Context) -> Action {
-        self.handle_commit_dialog(e, c)
-            .unwrap_or_else(|err| Action::Notice(format!("Log: {err:#}")))
+        self.handle_commit_dialog(e, c).unwrap_or_else(|err| {
+            Action::Notice(
+                if err.is::<loading::HistoryUnavailable>() {
+                    NoticeLevel::Warning
+                } else {
+                    NoticeLevel::Error
+                },
+                format!("Log: {err:#}"),
+            )
+        })
     }
 
     fn handle_commit_dialog(&mut self, e: &Event, c: &Context) -> Result<Action> {
@@ -432,16 +443,16 @@ impl LogPanel {
             return Action::None;
         };
         let is_pick = review.is_cherry_pick();
-        let message = match review.execute(c) {
-            Ok(message) => {
+        let (level, message) = match review.execute(c) {
+            Ok(outcome) => {
                 if is_pick {
                     self.set_pick_mode(false);
                 }
-                message
+                outcome
             }
-            Err(error) => format!("Log: {error:#}"),
+            Err(error) => (NoticeLevel::Error, format!("Log: {error:#}")),
         };
         // Git can leave a sequencer or conflicted index even when it reports failure.
-        Action::Refresh(message)
+        Action::Refresh(level, message)
     }
 }

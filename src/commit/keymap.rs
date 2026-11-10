@@ -91,15 +91,6 @@ impl CommitPanel {
                         ("Esc", "Cancel move"),
                     ],
                 ),
-                Edit::AIError => Section::new(
-                    "Commit / AI Error",
-                    &[
-                        ("j", "Scroll error down"),
-                        ("k", "Scroll error up"),
-                        ("Enter", "Close error; keep original message"),
-                        ("Esc", "Close error; keep original message"),
-                    ],
-                ),
                 Edit::Stash => Section::new(
                     "Commit / Create Stash",
                     &[
@@ -310,7 +301,6 @@ impl CommitPanel {
                     ("A", "Generate and fill shared commit message"),
                     ("S", "Open AI settings"),
                     ("P", "Commit, then open Push preview"),
-                    ("Esc", "Return to changes"),
                 ],
             )],
         );

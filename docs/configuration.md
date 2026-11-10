@@ -64,7 +64,9 @@ uses `%LOCALAPPDATA%\igit\state`, then `%APPDATA%\igit\state`,
 `%USERPROFILE%\AppData\Local\igit\state`, and Unix-style HOME as fallbacks.
 The cache identifies the running executable and native
 ownership record; invalid, stale, future-dated, and mismatched entries are ignored.
-Automatic failures do not interrupt work.
+Automatic update availability appears as a notification without interrupting
+work. Automatic no-update and failure results stay quiet; manual check results
+and installation completion notify.
 
 `check_on_startup = false` disables automatic checking and cached startup
 indicators. Manual checks still work. The `update` binding follows the normal-mode
@@ -89,7 +91,7 @@ icons = "unicode" # "nerd-font", "unicode", or "ascii"
 hint_delay_ms = 300
 
 [keybindings.global]
-focus-commit = ["1", "F8"]
+focus-commit = ["1", "F10"]
 quit = ["q", "Ctrl-c"]
 
 [keybindings.panes]
@@ -134,7 +136,7 @@ binding; the action's mouse button remains available.
 | `ai.max_requests` | `32` | Maximum HTTP requests per generation, including summaries, reductions, and final output; from `1` to `128` |
 | `ai.total_timeout_seconds` | `300` | Whole-job deadline including preparation and final checks, from `1` to `3600` seconds |
 | `keybindings.hint_delay_ms` | `200` | Delay before showing sequence continuations, from `0` to `10000` milliseconds |
-| `keybindings.global` | See defaults | Switch workspace tabs, review Pull/Fetch, Roots, Actions, refresh, help, quit |
+| `keybindings.global` | See defaults | Switch workspace tabs, review Pull/Fetch, Roots, Actions, notification history, refresh, help, quit |
 | `keybindings.panes` | See defaults | Focus/cycle panes, resize/reset sizes, maximize/restore, optional Kitty synchronization, close a Log tab |
 | `keybindings.log` | See defaults | Movement, paging, copying, filtering, tabs, display options |
 | `keybindings.commit` | See defaults | Movement, checkboxes, groups, preview, messages, AI and commits |
@@ -282,7 +284,11 @@ default to `P` and `F`, and Merge's `back-to-files` defaults to `F`. If an
 override still uses `p` or `f` for one of those panel commands, change that
 override or rebind the conflicting global command.
 
-`global.focus-branch` defaults to `4`. `[keybindings.branch]` controls `create`
+`global.focus-branch` defaults to `4`. `global.notification-history` defaults
+to `F8` and opens session Notification History; Actions → Notifications remains
+available if this command is unbound. Reusing F8 for another command requires
+rebinding `notification-history` or disabling it with
+`notification-history = []`. `[keybindings.branch]` controls `create`
 (`a`), `delete` (`d`), `checkout` (`Enter`), `merge` (`m`), `rename` (`r`),
 `view-options` (`o`, opens Group By), and tree navigation. The global `roots`
 binding is inactive in Branch because `r`
@@ -291,12 +297,18 @@ their fixed controls. For example:
 
 ```toml
 [keybindings.global]
-focus-branch = ["F8"]
+focus-branch = ["F10"]
 
 [keybindings.branch]
 create = ["n"]
 rename = ["R"]
 ```
+
+File History exposes `show-file-at-revision` (`e`) in both the commit list and
+the inline Diff. For example, set `show-file-at-revision = ["Ctrl-e"]` under
+`[keybindings.log]`. The action opens the selected commit's full file, using a
+read-only Neovim buffer or a temporary snapshot in the configured external
+editor. It is inactive in the ordinary Log tab.
 
 In the Log commit list, `[keybindings.log]` exposes `commit-actions` (`a`)
 and `edit-message` (`F2`). The action menu and message editor keep their
@@ -388,7 +400,7 @@ semantics. Mouse buttons remain usable when a command is unbound.
 `[keybindings.commit]`, `[keybindings.log]`, `[keybindings.push]`,
 `[keybindings.branch]`, and `[keybindings.stash]`. They apply only to the
 searchable panes listed in the [README](../README.md#find-in-a-pane). For example,
-set `find = ["F8"]` under `[keybindings.commit]` to change the shortcut for
+set `find = ["F10"]` under `[keybindings.commit]` to change the shortcut for
 Changes and the file preview. Enter and Esc retain their input behavior.
 
 Log's `search` and `search-refs` still open its commit and branch filters.
@@ -403,7 +415,7 @@ The file preview also provides `scroll-preview-left` and
 
 ```toml
 [keybindings.commit]
-edit-file = ["F8"]
+edit-file = ["F10"]
 ```
 
 Editor selection follows `git var GIT_EDITOR`: `GIT_EDITOR`, `core.editor`,

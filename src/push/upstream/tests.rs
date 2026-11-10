@@ -37,7 +37,7 @@ fn choose_tracking(panel: &mut PushPanel, c: &Context, idx: usize, target: &str)
     panel.finish_loading(c);
 }
 
-fn wait(panel: &mut PushPanel, c: &Context) -> String {
+fn wait(panel: &mut PushPanel, c: &Context) -> (NoticeLevel, String) {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if let Some(message) = panel.poll(c) {
@@ -231,7 +231,7 @@ fn changed_target_or_tracking_choice_cannot_execute_an_old_review() {
             );
         }
         assert!(
-            matches!(panel.confirm("push", &c), Action::Notice(ref text) if text.contains("changed; review again"))
+            matches!(panel.confirm("push", &c), Action::Notice(NoticeLevel::Warning, ref text) if text.contains("changed; review again"))
         );
         assert!(!panel.busy());
         assert!(git(
@@ -317,7 +317,7 @@ fn first_push_batch_records_independent_tracking_results_and_retries_only_failur
     choose_tracking(&mut panel, &c, 1, "origin:second");
     assert!(matches!(panel.review(&c, false), Action::Confirm { .. }));
     panel.confirm("push", &c);
-    wait(&mut panel, &c);
+    assert_eq!(wait(&mut panel, &c).0, NoticeLevel::Warning);
     assert_eq!(panel.results[&0], Ok(PushOutcome::Complete));
     assert!(panel.results[&1].is_err());
     assert_eq!(g(&a, &["config", "branch.topic.merge"]), "refs/heads/first");
@@ -342,7 +342,7 @@ fn first_push_batch_records_independent_tracking_results_and_retries_only_failur
     assert!(matches!(panel.review(&c, true), Action::Confirm { .. }));
     assert_eq!(panel.review.iter().map(|j| j.idx).collect::<Vec<_>>(), [1]);
     panel.confirm("push", &c);
-    wait(&mut panel, &c);
+    assert_eq!(wait(&mut panel, &c).0, NoticeLevel::Success);
     assert_eq!(
         g(
             &dir.path().join("a.git"),
@@ -372,7 +372,8 @@ fn upstream_config_lock_failure_retains_published_result_and_is_never_retried() 
     let lock = repo.join(".git/config.lock");
     fs::write(&lock, "another writer's lock\n").unwrap();
     panel.confirm("push", &c);
-    let message = wait(&mut panel, &c);
+    let (level, message) = wait(&mut panel, &c);
+    assert_eq!(level, NoticeLevel::Warning);
     assert!(message.contains("1 upstream setup failed"), "{message}");
     assert!(
         matches!(&panel.results[&0], Ok(PushOutcome::UpstreamNotSet(text)) if text.contains("origin:reviewed") && text.contains("Retry will not repeat"))
@@ -399,7 +400,10 @@ fn upstream_config_lock_failure_retains_published_result_and_is_never_retried() 
     panel.refresh(&c).unwrap();
     panel.finish_loading(&c);
     assert!(panel.entries[0].n > 0);
-    assert!(matches!(panel.review(&c, true), Action::Notice(_)));
+    assert!(matches!(
+        panel.review(&c, true),
+        Action::Notice(NoticeLevel::Warning, _)
+    ));
     assert!(!panel.busy());
 }
 
@@ -565,7 +569,7 @@ fn mouse_can_save_each_repositorys_tracking_choice_without_writing_git_config() 
             assert!(panel.target_edit.as_ref().unwrap().set_upstream);
             assert!(matches!(
                 click(&mut panel, |h| matches!(h, Hit::SaveTarget)),
-                Action::Notice(_)
+                Action::Notice(NoticeLevel::Success, _)
             ));
             panel.finish_loading(&c);
             assert!(panel.sets_upstream(&panel.entries[0]));

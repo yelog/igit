@@ -15,11 +15,15 @@ pub(super) const NVIM_SESSION: &str = "IGIT_NVIM_SESSION";
 pub(super) struct Request {
     pub repo: PathBuf,
     pub path: PathBuf,
+    pub revision: Option<String>,
 }
 
 pub(super) enum Prepared {
     Neovim(String),
-    External(Box<Command>),
+    External {
+        command: Box<Command>,
+        snapshot: Option<tempfile::TempDir>,
+    },
 }
 
 impl Request {
@@ -45,6 +49,9 @@ impl Request {
     }
 
     pub fn prepare(&self, session: Option<&str>) -> Result<Prepared> {
+        if let Some(revision) = &self.revision {
+            return self.prepare_revision(revision, session);
+        }
         self.validate()?;
         if let Some(session) = session.filter(|s| !s.is_empty()) {
             #[derive(Serialize)]
@@ -64,7 +71,79 @@ impl Request {
             return Ok(Prepared::Neovim(format!("\x1b]51;igit-edit;{payload}\x07")));
         }
         let editor = configured_editor(&self.repo, std::env::var_os("GIT_EDITOR").as_deref())?;
-        Ok(Prepared::External(Box::new(self.command(editor))))
+        Ok(Prepared::External {
+            command: Box::new(self.command(editor)),
+            snapshot: None,
+        })
+    }
+
+    fn prepare_revision(&self, revision: &str, session: Option<&str>) -> Result<Prepared> {
+        ensure!(
+            matches!(revision.len(), 40 | 64)
+                && revision.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "Choose an immutable commit revision"
+        );
+        ensure!(
+            self.repo.is_absolute()
+                && !self.path.as_os_str().is_empty()
+                && self
+                    .path
+                    .components()
+                    .all(|component| matches!(component, Component::Normal(_))),
+            "Choose a file inside the selected repository"
+        );
+        let source = core::revision::file(&self.repo, revision, &self.path)?
+            .context("File is absent at this revision; select an earlier commit")?;
+        if let Some(session) = session.filter(|value| !value.is_empty()) {
+            #[derive(Serialize)]
+            struct Revision<'a> {
+                version: u8,
+                session: &'a str,
+                repo: &'a str,
+                path: &'a str,
+                revision: &'a str,
+            }
+            let payload = serde_json::to_string(&Revision {
+                version: 1,
+                session,
+                repo: self
+                    .repo
+                    .to_str()
+                    .context("Neovim requires a UTF-8 repository path")?,
+                path: self
+                    .path
+                    .to_str()
+                    .context("Neovim requires a UTF-8 file name")?,
+                revision,
+            })?;
+            return Ok(Prepared::Neovim(format!(
+                "\x1b]51;igit-show-revision;{payload}\x07"
+            )));
+        }
+        let editor = configured_editor(&self.repo, std::env::var_os("GIT_EDITOR").as_deref())?;
+        let snapshot = tempfile::Builder::new()
+            .prefix("igit-revision-")
+            .tempdir()?;
+        let mut name = self
+            .path
+            .file_name()
+            .context("Choose a file")?
+            .to_os_string();
+        name.push(format!(" ({})", &revision[..8]));
+        let path = snapshot.path().join(name);
+        std::fs::write(&path, source.text)?;
+        let mut permissions = std::fs::metadata(&path)?.permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions)?;
+        let request = Request {
+            repo: self.repo.clone(),
+            path,
+            revision: None,
+        };
+        Ok(Prepared::External {
+            command: Box::new(request.command(editor)),
+            snapshot: Some(snapshot),
+        })
     }
 
     fn command(&self, mut editor: OsString) -> Command {

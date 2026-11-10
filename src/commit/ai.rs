@@ -174,9 +174,7 @@ impl CommitPanel {
 
     pub(super) fn show_ai_error(&mut self, error: impl ToString) -> Action {
         self.ai_error = error.to_string();
-        self.ai_scroll = 0;
-        self.edit = Some(Edit::AIError);
-        err(&self.ai_error)
+        Action::Notice(NoticeLevel::Error, self.ai_error.clone())
     }
 
     // This captures panel state only. All Git and filesystem work is on workers.
@@ -193,7 +191,7 @@ impl CommitPanel {
                 .push(file.change.clone());
         }
         if selected.is_empty() {
-            bail!("Select files first");
+            bail!(Constraint("Select files first"));
         }
         Ok(Job {
             settings: self.ai_settings.clone(),
@@ -210,7 +208,7 @@ impl CommitPanel {
 
     pub(super) fn start_ai(&mut self, c: &Context) -> Result<Action> {
         if self.ai_pending.is_some() {
-            bail!("AI request in progress. Please wait");
+            bail!(Constraint("AI request in progress. Please wait"));
         }
         let job = self.prepare_ai(c)?;
         let control = Control::new(Duration::from_secs(job.settings.total_timeout_seconds));
@@ -241,8 +239,9 @@ impl CommitPanel {
             revision: 0,
         });
         self.ai_error.clear();
-        Ok(err(
-            "Generating one commit message. Preparing changes in the background",
+        Ok(Action::Notice(
+            NoticeLevel::Info,
+            "Generating one commit message. Preparing changes in the background".into(),
         ))
     }
 
@@ -263,7 +262,7 @@ impl CommitPanel {
                 pending.finished = Some(Err(error.to_string()));
             }
         }
-        // Drain progress during editing, but defer adoption and error dialogs.
+        // Drain progress during editing, but defer adoption of generated messages.
         while let Ok(report) = pending.receiver.try_recv() {
             if pending.finished.is_some() {
                 continue;
@@ -297,7 +296,7 @@ impl CommitPanel {
                 }
             }
         }
-        if editing {
+        if editing && !matches!(pending.finished, Some(Err(_))) {
             return Action::None;
         }
         if let Some(candidate) = pending.candidate.take() {
@@ -351,7 +350,7 @@ impl CommitPanel {
                 self.message_selection.clear();
                 self.edit_view = (self.edit_view.0, 0, 0);
                 self.set_focus(Focus::Message);
-                Action::Notice("AI commit message generated".into())
+                Action::Notice(NoticeLevel::Success, "AI commit message generated".into())
             }
             Err(error) => self.show_ai_error(error),
         }

@@ -5,6 +5,17 @@ use std::collections::BTreeSet;
 
 type Selected = Option<(usize, String)>;
 
+#[derive(Debug)]
+pub(super) struct HistoryUnavailable;
+
+impl std::fmt::Display for HistoryUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("History is not current; wait for loading or refresh to retry")
+    }
+}
+
+impl std::error::Error for HistoryUnavailable {}
+
 struct Request {
     tab: usize,
     file: Option<file_history::Target>,
@@ -204,7 +215,7 @@ impl LogPanel {
                         .request
                         .as_ref()
                         .is_some_and(|r| r.matches(self)),
-            "History is not current; wait for loading or refresh to retry"
+            HistoryUnavailable
         );
         Ok(())
     }

@@ -536,16 +536,20 @@ impl Rollback {
                 .insert(f.change.path.clone());
         }
         let mut results = vec![];
+        let mut succeeded = 0;
+        let mut issues = false;
         for plan in self.plans {
             let Some(plan) = checked.get(&plan.root).and_then(|paths| plan.retain(paths)) else {
                 continue;
             };
             let Some(repo) = c.repos.get(plan.root).filter(|r| r.path == plan.repo) else {
+                issues = true;
                 results
                     .push("Workspace changed; rollback skipped. Press F5 and review again".into());
                 continue;
             };
             if !c.scope.contains(&plan.root) {
+                issues = true;
                 results.push(format!(
                     "{} is outside the current scope; rollback skipped",
                     repo.name
@@ -553,19 +557,25 @@ impl Rollback {
                 continue;
             }
             match discard::execute(&plan, self.delete_added) {
-                Ok(()) => results.push(format!(
-                    "{}: rolled back {} file{}",
-                    repo.name,
-                    plan.files.len(),
-                    if plan.files.len() == 1 { "" } else { "s" }
-                )),
-                Err(e) => results.push(format!("{}: rollback failed: {e:#}", repo.name)),
+                Ok(()) => {
+                    succeeded += 1;
+                    results.push(format!(
+                        "{}: rolled back {} file{}",
+                        repo.name,
+                        plan.files.len(),
+                        if plan.files.len() == 1 { "" } else { "s" }
+                    ));
+                }
+                Err(e) => {
+                    issues = true;
+                    results.push(format!("{}: rollback failed: {e:#}", repo.name));
+                }
             }
         }
         if results.is_empty() {
             Action::None
         } else {
-            Action::Refresh(results.join(" | "))
+            Action::Refresh(result_level(succeeded, issues), results.join(" | "))
         }
     }
 

@@ -49,6 +49,73 @@ fn complete(
     assert!(update.poll(true));
 }
 
+#[test]
+fn update_notifications_report_final_outcomes_once_and_keep_automatic_errors_quiet() {
+    let mut update = SoftwareUpdate::default();
+    complete(
+        &mut update,
+        State::Checking,
+        Err("Network unavailable".into()),
+        true,
+    );
+    assert!(update.take_notice().is_none());
+    complete(
+        &mut update,
+        State::Checking,
+        Err("Manual check failed\nRetry later".into()),
+        false,
+    );
+    assert_eq!(
+        update.take_notice(),
+        Some((
+            NoticeLevel::Error,
+            "Manual check failed\nRetry later".into()
+        ))
+    );
+    assert!(update.take_notice().is_none());
+    complete(
+        &mut update,
+        State::Checking,
+        Ok(report(Status::UpdateAvailable)),
+        true,
+    );
+    let (level, body) = update.take_notice().unwrap();
+    assert_eq!(level, NoticeLevel::Info);
+    assert!(body.contains("0.2.0-beta.1") && body.contains("Update Center"));
+    complete(
+        &mut update,
+        State::Installing(report(Status::UpdateAvailable), Progress::Preparing),
+        Ok(report(Status::Updated)),
+        false,
+    );
+    let (level, body) = update.take_notice().unwrap();
+    assert_eq!(level, NoticeLevel::Success);
+    assert!(body.contains("installed") && body.contains("restart"));
+    assert!(matches!(update.state, State::Ready(_)));
+}
+
+#[test]
+fn background_update_failure_notifies_without_replacing_an_existing_review() {
+    let (_dir, mut app) = fixture();
+    open_review(&mut app);
+    let (sender, receiver) = mpsc::channel();
+    app.software_update.state =
+        State::Installing(report(Status::UpdateAvailable), Progress::Preparing);
+    app.software_update.job = Some(receiver);
+    sender
+        .send(JobEvent::Finished(Err("Installation failed".into())))
+        .unwrap();
+    assert!(app.poll());
+    assert!(matches!(app.pop, Some(Popup::Confirm { .. })));
+    let notification = app.notifications.history().next().unwrap();
+    assert_eq!(notification.source, "IGit Update");
+    assert_eq!(notification.level, NoticeLevel::Error);
+    assert_eq!(notification.body, "Installation failed");
+    let count = app.notifications.history().count();
+    app.poll();
+    assert_eq!(app.notifications.history().count(), count);
+}
+
 fn buffer(app: &mut Shell) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
     terminal.draw(|frame| app.draw(frame)).unwrap();

@@ -10,7 +10,7 @@ fn wait_for(app: &mut Shell, label: &str) {
         assert!(
             Instant::now() < deadline,
             "automatic refresh did not show {label}: {}",
-            app.msg
+            app.notifications.latest_body()
         );
         std::thread::sleep(Duration::from_millis(10));
     }

@@ -54,7 +54,7 @@ fn stash_operations_confirm_cancel_remap_and_refresh_the_current_entry() {
         assert_eq!(git(&repo, &["stash", "list"]).unwrap(), entries);
     }
     app.config =
-        AppConfig::from_toml("[keybindings.global]\nupdate=[]\n[keybindings.stash]\napply=['F8']\npop=['F9']\ndrop=['F10']\n")
+        AppConfig::from_toml("[keybindings.global]\nupdate=[]\nnotification-history=[]\n[keybindings.stash]\napply=['F8']\npop=['F9']\ndrop=['F10']\n")
             .unwrap();
     assert!(app
         .configured_footer()
@@ -70,14 +70,22 @@ fn stash_operations_confirm_cancel_remap_and_refresh_the_current_entry() {
     }
     app.dispatch(&key(KeyCode::F(8)));
     app.dispatch(&key(KeyCode::Enter));
-    assert!(app.msg.contains("Applied stash"), "{}", app.msg);
+    assert!(
+        app.notifications.latest_body().contains("Applied stash"),
+        "{}",
+        app.notifications.latest_body()
+    );
     assert_eq!(git(&repo, &["stash", "list"]).unwrap(), entries);
     let applied = snapshot(&repo);
     assert_ne!(applied, before);
 
     app.dispatch(&key(KeyCode::F(10)));
     app.dispatch(&key(KeyCode::Enter));
-    assert!(app.msg.contains("Dropped stash"), "{}", app.msg);
+    assert!(
+        app.notifications.latest_body().contains("Dropped stash"),
+        "{}",
+        app.notifications.latest_body()
+    );
     assert!(git(&repo, &["stash", "list"]).unwrap().is_empty());
     assert!(screen(&mut app, 80, 24).contains("No stashes"));
     assert_eq!(snapshot(&repo), applied);
@@ -147,9 +155,10 @@ fn stash_pop_conflicts_refresh_commit_and_conflicts_and_keep_the_saved_entry() {
     app.dispatch(&key(KeyCode::Char('P')));
     app.dispatch(&key(KeyCode::Enter));
     assert!(
-        app.msg.contains("Stash kept") && app.msg.contains("Conflicts tab"),
+        app.notifications.latest_body().contains("Stash kept")
+            && app.notifications.latest_body().contains("Conflicts tab"),
         "{}",
-        app.msg
+        app.notifications.latest_body()
     );
     assert_eq!(git(&repo, &["stash", "list"]).unwrap(), entries);
     assert!(app.tab_available(Conflicts));
@@ -188,7 +197,11 @@ fn commit_stash_binding_review_cancel_and_saved_entry_work_through_shell() {
     app.dispatch(&key(KeyCode::F(9)));
     app.dispatch(&key(KeyCode::Enter));
     app.dispatch(&key(KeyCode::Char('y')));
-    assert!(app.msg.contains("SAVED"), "{}", app.msg);
+    assert!(
+        app.notifications.latest_body().contains("SAVED"),
+        "{}",
+        app.notifications.latest_body()
+    );
     assert!(git(&repo, &["status", "--porcelain"]).unwrap().is_empty());
     app.dispatch(&key(KeyCode::Char('5')));
     finish(&mut app);

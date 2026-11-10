@@ -55,7 +55,12 @@ pub(super) fn fixture() -> (tempfile::TempDir, Context, CommitPanel) {
 fn shared_message_commits_each_repo_and_preserves_unselected_index_and_worktree() {
     let (_dir, c, mut panel) = fixture();
     let message = panel.saved.message.clone().unwrap();
-    let Action::Committed { repos, .. } = panel.submit(&c, false).unwrap() else {
+    let Action::Committed {
+        repos,
+        level: NoticeLevel::Success,
+        ..
+    } = panel.submit(&c, false).unwrap()
+    else {
         panic!("commit");
     };
     assert_eq!(repos, [0, 1]);
@@ -102,7 +107,12 @@ fn partial_failure_keeps_shared_message_and_retry_skips_successful_repository() 
     let message = panel.saved.message.clone();
     let plans = panel.prepare_submission(&c).unwrap();
     git(&c.repos[1].path, &["add", "mixed.txt"]).unwrap(); // Invalidate only the second snapshot.
-    let Action::Committed { repos, .. } = panel.execute_submission(&c, plans, true) else {
+    let Action::Committed {
+        repos,
+        level: NoticeLevel::Warning,
+        ..
+    } = panel.execute_submission(&c, plans, true)
+    else {
         panic!("commit");
     };
     assert_eq!(repos, [0]);
@@ -110,7 +120,12 @@ fn partial_failure_keeps_shared_message_and_retry_skips_successful_repository() 
     let successful_head = git(&c.repos[0].path, &["rev-parse", "HEAD"]).unwrap();
     panel.refresh(&c).unwrap();
     assert_eq!(panel.checked_repos(&c), [1]);
-    let Action::Committed { repos, .. } = panel.submit(&c, false).unwrap() else {
+    let Action::Committed {
+        repos,
+        level: NoticeLevel::Success,
+        ..
+    } = panel.submit(&c, false).unwrap()
+    else {
         panic!("retry");
     };
     assert_eq!(repos, [1]);
@@ -172,7 +187,10 @@ fn legacy_drafts_are_migrated_once_and_retained_for_recovery() {
 #[test]
 fn amend_requires_an_unambiguous_highlighted_repository() {
     let (_dir, c, mut panel) = fixture();
-    assert!(matches!(panel.launch(Hit::Amend, &c), Action::Notice(_)));
+    assert!(matches!(
+        panel.launch(Hit::Amend, &c),
+        Action::Notice(NoticeLevel::Warning, _)
+    ));
     assert!(panel.amend.is_empty());
     let checks = panel.checks.clone();
     panel.set_all_expanded(false, &c);

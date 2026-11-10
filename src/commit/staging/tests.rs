@@ -107,7 +107,10 @@ fn hunk_review_stages_only_its_file_and_rejects_external_edits() {
         &c,
     );
     fs::write(c.repos[0].path.join("mixed.txt"), "changed after review\n").unwrap();
-    assert!(matches!(panel.confirm_staging(&c), Action::Notice(_)));
+    assert!(matches!(
+        panel.confirm_staging(&c),
+        Action::Notice(NoticeLevel::Error, _)
+    ));
     assert_eq!(
         git(&c.repos[0].path, &["ls-files", "--stage"]).unwrap(),
         before.1
@@ -123,7 +126,10 @@ fn hunk_review_stages_only_its_file_and_rejects_external_edits() {
         &Event::Key(crossterm::event::KeyEvent::new(K::Enter, Mod::NONE)),
         &c,
     );
-    assert!(matches!(panel.confirm_staging(&c), Action::Refresh(_)));
+    assert!(matches!(
+        panel.confirm_staging(&c),
+        Action::Refresh(NoticeLevel::Success, _)
+    ));
     assert_eq!(
         git(&c.repos[0].path, &["show", ":mixed.txt"]).unwrap(),
         "unstaged private marker"

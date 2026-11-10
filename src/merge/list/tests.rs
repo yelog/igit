@@ -213,7 +213,9 @@ fn conflict_list_accept_previews_the_entire_selected_side_before_apply() {
     let notice = click(&mut panel, &ctx, |hit| {
         matches!(hit, Hit::AcceptFile(_, FileSide::Incoming))
     });
-    assert!(matches!(notice, Action::Notice(message) if message.contains("entire Theirs")));
+    assert!(
+        matches!(notice, Action::Notice(NoticeLevel::Info, message) if message.contains("entire Theirs"))
+    );
     let doc = panel.doc.as_ref().unwrap();
     let preview: String = doc
         .chunks
@@ -230,7 +232,11 @@ fn conflict_list_accept_previews_the_entire_selected_side_before_apply() {
     assert_eq!(git(&["ls-files", "--stage"]), index);
     assert!(matches!(
         panel.confirm(&token, &ctx),
-        Action::Refresh(message) if message.contains("Continue is a separate action")
+        Action::Refresh(NoticeLevel::Warning, message)
+            if message.contains("staged resolved")
+                && message.contains("Continue is a separate action")
+                && message.contains("Next file:")
+                && message.contains("Added/deleted/renamed conflict")
     ));
     assert_eq!(fs::read_to_string(path.join(FILE)).unwrap(), INCOMING);
     assert_eq!(
@@ -268,7 +274,7 @@ fn conflict_list_prepares_drafts_only_in_the_highlighted_repository() {
     );
     assert!(matches!(
         click(&mut panel, &ctx, |h| matches!(h, Hit::PrepareSimple)),
-        Action::Notice(msg) if msg.contains("app: prepared 1") && msg.contains("2 skipped")
+        Action::Notice(NoticeLevel::Warning, msg) if msg.contains("app: prepared 1") && msg.contains("2 skipped")
     ));
     assert_eq!(snapshot(), before);
     let text = screen(&render(&mut panel, &ctx, 120, 24));

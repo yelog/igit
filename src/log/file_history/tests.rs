@@ -264,3 +264,78 @@ fn empty_history_and_binary_preview_remain_read_only_and_closeable() {
     p.close_tab(&c).unwrap();
     assert!(p.filter.file_history.is_none());
 }
+
+#[test]
+fn show_file_at_revision_uses_selected_commit_and_renamed_path_without_waiting_for_preview() {
+    let tmp = init();
+    commit(tmp.path(), "old 文件.ts", "const value = 1;\n");
+    let first = git(tmp.path(), &["rev-parse", "HEAD"]);
+    git(tmp.path(), &["mv", "old 文件.ts", "new 文件.ts"]);
+    git(tmp.path(), &["commit", "-qm", "rename"]);
+    let renamed = git(tmp.path(), &["rev-parse", "HEAD"]);
+    fs::write(tmp.path().join("new 文件.ts"), "staged\n").unwrap();
+    git(tmp.path(), &["add", "."]);
+    fs::write(tmp.path().join("new 文件.ts"), "working\n").unwrap();
+    let index = fs::read(tmp.path().join(".git/index")).unwrap();
+    let c = Context::discover(tmp.path()).unwrap();
+    let mut p = LogPanel::default();
+    p.set_file_history(&c, &tmp.path().join("new 文件.ts"))
+        .unwrap();
+    p.refresh(&c).unwrap();
+    finish_preview(&mut p, &c);
+    p.select_row(1);
+    assert!(p.preview.loading());
+    for focus in [Pane::Graph, Pane::Info] {
+        p.focus = focus;
+        let Action::ShowFileRevision {
+            repo,
+            path,
+            revision,
+        } = key(&mut p, &c, K::Char('e'))
+        else {
+            panic!("Expected Show File at Revision");
+        };
+        assert_eq!(repo, c.repos[p.rev().unwrap().root].path);
+        assert_eq!(path, Path::new("old 文件.ts"));
+        assert_eq!(revision, first);
+        assert!(p.keymap().sections.iter().any(|section| section
+            .bindings
+            .iter()
+            .any(|binding| binding.1 == "Show File at Revision")));
+    }
+    p.focus = Pane::Graph;
+    p.switch_tab(0, &c).unwrap();
+    assert!(matches!(key(&mut p, &c, K::Char('e')), Action::None));
+    assert_eq!(git(tmp.path(), &["rev-parse", "HEAD"]), renamed);
+    assert_eq!(fs::read(tmp.path().join(".git/index")).unwrap(), index);
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("new 文件.ts")).unwrap(),
+        "working\n"
+    );
+}
+
+#[test]
+fn show_file_at_revision_rejects_empty_hidden_history_and_does_not_use_preview_parent() {
+    let tmp = init();
+    commit(tmp.path(), "file.ts", "const value = 1;\n");
+    git(tmp.path(), &["rm", "file.ts"]);
+    git(tmp.path(), &["commit", "-qm", "delete"]);
+    let deleted = git(tmp.path(), &["rev-parse", "HEAD"]);
+    let mut c = Context::discover(tmp.path()).unwrap();
+    let mut p = LogPanel::default();
+    p.set_file_history(&c, &tmp.path().join("file.ts")).unwrap();
+    p.refresh(&c).unwrap();
+    finish_preview(&mut p, &c);
+    p.focus = Pane::Info;
+    key(&mut p, &c, K::Char('['));
+    let Action::ShowFileRevision { revision, .. } = key(&mut p, &c, K::Char('e')) else {
+        panic!("Expected selected deletion commit, not its preview parent");
+    };
+    assert_eq!(revision, deleted);
+    c.scope.clear();
+    p.refresh(&c).unwrap();
+    assert!(matches!(
+        key(&mut p, &c, K::Char('e')),
+        Action::Notice(_, _)
+    ));
+}

@@ -1,3 +1,6 @@
+mod commit_copy;
+#[cfg(test)]
+mod copy_tests;
 mod diff;
 mod display;
 mod files;
@@ -145,6 +148,7 @@ pub struct PushPanel {
     pos: usize,
     offset: usize,
     focus: usize,
+    copy_pending: bool,
     outgoing_search: crate::ui::search::Search<(usize, Option<usize>)>,
     file_search: crate::ui::search::Search,
     preview: Preview,
@@ -463,6 +467,7 @@ impl PushPanel {
     pub(crate) fn focus_pane(&mut self, id: PaneId) {
         if !self.editing() && (id != PaneId::PushDetails || self.show_details) {
             if let Some(i) = Self::PANES.iter().position(|&p| p == id) {
+                self.cancel_key_sequence();
                 self.focus = i;
             }
         }
@@ -570,20 +575,33 @@ impl PushPanel {
     }
     fn review(&mut self, c: &Context, retry: bool) -> Action {
         if self.busy() {
-            return Action::Notice(self.busy.clone());
+            return Action::Notice(NoticeLevel::Info, self.busy.clone());
         }
         if let Some(message) = self.read_status() {
-            return Action::Notice(message.into());
+            return Action::Notice(
+                if self.load.loading() {
+                    NoticeLevel::Warning
+                } else {
+                    NoticeLevel::Error
+                },
+                message.into(),
+            );
         }
         if self
             .load_scope
             .as_ref()
             .is_some_and(|scope| !scope.matches(c))
         {
-            return Action::Notice("Roots changed; refresh before reviewing a push".into());
+            return Action::Notice(
+                NoticeLevel::Warning,
+                "Roots changed; refresh before reviewing a push".into(),
+            );
         }
         if retry && self.last_fetch {
-            return Action::Notice("Retry Fetch after fixing the remote".into());
+            return Action::Notice(
+                NoticeLevel::Warning,
+                "Retry Fetch after fixing the remote".into(),
+            );
         }
         let mut js = vec![];
         let mut lines = vec![];
@@ -605,7 +623,7 @@ impl PushPanel {
                     j.set_upstream = self.sets_upstream(e);
                     if j.set_upstream {
                         if let Err(error) = j.config.writable_path(&j.path, &j.branch) {
-                            return Action::Notice(error.to_string());
+                            return Action::Notice(NoticeLevel::Error, error.to_string());
                         }
                     }
                     lines.push(format!(
@@ -630,11 +648,14 @@ impl PushPanel {
                     ));
                     js.push(j)
                 }
-                Err(err) => return Action::Notice(err.to_string()),
+                Err(err) => return Action::Notice(NoticeLevel::Error, err.to_string()),
             }
         }
         if js.is_empty() {
-            return Action::Notice("No outgoing repository selected".into());
+            return Action::Notice(
+                NoticeLevel::Warning,
+                "No outgoing repository selected".into(),
+            );
         }
         js.sort_by_key(|j| std::cmp::Reverse(j.path.components().count()));
         let count = js.len();
@@ -644,14 +665,22 @@ impl PushPanel {
     fn start(&mut self, c: &Context, fetch: bool) -> Action {
         if self.writes_blocked {
             return Action::Notice(
+                NoticeLevel::Warning,
                 "Wait for the current Git write before starting Push or Fetch".into(),
             );
         }
         if self.busy() {
-            return Action::Notice(self.busy.clone());
+            return Action::Notice(NoticeLevel::Info, self.busy.clone());
         }
         if let Some(message) = self.read_status() {
-            return Action::Notice(message.into());
+            return Action::Notice(
+                if self.load.loading() {
+                    NoticeLevel::Warning
+                } else {
+                    NoticeLevel::Error
+                },
+                message.into(),
+            );
         }
         if self
             .load_scope
@@ -659,12 +688,14 @@ impl PushPanel {
             .is_some_and(|scope| !scope.matches(c))
         {
             return Action::Notice(
+                NoticeLevel::Warning,
                 "Roots changed; refresh before starting a remote operation".into(),
             );
         }
         if !fetch {
             if self.review.is_empty() {
                 return Action::Notice(
+                    NoticeLevel::Warning,
                     "No reviewed push; select repositories and review again".into(),
                 );
             }
@@ -689,6 +720,7 @@ impl PushPanel {
             }) {
                 self.review.clear();
                 return Action::Notice(
+                    NoticeLevel::Warning,
                     "Push target or tracking choice changed; review again".into(),
                 );
             }
@@ -747,9 +779,9 @@ impl PushPanel {
             }
             let _ = tx.send(Report::Done);
         });
-        Action::Notice(self.busy.clone())
+        Action::Notice(NoticeLevel::Info, self.busy.clone())
     }
-    pub(crate) fn poll(&mut self, c: &Context) -> Option<String> {
+    pub(crate) fn poll(&mut self, c: &Context) -> Option<(NoticeLevel, String)> {
         let mut finished = false;
         let rx = self.inflight.as_ref()?;
         while let Ok(m) = rx.try_recv() {
@@ -774,6 +806,15 @@ impl PushPanel {
             .values()
             .filter(|r| matches!(r, Ok(PushOutcome::UpstreamNotSet(_))))
             .count();
+        let level = if self.results.is_empty() {
+            NoticeLevel::Info
+        } else if n == self.results.len() {
+            NoticeLevel::Error
+        } else if n > 0 || upstream_failures > 0 {
+            NoticeLevel::Warning
+        } else {
+            NoticeLevel::Success
+        };
         let msg = if upstream_failures > 0 {
             if n == 0 {
                 format!("Pushed · {upstream_failures} upstream setup failed · d details")
@@ -789,10 +830,17 @@ impl PushPanel {
         };
         let _ = self.refresh(c);
         self.inspect(c);
-        Some(msg)
+        Some((level, msg))
     }
 }
 impl Panel for PushPanel {
+    fn cancel_mouse(&mut self) {
+        self.detail_selection.cancel_mouse();
+        if let Some(diff) = &mut self.diff {
+            diff.cancel_mouse();
+        }
+    }
+
     fn help(&self) -> &'static str {
         if self.diff.is_some() {
             "F1 Help   Esc Back"
@@ -820,6 +868,7 @@ impl Panel for PushPanel {
         }
     }
     fn refresh(&mut self, c: &Context) -> Result<()> {
+        self.cancel_key_sequence();
         let old = self.selected_identity();
         let scope_changed = self
             .load_scope
@@ -847,6 +896,12 @@ impl Panel for PushPanel {
         if matches!(e, Event::Key(k) if k.kind == crossterm::event::KeyEventKind::Release) {
             return Action::None;
         }
+        if self.editing()
+            || matches!(e, Event::Paste(_) | Event::Resize(_, _) | Event::FocusLost)
+            || matches!(e, Event::Mouse(mouse) if mouse.kind != MouseEventKind::Moved)
+        {
+            self.cancel_key_sequence();
+        }
         if self.diff.is_some() {
             return self.diff_event(e, c);
         }
@@ -858,6 +913,11 @@ impl Panel for PushPanel {
         }
         if let Some(action) = self.target_event(e, c) {
             return action;
+        }
+        if let Event::Key(key) = e {
+            if let Some(action) = self.commit_copy_key(key, c) {
+                return action;
+            }
         }
         if self.search_event(e, c) {
             self.panes.cancel_drag();
@@ -1716,6 +1776,45 @@ mod tests {
     }
 
     #[test]
+    fn completed_push_notifications_use_structured_outcomes() {
+        let directory = tempfile::tempdir().unwrap();
+        make(directory.path(), "app");
+        make(directory.path(), "tools");
+        let context = Context::discover(directory.path()).unwrap();
+        for (outcomes, expected) in [
+            (
+                vec![Ok(PushOutcome::Complete), Ok(PushOutcome::Complete)],
+                NoticeLevel::Success,
+            ),
+            (
+                vec![Ok(PushOutcome::Complete), Err("remote rejected".into())],
+                NoticeLevel::Warning,
+            ),
+            (
+                vec![Err("remote rejected".into()), Err("not executed".into())],
+                NoticeLevel::Error,
+            ),
+            (
+                vec![Ok(PushOutcome::UpstreamNotSet("config locked".into()))],
+                NoticeLevel::Warning,
+            ),
+        ] {
+            let (sender, receiver) = mpsc::channel();
+            let mut panel = PushPanel {
+                inflight: Some(receiver),
+                busy: "Pushing…".into(),
+                results: outcomes.into_iter().enumerate().collect(),
+                ..Default::default()
+            };
+            sender.send(Report::Done).unwrap();
+            let (level, _) = panel.poll(&context).unwrap();
+            assert_eq!(level, expected);
+            assert!(panel.poll(&context).is_none());
+            panel.finish_loading(&context);
+        }
+    }
+
+    #[test]
     fn two_remotes_partial_failure_and_retry_scope() {
         use std::time::{Duration, Instant};
         let t = tempfile::tempdir().unwrap();
@@ -1758,7 +1857,10 @@ mod tests {
         c.scope.remove(&1);
         p.refresh(&c).unwrap();
         p.finish_loading(&c);
-        assert!(matches!(p.review(&c, true), Action::Notice(_)));
+        assert!(matches!(
+            p.review(&c, true),
+            Action::Notice(NoticeLevel::Warning, _)
+        ));
         c.scope.insert(1);
         p.refresh(&c).unwrap();
         p.finish_loading(&c);

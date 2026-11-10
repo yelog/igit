@@ -51,7 +51,10 @@ impl Target {
                 text: text.to_owned(),
                 label,
             },
-            None => Action::Notice("Path cannot be represented as Unicode".into()),
+            None => Action::Notice(
+                super::NoticeLevel::Error,
+                "Path cannot be represented as Unicode".into(),
+            ),
         }
     }
 }

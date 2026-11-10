@@ -981,7 +981,7 @@ mod tests {
         let mut panel = MergePanel::default();
         panel.refresh(&ctx).unwrap();
         let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
-        if let Action::Notice(error) = panel.event(&key(KeyCode::Enter), &ctx) {
+        if let Action::Notice(_, error) = panel.event(&key(KeyCode::Enter), &ctx) {
             panic!("Enter refused to open the saved base: {error}");
         }
         let doc = panel.doc.as_ref().expect("Enter opens the merge editor");
@@ -997,7 +997,7 @@ mod tests {
             .any(|c| c.kind == Kind::Conflict && !c.done()));
         assert!(matches!(
             panel.event(&key(KeyCode::Char('A')), &ctx),
-            Action::Notice(_)
+            Action::Notice(_, _)
         ));
         assert_eq!(fs::read(path).unwrap(), base);
         assert_eq!(g(repo, &["ls-files", "--stage"]), index);
@@ -1153,7 +1153,7 @@ mod tests {
                         assert!(!chunk.done());
                         assert!(!chunk.pending(side));
                         assert_eq!(chunk.result, side.text(chunk));
-                        assert!(matches!(p.event(&key('A'), &ctx), Action::Notice(_)));
+                        assert!(matches!(p.event(&key('A'), &ctx), Action::Notice(_, _)));
                         p.event(&key('u'), &ctx);
                     }
                 }
@@ -1253,7 +1253,7 @@ mod tests {
         );
         assert_eq!(panel.doc.as_ref().unwrap().pending(), 2);
         let save = control(&panel, |h| matches!(h, Hit::Save));
-        assert!(matches!(click(&mut panel, save), Action::Notice(_)));
+        assert!(matches!(click(&mut panel, save), Action::Notice(_, _)));
         assert!(panel.at_root());
         assert_eq!(fs::read(&path).unwrap(), original);
         assert_eq!(g(td.path(), &["ls-files", "--stage"]), index);
@@ -1558,7 +1558,7 @@ mod tests {
         ));
         assert!(matches!(
             panel.confirm("merge:apply", &ctx),
-            Action::Refresh(_)
+            Action::Refresh(_, _)
         ));
         assert!(!conflicts(0, a.path()).unwrap().is_empty());
         assert!(conflicts(1, b.path()).unwrap().is_empty());

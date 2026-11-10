@@ -98,7 +98,7 @@ fn stash_shortcut_reviews_all_repositories_and_ignores_checkboxes() {
     assert_eq!(p.stash.plans.len(), 2);
     assert_eq!(p.checks, checks);
     assert_eq!(count(&c, 0), 0);
-    let Action::Refresh(results) = p.confirm(&token, &c) else {
+    let Action::Refresh(NoticeLevel::Success, results) = p.confirm(&token, &c) else {
         panic!("stash");
     };
     assert!(results.contains("SAVED · app"));
@@ -134,7 +134,7 @@ fn stash_scope_is_reviewed_and_rechecked_before_execution() {
     assert!(matches!(review(&mut p, &c), Action::Confirm { .. }));
     assert_eq!(p.stash.plans.len(), 1);
     c.scope = [1].into();
-    let Action::Refresh(results) = p.confirm("commit-stash", &c) else {
+    let Action::Refresh(NoticeLevel::Error, results) = p.confirm("commit-stash", &c) else {
         panic!("results");
     };
     assert!(results.contains("outside Roots"));
@@ -151,7 +151,7 @@ fn stash_partial_failure_retry_only_saves_remaining_repository() {
     let (_dir, c, mut p) = fixture();
     review(&mut p, &c);
     fs::write(c.repos[1].path.join("mixed.txt"), "external edit\n").unwrap();
-    let Action::Refresh(results) = p.confirm("commit-stash", &c) else {
+    let Action::Refresh(NoticeLevel::Warning, results) = p.confirm("commit-stash", &c) else {
         panic!("results");
     };
     assert!(results.contains("SAVED · app"));
@@ -186,7 +186,7 @@ fn stash_preparation_errors_do_not_stop_other_repositories() {
     };
     assert!(body.contains("SKIP · api"));
     assert_eq!(p.stash.plans.len(), 1);
-    let Action::Refresh(results) = p.confirm("commit-stash", &c) else {
+    let Action::Refresh(NoticeLevel::Warning, results) = p.confirm("commit-stash", &c) else {
         panic!("results");
     };
     assert!(results.contains("SKIP · api"));
@@ -204,7 +204,10 @@ fn stash_input_cancel_empty_input_and_literal_keys_do_not_write() {
         .collect();
     let draft = p.saved.message.clone();
     key(&mut p, &c, K::Char('s'));
-    assert!(matches!(key(&mut p, &c, K::Enter), Action::Notice(_)));
+    assert!(matches!(
+        key(&mut p, &c, K::Enter),
+        Action::Notice(NoticeLevel::Warning, _)
+    ));
     key(&mut p, &c, K::Char('s'));
     assert_eq!(p.buf, "s");
     p.event(&Event::Paste("中文\nmessage".into()), &c);
@@ -254,12 +257,12 @@ fn stash_retry_does_not_duplicate_a_published_stash_with_cleanup_failure() {
     fs::write(&hook, "#!/bin/sh\nif [ \"$1\" = committed ]; then\nwhile read old new ref; do\nif [ \"$ref\" = refs/stash ]; then : > .git/index.lock; fi\ndone\nfi\n").unwrap();
     fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
     review(&mut p, &c);
-    let Action::Refresh(results) = p.confirm("commit-stash", &c) else {
+    let Action::Refresh(NoticeLevel::Warning, results) = p.confirm("commit-stash", &c) else {
         panic!("results");
     };
     assert!(results.contains("cleanup failed"));
     fs::remove_file(c.repos[0].path.join(".git/index.lock")).unwrap();
-    let Action::Notice(message) = review(&mut p, &c) else {
+    let Action::Notice(NoticeLevel::Error, message) = review(&mut p, &c) else {
         panic!("retry must not write");
     };
     assert!(message.contains("already saved"));

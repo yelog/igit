@@ -55,6 +55,71 @@ fn show_hints(app: &mut Shell, width: u16, height: u16) -> String {
 }
 
 #[test]
+fn push_commit_copy_shares_hints_help_and_cancellation() {
+    let (repo, mut app) = fixture();
+    git(
+        repo.path(),
+        &["remote", "add", "origin", repo.path().to_str().unwrap()],
+    )
+    .unwrap();
+    app.go(Push);
+    app.push.finish_loading(&app.ctx);
+    let capture = clipboard::CopyCapture::start();
+    app.dispatch(&key(KeyCode::Char('y')));
+    assert!(app.key_sequence().is_none());
+    app.dispatch(&key(KeyCode::Char('j')));
+    let oid = git(repo.path(), &["rev-parse", "HEAD"]).unwrap();
+    for (suffix, expected) in [
+        ('y', oid.as_str()),
+        ('m', "second revision"),
+        ('a', "Hint tester <hints@example.invalid>"),
+    ] {
+        app.dispatch(&key(KeyCode::Char('y')));
+        assert_eq!(app.key_sequence(), Some(KeySequence::CommitCopy));
+        let hints = show_hints(&mut app, 120, 36);
+        for label in [
+            "Copy full commit ID",
+            "Copy full commit message",
+            "Copy author name and email",
+        ] {
+            assert!(hints.contains(label), "{hints}");
+        }
+        app.dispatch(&key(KeyCode::Char(suffix)));
+        assert_eq!(capture.texts().last().map(String::as_str), Some(expected));
+        assert!(app.key_sequence().is_none());
+    }
+    for interrupt in [
+        key(KeyCode::Esc),
+        key(KeyCode::F(1)),
+        key(KeyCode::Tab),
+        key(KeyCode::Char('/')),
+        key(KeyCode::Char('o')),
+        Event::Resize(80, 24),
+        Event::FocusLost,
+    ] {
+        app.push.focus_pane(crate::ui::panes::PaneId::Outgoing);
+        app.dispatch(&key(KeyCode::Char('y')));
+        assert!(app.key_sequence().is_some());
+        app.dispatch(&interrupt);
+        assert!(app.key_sequence().is_none(), "{interrupt:?}");
+        app.dispatch(&key(KeyCode::Esc));
+    }
+    assert_eq!(capture.texts().len(), 3);
+    app.push.focus_pane(crate::ui::panes::PaneId::Outgoing);
+    app.dispatch(&key(KeyCode::F(1)));
+    app.dispatch(&Event::Paste("Copy full commit message".into()));
+    app.dispatch(&key(KeyCode::Enter));
+    assert_eq!(capture.texts().last().unwrap(), "second revision");
+    app.dispatch(&key(KeyCode::Char('y')));
+    show_hints(&mut app, 80, 24);
+    app.dispatch(&key(KeyCode::Down));
+    app.dispatch(&key(KeyCode::Enter));
+    assert_eq!(capture.texts().last().unwrap(), "second revision");
+    assert_eq!(capture.texts().len(), 5);
+    assert!(app.pop.is_none());
+}
+
+#[test]
 fn log_space_filters_take_priority_over_global_pull_and_keep_editor_keys() {
     use crate::ui::panes::PaneId;
     let (_dir, mut app) = fixture();

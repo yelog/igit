@@ -31,6 +31,8 @@ use ratatui::{layout::Rect, Frame};
 use std::collections::BTreeMap;
 use tree::{Kind, Tree};
 
+pub(crate) const MERGE_REVIEW_TOKEN: &str = "branch:merge";
+
 struct NameInput {
     root: usize,
     source: Branch,
@@ -74,7 +76,7 @@ pub struct BranchPanel {
     hits: Vec<(Rect, Hit)>,
     input: Option<NameInput>,
     review: Option<Review>,
-    syncing: Option<std::sync::mpsc::Receiver<String>>,
+    syncing: Option<std::sync::mpsc::Receiver<(NoticeLevel, String)>>,
     pub(crate) panes: PaneLayout,
     pub(crate) icons: IconMode,
     pub(crate) shortcut_labels: BTreeMap<&'static str, String>,
@@ -85,12 +87,15 @@ impl BranchPanel {
         self.syncing.is_some()
     }
 
-    pub(crate) fn poll_sync(&mut self) -> Option<String> {
+    pub(crate) fn poll_sync(&mut self) -> Option<(NoticeLevel, String)> {
         use std::sync::mpsc::TryRecvError;
         let message = match self.syncing.as_ref()?.try_recv() {
             Ok(message) => message,
             Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) => "Branch sync worker stopped unexpectedly".into(),
+            Err(TryRecvError::Disconnected) => (
+                NoticeLevel::Error,
+                "Branch sync worker stopped unexpectedly".into(),
+            ),
         };
         self.syncing = None;
         Some(message)
@@ -164,26 +169,49 @@ impl BranchPanel {
     ) -> Result<Action> {
         let review = Review::prepare(c, root, branch, operation, name)?;
         if matches!(operation, Operation::Checkout | Operation::Track) {
-            return Ok(Action::Refresh(
-                review.execute(c).unwrap_or_else(|e| format!("{e:#}")),
-            ));
+            return Ok(match review.execute(c) {
+                Ok(message) => Action::Refresh(NoticeLevel::Success, message),
+                Err(error) => Action::Refresh(NoticeLevel::Error, format!("{error:#}")),
+            });
         }
         let action = Action::Confirm {
             title: operation.title().into(),
             body: review.body.clone(),
-            token: "branch:apply".into(),
+            token: if operation == Operation::Merge {
+                MERGE_REVIEW_TOKEN
+            } else {
+                "branch:apply"
+            }
+            .into(),
         };
         self.review = Some(review);
         Ok(action)
     }
 
     fn operate(&mut self, operation: Operation, c: &Context) -> Result<Action> {
-        anyhow::ensure!(!self.syncing(), "Wait for the branch sync to finish");
+        if self.syncing() {
+            return Ok(Action::Notice(
+                NoticeLevel::Warning,
+                "Wait for the branch sync to finish".into(),
+            ));
+        }
         if let Some(status) = self.read_status() {
-            anyhow::bail!("{status}");
+            return Ok(Action::Notice(
+                if self.reads_pending() {
+                    NoticeLevel::Warning
+                } else {
+                    NoticeLevel::Error
+                },
+                status.into(),
+            ));
         }
         self.review = None;
-        let (root, mut source) = self.selection().context("Select a branch first")?;
+        let Some((root, mut source)) = self.selection() else {
+            return Ok(Action::Notice(
+                NoticeLevel::Warning,
+                "Select a branch first".into(),
+            ));
+        };
         let mut operation = operation;
         let mut name = String::new();
         if operation == Operation::Checkout && source.remote {
@@ -210,10 +238,12 @@ impl BranchPanel {
             }
         }
         if operation == Operation::Rename {
-            anyhow::ensure!(
-                !source.remote,
-                "Rename is available for local branches only"
-            );
+            if source.remote {
+                return Ok(Action::Notice(
+                    NoticeLevel::Warning,
+                    "Rename is available for local branches only".into(),
+                ));
+            }
             name = source.name.clone();
         }
         if matches!(
@@ -241,8 +271,9 @@ impl BranchPanel {
             Ok(action) => action,
             Err(error) => {
                 input.error = format!("{error:#}");
+                let action = Action::Notice(NoticeLevel::Error, input.error.clone());
                 self.input = Some(input);
-                Action::None
+                action
             }
         }
     }
@@ -394,7 +425,7 @@ impl Panel for BranchPanel {
 
     fn event(&mut self, e: &Event, c: &Context) -> Action {
         self.handle(e, c)
-            .unwrap_or_else(|e| Action::Notice(format!("{e:#}")))
+            .unwrap_or_else(|e| Action::Notice(NoticeLevel::Error, format!("{e:#}")))
     }
 
     fn editing(&self) -> bool {
@@ -424,26 +455,33 @@ impl Panel for BranchPanel {
     }
 
     fn confirm(&mut self, token: &str, c: &Context) -> Action {
-        if token != "branch:apply" {
+        if !matches!(token, "branch:apply" | MERGE_REVIEW_TOKEN) {
             return Action::None;
         }
         let Some(review) = self.review.take() else {
-            return Action::Notice("Review expired; select the branch again".into());
+            return Action::Notice(
+                NoticeLevel::Warning,
+                "Review expired; select the branch again".into(),
+            );
         };
         if review.is_sync() {
             let context = c.clone();
             let (send, receive) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
-                let message = review
-                    .execute(&context)
-                    .unwrap_or_else(|e| format!("{e:#}"));
+                let message = match review.execute(&context) {
+                    Ok(message) => (NoticeLevel::Success, message),
+                    Err(error) => (NoticeLevel::Error, format!("{error:#}")),
+                };
                 let _ = send.send(message);
             });
             self.syncing = Some(receive);
-            return Action::Notice("Branch sync running…".into());
+            return Action::Notice(NoticeLevel::Info, "Branch sync running…".into());
         }
         // A failing merge may have written conflict stages. Always refresh all panels.
-        Action::Refresh(review.execute(c).unwrap_or_else(|e| format!("{e:#}")))
+        match review.execute(c) {
+            Ok(message) => Action::Refresh(NoticeLevel::Success, message),
+            Err(error) => Action::Refresh(NoticeLevel::Error, format!("{error:#}")),
+        }
     }
 }
 

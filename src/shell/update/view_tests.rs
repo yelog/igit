@@ -255,10 +255,9 @@ fn update_running_and_results_keep_repository_rows_and_color_outcomes() {
         ],
     })
     .unwrap();
-    assert_eq!(
-        dialog.poll().unwrap().1,
-        "Pull: 1 succeeded · 1 failed · 1 skipped"
-    );
+    let (_, level, summary) = dialog.poll().unwrap();
+    assert_eq!(level, NoticeLevel::Warning);
+    assert_eq!(summary, "Pull: 1 succeeded · 1 failed · 1 skipped");
     assert_eq!(dialog.pos, 1);
     let (buffer, hits, text) = draw(&mut dialog, 120, 36, IconMode::Unicode);
     assert!(text.contains("1 succeeded · 1 failed · 1 skipped"));

@@ -43,7 +43,9 @@ Native builds containing the updater support `igit update --check` and
 The bottom-left status line shows the running version. Press `F9` in normal
 mode, click the version/update label, or choose **Update IGit** in Actions to
 open Update Center. It checks in the background 1.5 seconds after startup,
-using a 24-hour cache. Choose **Update** to install the reviewed release. The
+using a 24-hour cache. Available updates also appear in notifications;
+automatic no-update and failure results stay quiet. Choose **Update** to
+install the reviewed release. The
 dialog shows download progress and the current installation stage; choose
 **Run in background** to keep working. When it finishes, choose **Restart now**
 or relaunch later. Cargo/manual copies offer **How to update** for their
@@ -63,9 +65,14 @@ python3 scripts/cargo_serial.py install --locked --path .
 
 By default, `igit` and `ig` discover repositories from the current directory. You can pass a directory; `--list-roots [directory]` only lists discovered working trees. Discovery supports ordinary Git roots, nested repositories at multiple levels, initialized submodules, and linked worktrees. Bare repositories are not editable targets. Discovery does not recurse into symlinked directories or common dependency/build directories such as node_modules, target, .venv, and build, and does not initialize or clone submodules. To use a repository inside a directory normally skipped, start directly in that directory.
 
-The TUI appears before repository discovery starts. A loading view reports discovery,
-changes, and conflict checks; resizing and `Esc`, `q`, or `Ctrl-C` to quit remain
-available. Commit opens by default when these checks finish. Log history loads in the background
+The Commit layout appears before repository discovery starts, with the normal tab
+bar, Changes, message composer, and preview in place. Changes shows an animated
+stage indicator and tree placeholders; the preview waits for data. Discovered root
+counts and elapsed time (after five seconds) provide context without estimating
+completion. Actions remain disabled until changes and conflict checks finish;
+resizing and `Esc`, `q`, or `Ctrl-C` to quit remain available. Narrow terminals use
+the same compact layout as the loaded panel. Direct panel launches keep the
+requested tab selected while loading. Log history loads in the background
 the first time you open Log, and you can return to Commit while it loads.
 
 Open a panel directly, or inspect one file's history:
@@ -89,6 +96,16 @@ Parent 1/Result/Parent 2. History follows Git's rename detection. Use `Tab` or
 `Ctrl-W h/l` between history and Diff; inside Diff, `[/]` selects a revision,
 `n/p` selects a change, and `Esc` returns to history. Close a history tab with
 its close control or `Ctrl-W c` to return to the normal Log tab.
+
+Press `e` in either File History pane for **Show File at Revision**. It opens
+the selected commit's complete file using its historical path. In `igit.nvim`,
+this opens a read-only buffer named like `user.ts (69028162)`, with syntax
+highlighting and the IGit session retained. Standalone IGit opens a temporary
+read-only snapshot in Git's configured editor; use an editor command that waits
+until the file is closed. A deletion commit has no file to open: select an earlier
+commit. Empty files are supported; binary, non-UTF-8, and files over 512 KiB report
+an error. Customize the shortcut with `keybindings.log.show-file-at-revision`.
+Both the native binary and companion plugin need this feature's implementation.
 
 **Choose terminal icons.** The default uses Nerd Font icons for repositories, branches, file types, and actions. If icons appear as boxes, try `ig --icons unicode`; for text markers such as `[x]`, use `ig --icons ascii`. Both commands accept `--icons mode [directory]`. The selected mode applies to all panels and any workspace reopened during the same run.
 
@@ -176,6 +193,9 @@ returns to Changes after clearing search/selection. Below 48 preview columns,
 one revision is visible at a time; `[` / `]` switches sides. Binary, oversized,
 or unsupported content falls back to an explained patch.
 
+In Changes and the message actions, `Esc` keeps focus and preview visibility
+unchanged. While editing a message, `Esc` saves the draft and leaves Message focused.
+
 ## Stage and unstage hunks
 
 In Commit, highlight a tracked file and press `Ctrl-G`, or click **Hunks** in
@@ -241,7 +261,9 @@ IGit kitten helper and pass through these chords as described in
 
 ## Global Controls
 
-The single header row shows Log's filter tabs and `+` on the left, with **Commit**, **Log**, **Push**, **Branch**, and **Stash** on the right. In Push, the left side shows its contextual title. The active tab fills the workspace, and Commit is selected at startup. **Conflicts** appears in amber when any repository in Roots has unresolved files or a Git operation ready to continue. It disappears when that work is complete. Commit automatically refreshes files and the current Diff while active. Press `F5` to refresh the entire workspace, including Log and Conflicts. The footer starts with **IGit**, followed by the current shortcut hints or notification.
+The single header row shows Log's filter tabs and `+` on the left, with **Commit**, **Log**, **Push**, **Branch**, and **Stash** on the right. In Push, the left side shows its contextual title. The active tab fills the workspace, and Commit is selected at startup. **Conflicts** appears in amber when any repository in Roots has unresolved files or a Git operation ready to continue. It disappears when that work is complete. Commit automatically refreshes files and the current Diff while active. Press `F5` to refresh the entire workspace, including Log and Conflicts. The footer starts with **IGit**, followed by the current shortcut hints.
+
+Press `F8` or choose **Notifications** from Actions (`:`) to open the session notification history. Four newest live cards can appear in the upper-right while work continues; click a card body to inspect that entry, or click its close control. The center keeps up to 500 entries until IGit exits. In History, use `j/k` or arrows to browse, `/` to search, `n/N` for the next/previous match, and `y` to copy the full message. Press `c`, then `y` to clear history or `n` to keep it; `Esc` or `q` closes. On wide terminals, select a row and read its details beside the list; on narrow terminals, press Enter to open the selected detail and `Esc`/`q` to return. See [notification history](docs/design.md#notification-center) and [configuration](docs/configuration.md#settings) to rebind F8.
 
 | Action | Keyboard | Mouse |
 | --- | --- | --- |
@@ -251,7 +273,7 @@ The single header row shows Log's filter tabs and `+` on the left, with **Commit
 | Switch panes | `Tab` / `Shift-Tab` cycles forward/backward (also `F6` / `Shift-F6`); press `Ctrl-W`, then `h/j/k/l` for left/down/up/right | Click the target pane. |
 | Resize panes | After `Ctrl-W`, use `>` / `<` to increase/decrease width, `+` / `-` for height, or `=` to restore defaults | Drag the divider between adjacent panes in the active tab. |
 | Maximize or restore a pane | `Ctrl-W f`; optional Kitty synchronization uses `smart-toggle-pane-maximized` | In maximized mode, only the focused pane is shown; Tab still switches panes. |
-| Actions and help | `:` action list; `?` / `F1` help for the current area | Once open, click an action or select a help entry. |
+| Actions and help | `:` action list; `?` / `F1` help for the current area; `F8` opens Notifications | Once open, click an action or select a help entry. |
 | Refresh and quit | `F5` refreshes; `q` or normal-mode `Ctrl-C` quits immediately | Open Actions with `:`, then click Refresh workspace or Quit; quitting needs no confirmation. |
 | Review writes | `Tab` switches buttons, `Enter` activates the focused button, and `Esc` cancels; scroll long content with `j/k` or arrow keys | Click Confirm / Cancel; use the wheel to scroll. |
 
@@ -397,6 +419,11 @@ branch row and use that row's repository:
 Switching branches runs immediately. When a new tracking branch needs a name,
 Enter submits the name and switches to it. The name editor accepts Unicode,
 Ctrl-U clears it, and Esc cancels. Create and Rename open a review after name entry.
+Merge review highlights **From** and **Into** branches, with short commit IDs,
+repository/path context, and a separate result explanation. **Confirm** starts
+focused; Tab/Shift-Tab or left/right switches buttons, and Enter activates the
+focused button. Clicks also activate buttons; Esc cancels. The merge review
+does not use `y/n` shortcuts. Long content scrolls with `j/k` or the mouse wheel.
 Delete/rename leave remote branches unchanged. A branch checked out in another
 worktree cannot be deleted, renamed, or checked out here. Merges require a clean
 index/worktree and leave conflicts in **Conflicts** for separate Apply/Continue
@@ -434,6 +461,8 @@ The left branch/tag tree follows the applied Paths scope: local branches, remote
 **Copy paths from file trees.** Highlight a file or directory and press `yy` for its absolute path, `yf` for its name, `yn` for its name without the final file extension, or `yr` for its repository-relative path. Dotted directory names stay intact. A repository root copies as `.` with `yr`, and a directory spanning repositories is relative to the Commit tree's directory root. These shortcuts also work in Rollback, Log's Select in Tree dialog, and the Conflicts file list.
 
 **Log navigation and copying:** `j/k` or up/down moves within the viewport; scrolling begins only when movement passes the top or bottom edge. The list does not recenter automatically. `gg/G` selects the first/last commit; `H/M/L` selects the top/middle/bottom commit on screen. `Ctrl-F/B` pages down/up, `Ctrl-D/U` moves half a page, and `PageDown/PageUp` moves a full page. Page size uses the actual visible rows. `yy` copies the full commit ID, `ym` the full message including its body, and `ya` `Name <email>`. These shortcuts apply to the commit list; input fields and menus keep their own meanings. Copying uses the system clipboard: `pbcopy` on macOS, `clip.exe` on Windows, and `wl-copy`, `xclip`, then `xsel` on Linux. Missing commands or display sessions produce an explicit error.
+
+**Push commit copying:** With the left outgoing list focused and a commit highlighted, `yy`, `ym`, and `ya` copy its full ID, full message, and `Name <email>`, just like Log. The `y` prefix shows the same delayed chooser, and F1 lists these actions. Copying uses the highlighted commit even while its preview loads; it does not change repository checkboxes. Repository rows do not copy commit data. The right file tree keeps its path-copy shortcuts. Customize these commands with `copy-id`, `copy-message`, and `copy-author` under `[keybindings.push]`.
 
 **Log commit actions:** Right-click a commit, click the list's `...` button, or press `a` with the list focused. Create a local branch or lightweight tag at that revision, check it out in detached HEAD, undo the current branch tip while keeping staged and unstaged work, revert a commit with a new inverse commit, cherry-pick it onto the current branch, or drop it and replay its descendants. Press `C` to review the highlighted commit. For a batch, press `v` or choose **Select Commits**, toggle same-repository checkboxes with `Space` or the mouse, then press `C` or click **Pick N**. Review shows the checked-out destination and application order. Cherry-pick requires a clean tracked index/worktree and non-merge source commits; native conflicts remain in Conflicts for separate Continue, Abort, or Skip reviews. `F2` edits the full commit message, including its body. Press `F2` or `Ctrl-S` in the editor to review. Confirmations name the commit's repository and start on Cancel. See [commit action behavior](docs/design.md#commit-actions) for history and conflict limits.
 
@@ -518,7 +547,7 @@ background, so browsing, Help, tab switching, and message editing remain usable.
 Repeated presses show the existing operation, and conflicting Git writes wait.
 Completion reports added/failed counts and updates only affected repositories;
 failed files remain available for retry. Full per-repository errors remain in
-Console (`:` → Console). Folded children are included; hidden Roots and files
+Notification History. Folded children are included; hidden Roots and files
 outside that row are excluded. Commit checkboxes do not determine this action
 and keep their existing values. Other files' staged/unstaged content and the
 commit message are preserved. `Space` still only changes commit selection;

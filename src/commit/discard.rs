@@ -6,9 +6,9 @@ impl CommitPanel {
         self.rollback = None;
         let row = self
             .active()
-            .ok_or_else(|| anyhow::anyhow!("Select changes to roll back"))?;
+            .ok_or(Constraint("Select changes to roll back"))?;
         if !self.files.iter().any(|f| c.scope.contains(&f.root)) {
-            bail!("No changes to review")
+            bail!(Constraint("No changes to review"))
         }
         let mut targets = vec![];
         match &row.kind {
@@ -21,7 +21,7 @@ impl CommitPanel {
                 let roots: BTreeSet<_> = row.files.iter().map(|&i| self.files[i].root).collect();
                 let first = *roots
                     .first()
-                    .ok_or_else(|| anyhow::anyhow!("No changes in this directory"))?;
+                    .ok_or(Constraint("No changes in this directory"))?;
                 let base = if self.options.modules {
                     &c.repos[first].path
                 } else {

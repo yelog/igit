@@ -97,6 +97,7 @@ pub(crate) fn global_section(show_conflicts: bool, show_roots: bool) -> HelpSect
         (":", "Open Actions"),
         ("F5", "Refresh workspace"),
         ("F9", "Open Update Center"),
+        ("F8", "Open notification history"),
         ("F1", "Open help for current pane"),
         ("?", "Open help for current pane"),
         ("q", "Quit IGit"),

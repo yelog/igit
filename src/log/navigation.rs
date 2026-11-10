@@ -11,7 +11,7 @@ impl LogPanel {
         match self.key_prefix {
             Some(' ') => Some(KeySequence::LogFilters),
             Some('g') if self.focus == Pane::Graph => Some(KeySequence::LogGoto),
-            Some('y') if self.focus == Pane::Graph => Some(KeySequence::LogYank),
+            Some('y') if self.focus == Pane::Graph => Some(KeySequence::CommitCopy),
             _ => None,
         }
     }
@@ -132,27 +132,16 @@ impl LogPanel {
 
     fn yank_commit(&self, key: char, c: &Context) -> Result<Action> {
         let Some(rev) = self.rev() else {
-            return Ok(Action::Notice("Log: no commit selected".into()));
+            return Ok(Action::Notice(
+                NoticeLevel::Warning,
+                "Log: no commit selected".into(),
+            ));
         };
-        let (text, label) = match key {
-            'y' => (rev.oid.clone(), "commit ID"),
-            'm' => (
-                crate::core::git(
-                    &c.repos[rev.root].path,
-                    &[
-                        "show",
-                        "-s",
-                        "--no-show-signature",
-                        "--no-notes",
-                        "--format=%B",
-                        &rev.oid,
-                        "--",
-                    ],
-                )?,
-                "commit message",
-            ),
-            _ => (format!("{} <{}>", rev.author, rev.email), "author details"),
-        };
-        Ok(Action::Copy { text, label })
+        crate::ui::commit_copy::copy(
+            &c.repos[rev.root].path,
+            &rev.oid,
+            Some((&rev.author, &rev.email)),
+            key,
+        )
     }
 }

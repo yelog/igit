@@ -117,7 +117,7 @@ impl PushPanel {
                 ],
             ),
         };
-        HelpContent::new(
+        let mut content = HelpContent::new(
             current,
             vec![Section::new(
                 "Push / General",
@@ -136,6 +136,20 @@ impl PushPanel {
                 ],
             )],
         )
-        .with_selection(self.selected_text().is_some(), true)
+        .with_selection(self.selected_text().is_some(), true);
+        if self.selected_commit().is_some() {
+            content.sections.insert(
+                1,
+                Section::new(
+                    "Push / Commit Copy",
+                    &[
+                        ("yy", "Copy full commit ID"),
+                        ("ym", "Copy full commit message"),
+                        ("ya", "Copy author name and email"),
+                    ],
+                ),
+            );
+        }
+        content
     }
 }

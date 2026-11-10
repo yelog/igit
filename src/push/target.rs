@@ -59,11 +59,13 @@ impl PushPanel {
             let idx = editor.idx;
             if !c.scope.contains(&idx) {
                 return Some(Action::Notice(
+                    NoticeLevel::Warning,
                     "Roots changed; cancel and review the target again".into(),
                 ));
             }
             let Some((remote, dst)) = editor.text.split_once(':') else {
                 return Some(Action::Notice(
+                    NoticeLevel::Warning,
                     "Use a configured remote and valid remote:branch".into(),
                 ));
             };
@@ -77,6 +79,7 @@ impl PushPanel {
                 .is_err()
             {
                 return Some(Action::Notice(
+                    NoticeLevel::Warning,
                     "Use a configured remote and valid remote:branch".into(),
                 ));
             }
@@ -87,6 +90,7 @@ impl PushPanel {
             if editor.set_upstream {
                 let Some(entry) = self.entries.iter().find(|e| e.idx == idx) else {
                     return Some(Action::Notice(
+                        NoticeLevel::Warning,
                         "Repository changed; cancel and refresh".into(),
                     ));
                 };
@@ -105,6 +109,7 @@ impl PushPanel {
             self.inspect(c);
             let _ = self.refresh(c);
             return Some(Action::Notice(
+                NoticeLevel::Success,
                 "Push target and tracking choice updated; review before pushing".into(),
             ));
         }

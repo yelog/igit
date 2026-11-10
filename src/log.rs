@@ -24,7 +24,7 @@ use crate::{
         inside,
         panes::{pane_frame, Axis, PaneId, PaneLayout, SplitId},
         selection::{TextLayout, TextSelection, Wrap},
-        Action, Panel,
+        Action, NoticeLevel, Panel,
     },
 };
 use anyhow::Result;
@@ -743,6 +743,17 @@ impl LogPanel {
     }
 }
 impl Panel for LogPanel {
+    fn cancel_mouse(&mut self) {
+        self.info_click = None;
+        self.info_selection.cancel_mouse();
+        if let Some(diff) = &mut self.diff {
+            diff.selection.cancel_mouse();
+            if let Some(view) = &mut diff.comparison {
+                view.cancel_mouse();
+            }
+        }
+    }
+
     fn refresh(&mut self, c: &Context) -> Result<()> {
         self.reload(c, true)
     }
@@ -787,7 +798,7 @@ impl Panel for LogPanel {
         if token == REVIEW_TOKEN {
             if let Err(error) = self.require_current_history(c) {
                 self.commit_review = None;
-                return Action::Notice(format!("Log: {error:#}"));
+                return Action::Notice(NoticeLevel::Warning, format!("Log: {error:#}"));
             }
         }
         self.confirm_commit_action(token, c)
@@ -822,9 +833,10 @@ impl Panel for LogPanel {
                     self.diff = None;
                     Action::None
                 }
-                RevisionEvent::File(delta) => self
-                    .diff_file(c, delta)
-                    .map_or_else(|error| Action::Notice(error.to_string()), |_| Action::None),
+                RevisionEvent::File(delta) => self.diff_file(c, delta).map_or_else(
+                    |error| Action::Notice(NoticeLevel::Error, error.to_string()),
+                    |_| Action::None,
+                ),
                 RevisionEvent::Copy(text) => Action::Copy {
                     text,
                     label: "revision",
@@ -1008,6 +1020,14 @@ impl Panel for LogPanel {
                 self.view_menu_key(k, c)?;
                 return Ok(());
             }
+            if key == K::Char('e')
+                && k.modifiers.is_empty()
+                && self.filter.file_history.is_some()
+                && matches!(self.focus, Pane::Graph | Pane::Info)
+            {
+                action = self.show_file_at_revision(c)?;
+                return Ok(());
+            }
             if self.focus == Pane::Graph && matches!(k.modifiers, Mods::NONE | Mods::SHIFT) {
                 match key {
                     K::Char('v') => {
@@ -1114,7 +1134,14 @@ impl Panel for LogPanel {
         })();
         match answer {
             Ok(()) => action,
-            Err(e) => Action::Notice(format!("Log: {e:#}")),
+            Err(e) => Action::Notice(
+                if e.is::<loading::HistoryUnavailable>() {
+                    NoticeLevel::Warning
+                } else {
+                    NoticeLevel::Error
+                },
+                format!("Log: {e:#}"),
+            ),
         }
     }
 }

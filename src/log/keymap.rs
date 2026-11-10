@@ -11,6 +11,7 @@ impl LogPanel {
                     "Log / File History Diff",
                     &[
                         ("Tab", "Focus commit history"),
+                        ("e", "Show File at Revision"),
                         ("[", "Focus previous revision"),
                         ("]", "Focus next revision"),
                         ("n", "Next change"),
@@ -365,6 +366,10 @@ impl LogPanel {
             )],
         );
         if self.filter.file_history.is_some() {
+            content.sections.insert(
+                1,
+                Section::new("Log / File History", &[("e", "Show File at Revision")]),
+            );
             content.sections.insert(1, HISTORY_SCROLL);
         }
         content.with_selection(self.selected_text().is_some(), true)

@@ -106,7 +106,7 @@ impl CommitPanel {
             pending.stop.store(true, Ordering::Release);
             self.execution.progress =
                 "Stopping after the current repository; completed commits are kept".into();
-            Action::Notice(self.execution.progress.clone())
+            Action::Notice(NoticeLevel::Info, self.execution.progress.clone())
         } else {
             Action::None
         }
@@ -114,13 +114,15 @@ impl CommitPanel {
 
     pub(super) fn submit(&mut self, c: &Context, push: bool) -> Result<Action> {
         if self.add_running() {
-            bail!("Adding files to Git; wait before committing");
+            bail!(Constraint("Adding files to Git; wait before committing"));
         }
         if self.execution.blocked {
-            bail!("Wait for the remote operation before committing");
+            bail!(Constraint(
+                "Wait for the remote operation before committing"
+            ));
         }
         if self.execution_running() {
-            bail!("Wait for the current commit batch to finish");
+            bail!(Constraint("Wait for the current commit batch to finish"));
         }
         let plans = self.prepare_submission(c)?;
         Ok(self.execute_submission(c, plans, push))
@@ -135,12 +137,12 @@ impl CommitPanel {
                 .push(file.change.clone());
         }
         if files_by_root.is_empty() {
-            bail!("Select files first");
+            bail!(Constraint("Select files first"));
         }
         let msg = self.saved.message.clone().unwrap_or_default();
         if msg.trim().is_empty() {
             self.edit_message(c);
-            bail!("Enter a commit message for the selected files");
+            bail!(Constraint("Enter a commit message for the selected files"));
         }
         let mut plans = Vec::with_capacity(files_by_root.len());
         for (root, files) in files_by_root {
@@ -187,7 +189,7 @@ impl CommitPanel {
                 });
             });
         if let Err(error) = spawned {
-            return err(format!("Cannot start commit worker: {error}"));
+            return err(anyhow::anyhow!("Cannot start commit worker: {error}"));
         }
         self.execution.progress = "Starting commits…".into();
         self.execution.pending = Some(Pending {
@@ -197,7 +199,7 @@ impl CommitPanel {
             push,
             message,
         });
-        Action::Notice(self.execution.progress.clone())
+        Action::Notice(NoticeLevel::Info, self.execution.progress.clone())
     }
 
     pub(crate) fn poll_execution(&mut self, c: &Context) -> Action {
@@ -234,8 +236,8 @@ impl CommitPanel {
         }
         self.execution.pending = Some(pending);
         if let Some(label) = progress {
-            self.execution.progress = label.clone();
-            Action::Notice(label)
+            self.execution.progress = label;
+            Action::Redraw
         } else {
             Action::None
         }
@@ -252,6 +254,7 @@ impl CommitPanel {
         let mut success = Vec::new();
         let mut out = Vec::new();
         let mut failed = interrupted.is_some();
+        let mut warnings = false;
         for Completed { plan, outcome } in completed {
             let name = &c.repos[plan.root].name;
             match outcome {
@@ -262,6 +265,7 @@ impl CommitPanel {
                         result.hash
                     ));
                     if let Some(note) = result.warning {
+                        warnings = true;
                         push = false;
                         out.push(format!("{} {note}", self.icons.glyph(Icon::Warning)));
                     }
@@ -294,9 +298,11 @@ impl CommitPanel {
             self.saved.message = Some(String::new());
         }
         if let Err(error) = self.save(c) {
+            warnings = true;
             out.push(format!("Failed to save local state: {error}"));
         }
         Action::Committed {
+            level: result_level(success.len(), failed || warnings),
             push: push && !success.is_empty(),
             repos: success,
             message: out.join(" | "),

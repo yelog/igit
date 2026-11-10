@@ -214,7 +214,7 @@ impl Shell {
                 'f' => self.toggle_pane_maximized(),
                 'c' if tab == Log => {
                     if let Err(error) = self.log.close_tab(&self.ctx) {
-                        self.notice(format!("Log: {error:#}"));
+                        self.notify(NoticeLevel::Error, "Log", format!("{error:#}"));
                     }
                 }
                 _ => (),

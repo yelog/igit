@@ -170,7 +170,13 @@ fn inline_message_failed_save_blocks_workspace_navigation_and_reports_the_error(
     fs::write(&app.ctx.state_dir, "not a directory").unwrap();
     click_tab(&mut app, Log);
     assert!(app.commit.editing() && app.tab == Commit);
-    assert!(app.msg.starts_with("Commit message:"), "{}", app.msg);
+    assert!(
+        app.notifications
+            .latest_body()
+            .starts_with("Commit message:"),
+        "{}",
+        app.notifications.latest_body()
+    );
     app.dispatch(&Event::Key(KeyEvent::new(
         KeyCode::Char('a'),
         KeyModifiers::CONTROL,

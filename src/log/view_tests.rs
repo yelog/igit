@@ -384,7 +384,7 @@ fn navigation_empty_and_zero_height_views_are_safe() {
         key(&mut p, K::Char('y'), Mods::NONE, &c);
         assert!(matches!(
             key(&mut p, K::Char(second), Mods::NONE, &c),
-            Action::Notice(_)
+            Action::Notice(_, _)
         ));
     }
     for ch in ['g', 'g', 'G', 'H', 'M', 'L', 'j', 'k'] {
@@ -972,21 +972,21 @@ fn date_range_rejects_invalid_drafts_and_restores_the_applied_range() {
     // Both dates are required; invalid input leaves the applied preset intact.
     assert!(matches!(
         key(&mut p, K::Enter, Mods::NONE, &c),
-        Action::Notice(_)
+        Action::Notice(_, _)
     ));
     p.event(&Event::Paste("2026-02-29".into()), &c);
     key(&mut p, K::Tab, Mods::NONE, &c);
     p.event(&Event::Paste("2026-03-01".into()), &c);
     assert!(matches!(
         key(&mut p, K::Enter, Mods::NONE, &c),
-        Action::Notice(_)
+        Action::Notice(_, _)
     ));
     assert_eq!(p.filter.date, Some(DateFilter::Last7Days));
     assert!(p.editing());
     key(&mut p, K::BackTab, Mods::SHIFT, &c);
     key(&mut p, K::Char('u'), Mods::CONTROL, &c);
     p.event(&Event::Paste("2026-03-02".into()), &c);
-    let Action::Notice(error) = key(&mut p, K::Enter, Mods::NONE, &c) else {
+    let Action::Notice(_, error) = key(&mut p, K::Enter, Mods::NONE, &c) else {
         panic!("reversed range should fail");
     };
     assert!(error.contains("Start date"));
@@ -1319,7 +1319,7 @@ fn toolbar_queries_are_scoped_and_log_tabs_restore_the_selected_commit() {
     p.event(&Event::Paste("[".into()), &c);
     assert!(matches!(
         key(&mut p, K::Enter, Mods::NONE, &c),
-        Action::Notice(_)
+        Action::Notice(_, _)
     ));
     assert_eq!(p.filter.query, "^fix:");
     assert_eq!(p.rev().unwrap().oid, oid);

@@ -99,11 +99,13 @@ fn text_selection_mouse_release_copies_without_shortcut_and_keeps_message_caret(
 }
 
 #[test]
-fn text_selection_click_after_copy_survives_notice_clear_and_resize() {
+fn text_selection_click_after_copy_survives_notice_expiry_and_resize() {
     let (_dir, mut app) = fixture();
     let capture = clipboard::CopyCapture::start();
     let before = snapshot(&app.ctx.repos[0].path);
     for (width, height) in [(120, 35), (80, 25), (44, 13)] {
+        app.notifications
+            .expire(Instant::now() + Duration::from_secs(9));
         app.go(Commit);
         screen(&mut app, width, height);
         app.dispatch(&key(KeyCode::Char('i')));
@@ -137,11 +139,13 @@ fn text_selection_click_after_copy_survives_notice_clear_and_resize() {
         assert_eq!(capture.texts().len(), copies + 1);
         assert_eq!(capture.texts().last().unwrap(), "first");
         assert!(app.panel().selected_text().is_none());
-        assert!(app.msg.contains("Copied"));
+        assert!(app.notifications.latest_body().contains("Copied"));
         app.dispatch(&key(KeyCode::Down));
         let (x, y) = find(screen(&mut app, width, height), "second line");
         app.dispatch(&mouse(MouseEventKind::Down(MouseButton::Left), x + 2, y));
-        assert!(app.msg.is_empty());
+        assert!(app.notifications.latest_body().contains("Copied"));
+        app.notifications
+            .expire(Instant::now() + Duration::from_secs(9));
         // Moving the editor between Down and Up must still count as a click.
         screen(&mut app, width, height + 2);
         app.dispatch(&mouse(MouseEventKind::Up(MouseButton::Left), x + 2, y));
@@ -641,7 +645,7 @@ fn help_revalidates_the_origin_before_replaying_a_shortcut() {
     app.dispatch(&key(KeyCode::Enter));
     assert_eq!(context(&app), "Commit / Edit Message");
     assert!(app.commit.editing());
-    assert!(app.msg.contains("Context changed"));
+    assert!(app.notifications.latest_body().contains("Context changed"));
     app.dispatch(&key(KeyCode::Esc));
     assert!(!screen(&mut app, 80, 24).contains("Search"));
 }

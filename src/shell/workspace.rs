@@ -28,6 +28,16 @@ fn header_button(f: &mut Frame, row: &mut Rect, label: &str, style: Style) -> Re
     r
 }
 
+pub(super) fn footer_identity() -> [Span<'static>; 2] {
+    [
+        Span::styled(" IGit ", button_style(true)),
+        Span::styled(
+            format!(" v{}", env!("CARGO_PKG_VERSION")),
+            Style::new().fg(MUTED),
+        ),
+    ]
+}
+
 impl Shell {
     pub(super) fn workspace_mouse(&mut self, m: &MouseEvent) {
         let (x, y) = (m.column, m.row);
@@ -62,7 +72,8 @@ impl Shell {
     }
 
     pub(super) fn hover(&mut self, x: u16, y: u16) -> bool {
-        if self.pop.is_some() || self.key_picker.contains(x, y) {
+        if self.pop.is_some() || self.key_picker.contains(x, y) || self.notifications.contains(x, y)
+        {
             return false;
         }
         match self.tab {
@@ -72,15 +83,25 @@ impl Shell {
             _ => false,
         }
     }
+}
 
-    fn draw_header(&mut self, f: &mut Frame, mut row: Rect) -> Rect {
-        let show_icons = row.width >= 72 && self.icons != IconMode::Ascii;
+impl Regions {
+    pub(super) fn draw_header(
+        &mut self,
+        f: &mut Frame,
+        mut row: Rect,
+        selected: Tab,
+        icons: IconMode,
+        conflicts: bool,
+        enabled: bool,
+    ) -> Rect {
+        let show_icons = row.width >= 72 && icons != IconMode::Ascii;
         let tab_width = Tab::DISPLAY_ORDER
             .into_iter()
-            .filter(|&t| self.tab_available(t))
+            .filter(|&tab| tab != Conflicts || conflicts)
             .map(|t| t.name().width() + 2)
             .sum::<usize>();
-        let context_width = match self.tab {
+        let context_width = match selected {
             Log => 11,
             Push => 14,
             _ => 0,
@@ -88,10 +109,10 @@ impl Shell {
         let compact = tab_width + context_width > usize::from(row.width);
         f.render_widget(Block::default().style(Style::new().bg(TAG)), row);
         for tab in Tab::DISPLAY_ORDER.into_iter().rev() {
-            if !self.tab_available(tab) {
+            if tab == Conflicts && !conflicts {
                 continue;
             }
-            let active = self.tab == tab;
+            let active = selected == tab;
             let mut style = if active {
                 button_style(true)
             } else {
@@ -99,6 +120,9 @@ impl Shell {
             };
             if tab == Conflicts {
                 style = style.fg(CONFLICT).bold();
+            }
+            if !enabled {
+                style = style.fg(MUTED);
             }
             let label = if show_icons {
                 let icon = match tab {
@@ -109,20 +133,26 @@ impl Shell {
                     Branch => Icon::Branch,
                     Stash => Icon::Folder,
                 };
-                format!(" {} {} ", self.icons.glyph(icon), tab.name())
+                format!(" {} {} ", icons.glyph(icon), tab.name())
             } else if compact {
                 format!(" {}", tab.name())
             } else {
                 format!(" {} ", tab.name())
             };
-            self.regions.tabs[tab as usize] = header_button(f, &mut row, &label, style);
+            self.tabs[tab as usize] = header_button(f, &mut row, &label, style);
         }
         row
     }
+}
 
+impl Shell {
     pub(super) fn draw(&mut self, f: &mut Frame) {
         let a = f.area();
         self.regions = Regions::default();
+        self.notifications.clear_hits();
+        if let Some(popup) = &mut self.pop {
+            popup.clear_notification_hits();
+        }
         self.pop_hits.clear();
         self.key_picker.clear_geometry();
         f.render_widget(Block::default().style(Style::new().bg(BG).fg(FG)), a);
@@ -147,7 +177,7 @@ impl Shell {
             let notice = if self.maximize_pending {
                 "Synchronizing Kitty layout…".to_owned()
             } else {
-                self.msg.clone()
+                String::new()
             };
             self.merge.draw_editor(f, editor, &self.ctx, &notice);
             let hint = format!("{} Updates  F1 Help", self.config.label("global", "update"));
@@ -167,7 +197,10 @@ impl Shell {
             Constraint::Length(1),
         ])
         .areas(a);
-        let context = self.draw_header(f, header);
+        let conflicts = self.tab_available(Conflicts);
+        let context = self
+            .regions
+            .draw_header(f, header, self.tab, self.icons, conflicts, true);
         let maximized = self.pane_is_maximized();
         if self.ctx.repos.is_empty() {
             let empty = format!("No Git working trees found.\n\nUse {} Actions → Open / rescan workspace, or start igit /path/to/workspace.", self.config.label("global", "actions"));
@@ -215,7 +248,12 @@ impl Shell {
         }
 
         let pick_hint = (self.tab == Log)
-            .then(|| self.log.pick_hint(&self.ctx))
+            .then(|| {
+                self.log.pick_hint(
+                    &self.ctx,
+                    &self.config.label("log", "show-file-at-revision"),
+                )
+            })
             .flatten();
         let (hint, color) = if self.maximize_pending {
             ("Synchronizing Kitty layout…".into(), ACCENT)
@@ -225,8 +263,6 @@ impl Shell {
                     .add_progress(usize::from(foot.width.saturating_sub(18))),
                 ACCENT,
             )
-        } else if !self.msg.is_empty() {
-            (self.msg.clone(), ACCENT)
         } else if self.pop.is_some() {
             ("F1 Help   Esc Back".into(), MUTED)
         } else if self.panel().editing() {
@@ -260,11 +296,11 @@ impl Shell {
         } else {
             (
                 if foot.width < 60 {
-                    "F9 Updates  F1 Help"
+                    "F8 Notices  F1 Help"
                 } else if foot.width < 100 {
                     "Tab Panes  p Pull  f Fetch  F1 Help"
                 } else {
-                    "Tab Panes  Ctrl-W Pane keys  p Pull  f Fetch  F9 Updates  F1 Help"
+                    "Tab Panes  Ctrl-W Pane keys  p Pull  f Fetch  F8 Notices  F9 Updates  F1 Help"
                 }
                 .into(),
                 MUTED,
@@ -275,8 +311,7 @@ impl Shell {
     }
 
     fn draw_footer(&mut self, f: &mut Frame, foot: Rect, hint: &str, color: ratatui::style::Color) {
-        let brand = " IGit ";
-        let version = format!(" v{}", env!("CARGO_PKG_VERSION"));
+        let [brand, version] = footer_identity();
         let (status, status_style) = self.software_update.footer_status(self.icons);
         let start = foot.x + brand.width() as u16;
         let visible_width = foot.width.saturating_sub(brand.width() as u16);
@@ -289,7 +324,7 @@ impl Shell {
         let search = self.focused_search().filter(|prompt| {
             self.pop.is_none()
                 && prompt.visible()
-                && (prompt.editing() || self.msg.is_empty() && !self.commit.add_running())
+                && (prompt.editing() || !self.commit.add_running())
         });
         let hint = if search.is_some() {
             String::new()
@@ -298,8 +333,8 @@ impl Shell {
         };
         f.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(brand, button_style(true)),
-                Span::styled(version, Style::new().fg(MUTED)),
+                brand,
+                version,
                 Span::styled(status, status_style),
                 Span::styled(hint, Style::new().fg(color)),
             ]))
@@ -319,6 +354,11 @@ impl Shell {
                 .draw_items(f, work, &pending.prefix_label(), &pending.hints());
         } else if let Some(sequence) = self.key_sequence() {
             self.key_picker.draw(f, work, sequence);
+        }
+        if !matches!(self.pop, Some(Popup::Notifications(_))) {
+            let mut viewport = f.area();
+            viewport.height = viewport.height.saturating_sub(1);
+            self.notifications.draw_live(f, viewport, self.icons);
         }
     }
 }

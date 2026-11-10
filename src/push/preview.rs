@@ -301,6 +301,7 @@ impl PushPanel {
     }
 
     pub(super) fn inspect(&mut self, c: &Context) {
+        self.cancel_key_sequence();
         self.preview_load.cancel();
         self.preview_request = None;
         self.diff = None;

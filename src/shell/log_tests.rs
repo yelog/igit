@@ -20,7 +20,10 @@ fn log_actions_review_cancels_by_default_and_revert_conflict_refreshes_workspace
         run(&["commit", "-am", text]);
     }
     let before = snapshot(&repo);
-    app.config = AppConfig::from_toml("[keybindings.log]\ncommit-actions=['F8']").unwrap();
+    app.config = AppConfig::from_toml(
+        "[keybindings.global]\nnotification-history=[]\n[keybindings.log]\ncommit-actions=['F8']",
+    )
+    .unwrap();
     app.go(Log);
     app.dispatch(&key(KeyCode::F(5)));
     screen(&mut app, 44, 12);
@@ -43,7 +46,7 @@ fn log_actions_review_cancels_by_default_and_revert_conflict_refreshes_workspace
             ..
         }) = &app.pop
         else {
-            panic!("Expected Log review: {}", app.msg);
+            panic!("Expected Log review: {}", app.notifications.latest_body());
         };
         assert_eq!(title, "Revert Commit");
         assert!(body.contains("first change"), "{body}");

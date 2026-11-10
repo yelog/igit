@@ -111,6 +111,17 @@ impl CommitPanel {
     }
 
     pub(super) fn draw_workbench(&mut self, f: &mut Frame, area: Rect, c: &Context) {
+        let [changes, message, preview] = self.workbench_areas(area);
+        if !changes.is_empty() || !message.is_empty() {
+            self.draw_sidebar(f, changes, message, c);
+        }
+        if !preview.is_empty() {
+            let inner = pane_frame(f, preview, self.pane_focused(PaneId::Preview));
+            self.draw_preview(f, inner, c, self.stacked);
+        }
+    }
+
+    pub(super) fn workbench_areas(&mut self, area: Rect) -> [Rect; 3] {
         self.panes.begin();
         self.hits.clear();
         self.tree = Rect::default();
@@ -168,13 +179,7 @@ impl CommitPanel {
         if message.is_empty() {
             self.message_selection.reset();
         }
-        if !sidebar.is_empty() {
-            self.draw_sidebar(f, changes, message, c);
-        }
-        if !preview.is_empty() {
-            let inner = pane_frame(f, preview, self.pane_focused(PaneId::Preview));
-            self.draw_preview(f, inner, c, self.stacked);
-        }
+        [changes, message, preview]
     }
 
     fn draw_sidebar(&mut self, f: &mut Frame, changes: Rect, message: Rect, c: &Context) {

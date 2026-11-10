@@ -334,6 +334,9 @@ fn workspace_tabs_open_on_commit_and_switch_in_header_order_at_each_size() {
         assert!(!app.regions.log_tabs.is_empty());
         app.dispatch(&key(KeyCode::Char('6')));
         assert_eq!(app.tab, Log);
+        assert!(app.notifications.latest_body().contains("No conflicts"));
+        app.notifications
+            .expire(Instant::now() + Duration::from_secs(9));
 
         let add = header.find('+').unwrap() as u16;
         app.dispatch(&mouse(MouseEventKind::Down(MouseButton::Left), add, 0));
@@ -496,14 +499,20 @@ fn commit_and_push_keyboard_action_commits_once_and_requires_separate_push_confi
     app.dispatch(&key(KeyCode::Enter));
     assert!(app.pop.is_none() && !app.commit.execution_running());
     assert!(
-        app.msg.contains("Wait for the remote operation"),
+        app.notifications
+            .latest_body()
+            .contains("Wait for the remote operation"),
         "{}",
-        app.msg
+        app.notifications.latest_body()
     );
     let deadline = Instant::now() + Duration::from_secs(10);
     while app.push.busy() {
         app.poll();
-        assert!(Instant::now() < deadline, "push timed out: {}", app.msg);
+        assert!(
+            Instant::now() < deadline,
+            "push timed out: {}",
+            app.notifications.latest_body()
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(

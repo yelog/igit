@@ -492,7 +492,11 @@ impl super::super::Shell {
                             self.restart = Some(path);
                             self.quit = true;
                         }
-                        Err(error) => self.notice(format!("Restart: {error:#}")),
+                        Err(error) => self.notify(
+                            crate::ui::NoticeLevel::Error,
+                            "IGit Update",
+                            format!("Restart: {error:#}"),
+                        ),
                     }
                 }
             }

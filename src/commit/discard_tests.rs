@@ -62,7 +62,7 @@ fn press(panel: &mut CommitPanel, c: &Context, ch: char) -> Action {
 fn review(panel: &mut CommitPanel, c: &Context) -> Box<Rollback> {
     match press(panel, c, 'd') {
         Action::ReviewRollback => panel.take_rollback().unwrap(),
-        Action::Notice(message) => panic!("{message}"),
+        Action::Notice(_, message) => panic!("{message}"),
         _ => panic!("missing rollback review"),
     }
 }
@@ -122,7 +122,10 @@ fn discard_targets_unchecked_cursor_and_keeps_other_checks_and_staged_content() 
         b"working\n"
     );
     assert_eq!(panel.checks, checks);
-    assert!(matches!(rollback.apply(&c), Action::Refresh(_)));
+    assert!(matches!(
+        rollback.apply(&c),
+        Action::Refresh(NoticeLevel::Success, _)
+    ));
     assert_eq!(
         git(&c.repos[0].path, &["show", ":src/mixed"]).unwrap(),
         "base"
@@ -205,7 +208,7 @@ fn discard_is_inactive_in_preview_message_and_text_input_and_rechecks_scope() {
     panel.focus = Focus::Tree;
     let rollback = review(&mut panel, &c);
     c.scope = [1].into();
-    let Action::Refresh(message) = rollback.apply(&c) else {
+    let Action::Refresh(NoticeLevel::Error, message) = rollback.apply(&c) else {
         panic!("missing scope result")
     };
     assert!(message.contains("outside the current scope"));
@@ -323,7 +326,7 @@ fn discard_full_tree_keeps_unsupported_and_ignored_rows_read_only() {
     assert!(render(&mut rollback, &c).contains("Cannot roll back:"));
 
     select_file(&mut panel, 0, "src/mixed");
-    let Action::Refresh(message) = review(&mut panel, &c).apply(&c) else {
+    let Action::Refresh(NoticeLevel::Success, message) = review(&mut panel, &c).apply(&c) else {
         panic!("missing rollback result")
     };
     assert!(message.contains("rolled back 1 file"), "{message}");

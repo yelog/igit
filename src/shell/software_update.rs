@@ -7,6 +7,7 @@ mod view;
 use crate::{
     config::UpdateConfig,
     installation::{self, Inspection, Progress, Status},
+    ui::NoticeLevel,
 };
 use std::{
     path::{Path, PathBuf},
@@ -58,6 +59,7 @@ pub(super) struct SoftwareUpdate {
     started_at: Option<Instant>,
     fade: u8,
     sweep: usize,
+    notice: Option<(NoticeLevel, String)>,
 }
 
 impl SoftwareUpdate {
@@ -80,6 +82,7 @@ impl SoftwareUpdate {
             .as_ref()
             .and_then(|path| cache::read(path, SystemTime::now(), config.interval()))
         {
+            self.report_notice(&report, true);
             self.state = State::Report(report);
             return true;
         } else {
@@ -152,7 +155,9 @@ impl SoftwareUpdate {
                 self.state = if self.automatic && matches!(state, State::Checking) {
                     State::Idle
                 } else {
-                    State::Failed(format!("Cannot start update worker: {error}"))
+                    let message = format!("Cannot start update worker: {error}");
+                    self.notice = Some((NoticeLevel::Error, message.clone()));
+                    State::Failed(message)
                 }
             }
         }
@@ -195,21 +200,53 @@ impl SoftwareUpdate {
                 if let Some(path) = &self.cache_path {
                     let _ = std::fs::remove_file(path);
                 }
+                self.notice = Some((
+                    NoticeLevel::Success,
+                    format!(
+                        "IGit {} installed. Open Update Center to restart.",
+                        report.target_version
+                    ),
+                ));
                 State::Ready(report)
             }
             Ok(report) => {
                 if let Some(path) = &self.cache_path {
                     let _ = cache::write(path, &report, SystemTime::now());
                 }
+                self.report_notice(&report, self.automatic);
                 State::Report(report)
             }
             Err(_) if self.automatic && !installing => State::Idle,
-            Err(message) => State::Failed(message),
+            Err(message) => {
+                self.notice = Some((NoticeLevel::Error, message.clone()));
+                State::Failed(message)
+            }
         };
         self.primary = false;
         self.instructions = false;
         self.scroll = 0;
         true
+    }
+
+    fn report_notice(&mut self, report: &Inspection, automatic: bool) {
+        self.notice = match report.status {
+            Status::UpdateAvailable | Status::ManagerActionRequired => Some((
+                NoticeLevel::Info,
+                format!(
+                    "IGit {} is available. Open Update Center for details.",
+                    report.target_version
+                ),
+            )),
+            Status::UpToDate if !automatic => Some((
+                NoticeLevel::Success,
+                format!("IGit {} is up to date.", report.current_version),
+            )),
+            _ => None,
+        };
+    }
+
+    pub(super) fn take_notice(&mut self) -> Option<(NoticeLevel, String)> {
+        self.notice.take()
     }
 
     pub(super) fn installing(&self) -> bool {

@@ -212,7 +212,7 @@ fn paths_multiline_matches_file_or_directory_literally_and_keeps_invalid_drafts(
     open(&mut p, &c, false);
     key(&mut p, K::Char('u'), Mods::CONTROL, &c);
     p.event(&Event::Paste("docs\n../escape".into()), &c);
-    let Action::Notice(error) = key(&mut p, K::Char('s'), Mods::CONTROL, &c) else {
+    let Action::Notice(_, error) = key(&mut p, K::Char('s'), Mods::CONTROL, &c) else {
         panic!("an escaping path must keep the editor open")
     };
     assert!(error.contains("Line 2"));
@@ -404,7 +404,7 @@ fn paths_tree_keeps_native_names_and_cannot_descend_into_links_or_other_roots() 
     filter_key(&mut p, 'p', &c);
     assert!(matches!(
         key(&mut p, K::Enter, Mods::NONE, &c),
-        Action::Notice(_)
+        Action::Notice(_, _)
     ));
     key(&mut p, K::Esc, Mods::NONE, &c);
     assert_eq!(subjects(&p), ["native name"]);

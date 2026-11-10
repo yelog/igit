@@ -7,7 +7,7 @@ use crate::{
     core::{command, git, redact_remote_error, revpath, Context},
     ui::{
         help::{HelpContent, HelpSection},
-        inside,
+        inside, NoticeLevel,
     },
 };
 use anyhow::{bail, ensure, Context as _, Result};
@@ -25,7 +25,7 @@ pub(super) enum Kind {
 }
 
 impl Kind {
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Self::Pull => "Pull",
             Self::Fetch => "Fetch",
@@ -360,7 +360,7 @@ impl Dialog {
         }
     }
 
-    pub(super) fn poll(&mut self) -> Option<(Kind, String)> {
+    pub(super) fn poll(&mut self) -> Option<(Kind, NoticeLevel, String)> {
         let Stage::Running(job) = &self.stage else {
             return None;
         };
@@ -390,7 +390,29 @@ impl Dialog {
                 .unwrap_or(0),
         );
         self.detail_scroll = 0;
-        Some((self.kind, report.summary))
+        let failed = self
+            .rows
+            .iter()
+            .filter(|row| matches!(row.outcome, Outcome::Failed(_)))
+            .count();
+        let succeeded = self
+            .rows
+            .iter()
+            .filter(|row| matches!(row.outcome, Outcome::Succeeded))
+            .count();
+        let level = if failed > 0 && succeeded == 0 {
+            NoticeLevel::Error
+        } else if failed > 0
+            || self
+                .rows
+                .iter()
+                .any(|row| matches!(row.outcome, Outcome::Skipped(_)))
+        {
+            NoticeLevel::Warning
+        } else {
+            NoticeLevel::Success
+        };
+        Some((self.kind, level, report.summary))
     }
 
     fn pull_review(&self) -> bool {

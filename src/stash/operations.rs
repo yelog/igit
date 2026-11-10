@@ -1,6 +1,7 @@
 //! Reviewed operations on one exact stash entry in one repository.
 use super::model::{self, Entry};
 use crate::core::{command, git, git_bytes, revpath, Context, Repo};
+use crate::ui::NoticeLevel;
 use anyhow::{bail, ensure, Context as _, Result};
 use std::{
     path::{Path, PathBuf},
@@ -231,7 +232,7 @@ impl Review {
         Ok(())
     }
 
-    pub fn execute(self, c: &Context) -> Result<String> {
+    pub fn execute(self, c: &Context) -> Result<(NoticeLevel, String)> {
         ensure!(
             c.scope.contains(&self.root),
             "Repository is outside Roots; review again"
@@ -251,7 +252,7 @@ impl Review {
         );
         if self.operation == Operation::Drop {
             self.drop_entry()?;
-            return Ok(format!("Dropped stash · {label}"));
+            return Ok((NoticeLevel::Success, format!("Dropped stash · {label}")));
         }
         let destination = self
             .destination
@@ -297,11 +298,14 @@ impl Review {
         }
         if self.operation == Operation::Pop {
             if let Err(error) = self.drop_entry() {
-                return Ok(format!("Applied stash · {label}, but could not drop it: {error:#}. Do not apply again; refresh and review Drop to remove the saved entry."));
+                return Ok((NoticeLevel::Warning, format!("Applied stash · {label}, but could not drop it: {error:#}. Do not apply again; refresh and review Drop to remove the saved entry.")));
             }
-            Ok(format!("Popped stash · {label}"))
+            Ok((NoticeLevel::Success, format!("Popped stash · {label}")))
         } else {
-            Ok(format!("Applied stash · {label}; stash kept"))
+            Ok((
+                NoticeLevel::Success,
+                format!("Applied stash · {label}; stash kept"),
+            ))
         }
     }
 }

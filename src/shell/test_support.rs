@@ -42,11 +42,19 @@ pub(super) fn fixture() -> (tempfile::TempDir, Shell) {
 }
 
 pub(super) fn finish_commit(app: &mut Shell) {
-    assert!(app.commit.execution_running(), "{}", app.msg);
+    assert!(
+        app.commit.execution_running(),
+        "{}",
+        app.notifications.latest_body()
+    );
     let deadline = Instant::now() + Duration::from_secs(10);
     while app.commit.execution_running() {
         app.poll();
-        assert!(Instant::now() < deadline, "commit timed out: {}", app.msg);
+        assert!(
+            Instant::now() < deadline,
+            "commit timed out: {}",
+            app.notifications.latest_body()
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
 }

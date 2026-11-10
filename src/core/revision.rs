@@ -16,6 +16,13 @@ pub(crate) struct Source {
 }
 
 pub(crate) fn source(repo: &Path, oid: &str, path: &Path) -> Result<Source> {
+    Ok(file(repo, oid, path)?.unwrap_or_else(|| Source {
+        text: String::new(),
+        description: "Absent in this revision".into(),
+    }))
+}
+
+pub(crate) fn file(repo: &Path, oid: &str, path: &Path) -> Result<Option<Source>> {
     let output = reader(repo)
         .args(["--literal-pathspecs", "ls-tree", "-z", oid, "--"])
         .arg(path)
@@ -29,10 +36,7 @@ pub(crate) fn source(repo: &Path, oid: &str, path: &Path) -> Result<Source> {
         (entry[tab + 1..] == *raw).then_some(&entry[..tab])
     });
     let Some(entry) = entry else {
-        return Ok(Source {
-            text: String::new(),
-            description: "Absent in this revision".into(),
-        });
+        return Ok(None);
     };
     let meta = std::str::from_utf8(entry)?;
     let mut fields = meta.split(' ');
@@ -40,9 +44,9 @@ pub(crate) fn source(repo: &Path, oid: &str, path: &Path) -> Result<Source> {
     let kind = fields.next().context("missing object type")?;
     let blob = fields.next().context("missing object ID")?;
     if kind != "blob" {
-        bail!("Split preview is unavailable for {kind} entries; showing the Git patch");
+        bail!("File revision is unavailable for {kind} entries");
     }
-    self::blob(repo, blob, mode)
+    self::blob(repo, blob, mode).map(Some)
 }
 
 fn reader(repo: &Path) -> Command {
@@ -58,14 +62,14 @@ pub(crate) fn blob(repo: &Path, oid: &str, mode: &str) -> Result<Source> {
     cmd.args(["cat-file", "blob", oid]);
     let (bytes, cut) = read_output(cmd, "git cat-file")?;
     if cut {
-        bail!("Split preview is limited to 512 KiB per revision; showing the Git patch");
+        bail!("File revision is limited to 512 KiB");
     }
     text(bytes, mode)
 }
 
 fn mode_supported(mode: &str) -> Result<()> {
     if !matches!(mode, "100644" | "100755" | "120000") {
-        bail!("Split preview is unavailable for mode {mode} (submodule or special entry); showing the Git patch");
+        bail!("File revision is unavailable for mode {mode} (submodule or special entry)");
     }
     Ok(())
 }
@@ -73,10 +77,10 @@ fn mode_supported(mode: &str) -> Result<()> {
 pub(crate) fn text(bytes: Vec<u8>, mode: &str) -> Result<Source> {
     mode_supported(mode)?;
     if bytes.len() > LIMIT {
-        bail!("Split preview is limited to 512 KiB per revision; showing the Git patch");
+        bail!("File revision is limited to 512 KiB");
     }
     if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
-        bail!("Binary or non-UTF-8 content; showing the Git patch");
+        bail!("Binary or non-UTF-8 content");
     }
     let text = String::from_utf8(bytes)?;
     let ending = if text.is_empty() {

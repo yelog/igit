@@ -386,7 +386,7 @@ fn canceled_reviews_and_changed_roots_cannot_authorize_recovery() {
             panic!("recovery should require confirmation");
         };
         key(&mut panel, &ctx, KeyCode::Esc);
-        assert!(matches!(panel.confirm(&token, &ctx), Action::Notice(_)));
+        assert!(matches!(panel.confirm(&token, &ctx), Action::Notice(_, _)));
         assert_eq!(State::read(a.path()).unwrap(), before_a);
         assert_eq!(State::read(b.path()).unwrap(), before_b);
     }
@@ -395,7 +395,7 @@ fn canceled_reviews_and_changed_roots_cannot_authorize_recovery() {
     };
     ctx.scope.remove(&0);
     assert!(
-        matches!(panel.confirm(&token, &ctx), Action::Notice(message) if message.contains("out of scope"))
+        matches!(panel.confirm(&token, &ctx), Action::Notice(_, message) if message.contains("out of scope"))
     );
     ctx.scope.insert(0);
     let Action::Confirm { token, .. } = key(&mut panel, &ctx, KeyCode::Char('B')) else {
@@ -403,7 +403,7 @@ fn canceled_reviews_and_changed_roots_cannot_authorize_recovery() {
     };
     ctx.repos.swap(0, 1);
     assert!(
-        matches!(panel.confirm(&token, &ctx), Action::Refresh(message) if message.contains("changed"))
+        matches!(panel.confirm(&token, &ctx), Action::Refresh(_, message) if message.contains("changed"))
     );
     assert_eq!(State::read(a.path()).unwrap(), before_a);
     assert_eq!(State::read(b.path()).unwrap(), before_b);
@@ -436,11 +436,11 @@ fn recovery_buttons_remain_reachable_and_only_write_the_highlighted_repository()
     };
     assert!(title.contains("repo-1"));
     assert!(
-        matches!(panel.confirm(&token, &ctx), Action::Refresh(message) if message.contains("completed"))
+        matches!(panel.confirm(&token, &ctx), Action::Refresh(_, message) if message.contains("completed"))
     );
     assert_eq!(State::read(a.path()).unwrap(), before_a);
     assert!(operation(b.path()).unwrap().is_none());
-    assert!(matches!(panel.confirm(&token, &ctx), Action::Notice(_)));
+    assert!(matches!(panel.confirm(&token, &ctx), Action::Notice(_, _)));
 }
 
 #[test]

@@ -56,6 +56,10 @@ fn inline_message_first_drag_copies_and_escape_saves_the_edited_draft() {
     assert!(!p.editing());
     assert_eq!(p.focused_pane(), PaneId::Message);
     assert_eq!(p.saved.message.as_deref().unwrap(), "Subject! ＵＩ\nBody");
+    key(&mut p, &c, K::Esc);
+    assert_eq!(p.focused_pane(), PaneId::Message);
+    assert!(p.preview_open);
+    assert_eq!(p.saved.message.as_deref().unwrap(), "Subject! ＵＩ\nBody");
 }
 
 #[test]
@@ -269,7 +273,7 @@ fn inline_message_save_failure_keeps_editing_and_blocks_commit() {
         button.x + 1,
         button.y,
     );
-    assert!(matches!(action, Action::Notice(_)));
+    assert!(matches!(action, Action::Notice(NoticeLevel::Error, _)));
     assert!(p.message_editing());
     assert!(git(&c.repos[0].path, &["rev-parse", "--verify", "HEAD"]).is_err());
     assert_eq!(p.buf, "Original unsaved");

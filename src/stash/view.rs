@@ -1,6 +1,6 @@
 use super::*;
 use crate::ui::{
-    idea::{clipped, CONFLICT, TAG},
+    idea::{clipped, repo_tint, CONFLICT, TAG},
     panes::{pane_frame, Axis, SplitId},
     selection::{TextLayout, Wrap as TextWrap},
 };
@@ -179,33 +179,28 @@ impl StashPanel {
             Row::Repository(root) => {
                 let repo = self.repository(root).unwrap();
                 let name = model::label(&c.repos[root].name);
-                let icon = self.icons.repo(c.repos[root].submodule);
+                let icon = Span::styled(
+                    format!("{} ", self.icons.repo(c.repos[root].submodule)),
+                    Style::new().fg(repo_tint(root)),
+                );
                 if repo.is_empty() {
-                    let prefix = format!("  {icon} ");
-                    let mut line = Line::styled(prefix.clone(), muted);
-                    line.spans.extend(highlight.clipped(
-                        &name,
-                        width.saturating_sub(prefix.width()),
-                        muted,
-                    ));
+                    let mut line = Line::from(vec![Span::styled("  ", muted), icon]);
+                    let room = width.saturating_sub(line.width());
+                    line.spans.extend(highlight.clipped(&name, room, muted));
                     return line;
                 }
                 let (prefix, badge, badge_style) = if repo.error.is_some() {
-                    (
-                        format!("  {icon} "),
-                        "  Error".into(),
-                        Style::new().fg(CONFLICT),
-                    )
+                    ("  ".into(), "  Error".into(), Style::new().fg(CONFLICT))
                 } else {
                     let disclosure = self.icons.disclosure(!self.folded.contains(&root));
                     (
-                        format!("{disclosure} {icon} "),
+                        format!("{disclosure} "),
                         format!("  {}", repo.entries.len()),
                         muted,
                     )
                 };
-                let room = width.saturating_sub(prefix.width() + badge.width());
-                let mut line = Line::from(Span::styled(prefix, muted));
+                let mut line = Line::from(vec![Span::styled(prefix, muted), icon]);
+                let room = width.saturating_sub(line.width() + badge.width());
                 line.spans
                     .extend(highlight.clipped(&name, room, Style::new().fg(FG).bold()));
                 line.push_span(Span::styled(badge, badge_style));

@@ -85,7 +85,7 @@ fn non_utf8_index_paths_keep_ordinary_conflicts_and_native_operation_visible() {
             &Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             &ctx,
         );
-        assert!(matches!(action, Action::Notice(message) if message.contains("Non-UTF-8 path")));
+        assert!(matches!(action, Action::Notice(_, message) if message.contains("Non-UTF-8 path")));
         assert!(panel.doc.is_none());
         assert!(matches!(
             panel.event(

@@ -45,6 +45,7 @@ fn applies_only_the_reviewed_oid_even_when_its_source_ref_moves() {
     assert!(review
         .execute(&c)
         .unwrap()
+        .1
         .contains("Cherry-pick Commit completed"));
     assert_eq!(git(repo, &["rev-parse", "HEAD^"]), head);
     assert_eq!(

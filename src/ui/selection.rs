@@ -238,6 +238,11 @@ impl TextSelection {
         self.press.is_some()
     }
 
+    pub fn cancel_mouse(&mut self) {
+        self.press = None;
+        self.dragged = false;
+    }
+
     pub fn extend(&mut self, from: usize, to: usize) {
         if self.range().is_none() {
             self.anchor = from;
