@@ -10,7 +10,7 @@ impl BranchPanel {
                     &[
                         ("Backspace", "Delete last name character"),
                         ("Ctrl-u", "Clear branch name"),
-                        ("Enter", "Validate name and review action"),
+                        ("Enter", "Submit branch name"),
                         ("Esc", "Cancel name input"),
                     ],
                 ),
@@ -54,6 +54,8 @@ impl BranchPanel {
                     ("Enter", "Switch branch or toggle group"),
                     ("m", "Merge focused branch into current branch"),
                     ("r", "Rename focused local branch"),
+                    ("U", "Review fast-forward pull for focused local branch"),
+                    ("P", "Review push for focused local branch"),
                 ],
             )
         };

@@ -25,7 +25,7 @@ use crate::{
         *,
     },
 };
-use anyhow::{bail, Result};
+use anyhow::{bail, Context as _, Result};
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use files::{Change, FileTree, Group, Grouping, Kind};
 use ratatui::{
@@ -74,6 +74,7 @@ struct Job {
     url: String,
     config: upstream::Snapshot,
     set_upstream: bool,
+    focused_ref: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -283,6 +284,7 @@ fn job(repo: &Repo, x: &Entry) -> Result<Job> {
         tracking: x.tracking.clone(),
         config: x.config.clone(),
         set_upstream: false,
+        focused_ref: None,
     };
     j.revalidate()?;
     Ok(j)
@@ -290,8 +292,13 @@ fn job(repo: &Repo, x: &Entry) -> Result<Job> {
 
 impl Job {
     fn revalidate(&self) -> Result<()> {
-        if git(&self.path, &["symbolic-ref", "--short", "-q", "HEAD"])? != self.branch
-            || git(&self.path, &["rev-parse", "HEAD"])? != self.head
+        let source_matches = if let Some(reference) = &self.focused_ref {
+            git(&self.path, &["rev-parse", "--verify", reference])? == self.head
+        } else {
+            git(&self.path, &["symbolic-ref", "--short", "-q", "HEAD"])? == self.branch
+                && git(&self.path, &["rev-parse", "HEAD"])? == self.head
+        };
+        if !source_matches
             || url(&self.path, &self.t.remote)? != self.url
             || upstream::Snapshot::read(&self.path, &self.branch)? != self.config
         {
@@ -311,6 +318,46 @@ impl Job {
         {
             bail!("mirror remote requires a separate manual review");
         }
+        Ok(())
+    }
+}
+
+pub(crate) struct FocusedPush(Job);
+
+impl FocusedPush {
+    pub(crate) fn prepare(
+        repo: &Repo,
+        root: usize,
+        reference: &str,
+        head: &str,
+        remote: &str,
+        destination: &str,
+        tracking_ref: &str,
+    ) -> Result<Self> {
+        let branch = reference
+            .strip_prefix("refs/heads/")
+            .context("Select a local branch")?;
+        let job = Job {
+            idx: root,
+            path: repo.path.clone(),
+            branch: branch.into(),
+            head: head.into(),
+            t: Target {
+                remote: remote.into(),
+                dst: destination.into(),
+            },
+            tracking: git(&repo.path, &["rev-parse", "--verify", tracking_ref]).ok(),
+            url: url(&repo.path, remote)?,
+            config: upstream::Snapshot::read(&repo.path, branch)?,
+            set_upstream: false,
+            focused_ref: Some(reference.into()),
+        };
+        job.revalidate()?;
+        Ok(Self(job))
+    }
+
+    pub(crate) fn execute(&self) -> Result<()> {
+        push_one(&self.0, false, false)?;
         Ok(())
     }
 }
@@ -425,10 +472,6 @@ impl PushPanel {
         self.panes.active
             && (!self.editing() || self.focused_search().is_some_and(|prompt| prompt.editing()))
             && self.focused_pane() == id
-    }
-
-    pub(crate) fn at_root(&self) -> bool {
-        !self.editing() && !self.show_details
     }
 
     pub(crate) fn busy(&self) -> bool {

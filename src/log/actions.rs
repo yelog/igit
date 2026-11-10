@@ -5,6 +5,8 @@ use super::{
     *,
 };
 use crate::ui::{help::HelpSection, idea::button_style};
+
+const SELECT_ROW: usize = Kind::ALL.len();
 use crossterm::event::{KeyEvent, KeyEventKind};
 
 pub(super) struct Dialog {
@@ -21,7 +23,7 @@ enum Mode {
 
 #[derive(Clone, Copy)]
 enum Hit {
-    Choice(Kind),
+    Choice(usize),
     Text,
     Review,
     Cancel,
@@ -31,6 +33,7 @@ enum Input {
     None,
     Close,
     Choose(Kind),
+    SelectCommits,
     Review(Kind, String),
 }
 
@@ -71,6 +74,12 @@ impl Dialog {
         }
     }
 
+    fn choose(row: usize) -> Input {
+        Kind::ALL
+            .get(row)
+            .map_or(Input::SelectCommits, |kind| Input::Choose(*kind))
+    }
+
     fn event(&mut self, event: &Event) -> Input {
         if matches!(event, Event::Key(k) if k.kind == KeyEventKind::Release) {
             return Input::None;
@@ -86,18 +95,18 @@ impl Dialog {
                         K::Up | K::Char('k') => -1,
                         K::Home => -(Kind::ALL.len() as isize),
                         K::End => Kind::ALL.len() as isize,
-                        K::Enter => return Input::Choose(Kind::ALL[*row]),
+                        K::Enter => return Self::choose(*row),
                         _ => 0,
                     },
                     Event::Mouse(m) => {
                         let hit = self.hits.iter().find(|(r, _)| inside(*r, m.column, m.row));
                         match (m.kind, hit.map(|(_, h)| *h)) {
                             (M::Down(MouseButton::Left), Some(Hit::Choice(kind))) => {
-                                return Input::Choose(kind);
+                                return Self::choose(kind);
                             }
                             (M::Down(_), None) => return Input::Close,
                             (M::Moved, Some(Hit::Choice(kind))) => {
-                                *row = Kind::ALL.iter().position(|k| *k == kind).unwrap_or(*row);
+                                *row = kind;
                                 0
                             }
                             (M::ScrollDown, _) => 1,
@@ -107,7 +116,7 @@ impl Dialog {
                     }
                     _ => 0,
                 };
-                *row = row.saturating_add_signed(delta).min(Kind::ALL.len() - 1);
+                *row = row.saturating_add_signed(delta).min(SELECT_ROW);
             }
             Mode::Input(kind, input) => {
                 let submit = match event {
@@ -155,7 +164,7 @@ impl Dialog {
     fn draw(&mut self, f: &mut Frame, area: Rect, c: &Context) {
         self.hits.clear();
         let (title, width, height) = match self.mode {
-            Mode::Menu(_) => ("Commit Actions", 42, Kind::ALL.len() as u16 + 3),
+            Mode::Menu(_) => ("Commit Actions", 42, Kind::ALL.len() as u16 + 4),
             Mode::Input(kind, _) => (kind.title(), 68, if kind == Kind::Edit { 15 } else { 7 }),
         };
         let mut r = popup(area, width, height);
@@ -183,15 +192,23 @@ impl Dialog {
         match &mut self.mode {
             Mode::Menu(row) => {
                 let h = usize::from(inner.height - 1);
-                let start = window(*row, h, Kind::ALL.len());
-                for (i, kind) in Kind::ALL.iter().enumerate().skip(start).take(h) {
+                let start = window(*row, h, SELECT_ROW + 1);
+                for i in (start..=SELECT_ROW).take(h) {
+                    let label = match Kind::ALL.get(i) {
+                        Some(Kind::CherryPick) => "Cherry-pick Commit  C",
+                        Some(kind) => kind.title(),
+                        None => "Select Commits  v",
+                    };
                     let r = line(inner.y + 1 + (i - start) as u16);
                     f.render_widget(
-                        Paragraph::new(format!(" {}", kind.title()))
-                            .style(fg(INK).bg(if i == *row { SELECT } else { PANEL })),
+                        Paragraph::new(format!(" {label}")).style(fg(INK).bg(if i == *row {
+                            SELECT
+                        } else {
+                            PANEL
+                        })),
                         r,
                     );
-                    self.hits.push((r, Hit::Choice(*kind)));
+                    self.hits.push((r, Hit::Choice(i)));
                 }
             }
             Mode::Input(kind, input) if inner.height > 2 => {
@@ -227,6 +244,97 @@ impl Dialog {
 }
 
 impl LogPanel {
+    pub(super) fn set_pick_mode(&mut self, enabled: bool) {
+        self.cancel_key_sequence();
+        self.pick_mode = enabled;
+        if !enabled {
+            self.picks.clear();
+        }
+    }
+
+    pub(super) fn toggle_pick(&mut self, c: &Context) -> Result<()> {
+        self.cancel_key_sequence();
+        self.require_current_history(c)?;
+        let rev = self
+            .rev()
+            .ok_or_else(|| anyhow::anyhow!("No commit selected"))?;
+        let target = Target::new(c, rev)?;
+        if let Some(i) = self
+            .picks
+            .iter()
+            .position(|pick| pick.root == target.root && pick.oid == target.oid)
+        {
+            self.picks.remove(i);
+        } else {
+            if let Some(first) = self.picks.first() {
+                anyhow::ensure!(
+                    first.root == target.root,
+                    "Select commits from {}",
+                    c.repos
+                        .get(first.root)
+                        .map_or("the original repository", |repo| repo.name.as_str())
+                );
+            }
+            anyhow::ensure!(
+                rev.parents.len() <= 1,
+                "Cherry-picking a merge requires choosing a mainline parent"
+            );
+            self.picks.push(target);
+        }
+        Ok(())
+    }
+
+    pub(super) fn review_picks(&mut self, c: &Context, target: Option<Target>) -> Result<Action> {
+        self.require_current_history(c)?;
+        let picks = if self.pick_mode {
+            self.picks.clone()
+        } else if let Some(target) = target {
+            vec![target]
+        } else {
+            vec![Target::new(
+                c,
+                self.rev()
+                    .ok_or_else(|| anyhow::anyhow!("No commit selected"))?,
+            )?]
+        };
+        let count = picks.len();
+        let (review, body) = Review::prepare_picks(c, picks)?;
+        self.commit_review = Some(review);
+        self.commit_dialog = None;
+        let noun = if count == 1 { "commit" } else { "commits" };
+        Ok(Action::Confirm {
+            title: format!("Cherry-pick {count} {noun}"),
+            body,
+            token: REVIEW_TOKEN.into(),
+        })
+    }
+
+    pub(crate) fn pick_hint(&self, c: &Context) -> Option<String> {
+        if !self.pick_mode {
+            return (self.focus == Pane::Graph && !self.editing())
+                .then(|| "C Cherry-pick  v Select commits  F1 Help".to_owned());
+        }
+        let visible = self
+            .visible
+            .iter()
+            .filter(|&&i| {
+                let rev = &self.hist.revs[i];
+                self.picks
+                    .iter()
+                    .any(|p| p.root == rev.root && p.oid == rev.oid)
+            })
+            .count();
+        let hidden = self.picks.len().saturating_sub(visible);
+        let mut hint = format!("{} selected", self.picks.len());
+        if hidden > 0 {
+            hint.push_str(&format!(" · {hidden} hidden"));
+        }
+        if let Some(repo) = self.picks.first().and_then(|p| c.repos.get(p.root)) {
+            hint.push_str(&format!(" · {}", repo.name));
+        }
+        Some(format!("{hint}  Space Toggle  C Cherry-pick  Esc Clear"))
+    }
+
     pub(super) fn open_commit_actions(
         &mut self,
         c: &Context,
@@ -284,6 +392,15 @@ impl LogPanel {
                 self.commit_dialog = None;
                 return Ok(Action::None);
             }
+            Input::SelectCommits => {
+                self.commit_dialog = None;
+                self.set_pick_mode(true);
+                return Ok(Action::None);
+            }
+            Input::Choose(Kind::CherryPick) => {
+                let target = dialog.target.clone();
+                return self.review_picks(c, Some(target));
+            }
             Input::Choose(kind @ (Kind::Branch | Kind::Tag | Kind::Edit)) => {
                 let text = if kind == Kind::Edit {
                     dialog.target.message(c)?
@@ -314,9 +431,16 @@ impl LogPanel {
         let Some(review) = self.commit_review.take() else {
             return Action::None;
         };
-        let message = review
-            .execute(c)
-            .unwrap_or_else(|error| format!("Log: {error:#}"));
+        let is_pick = review.is_cherry_pick();
+        let message = match review.execute(c) {
+            Ok(message) => {
+                if is_pick {
+                    self.set_pick_mode(false);
+                }
+                message
+            }
+            Err(error) => format!("Log: {error:#}"),
+        };
         // Git can leave a sequencer or conflicted index even when it reports failure.
         Action::Refresh(message)
     }

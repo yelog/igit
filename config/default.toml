@@ -126,6 +126,8 @@ delete = ["d"]
 checkout = ["Enter"]
 merge = ["m"]
 rename = ["r"]
+pull = ["U"]
+push = ["P"]
 
 [keybindings.log]
 find = ["/"]

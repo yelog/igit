@@ -455,9 +455,70 @@ pub(super) struct Review {
     kind: Kind,
     input: String,
     plan: Plan,
+    picks: Vec<Target>,
 }
 
 impl Review {
+    pub fn is_cherry_pick(&self) -> bool {
+        self.kind == Kind::CherryPick
+    }
+
+    pub fn prepare_picks(c: &Context, mut picks: Vec<Target>) -> Result<(Self, String)> {
+        let target = picks.first().context("No commits selected")?.clone();
+        let repo = target.repo(c)?;
+        let plan = Plan::read(&repo.path, &target.oid, Kind::CherryPick, "")?;
+        for pick in &picks[1..] {
+            ensure!(
+                pick.root == target.root,
+                "Select commits from one repository"
+            );
+            pick.repo(c)?;
+            ensure!(
+                Plan::read(&repo.path, &pick.oid, Kind::CherryPick, "")? == plan,
+                "Branch or HEAD changed; review again"
+            );
+        }
+        if picks.len() > 1 {
+            // Walk all source tips together so even ancestry through an unselected
+            // commit constrains execution order. Ignore unrelated history in the review.
+            let mut args = vec!["rev-list", "--date-order", "--reverse"];
+            args.extend(picks.iter().map(|pick| pick.oid.as_str()));
+            args.push("--");
+            let order = git(&repo.path, &args)?;
+            let positions: std::collections::HashMap<_, _> =
+                order.lines().enumerate().map(|(i, oid)| (oid, i)).collect();
+            picks.sort_by_key(|pick| positions.get(pick.oid.as_str()).copied());
+        }
+        let Plan::CherryPick(head) = &plan else {
+            unreachable!()
+        };
+        let mut body = format!(
+            "Apply to {} / {}\nCurrent branch\n",
+            plain(repo.name.as_bytes()),
+            plain(head.label().as_bytes())
+        );
+        for (i, pick) in picks.iter().enumerate() {
+            use std::fmt::Write as _;
+            writeln!(
+                body,
+                "{}  {}  {}",
+                i + 1,
+                pick.short(),
+                plain(pick.subject.as_bytes())
+            )?;
+        }
+        Ok((
+            Self {
+                target,
+                kind: Kind::CherryPick,
+                input: String::new(),
+                plan,
+                picks,
+            },
+            body,
+        ))
+    }
+
     pub fn prepare(
         c: &Context,
         target: Target,
@@ -543,6 +604,7 @@ impl Review {
                 kind,
                 input,
                 plan,
+                picks: Vec::new(),
             },
             body,
         ))
@@ -554,6 +616,18 @@ impl Review {
         let current = Plan::read(&repo.path, oid, self.kind, &self.input)
             .context("Repository changed; review again")?;
         ensure!(current == self.plan, "Branch or HEAD changed; review again");
+
+        for pick in &self.picks {
+            if pick.oid != oid {
+                pick.repo(c)?;
+                ensure!(
+                    Plan::read(&repo.path, &pick.oid, self.kind, "")
+                        .context("Repository changed; review again")?
+                        == self.plan,
+                    "Branch or HEAD changed; review again"
+                );
+            }
+        }
 
         let mut cmd = command(&repo.path);
         cmd.args([
@@ -604,8 +678,12 @@ impl Review {
                     "--no-edit",
                     "--no-rerere-autoupdate",
                     "--",
-                    oid,
                 ]);
+                if self.picks.is_empty() {
+                    cmd.arg(oid);
+                } else {
+                    cmd.args(self.picks.iter().map(|pick| &pick.oid));
+                }
             }
             Plan::Undo { parent, .. } => {
                 cmd.args(["reset", "--soft", parent]);
@@ -637,6 +715,48 @@ impl Review {
         }
         let result = checked(cmd.output().context("Cannot start Git")?);
         drop((message_file, todo_file));
+        if let Plan::CherryPick(head) = &self.plan {
+            if !self.picks.is_empty() {
+                let count = self.picks.len();
+                let destination = format!("{} / {}", repo.name, head.label());
+                if result.is_ok() {
+                    return Ok(format!("Cherry-picked {count} onto {destination}"));
+                }
+                let range = format!("{}..HEAD", head.oid);
+                let applied = git(
+                    &repo.path,
+                    &["rev-list", "--count", "--first-parent", &range],
+                )
+                .ok()
+                .and_then(|n| n.parse::<usize>().ok());
+                let pending = revpath(&repo.path, "--absolute-git-dir")
+                    .is_some_and(|dir| dir.join("CHERRY_PICK_HEAD").exists());
+                if pending {
+                    let stopped = if git_bytes(&repo.path, &["ls-files", "--unmerged", "-z"])
+                        .is_ok_and(|paths| !paths.is_empty())
+                    {
+                        "1 conflicted"
+                    } else {
+                        "1 stopped"
+                    };
+                    if let Some(applied) = applied.filter(|n| *n < count) {
+                        let remaining = count - applied - 1;
+                        return Ok(format!(
+                            "{applied} applied · {stopped} · {remaining} remaining · 6 Conflicts · {destination}"
+                        ));
+                    }
+                    return Ok(format!("Cherry-pick stopped · 6 Conflicts · {destination}"));
+                }
+                if let Some(applied) = applied.filter(|n| *n > 0 && *n <= count) {
+                    // Do not offer the original selection again after Git has
+                    // already created commits, even if it left no conflict marker.
+                    let error = result.unwrap_err();
+                    return Ok(format!(
+                        "{applied}/{count} applied · Cherry-pick stopped in {destination} · {error:#}"
+                    ));
+                }
+            }
+        }
         result.with_context(|| format!("{} failed in {}", self.kind.title(), repo.name))?;
         let detail = if matches!(self.kind, Kind::Branch | Kind::Tag) {
             &self.input

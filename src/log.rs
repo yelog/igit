@@ -96,6 +96,8 @@ enum DropdownHit {
 enum Hit {
     Ref(usize),
     Commit(usize),
+    PickCommit(usize),
+    ReviewPicks,
     CommitScroll(usize),
     CommitActions,
     GraphJump(usize),
@@ -187,6 +189,8 @@ pub struct LogPanel {
     history_mouse: bool,
     commit_dialog: Option<actions::Dialog>,
     commit_review: Option<operations::Review>,
+    pick_mode: bool,
+    picks: Vec<operations::Target>,
     hits: Vec<(Rect, Hit)>,
     bounds: Rect,
     info_selection: TextSelection,
@@ -239,6 +243,8 @@ impl Default for LogPanel {
             history_mouse: false,
             commit_dialog: None,
             commit_review: None,
+            pick_mode: false,
+            picks: Vec::new(),
             hits: vec![],
             bounds: Rect::default(),
             info_selection: TextSelection::default(),
@@ -524,6 +530,13 @@ impl LogPanel {
                 self.refs.set_cursor(n);
                 self.activate_ref(c)?
             }
+            Hit::PickCommit(n) => {
+                self.focus = Pane::Graph;
+                self.last = None;
+                self.select_row(n);
+                self.toggle_pick(c)?;
+            }
+            Hit::ReviewPicks => {}
             Hit::Commit(n) => {
                 let dbl = self.double(Pane::Graph, n);
                 self.focus = Pane::Graph;
@@ -888,7 +901,19 @@ impl Panel for LogPanel {
                     return Ok(());
                 }
                 if let M::Down(button) = m.kind {
-                    self.mouse_down(button, m.column, m.row, c)?;
+                    if button == MouseButton::Left
+                        && !self.editing()
+                        && self
+                            .hits
+                            .iter()
+                            .rev()
+                            .find(|(r, _)| inside(*r, m.column, m.row))
+                            .is_some_and(|(_, hit)| matches!(hit, Hit::ReviewPicks))
+                    {
+                        action = self.review_picks(c, None)?;
+                    } else {
+                        self.mouse_down(button, m.column, m.row, c)?;
+                    }
                 } else if m.kind == M::Moved {
                     self.hover_menu_at(m.column, m.row);
                 } else if matches!(m.kind, M::ScrollUp | M::ScrollDown) {
@@ -982,6 +1007,27 @@ impl Panel for LogPanel {
             if self.view_menu.is_some() {
                 self.view_menu_key(k, c)?;
                 return Ok(());
+            }
+            if self.focus == Pane::Graph && matches!(k.modifiers, Mods::NONE | Mods::SHIFT) {
+                match key {
+                    K::Char('v') => {
+                        self.set_pick_mode(!self.pick_mode);
+                        return Ok(());
+                    }
+                    K::Esc if self.pick_mode => {
+                        self.set_pick_mode(false);
+                        return Ok(());
+                    }
+                    K::Char(' ') if self.pick_mode => {
+                        self.toggle_pick(c)?;
+                        return Ok(());
+                    }
+                    K::Char('C') => {
+                        action = self.review_picks(c, None)?;
+                        return Ok(());
+                    }
+                    _ => {}
+                }
             }
             if self.filter_key(k, c)? {
                 return Ok(());

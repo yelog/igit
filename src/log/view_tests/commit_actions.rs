@@ -162,9 +162,9 @@ fn cherry_pick_keyboard_menu_reviews_at_narrow_and_wide_sizes_without_writing() 
         else {
             panic!("Cherry-pick should open a write review");
         };
-        assert_eq!(title, "Cherry-pick Commit");
-        assert!(body.contains(&picked) && body.contains(&head));
-        assert!(body.contains("new commit on main"));
+        assert_eq!(title, "Cherry-pick 1 commit");
+        assert!(body.contains(&picked[..8]));
+        assert!(body.lines().next().unwrap().ends_with(" / main"));
         assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]), head);
         assert_eq!(
             std::fs::read(dir.path().join(".git/index")).unwrap(),
@@ -200,21 +200,21 @@ fn cherry_pick_mouse_confirmation_refreshes_after_success_or_native_conflict() {
         else {
             panic!("Cherry-pick should open a write review");
         };
-        assert_eq!(title, "Cherry-pick Commit");
-        assert!(body.contains(&picked));
+        assert_eq!(title, "Cherry-pick 1 commit");
+        assert!(body.contains(&picked[..8]));
         assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]), head);
         let Action::Refresh(message) = panel.confirm(&token, &c) else {
             panic!("Every attempted cherry-pick must refresh workspace and Conflicts");
         };
         assert!(matches!(panel.confirm(&token, &c), Action::None));
         if conflict {
-            assert!(message.contains("Cherry-pick Commit failed"));
+            assert!(message.contains("0 applied · 1 conflicted · 0 remaining"));
             assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]), head);
             assert_eq!(git(dir.path(), &["rev-parse", "CHERRY_PICK_HEAD"]), picked);
             assert!(!git(dir.path(), &["ls-files", "--unmerged"]).is_empty());
             git(dir.path(), &["cherry-pick", "--abort"]);
         } else {
-            assert!(message.contains("Cherry-pick Commit completed"));
+            assert!(message.contains("Cherry-picked 1 onto"));
             assert_eq!(git(dir.path(), &["rev-parse", "HEAD^"]), head);
             assert_eq!(
                 git(dir.path(), &["show", "HEAD:picked"]),
@@ -222,4 +222,63 @@ fn cherry_pick_mouse_confirmation_refreshes_after_success_or_native_conflict() {
             );
         }
     }
+}
+
+#[test]
+fn multi_pick_reviews_hidden_commits_in_application_order_and_leaves_native_queue() {
+    let dir = init();
+    let repo = dir.path();
+    commit(repo, "base", "Base");
+    git(repo, &["switch", "-c", "source"]);
+    commit(repo, "first", "First source");
+    let first = git(repo, &["rev-parse", "HEAD"]);
+    commit(repo, "clash", "Second source");
+    let second = git(repo, &["rev-parse", "HEAD"]);
+    commit(repo, "third", "Third source");
+    let third = git(repo, &["rev-parse", "HEAD"]);
+    git(repo, &["switch", "main"]);
+    commit(repo, "clash", "Destination change");
+    let head = git(repo, &["rev-parse", "HEAD"]);
+    let c = Context::discover(repo).unwrap();
+    let mut panel = LogPanel::default();
+    panel.refresh(&c).unwrap();
+    key(&mut panel, K::Char('v'), Mods::NONE, &c);
+    for oid in [&third, &second, &first] {
+        let row = panel
+            .visible
+            .iter()
+            .position(|&i| &panel.hist.revs[i].oid == oid)
+            .unwrap();
+        panel.select_row(row);
+        key(&mut panel, K::Char(' '), Mods::NONE, &c);
+    }
+    panel.visible.retain(|&i| panel.hist.revs[i].oid == third);
+    assert!(panel
+        .pick_hint(&c)
+        .unwrap()
+        .starts_with("3 selected · 2 hidden"));
+    let Action::Confirm { title, body, token } = key(&mut panel, K::Char('C'), Mods::SHIFT, &c)
+    else {
+        panic!("expected a batch review");
+    };
+    assert_eq!(title, "Cherry-pick 3 commits");
+    assert!(body.lines().next().unwrap().ends_with(" / main"));
+    let list = body.lines().skip(2).collect::<Vec<_>>();
+    for (i, oid) in [&first, &second, &third].iter().enumerate() {
+        assert!(list[i].starts_with(&format!("{}  {}", i + 1, &oid[..8])));
+    }
+    assert_eq!(git(repo, &["rev-parse", "HEAD"]), head);
+    let Action::Refresh(message) = panel.confirm(&token, &c) else {
+        panic!("expected a batch result");
+    };
+    assert!(
+        message.contains("1 applied · 1 conflicted · 1 remaining"),
+        "{message}"
+    );
+    assert!(repo.join("first").exists());
+    assert!(!repo.join("third").exists());
+    assert_eq!(git(repo, &["rev-parse", "CHERRY_PICK_HEAD"]), second);
+    git(repo, &["cherry-pick", "--skip"]);
+    assert!(repo.join("third").exists());
+    assert!(!panel.pick_mode);
 }

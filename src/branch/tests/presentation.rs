@@ -311,7 +311,15 @@ fn action_buttons_only_offer_operations_for_the_focused_branch() {
             .collect::<Vec<_>>()
     };
     select(&mut p, 0, "refs/heads/main");
-    assert_eq!(operations(&mut p), [Operation::Create, Operation::Rename]);
+    assert_eq!(
+        operations(&mut p),
+        [
+            Operation::Create,
+            Operation::Rename,
+            Operation::Pull,
+            Operation::Push
+        ]
+    );
     p.tree.cursor = 0;
     assert!(operations(&mut p).is_empty());
     select(&mut p, 0, "refs/remotes/origin/main");

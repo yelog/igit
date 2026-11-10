@@ -344,7 +344,7 @@ impl BranchPanel {
     }
 
     pub(super) fn action_enabled(&self, operation: Operation) -> bool {
-        if self.read_status().is_some() {
+        if self.syncing() || self.read_status().is_some() {
             return false;
         }
         let Some((root, branch)) = self.selection() else {
@@ -367,6 +367,10 @@ impl BranchPanel {
                             .is_ok_and(|s| s.head.is_some() && s.oid.is_some())
                     })
             }
+            Operation::Pull => {
+                !branch.remote && !locked && branch.upstream.starts_with("refs/remotes/")
+            }
+            Operation::Push => !branch.remote && branch.upstream.starts_with("refs/remotes/"),
             Operation::Track => branch.remote,
         }
     }

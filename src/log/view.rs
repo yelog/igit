@@ -388,6 +388,11 @@ impl LogPanel {
                 Hit::CommitActions,
             );
         }
+        if self.pick_mode && !self.picks.is_empty() && a.width >= 25 {
+            let label = format!(" Pick {} ", self.picks.len());
+            let r = take_right(&mut a, cells(&label) as u16);
+            self.button(f, r, &label, false, Hit::ReviewPicks);
+        }
         let input = self
             .editor
             .as_ref()
@@ -803,7 +808,8 @@ impl LogPanel {
         } else {
             0
         };
-        let stripe_width = marker_width + root_width;
+        let pick_width = if self.pick_mode { 4 } else { 0 };
+        let stripe_width = marker_width + root_width + pick_width;
         let mut hash_width = if self.options.shows(Column::Hash) && fits(40) {
             9
         } else {
@@ -872,6 +878,7 @@ impl LogPanel {
             // Graph jumps take precedence over the enclosing commit row.
             self.hit(row, Hit::Commit(n));
             let rev = &self.hist.revs[self.visible[n]];
+            let repo_id = rev.root;
             let selected = n == self.cursor;
             let bg = if selected {
                 SELECT
@@ -904,17 +911,30 @@ impl LogPanel {
             // roots without extra rows; keep the gutter independent of highlights.
             f.render_widget(
                 Paragraph::new(self.repository_marker(n))
-                    .style(fg(repo_tint(rev.root)).bg(PANEL).not_bold().not_reversed()),
+                    .style(fg(repo_tint(repo_id)).bg(PANEL).not_bold().not_reversed()),
                 marker,
             );
+            if self.pick_mode {
+                let checkbox = take(&mut line, pick_width);
+                let checked = self
+                    .picks
+                    .iter()
+                    .any(|p| p.root == rev.root && p.oid == rev.oid);
+                let label = if checked { "[x] " } else { "[ ] " };
+                f.render_widget(
+                    Paragraph::new(label).style(fg(if checked { BLUE } else { DIM })),
+                    checkbox,
+                );
+                self.hit(checkbox, Hit::PickCommit(n));
+            }
             if root_width > 0 {
                 let root = take(&mut line, root_width);
                 f.render_widget(
                     Paragraph::new(clipped(
-                        &c.repos[rev.root].name,
+                        &c.repos[repo_id].name,
                         root.width.saturating_sub(1).into(),
                     ))
-                    .style(fg(repo_tint(rev.root))),
+                    .style(fg(repo_tint(repo_id))),
                     root,
                 );
             }

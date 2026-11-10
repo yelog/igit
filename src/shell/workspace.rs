@@ -214,6 +214,9 @@ impl Shell {
             }
         }
 
+        let pick_hint = (self.tab == Log)
+            .then(|| self.log.pick_hint(&self.ctx))
+            .flatten();
         let (hint, color) = if self.maximize_pending {
             ("Synchronizing Kitty layout…".into(), ACCENT)
         } else if self.commit.add_running() {
@@ -246,6 +249,8 @@ impl Shell {
                 ),
                 MUTED,
             )
+        } else if let Some(hint) = pick_hint {
+            (hint, MUTED)
         } else if self.config.changed()
             || self.tab == Commit && self.commit.file_comparison_focused()
         {

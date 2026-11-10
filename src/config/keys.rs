@@ -171,6 +171,8 @@ commands! {
         "checkout" => "Enter", BRANCH;
         "merge" => "m", BRANCH;
         "rename" => "r", BRANCH;
+        "pull" => "U", BRANCH;
+        "push" => "P", BRANCH;
     }
     "log" {
         "move-down" => "j", LOG;

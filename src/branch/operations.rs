@@ -1,4 +1,5 @@
 use super::model::{Branch, Snapshot};
+use super::sync::Sync;
 use crate::core::{command, git, revpath, Context, Repo};
 use anyhow::{bail, ensure, Context as _, Result};
 use std::path::PathBuf;
@@ -11,6 +12,8 @@ pub(super) enum Operation {
     Track,
     Merge,
     Rename,
+    Pull,
+    Push,
 }
 
 impl Operation {
@@ -21,6 +24,8 @@ impl Operation {
             Self::Checkout => "Switch branch",
             Self::Track => "Track remote branch",
             Self::Merge => "Merge branch",
+            Self::Pull => "Pull local branch",
+            Self::Push => "Push local branch",
             Self::Rename => "Rename local branch",
         }
     }
@@ -33,6 +38,7 @@ pub(super) struct Review {
     source: Branch,
     operation: Operation,
     name: String,
+    sync: Option<Sync>,
     pub body: String,
 }
 
@@ -139,8 +145,12 @@ impl Review {
             }
             _ => (),
         }
+        let sync = matches!(operation, Operation::Pull | Operation::Push)
+            .then(|| Sync::prepare(repo, root, source, operation))
+            .transpose()?;
         let head = snapshot.head_label();
         let detail = match operation {
+            Operation::Pull | Operation::Push => sync.as_ref().unwrap().detail(source),
             Operation::Create => format!("Create local branch: {name}\nFrom: {}\nStay on: {head}\nThe new branch has no upstream.", source.name),
             Operation::Delete => format!("Delete local branch: {}\nStay on: {head}\nGit's safe deletion check must pass. Remote branches are kept.", source.name),
             Operation::Checkout => format!("Switch from: {head}\nTo local branch: {}\nGit will refuse to overwrite local changes or ignored files.", source.name),
@@ -162,8 +172,13 @@ impl Review {
             source: source.clone(),
             operation,
             name: name.into(),
+            sync,
             body,
         })
+    }
+
+    pub fn is_sync(&self) -> bool {
+        self.sync.is_some()
     }
 
     pub fn execute(self, c: &Context) -> Result<String> {
@@ -181,10 +196,37 @@ impl Review {
             Snapshot::read(repo)? == self.snapshot,
             "Branches or HEAD changed; refresh and review again"
         );
+        if let Some(sync) = &self.sync {
+            sync.execute(repo, &self.source, || {
+                ready(repo, self.operation)?;
+                let snapshot = Snapshot::read(repo)?;
+                ensure!(
+                    snapshot.head == self.snapshot.head
+                        && snapshot.oid == self.snapshot.oid
+                        && snapshot
+                            .branches
+                            .get(&self.source.reference)
+                            .is_some_and(|branch| {
+                                branch.current == self.source.current
+                                    && branch.worktree == self.source.worktree
+                                    && branch.oid == self.source.oid
+                            }),
+                    "Branch or HEAD changed during fetch; review again"
+                );
+                Ok(())
+            })?;
+            return Ok(format!(
+                "{} completed in {}: {}",
+                self.operation.title(),
+                repo.name,
+                self.source.name
+            ));
+        }
         let mut cmd = command(&repo.path);
         // A single-repository review never authorizes recursive submodule writes.
         cmd.args(["-c", "submodule.recurse=false"]);
         match self.operation {
+            Operation::Pull | Operation::Push => unreachable!("sync operations return above"),
             Operation::Create => {
                 cmd.args(["branch", "--no-track", "--", &self.name, &self.source.oid]);
             }

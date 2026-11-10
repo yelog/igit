@@ -50,15 +50,15 @@ or relaunch later. Cargo/manual copies offer **How to update** for their
 original installation method. See
 [update settings](docs/configuration.md#update-checks).
 
-Build and launch from this source directory. To use `igit` or `ig` in any workspace, optionally install both commands into Cargo's bin directory:
+Build and launch from this source directory. On macOS/Linux, use the serial entry point below; on Windows, replace `python3 scripts/cargo_serial.py` with `cargo`. To use `igit` or `ig` in any workspace, optionally install both commands into Cargo's bin directory:
 
 ```sh
-cargo build --release --locked
-./target/release/igit /path/to/workspace
-./target/release/ig /path/to/workspace
+python3 scripts/cargo_serial.py build --release --locked
+./target-serial/release/igit /path/to/workspace
+./target-serial/release/ig /path/to/workspace
 
 # Optional: install both commands into Cargo's bin directory
-cargo install --locked --path .
+python3 scripts/cargo_serial.py install --locked --path .
 ```
 
 By default, `igit` and `ig` discover repositories from the current directory. You can pass a directory; `--list-roots [directory]` only lists discovered working trees. Discovery supports ordinary Git roots, nested repositories at multiple levels, initialized submodules, and linked worktrees. Bare repositories are not editable targets. Discovery does not recurse into symlinked directories or common dependency/build directories such as node_modules, target, .venv, and build, and does not initialize or clone submodules. To use a repository inside a directory normally skipped, start directly in that directory.
@@ -391,8 +391,12 @@ branch row and use that row's repository:
 | `Enter` | Switch to the local branch; for a remote branch, create a named tracking branch or switch to its matching local tracking branch. On groups, toggle expansion. |
 | `m` | Merge the focused local or remote branch into the current local branch. |
 | `r` | Rename the focused local branch, retaining its upstream. |
+| `U` | Review a fast-forward pull from the focused local branch’s configured upstream. |
+| `P` | Review a push of the focused local branch to its configured upstream. |
 
-Name input accepts Unicode; Enter opens review, Ctrl-U clears, and Esc cancels.
+Switching branches runs immediately. When a new tracking branch needs a name,
+Enter submits the name and switches to it. The name editor accepts Unicode,
+Ctrl-U clears it, and Esc cancels. Create and Rename open a review after name entry.
 Delete/rename leave remote branches unchanged. A branch checked out in another
 worktree cannot be deleted, renamed, or checked out here. Merges require a clean
 index/worktree and leave conflicts in **Conflicts** for separate Apply/Continue
@@ -431,7 +435,7 @@ The left branch/tag tree follows the applied Paths scope: local branches, remote
 
 **Log navigation and copying:** `j/k` or up/down moves within the viewport; scrolling begins only when movement passes the top or bottom edge. The list does not recenter automatically. `gg/G` selects the first/last commit; `H/M/L` selects the top/middle/bottom commit on screen. `Ctrl-F/B` pages down/up, `Ctrl-D/U` moves half a page, and `PageDown/PageUp` moves a full page. Page size uses the actual visible rows. `yy` copies the full commit ID, `ym` the full message including its body, and `ya` `Name <email>`. These shortcuts apply to the commit list; input fields and menus keep their own meanings. Copying uses the system clipboard: `pbcopy` on macOS, `clip.exe` on Windows, and `wl-copy`, `xclip`, then `xsel` on Linux. Missing commands or display sessions produce an explicit error.
 
-**Log commit actions:** Right-click a commit, click the list's `...` button, or press `a` with the list focused. Create a local branch or lightweight tag at that revision, check it out in detached HEAD, undo the current branch tip while keeping staged and unstaged work, revert a commit with a new inverse commit, cherry-pick it onto the current branch, or drop it and replay its descendants. Cherry-pick requires a clean tracked index/worktree and a non-merge target; native conflicts remain in Conflicts for separate Continue, Abort, or Skip reviews. `F2` edits the full commit message, including its body. Press `F2` or `Ctrl-S` in the editor to review. Confirmations name the commit's repository and start on Cancel. See [commit action behavior](docs/design.md#commit-actions) for history and conflict limits.
+**Log commit actions:** Right-click a commit, click the list's `...` button, or press `a` with the list focused. Create a local branch or lightweight tag at that revision, check it out in detached HEAD, undo the current branch tip while keeping staged and unstaged work, revert a commit with a new inverse commit, cherry-pick it onto the current branch, or drop it and replay its descendants. Press `C` to review the highlighted commit. For a batch, press `v` or choose **Select Commits**, toggle same-repository checkboxes with `Space` or the mouse, then press `C` or click **Pick N**. Review shows the checked-out destination and application order. Cherry-pick requires a clean tracked index/worktree and non-merge source commits; native conflicts remain in Conflicts for separate Continue, Abort, or Skip reviews. `F2` edits the full commit message, including its body. Press `F2` or `Ctrl-S` in the editor to review. Confirmations name the commit's repository and start on Cancel. See [commit action behavior](docs/design.md#commit-actions) for history and conflict limits.
 
 Log refresh, Git filter changes, and filter-tab switching load history and graph
 data in the background. Cached rows remain browsable while **Refreshing
@@ -472,7 +476,7 @@ and do not hide other files or the repository operation.
 
 ```sh
 log_workspace="$(sh examples/demo-log.sh)"
-cargo run --locked --bin igit -- "$log_workspace"
+python3 scripts/cargo_serial.py run --locked --bin igit -- "$log_workspace"
 ```
 
 Commit nodes sit at the center of their rails. In default mode, [kitty 0.36.2 and later](https://github.com/kovidgoyal/kitty/blob/v0.36.2/kitty/fonts/box_drawing.py#L1334-L1365) and [Ghostty](https://github.com/ghostty-org/ghostty/blob/v1.0.0/src/font/sprite/Box.zig#L1452) can draw the node and connecting lines in the same cell. In a compatible terminal through tmux, use `IGIT_GRAPH_GLYPHS=connected igit` for connected nodes and diagonal mid-lines; `IGIT_GRAPH_GLYPHS=unicode igit` uses standard circles and box-drawing lines. Explicit `--icons unicode` or `--icons ascii` takes precedence: Unicode uses `●` / `◉`, and ASCII uses `*` / `@`, for ordinary commits / HEAD.
@@ -483,10 +487,10 @@ Commit nodes sit at the center of their rails. In default mode, [kitty 0.36.2 an
 
 ```sh
 commit_demo="$(sh examples/demo-commit.sh)"
-cargo run --locked --bin ig -- "$commit_demo"
+python3 scripts/cargo_serial.py run --locked --bin ig -- "$commit_demo"
 ```
 
-To test the local build from another terminal, run `cargo build --locked --bins` in the source directory, then **`/absolute/path/to/source/target/debug/ig .`** in the target directory. Rebuild after changing Rust sources; `cargo test --lib` and `cargo clippy` do not refresh these runnable binaries. This does not require installing or replacing global commands.
+To test the local build from another terminal, run `python3 scripts/cargo_serial.py build --locked --bins` in the source directory, then **`/absolute/path/to/source/target-serial/debug/ig .`** in the target directory. Rebuild after changing Rust sources; `python3 scripts/cargo_serial.py test --lib` and `python3 scripts/cargo_serial.py clippy` do not refresh these runnable binaries. This does not require installing or replacing global commands.
 
 **Create a stash from Commit:** Press `s`, enter one shared message, then press
 `Enter` to review. Confirm with `y` to stash all staged, unstaged, and untracked
@@ -526,7 +530,7 @@ Unmerged files in Roots appear under **Changes → Merge Conflicts**, with red f
 
 ```sh
 push_demo="$(sh examples/demo-push.sh)"
-cargo run --locked --bin ig -- "$push_demo"
+python3 scripts/cargo_serial.py run --locked --bin ig -- "$push_demo"
 ```
 
 Push opens immediately while outgoing commits load in the background. Returning
@@ -595,10 +599,14 @@ Local groups, the shared message draft and workspace AI settings are stored in a
 
 ## Verification
 
+For local macOS/Linux development, the entry point below serializes entire Cargo commands across terminals and IGit checkouts. It uses a fresh `target-serial/` directory, one compilation job and one test thread. Existing `target/` artifacts are retained. A second command waits for the first to finish; `run` holds the lock until the application exits. Avoid mixing this entry point with raw Cargo commands. On Windows, use the corresponding native Cargo commands: the project defaults still limit build/test threads and use `target-serial/`, but there is no whole-command lock. CI explicitly retains its existing `target/` layout.
+
+During the macOS freeze investigation, run a focused check first, for example `python3 scripts/cargo_serial.py test --locked --lib commit::`. The complete checks below are for deliberate broader verification, not an automatic retry loop. Do not clean the old target directory.
+
 ```sh
-cargo test --locked
-cargo fmt --all --check
-cargo clippy --locked --all-targets -- -D warnings
+python3 scripts/cargo_serial.py test --locked
+python3 scripts/cargo_serial.py fmt --all --check
+python3 scripts/cargo_serial.py clippy --locked --all-targets -- -D warnings
 python3 -B -m unittest discover -s scripts/release -p 'test_*.py'
 ```
 

@@ -7,6 +7,7 @@ mod navigation;
 mod operations;
 mod rows;
 mod search;
+mod sync;
 mod tree;
 mod view;
 
@@ -73,12 +74,28 @@ pub struct BranchPanel {
     hits: Vec<(Rect, Hit)>,
     input: Option<NameInput>,
     review: Option<Review>,
+    syncing: Option<std::sync::mpsc::Receiver<String>>,
     pub(crate) panes: PaneLayout,
     pub(crate) icons: IconMode,
     pub(crate) shortcut_labels: BTreeMap<&'static str, String>,
 }
 
 impl BranchPanel {
+    pub(crate) fn syncing(&self) -> bool {
+        self.syncing.is_some()
+    }
+
+    pub(crate) fn poll_sync(&mut self) -> Option<String> {
+        use std::sync::mpsc::TryRecvError;
+        let message = match self.syncing.as_ref()?.try_recv() {
+            Ok(message) => message,
+            Err(TryRecvError::Empty) => return None,
+            Err(TryRecvError::Disconnected) => "Branch sync worker stopped unexpectedly".into(),
+        };
+        self.syncing = None;
+        Some(message)
+    }
+
     pub(crate) fn has_repository_pane(&self) -> bool {
         self.repos.len() > 1
     }
@@ -146,6 +163,11 @@ impl BranchPanel {
         name: &str,
     ) -> Result<Action> {
         let review = Review::prepare(c, root, branch, operation, name)?;
+        if matches!(operation, Operation::Checkout | Operation::Track) {
+            return Ok(Action::Refresh(
+                review.execute(c).unwrap_or_else(|e| format!("{e:#}")),
+            ));
+        }
         let action = Action::Confirm {
             title: operation.title().into(),
             body: review.body.clone(),
@@ -156,6 +178,7 @@ impl BranchPanel {
     }
 
     fn operate(&mut self, operation: Operation, c: &Context) -> Result<Action> {
+        anyhow::ensure!(!self.syncing(), "Wait for the branch sync to finish");
         if let Some(status) = self.read_status() {
             anyhow::bail!("{status}");
         }
@@ -313,6 +336,8 @@ impl BranchPanel {
                     K::Char('d') => return self.operate(Operation::Delete, c),
                     K::Char('m') => return self.operate(Operation::Merge, c),
                     K::Char('r') => return self.operate(Operation::Rename, c),
+                    K::Char('U') => return self.operate(Operation::Pull, c),
+                    K::Char('P') => return self.operate(Operation::Push, c),
                     _ => (),
                 }
             }
@@ -379,16 +404,22 @@ impl Panel for BranchPanel {
     }
 
     fn help(&self) -> &'static str {
-        if self.input.is_some() {
+        if self
+            .input
+            .as_ref()
+            .is_some_and(|input| input.operation == Operation::Track)
+        {
+            "Enter Switch   Ctrl-U Clear   Esc Cancel"
+        } else if self.input.is_some() {
             "Enter Review   Ctrl-U Clear   Esc Cancel"
         } else if self.view_menu {
             "Space/Enter Toggle   Esc Close   F1 Help"
         } else if self.focused_pane() == PaneId::BranchRepos {
             "j/k Repos   Enter Branches   Tab Panes   F1 Help"
         } else if self.has_repository_pane() {
-            "Tab Repos   o Group By   a New   d Delete   Enter Switch   m Merge   r Rename   F1 Help"
+            "Tab Repos   o Group By   a New   d Delete   Enter Switch   m Merge   r Rename   U Pull   P Push   F1 Help"
         } else {
-            "o Group By   a New   d Delete   Enter Switch   m Merge   r Rename   F1 Help"
+            "o Group By   a New   d Delete   Enter Switch   m Merge   r Rename   U Pull   P Push   F1 Help"
         }
     }
 
@@ -399,6 +430,18 @@ impl Panel for BranchPanel {
         let Some(review) = self.review.take() else {
             return Action::Notice("Review expired; select the branch again".into());
         };
+        if review.is_sync() {
+            let context = c.clone();
+            let (send, receive) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let message = review
+                    .execute(&context)
+                    .unwrap_or_else(|e| format!("{e:#}"));
+                let _ = send.send(message);
+            });
+            self.syncing = Some(receive);
+            return Action::Notice("Branch sync running…".into());
+        }
         // A failing merge may have written conflict stages. Always refresh all panels.
         Action::Refresh(review.execute(c).unwrap_or_else(|e| format!("{e:#}")))
     }

@@ -341,7 +341,7 @@ fn browsing_folding_mouse_and_cancelled_unicode_input_do_not_write() {
 
 #[test]
 fn create_from_focused_commit_then_rename_delete_and_switch_preserve_other_state() {
-    let (_temp, c, _) = fixture();
+    let (_temp, c, mut p) = fixture();
     let repo = &c.repos[0].path;
     let other = state(&c.repos[1].path);
     run(repo, &["switch", "-c", "topic"]);
@@ -362,9 +362,10 @@ fn create_from_focused_commit_then_rename_delete_and_switch_preserve_other_state
     )
     .execute(&c)
     .unwrap();
-    review(&c, "refs/heads/feature/renamed", Operation::Checkout, "")
-        .execute(&c)
-        .unwrap();
+    reload(&mut p, &c);
+    select(&mut p, 0, "refs/heads/feature/renamed");
+    assert!(matches!(key(&mut p, &c, K::Enter), Action::Refresh(_)));
+    assert_eq!(run(repo, &["branch", "--show-current"]), "feature/renamed");
     assert_eq!(fs::read_to_string(repo.join("file")).unwrap(), "topic\n");
     review(
         &c,
@@ -502,8 +503,7 @@ fn remote_checkout_creates_tracking_branch_and_reuses_it_without_remote_writes()
     select(&mut p, 0, "refs/remotes/origin/feature/remote");
     key(&mut p, &c, K::Enter);
     assert_eq!(p.input.as_ref().unwrap().name, "feature/remote");
-    assert!(matches!(key(&mut p, &c, K::Enter), Action::Confirm { .. }));
-    assert!(matches!(p.confirm("branch:apply", &c), Action::Refresh(_)));
+    assert!(matches!(key(&mut p, &c, K::Enter), Action::Refresh(_)));
     assert_eq!(run(repo, &["branch", "--show-current"]), "feature/remote");
     assert_eq!(
         source(&c, "refs/heads/feature/remote").upstream,
@@ -512,9 +512,8 @@ fn remote_checkout_creates_tracking_branch_and_reuses_it_without_remote_writes()
     run(repo, &["switch", "main"]);
     reload(&mut p, &c);
     select(&mut p, 0, "refs/remotes/origin/feature/remote");
-    assert!(matches!(key(&mut p, &c, K::Enter), Action::Confirm { .. }));
+    assert!(matches!(key(&mut p, &c, K::Enter), Action::Refresh(_)));
     assert!(p.input.is_none());
-    p.confirm("branch:apply", &c);
     assert_eq!(run(repo, &["branch", "--show-current"]), "feature/remote");
     assert_eq!(
         run(repo, &["rev-parse", "refs/remotes/origin/feature/remote"]),
@@ -627,4 +626,117 @@ fn pane_search_branch_switches_repository_and_reveals_only_matching_ancestors() 
             && (Some(cell.bg) == crate::ui::search::CURRENT.bg
                 || cell.modifier.contains(ratatui::style::Modifier::REVERSED))));
     assert_eq!(state(path), before);
+}
+
+#[test]
+fn focused_sync_uses_configured_upstream_without_switching_or_touching_dirty_files() {
+    let (temp, c, mut panel) = fixture();
+    let repo = &c.repos[0].path;
+    let remote = temp.path().join("remote.git");
+    fs::create_dir(&remote).unwrap();
+    run(&remote, &["init", "--bare"]);
+    run(repo, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    run(repo, &["push", "origin", "main:refs/heads/upstream"]);
+    run(repo, &["branch", "--track", "topic", "origin/upstream"]);
+    run(repo, &["switch", "-c", "producer"]);
+    run(repo, &["commit", "--allow-empty", "-m", "upstream update"]);
+    let upstream = run(repo, &["rev-parse", "HEAD"]);
+    run(repo, &["push", "origin", "HEAD:refs/heads/upstream"]);
+    run(repo, &["switch", "main"]);
+    // Make the cached comparison stale so Pull must contact the remote.
+    let main = run(repo, &["rev-parse", "HEAD"]);
+    run(repo, &["update-ref", "refs/remotes/origin/upstream", &main]);
+    fs::write(repo.join("file"), "dirty\n").unwrap();
+    let before = state(repo);
+
+    reload(&mut panel, &c);
+    select(&mut panel, 0, "refs/heads/topic");
+    let Action::Confirm { token, body, .. } = key(&mut panel, &c, K::Char('U')) else {
+        panic!("expected Pull review");
+    };
+    assert!(body.contains("topic") && body.contains("origin:refs/heads/upstream"));
+    assert_eq!(run(repo, &["rev-parse", "topic"]), main);
+    select(&mut panel, 0, "refs/heads/main");
+    assert!(matches!(panel.confirm(&token, &c), Action::Notice(_)));
+    let message = wait_for_branch_sync(&mut panel);
+    assert!(message.contains("completed"), "{message}");
+    assert_eq!(run(repo, &["rev-parse", "topic"]), upstream);
+    assert_eq!(&state(repo)[..4], &before[..4]);
+
+    run(repo, &["switch", "topic"]);
+    run(repo, &["commit", "--allow-empty", "-m", "topic update"]);
+    let topic = run(repo, &["rev-parse", "HEAD"]);
+    run(repo, &["switch", "main"]);
+    review(&c, "refs/heads/topic", Operation::Pull, "")
+        .execute(&c)
+        .unwrap();
+    assert_eq!(run(repo, &["rev-parse", "topic"]), topic);
+    reload(&mut panel, &c);
+    select(&mut panel, 0, "refs/heads/topic");
+    let Action::Confirm { token, .. } = key(&mut panel, &c, K::Char('P')) else {
+        panic!("expected Push review");
+    };
+    assert_eq!(
+        run(&remote, &["rev-parse", "refs/heads/upstream"]),
+        upstream
+    );
+    panel.confirm(&token, &c);
+    let message = wait_for_branch_sync(&mut panel);
+    assert!(message.contains("completed"), "{message}");
+    assert_eq!(run(&remote, &["rev-parse", "refs/heads/upstream"]), topic);
+    assert_eq!(&state(repo)[..4], &before[..4]);
+
+    run(
+        repo,
+        &["branch", "--set-upstream-to=origin/upstream", "main"],
+    );
+    review(&c, "refs/heads/main", Operation::Pull, "")
+        .execute(&c)
+        .unwrap();
+    assert_eq!(run(repo, &["rev-parse", "HEAD"]), topic);
+    assert_eq!(fs::read_to_string(repo.join("file")).unwrap(), "dirty\n");
+    let linked = temp.path().join("linked");
+    run(
+        repo,
+        &["worktree", "add", linked.to_str().unwrap(), "topic"],
+    );
+    let error = Review::prepare(&c, 0, &source(&c, "refs/heads/topic"), Operation::Pull, "")
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("another worktree"));
+
+    run(
+        &linked,
+        &["commit", "--allow-empty", "-m", "local divergence"],
+    );
+    let local = run(&linked, &["rev-parse", "HEAD"]);
+    run(repo, &["worktree", "remove", linked.to_str().unwrap()]);
+    run(
+        repo,
+        &["commit", "--allow-empty", "-m", "remote divergence"],
+    );
+    run(repo, &["push", "origin", "HEAD:refs/heads/upstream"]);
+    assert!(review(&c, "refs/heads/topic", Operation::Pull, "")
+        .execute(&c)
+        .is_err());
+    assert!(review(&c, "refs/heads/topic", Operation::Push, "")
+        .execute(&c)
+        .unwrap_err()
+        .to_string()
+        .contains("non-fast-forward"));
+    assert_eq!(run(repo, &["rev-parse", "topic"]), local);
+}
+
+fn wait_for_branch_sync(panel: &mut BranchPanel) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(message) = panel.poll_sync() {
+            return message;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Branch sync timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }

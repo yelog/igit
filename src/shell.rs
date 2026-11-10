@@ -362,7 +362,7 @@ impl Shell {
             self.notice("Adding files to Git; wait before fetching".into());
             return;
         }
-        if self.push.busy()
+        if (self.push.busy() || self.branch.syncing())
             && self.tab == Commit
             && !self.commit.editing()
             && matches!(ev, Event::Key(key) if matches!(key.code, KeyCode::Char('a') | KeyCode::Insert) && key.modifiers.is_empty())
@@ -370,8 +370,9 @@ impl Shell {
             self.notice("Wait for the remote operation before adding files".into());
             return;
         }
-        self.push
-            .block_writes(self.commit.execution_running() || self.commit.add_running());
+        self.push.block_writes(
+            self.branch.syncing() || self.commit.execution_running() || self.commit.add_running(),
+        );
         if self.tab == Log && !self.log_load.ready() {
             return;
         }
@@ -379,7 +380,8 @@ impl Shell {
         let action = match self.tab {
             Log => self.log.event(ev, &self.ctx),
             Commit => {
-                self.commit.block_submissions(self.push.busy());
+                self.commit
+                    .block_submissions(self.push.busy() || self.branch.syncing());
                 self.commit.event(ev, &self.ctx)
             }
             Push => self.push.event(ev, &self.ctx),
@@ -582,8 +584,9 @@ impl Shell {
         }
     }
     fn confirm(&mut self, owner: Tab, token: &str) {
-        self.push
-            .block_writes(self.commit.execution_running() || self.commit.add_running());
+        self.push.block_writes(
+            self.branch.syncing() || self.commit.execution_running() || self.commit.add_running(),
+        );
         if self.git_busy() {
             self.notice("Wait for the Git operation to finish".into());
             return;
@@ -1094,9 +1097,8 @@ impl Shell {
             return false;
         }
         match self.tab {
-            Push => self.push.at_root(),
             Conflicts => self.merge.at_root(),
-            Commit | Log | Branch | Stash => false,
+            Commit | Log | Push | Branch | Stash => false,
         }
     }
     fn inline_diff_key(&self, event: &Event) -> bool {
@@ -1389,6 +1391,11 @@ impl Shell {
                 change = true;
             }
         }
+        if let Some(message) = self.branch.poll_sync() {
+            self.refresh();
+            self.notice(message);
+            change = true;
+        }
         let seq = self.push.progress_seq;
         if let Some(msg) = self.push.poll(&self.ctx) {
             self.remote_refs_changed = true;
@@ -1468,7 +1475,10 @@ impl Shell {
     }
 
     fn git_busy(&self) -> bool {
-        self.push.busy() || self.commit.execution_running() || self.commit.add_running()
+        self.branch.syncing()
+            || self.push.busy()
+            || self.commit.execution_running()
+            || self.commit.add_running()
     }
     fn draw_popup(&mut self, f: &mut Frame, a: Rect) {
         if matches!(self.pop, Some(Popup::SoftwareUpdate)) {
@@ -1556,6 +1566,7 @@ impl Shell {
             Popup::SoftwareUpdate => unreachable!("software update is rendered above"),
             Popup::Confirm {
                 body: text,
+                title,
                 yes,
                 scroll,
                 owner,
@@ -1570,6 +1581,11 @@ impl Shell {
                 );
                 let (cancel, confirm) = if confirm_uses_letter_keys(*owner, token) {
                     (" n Cancel ", " y Confirm ")
+                } else if *owner == Log
+                    && token == crate::log::REVIEW_TOKEN
+                    && title.starts_with("Cherry-pick ")
+                {
+                    (" Cancel ", " Cherry-pick ")
                 } else {
                     (" Cancel ", " Confirm ")
                 };

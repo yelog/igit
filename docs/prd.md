@@ -50,7 +50,7 @@ Log runtime refreshes, Git-filter changes, and tab reloads also run in the
 background with generation/scope checks and cached browsing. Loaded-page search
 and the 3,200-commit limit remain unchanged.
 
-Log adds a reviewed single-commit Cherry-pick to the selected repository.
+Log supports reviewed single-commit and same-repository batch Cherry-pick.
 Conflicts offers separately reviewed native Abort (`B`) and supported Skip
 (`N`) without changing Apply/Continue boundaries. Native conflict paths retain
 their byte identity; unsupported names remain visible individually. Push target
@@ -179,18 +179,20 @@ shortcut remapping, and narrow layouts in all icon modes.
 
 **Log commit actions (R1/R3/R7/R8).** The Log list supports reviewed local branch
 and lightweight tag creation, detached checkout, Undo of the checked-out tip,
-Revert as a new inverse commit, a single non-merge Cherry-pick, Drop from a linear range, and editing the full
-message of an unpublished commit. Actions address only the selected commit's
+Revert as a new inverse commit, Cherry-pick of one or more non-merge commits,
+Drop from a linear range, and editing the full message of an unpublished commit. Actions address only the selected commit's
 repository. Undo and tip message edits preserve staged and unstaged work.
 Drop and earlier message edits replay descendants only on the current branch.
 Pending operations block checkout and history changes. Stale reviews and local
 file collisions prevent the affected write.
 Git conflicts stay available in Conflicts. See A17.
 
-Cherry-pick validates the selected immutable commit, current local branch/HEAD,
+Cherry-pick validates each selected immutable commit, current local branch/HEAD,
 clean tracked index/worktree, pending operations, Roots, and untracked/ignored
 collisions before execution. It leaves native conflict state for a separate
-Continue/Abort/Skip review. No batch selection across repositories is implied.
+Continue/Abort/Skip review. A batch stays within one repository. Review shows
+the destination branch and all selected commits in application order, including
+selections hidden by filters.
 
 **Stash browsing (R1/R3/R7/R8 extension).** The Stash tab (`5`) starts with
 expanded repositories that have stashes, shows each newest-first entry on one
@@ -278,12 +280,15 @@ use the keyboard in the left pane to switch; Tab moves between panes.
 `gg/G`, `H/M/L`, and full/half-page Ctrl-F/B/D/U motions use the focused list's
 viewport. Remote symbolic HEAD aliases are omitted.
 Focused-row actions create (`a`), safely delete (`d`), switch (`Enter`), merge
-into the current local branch (`m`), and rename (`r`) after a single-repository
-review. Creation does not switch. Remote checkout creates a named local tracking
+into the current local branch (`m`), and rename (`r`). Switching runs directly.
+Create, delete, merge, and rename open a single-repository review. Creation does not switch. Remote checkout creates a named local tracking
 branch or switches to the same-name branch already tracking that remote ref.
 Delete/rename are local-only. Roots is available through Actions while `r` is
-used for rename. No force delete, remote mutation, or automatic stashing is part
-of this feature. Failed merges remain available in Conflicts.
+used for rename. `U` and `P` review Pull and Push for one focused local branch
+with a configured remote upstream. Both require fast-forward updates. Pull
+leaves the active worktree intact when the target branch is not checked out,
+and refuses a branch checked out in another worktree. Failed merges remain
+available in Conflicts.
 
 **User configuration (R7/R8 extension).** Optional TOML settings support partial
 overrides of embedded defaults, global/pane/panel normal-mode shortcuts, aliases,
@@ -343,7 +348,7 @@ ws="$(sh examples/demo-workspace.sh)"
 | --- | --- | --- |
 | Pane search (R7, R8) | Run `cargo test --locked --lib pane_search`. In a practice workspace, find a duplicate filename under folded directories and a repeated term far to the right in a Commit patch. Repeat at 44×12 and try searching from another pane. | Enter reveals a match; `n/N` visits all occurrences and wraps; Escape cancels or clears only the focused search. Long Unicode matches remain readable where space permits. Git, checkboxes, and unrelated folds stay unchanged. |
 | Branch repository layout (R1, R7, R8) | Open Branch in a disposable workspace with two repositories, each with a distinct local branch. Switch repositories with mouse and keyboard at 120×36, 80×25, and 44×12. Apply Roots with one repository, then restore both. Review an operation in the second repository. | Both panes stay visible in the tiled layout; the right pane shows only the selected repository's branches. With one repository in Roots, the branch list uses the full width and hides the repository name. Branch selection and folds return when switching back; the review names only the selected repository. |
-| Branch tree and operations (R1, R4, R7, R8) | Open Branch with `4` in a temporary multi-repository workspace. Add nested local/remote names, a recorded remote HEAD, and an upstream whose ref is missing. Browse/fold and toggle the eye menu at 120×36, 80×25, and 44×12. Exercise reviewed create, rename, checkout, safe deletion and merge. Run `cargo test --locked branch`. | The current branch is the first local leaf. Both branch sections and all nested folders start expanded; explicit folds are retained. The eye switches between folders and full names without changing refs or the selected branch. Verify folder icons, indentation, keyboard motions, and aligned upstreams. Remote HEAD aliases are omitted; local upstreams and `[gone]` labels reflect Git. Creation uses the focused commit without switching; remote checkout establishes tracking. Cancellation, stale reviews, other-worktree branches, and refused overwrites preserve refs/index/content. Renaming preserves upstream and mixed staging. A failing merge exposes Conflicts. Branch owns `r`; Actions retains Roots, and remapped global Roots labels do not replace Rename. |
+| Branch tree and operations (R1, R4, R7, R8) | Open Branch with `4` in a temporary multi-repository workspace. Add nested local/remote names, a recorded remote HEAD, and an upstream whose ref is missing. Browse/fold and toggle the eye menu at 120×36, 80×25, and 44×12. Exercise direct checkout and reviewed create, rename, safe deletion and merge. Run `cargo test --locked branch`. | The current branch is the first local leaf. Both branch sections and all nested folders start expanded; explicit folds are retained. The eye switches between folders and full names without changing refs or the selected branch. Verify folder icons, indentation, keyboard motions, and aligned upstreams. Remote HEAD aliases are omitted; local upstreams and `[gone]` labels reflect Git. Creation uses the focused commit without switching; remote checkout establishes tracking. Cancellation, stale reviews, other-worktree branches, and refused overwrites preserve refs/index/content. Renaming preserves upstream and mixed staging. A failing merge exposes Conflicts. Branch owns `r`; Actions retains Roots, and remapped global Roots labels do not replace Rename. |
 | Branch loading (R1, R3, R7, R8) | Run `cargo test --locked shell::branch_tests`. Hold a Branch read open, switch tabs, return, then change Roots before an older read finishes. | The Branch header and loading state paint before the scan completes. Help and tab switching remain responsive. Same-scope refresh keeps browsing and the latest selection/folds; new branch actions wait for the current list. Results from prior Roots never appear. |
 | Branch upstream divergence (R1, R4) | Run `cargo test --locked --lib branch::tests::tracking`. Use disposable repositories with ahead-only, behind-only, diverged, synchronized, untracked, and missing-upstream branches, including differently named upstreams. Inspect all icon modes at 120×36, 80×25, and 44×12. | Arrows show the correct counts and colors; both directions appear for diverged branches. Zero and unavailable counts stay hidden. Long Unicode names and flat/grouped layouts retain the counters. Folding does not move the upstream column. Refresh replaces old counts, repository switching does not mix counts, clicks retain branch identity, and browsing preserves HEAD, refs, the real index, and staged/unstaged content. |
 | Branch repository status and commit times (R1, R4) | Use two repositories with different current branches and a local branch with a different upstream tip. Compare the Branch rows to Git before and after changing a tip and pressing F5. Resize to 80×25 and 44×12. | Each repository row right-aligns its own branch and counters. The Last Commit column aligns local and remote tip times, updates on refresh, and leaves folders and unborn branches blank. Narrow panes give priority to branch names and preserve row selection. |

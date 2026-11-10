@@ -317,9 +317,13 @@ cells for counts before clipping branch names. The selected-row details repeat
 the counters. [view.rs](../src/branch/view.rs) uses the
 shared pane layout for the repository list and selected branch tree, hiding
 the repository list for single-repository Roots. State is session-only.
+Branch Pull and Push run reviewed operations in a background worker. Pull
+fetches explicit upstream refs and uses Git's fast-forward and worktree checks.
+Branch Push reuses the Push executor with a pinned local branch ref and OID.
+Shell blocks overlapping writes and refreshes workspace state after completion.
 
-[operations.rs](../src/branch/operations.rs) prepares a single-repository review
-and rechecks Roots, worktree path, refs, HEAD, upstreams, worktree ownership and
+[operations.rs](../src/branch/operations.rs) prepares a single-repository operation. Checkout and tracking run without a
+confirmation dialog. Execution rechecks Roots, worktree path, refs, HEAD, upstreams, worktree ownership and
 pending Git operations before executing. Create and merge use the reviewed
 immutable source OID. Local checkout uses `switch --no-guess`; remote checkout
 uses explicit `--track -c`. Safe deletion is `branch -d`, rename is `branch -m`,
@@ -332,6 +336,8 @@ remote operations refresh them while Branch is active. Name drafts and pending
 reviews retain their original source identity across refreshes.
 
 Log's [display menu](../src/log/display.rs) stores session preferences and temporary menu focus without writing project/state files. Filters and selected SHA remain per Log tab. `Rev` retains author email, author date, and commit date; sorting still uses commit time. After refresh/tab changes, [presentation metadata](../src/log/model/presentation.rs) reads per-repository identity. Loaded OIDs are queried in batches for `%G?` only when signatures are visible; `git cherry HEAD <resolved-tip>` runs only when cherry highlighting is enabled and another branch is selected. Queries use the shared Git environment, report failures per repository, and preserve history. Rendering, hover, and row navigation do not run these commands. Runtime reloads include signature verification and patch comparison in the history worker; direct synchronous Panel callers still wait for them. Shortening long edges recomputes the visible row projection and releases hidden columns; arrow hit areas retain the real visible endpoints without modifying the underlying DAG.
+
+Log holds cherry-pick selections by repository and immutable object ID. Review validates all sources against the same destination HEAD and passes the reviewed order to Git in one command. Git owns the pending queue and Conflicts handles continuation, skipping, and aborting.
 
 **Log: multiple commit graphs on one screen.** Each repository starts from local branches, remote-tracking branches, tags, and valid HEAD. `git log --date-order` produces a topologically valid sequence; sequences are then merged by their head timestamps. [Graph metadata](../src/log/model/graph/load.rs) reads full object IDs, parents, and branch/tag decorations once per history load, without loading all messages or authors. Its cached permanent ordering keeps fragment colors stable when older commits are outside the display page. [Graph topology](../src/log/model/graph.rs) matches real parents/children by repository ID + object ID. Each parent edge remains independent until its parent commit. [Layout](../src/log/model/graph/layout.rs) orders branch heads by Git reference priority, assigns DFS fragment indices, and sorts each row's node and passing edges using IDEA's endpoint comparator. Removing a node or folding a long edge changes the next row's positions; adjacent half-row segments share one boundary coordinate. The compact projection is prepared with history; the expanded projection is cached lazily. [Character rendering](../src/log/model/graph/render.rs) draws only the viewport with one horizontal origin, separating crossings from commit joins. [Colors](../src/log/model/graph/color.rs) use reference names and fragment indices, independently of screen columns. Text/hash filtering keeps the loaded topology's ordering/colors and includes only real edges with both endpoints visible. The default is 160 commits per repository, capped at 3,200. Text/hash filter changes do not reload all history; `regex-lite` matches in memory. Queries use full ref names across repositories and Git namespaces to distinguish identically named branches, remotes, and tags. Log tabs store only filters/selection; switching reuses the same panel and reloads visible data. Roots applies to all tabs.
 

@@ -359,8 +359,10 @@ fn workspace_tabs_open_on_commit_and_switch_in_header_order_at_each_size() {
         );
         assert!(app.commit.panes.nodes().is_empty());
         assert_eq!(app.regions.body.width, w);
-        app.dispatch(&key(KeyCode::Esc));
-        assert_eq!(app.tab, Commit);
+        for code in [KeyCode::Enter, KeyCode::Esc] {
+            app.dispatch(&key(code));
+            assert_eq!(app.tab, Push);
+        }
     }
 }
 
@@ -452,7 +454,7 @@ fn commit_and_push_keyboard_action_commits_once_and_requires_separate_push_confi
     }
     app.dispatch(&key(KeyCode::Esc));
     assert_eq!(app.tab, Push);
-    app.dispatch(&key(KeyCode::Esc));
+    click_tab(&mut app, Commit);
     assert_eq!(app.tab, Commit);
     let text = screen(&mut app, 140, 36);
     assert!(text.contains("0 files selected"), "{text}");

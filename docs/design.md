@@ -84,7 +84,7 @@ message appears only after discovery completes.
 - **Keep four kinds of selection distinct.** The highlighted row determines what is being viewed; checkboxes determine candidates for the operation; Roots limits which repositories are available; an explicit action starts execution. Moving the highlight must not silently check a row. Commit/Push retain selections hidden by filters, but exclude them from the current operation. When a workspace has at least one repository, global Roots cannot be applied empty.
 - Click a workspace tab or press `1` for Commit, `2` for Log, `3` for Push, `4` for Branch, or `5` for Stash. Each panel retains its cursor, checkboxes, and filters. Log's own filter tabs and `+` share the header row on the left; their hit areas stop before the workspace tabs.
 - **Conflicts** appears in bold amber while any repository in Roots has unmerged files or an operation awaiting Continue. Open it by clicking or pressing `6`. When the last pending operation ends, the tab disappears and returns to the last Commit, Log, Branch or Stash tab if it was active. The same tabs are available from Actions (`:`).
-- In Push or Conflicts, `Esc` first backs out of editing, details, or the conflict document, then returns to the last Commit, Log, Branch or Stash tab. Commit & Push opens the Push tab after committing; pushing requires a separate review.
+- In Push, `Esc` closes the active editor, details, or Diff. Use the footer’s Cancel button to return to the last Commit, Log, Branch or Stash tab. In Conflicts, `Esc` first backs out of the conflict document, then returns to the last main tab. Commit & Push opens the Push tab after committing; pushing requires a separate review.
 - Press `r` for repository filtering (in Branch, use `:` → Roots because `r` renames a branch): `j/k` moves, `Space` toggles, `a` selects all, `Enter` applies, and `Esc` cancels. The header has no Console, Roots, Actions, or Help buttons. Use `:` for Actions and its Console entry, or `?` / `F1` for help. `F5` refreshes the workspace and updates Conflicts after external Git changes. Actions → Open / rescan workspace reruns discovery.
 - In normal mode, `q`, `Ctrl-C` without a text selection, and Actions → Quit close IGit immediately without confirmation. Configured quit bindings and the help action use the same path. Running Git writes and software installation prevent quitting until completion; retry quit afterward. Text entry, dialogs, and pending key sequences retain their own input and cancellation rules.
 - In normal mode, `Tab` / `Shift-Tab` cycles panes within the current tab (`F6` is equivalent). Commit cycles Changes, Preview (if open), and Message; Log cycles Branches, Commits, Files, and Details. Branch cycles Repositories and the branch tree when Roots includes multiple repositories; Stash cycles Repositories and Files. Hidden sidebars are skipped. `Ctrl-W` followed by `h/j/k/l` focuses the adjacent left/down/up/right pane and stops at the outside edge. Browsing focus is independent of file checkboxes.
@@ -185,7 +185,7 @@ The menu captures the commit and repository from the row. The review shows the r
 | Checkout Revision | Check out the selected commit in detached HEAD. Git protects local changes and ignored files that would be overwritten. |
 | Undo Commit | Move the current branch tip back one commit. The real index and working files stay intact; the undone changes are available in Commit. Requires the tip to have one parent. |
 | Revert Commit | Add a Git-generated inverse commit on the checked-out branch. Requires a clean tracked worktree and index and a non-merge target. If Git stops with conflicts, use Conflicts to resolve and continue. |
-| Cherry-pick Commit | Apply the selected non-merge commit on the current local branch after review. Requires a clean tracked worktree/index; protected local paths and stale reviews stop execution. Native conflicts remain in Conflicts for separately reviewed Continue, Abort, or Skip. |
+| Cherry-pick Commit | Apply one or more non-merge commits from one repository onto its checked-out local branch. Press `C` to review, or use `v` / Select Commits to show checkboxes. `Space` toggles a checkbox, and `Esc` clears selection mode. The footer reports checked and hidden counts. Review shows the destination first and every checked commit in application order. Requires a clean tracked worktree/index; protected local paths and stale reviews stop execution. Native conflicts remain in Conflicts for separately reviewed Continue, Abort, or Skip. |
 | Drop Commit | Remove the selected commit from the current branch and replay later commits. The range must be linear and the tracked worktree and index clean. If Git stops, use Conflicts to resolve and continue, or review Abort there. |
 | Edit Commit Message | Edit the prefilled subject and body. Enter inserts a newline; F2 or Ctrl-S opens review. Editing the current tip preserves staged and unstaged work; editing an earlier commit replays a clean linear range. Commits reachable from local remote-tracking refs cannot be edited. |
 
@@ -586,16 +586,22 @@ or PgDn/PgUp moves a full page down/up; `Ctrl-D/U` moves half a page. Both the
 viewport and cursor move by the usable height of the focused list, clamped at the ends.
 `g` uses the shared delayed sequence hint and cancellation lifecycle.
 In the tree, `h/l` collapses/expands or moves to the parent/child; Space and
-clicking a folder toggle it. Enter on a branch reviews
-checkout; remote checkout asks for a local tracking name unless a matching
-local name already tracks that ref. `a` asks for a new local name at the focused
+clicking a folder toggle it. Enter on a branch switches immediately. Remote checkout asks for a local
+tracking name unless a matching local name already tracks that ref. Submitting
+the tracking name creates and switches to that branch. `a` asks for a new local name at the focused
 commit without switching; `r` renames a local branch; `d` requests safe local
 deletion; `m` merges into the currently checked-out local branch. The name
 editor keeps Unicode input separate from global shortcuts and shows validation
 errors without losing the draft. Toolbar actions that do not apply to the
 focused row are dimmed and have no mouse action; keyboard validation still
-explains invalid requests. Enter proceeds to the shared Cancel-first
-review; Esc cancels. Mouse controls follow these same paths.
+explains invalid requests. For Create and Rename, Enter in the name editor
+opens the shared Cancel-first review. Esc cancels. Mouse controls follow these
+same paths.
+`U` reviews a fast-forward pull for the focused local branch and `P` reviews
+a push to its configured upstream. The toolbar offers the same actions. Pull
+updates a checked-out branch through Git's worktree checks, and can advance an
+unchecked-out branch without switching. A branch checked out in another
+worktree cannot be pulled here.
 
 Reviews identify one repository path, source/destination branches and commits.
 Delete and rename operate locally. Merge requires a clean index/worktree;

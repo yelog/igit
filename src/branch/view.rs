@@ -84,6 +84,8 @@ impl BranchPanel {
             ("Enter", "Switch", "Go", Operation::Checkout),
             ("m", "Merge", "Merge", Operation::Merge),
             ("r", "Rename", "Rename", Operation::Rename),
+            ("U", "Pull", "Pull", Operation::Pull),
+            ("P", "Push", "Push", Operation::Push),
         ]
         .map(|(key, full, short, op)| {
             let key = self.shortcut_labels.get(key).map_or(key, String::as_str);
@@ -309,11 +311,13 @@ impl BranchPanel {
                 Rect::new(inner.x, inner.y + 4, inner.width, inner.height - 5),
             );
         }
+        let submit = if input.operation == Operation::Track {
+            " Enter Switch "
+        } else {
+            " Enter Review "
+        };
         let mut x = inner.x;
-        for (label, hit) in [
-            (" Enter Review ", Hit::Submit),
-            (" Esc Cancel ", Hit::Cancel),
-        ] {
+        for (label, hit) in [(submit, Hit::Submit), (" Esc Cancel ", Hit::Cancel)] {
             let rect = Rect::new(x, inner.bottom().saturating_sub(1), label.width() as u16, 1);
             if rect.right() <= inner.right() {
                 f.render_widget(Paragraph::new(label).style(button_style(false)), rect);
