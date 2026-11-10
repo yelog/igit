@@ -226,6 +226,15 @@ pub(super) fn set(job: &Job) -> Result<()> {
     drop(file);
     // Edit only our unpublished lock file. Both keys reach the real config in
     // one rename; errors cannot leave half of an upstream configuration behind.
+    // Git for Windows accepts verbatim paths for -C, but not for config --file.
+    let directory = lock
+        .path
+        .parent()
+        .context("Git config lock has no directory")?;
+    let filename = lock
+        .path
+        .file_name()
+        .context("Git config lock has no filename")?;
     for (key, value) in [
         (
             format!("branch.{}.remote", job.branch),
@@ -236,9 +245,9 @@ pub(super) fn set(job: &Job) -> Result<()> {
             format!("refs/heads/{}", job.t.dst),
         ),
     ] {
-        let output = command(&job.path)
+        let output = command(directory)
             .args(["config", "--file"])
-            .arg(&lock.path)
+            .arg(filename)
             .args(["--replace-all", &key, &value])
             .output()?;
         if !output.status.success() {
