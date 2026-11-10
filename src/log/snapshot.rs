@@ -117,6 +117,10 @@ impl SnapshotPreview {
         self.panel.diff.is_some()
     }
 
+    pub(crate) fn path_copy_target(&self, c: &Context) -> Option<crate::ui::path_copy::Target> {
+        self.panel.inspector_copy_target(c)
+    }
+
     pub(crate) fn selected_text(&self) -> Option<&str> {
         self.panel.selected_text()
     }

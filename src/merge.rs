@@ -182,6 +182,18 @@ impl MergePanel {
     }
     const SIDES: [PaneId; 3] = [PaneId::Current, PaneId::Result, PaneId::Incoming];
 
+    pub(crate) fn path_copy_target(&self, c: &Context) -> Option<crate::ui::path_copy::Target> {
+        if !self.at_root() || self.editing() {
+            return None;
+        }
+        let file = self.list.selected_file()?;
+        Some(crate::ui::path_copy::Target::new(
+            &c.repos.get(file.root)?.path,
+            &file.path,
+            false,
+        ))
+    }
+
     pub(crate) fn focused_pane(&self) -> PaneId {
         if self.doc.is_some() {
             Self::SIDES[self.side]

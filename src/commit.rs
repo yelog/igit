@@ -10,6 +10,7 @@ mod keymap;
 #[cfg(test)]
 mod message_tests;
 mod preview;
+mod process;
 mod refresh;
 mod rollback;
 mod rows;
@@ -343,6 +344,15 @@ impl CommitPanel {
             && self.focused_pane() == pane
     }
 
+    pub(crate) fn tree_motion(&self, event: &Event) -> bool {
+        self.focus == Focus::Tree
+            && !self.editing()
+            && matches!(event, Event::Key(key)
+                if key.kind != KeyEventKind::Release
+                    && key.modifiers.is_empty()
+                    && matches!(key.code, K::Char('j' | 'k') | K::Down | K::Up))
+    }
+
     fn file_preview_visible(&self) -> bool {
         self.preview_open && !self.diff.is_empty() && self.active().and_then(Row::file).is_some()
     }
@@ -382,6 +392,14 @@ impl CommitPanel {
                 .unwrap_or(0),
         };
     }
+    pub(crate) fn path_copy_target(&self, c: &Context) -> Option<crate::ui::path_copy::Target> {
+        if self.focus != Focus::Tree || self.editing() {
+            return None;
+        }
+        self.active()?
+            .copy_target(c, &self.files, self.options.modules)
+    }
+
     fn active(&self) -> Option<&Row> {
         self.view.get(self.cursor)
     }
@@ -499,6 +517,7 @@ impl CommitPanel {
         self.diff_scroll = 0
     }
     fn edit_message(&mut self, _c: &Context) {
+        self.invalidate_ai_check();
         self.buf = self.saved.message.clone().unwrap_or_default();
         self.caret = self.buf.len();
         self.message_selection.clear();
@@ -521,6 +540,7 @@ impl CommitPanel {
         self.edit = Some(Edit::Move)
     }
     fn accept(&mut self, c: &Context) -> Result<()> {
+        self.invalidate_ai_check();
         let previous = self.saved.clone();
         let previous_ai = self.ai_settings.clone();
         match self.edit.clone() {
@@ -819,10 +839,17 @@ impl Panel for CommitPanel {
         if matches!(e, Event::Key(k) if k.kind == KeyEventKind::Release) {
             return Action::None;
         }
+        if self.editing() {
+            self.invalidate_ai_check();
+        }
         if let Some(action) = self.staging_event(e, c) {
             return action;
         }
-        if self.edit.is_none() && self.view_menu.is_none() && !self.diff.is_empty() {
+        if self.edit.is_none()
+            && self.view_menu.is_none()
+            && !self.diff.is_empty()
+            && !self.tree_motion(e)
+        {
             self.ensure_preview(c);
         }
         if self.search_event(e, c) {

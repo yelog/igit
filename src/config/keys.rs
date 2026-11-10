@@ -375,6 +375,9 @@ pub fn catalogue_sequence(value: &str) -> Sequence {
     let expanded = match value {
         "gg" => "g g",
         "yy" => "y y",
+        "yf" => "y f",
+        "yn" => "y n",
+        "yr" => "y r",
         "ym" => "y m",
         "ya" => "y a",
         "[c" => "[ c",

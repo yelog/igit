@@ -1,5 +1,5 @@
+use super::highlight::{padding_tint, revision_line, Fragment};
 use super::*;
-use similar::{DiffTag, TextDiff};
 use std::ops::Range;
 
 const CONTEXT: usize = 4;
@@ -10,60 +10,8 @@ const NUMBER: Color = Color::Rgb(105, 110, 120);
 const GUIDE: Color = Color::Rgb(63, 66, 74);
 const FOLD_BG: Color = Color::Rgb(42, 44, 49);
 
-#[derive(Clone, Copy)]
-pub(super) struct Tint {
-    pub line: Color,
-    pub gutter: Color,
-    pub word: Color,
-    pub marker: Color,
-}
-
-const MODIFIED: Tint = Tint {
-    line: Color::Rgb(31, 40, 50),
-    gutter: Color::Rgb(43, 66, 93),
-    word: Color::Rgb(43, 66, 93),
-    marker: Color::Rgb(85, 132, 165),
-};
-const CONFLICTED: Tint = Tint {
-    line: Color::Rgb(35, 28, 28),
-    gutter: Color::Rgb(53, 36, 32),
-    word: Color::Rgb(64, 43, 39),
-    marker: Color::Rgb(166, 90, 73),
-};
-const INSERTED: Tint = Tint {
-    line: Color::Rgb(38, 54, 45),
-    gutter: Color::Rgb(46, 73, 56),
-    word: Color::Rgb(57, 92, 66),
-    marker: Color::Rgb(83, 139, 99),
-};
-const DELETED: Tint = Tint {
-    line: Color::Rgb(42, 43, 48),
-    gutter: Color::Rgb(62, 63, 72),
-    word: Color::Rgb(76, 78, 88),
-    marker: Color::Rgb(116, 117, 131),
-};
-
-pub(super) fn side_tint(chunk: &Chunk, side: FileSide) -> Option<Tint> {
-    chunk.pending(side).then(|| {
-        if chunk.kind == Kind::Conflict {
-            CONFLICTED
-        } else {
-            change_tint(&chunk.base, side.text(chunk))
-        }
-    })
-}
-
-fn change_tint(base: &str, result: &str) -> Tint {
-    if base.is_empty() {
-        INSERTED
-    } else if result.is_empty() {
-        DELETED
-    } else {
-        MODIFIED
-    }
-}
-
 pub(super) struct Section<'a> {
+    pub texts: [&'a str; 3],
     pub lines: [Vec<&'a str>; 3],
     pub first: usize,
     pub height: usize,
@@ -131,6 +79,19 @@ impl<'a> RowMap<'a> {
         view: &EditorView,
         edit: Option<(usize, &'a str, usize)>,
     ) -> Self {
+        Self::layout(chunks, view, edit, None)
+    }
+
+    pub fn revision(chunks: &'a [Chunk], view: &EditorView, single_pane: Option<usize>) -> Self {
+        Self::layout(chunks, view, None, single_pane)
+    }
+
+    fn layout(
+        chunks: &'a [Chunk],
+        view: &EditorView,
+        edit: Option<(usize, &'a str, usize)>,
+        single_pane: Option<usize>,
+    ) -> Self {
         let mut total = 0;
         let mut numbers = [0; 3];
         let mut widths = [0; 3];
@@ -139,21 +100,29 @@ impl<'a> RowMap<'a> {
             .enumerate()
             .map(|(i, chunk)| {
                 let replacement = edit.filter(|(index, _, _)| *index == i);
-                let mut lines = [
-                    split(&chunk.left),
-                    split(replacement.map_or(chunk.result.as_str(), |(_, text, _)| text)),
-                    split(&chunk.right),
+                let texts = [
+                    chunk.left.as_str(),
+                    replacement.map_or(chunk.result.as_str(), |(_, text, _)| text),
+                    chunk.right.as_str(),
                 ];
+                let mut lines = texts.map(|text| text.split_inclusive('\n').collect::<Vec<_>>());
                 let starts = numbers;
                 for (pane, lines) in lines.iter().enumerate() {
                     numbers[pane] += lines.len();
-                    widths[pane] = lines.iter().fold(widths[pane], |w, l| w.max(cell_width(l)));
+                    widths[pane] = lines
+                        .iter()
+                        .fold(widths[pane], |w, line| w.max(cell_width(line_body(line))));
                 }
                 if let Some((_, _, cursor_row)) = replacement {
                     // The caret can be on the blank line after a final newline.
                     lines[1].resize(lines[1].len().max(cursor_row + 1), "");
                 }
-                let count = lines.iter().map(Vec::len).max().unwrap_or(0).max(1);
+                let count = single_pane
+                    .map_or_else(
+                        || lines.iter().map(Vec::len).max().unwrap_or(0),
+                        |pane| lines[pane].len(),
+                    )
+                    .max(1);
                 let fold = (view.folding
                     && replacement.is_none()
                     && chunk.kind == Kind::Context
@@ -166,6 +135,7 @@ impl<'a> RowMap<'a> {
                 let first = total;
                 total += height;
                 Section {
+                    texts,
                     lines,
                     first,
                     height,
@@ -184,10 +154,8 @@ impl<'a> RowMap<'a> {
     }
 }
 
-fn split(text: &str) -> Vec<&str> {
-    text.split_inclusive('\n')
-        .map(|s| s.trim_end_matches(['\n', '\r']))
-        .collect()
+pub(super) fn line_body(line: &str) -> &str {
+    line.trim_end_matches(['\n', '\r'])
 }
 
 #[derive(Default, Clone, Copy)]
@@ -334,23 +302,17 @@ impl Rows<'_> {
             .take_while(|(_, s)| s.first < end)
         {
             let chunk = &self.chunks[i];
-            let tint = if self.read_only {
-                let changed = match pane {
-                    0 => chunk.left != chunk.result,
-                    2 => chunk.right != chunk.result,
-                    _ => chunk.left != chunk.result || chunk.right != chunk.result,
-                };
-                changed.then_some(MODIFIED)
-            } else if let Some(s) = source {
-                side_tint(chunk, s)
+            let padding_tint = if self.read_only && !section.lines[pane].is_empty() {
+                None
             } else {
-                FileSide::ALL
-                    .into_iter()
-                    .find_map(|s| side_tint(chunk, s))
-                    .or_else(|| {
-                        (chunk.result != chunk.base)
-                            .then(|| change_tint(&chunk.base, &chunk.result))
-                    })
+                padding_tint(chunk, pane, self.read_only)
+            };
+            let changes = if self.read_only {
+                Vec::new()
+            } else {
+                self.view
+                    .highlights
+                    .line_changes(i, chunk, &section.texts, pane)
             };
             for row in self.scroll.max(section.first)..end.min(section.first + section.height) {
                 let local = row - section.first;
@@ -382,6 +344,25 @@ impl Rows<'_> {
                 let code = rect(col.code.x, y, col.code.width, 1);
                 let number = rect(col.numbers.x, y, col.numbers.width, 1);
                 let controls = rect(col.controls.x, y, col.controls.width, 1);
+                let raw = section.lines[pane].get(line).copied().map(line_body);
+                let change = if self.read_only {
+                    revision_line(
+                        section
+                            .lines
+                            .each_ref()
+                            .map(|lines| lines.get(line).copied()),
+                        pane,
+                    )
+                } else {
+                    changes.get(line).copied().unwrap_or_default()
+                };
+                let tint = if raw.is_some() {
+                    change.tint()
+                } else if self.read_only {
+                    None
+                } else {
+                    padding_tint
+                };
                 let line_bg = tint.map_or(EDITOR_BG, |t| t.line);
                 let gutter_bg = tint.map_or(EDITOR_BG, |t| t.gutter);
                 if let Some(x) = col.rule {
@@ -390,7 +371,7 @@ impl Rows<'_> {
                 fill(f, code, line_bg);
                 fill(f, number, gutter_bg);
                 fill(f, controls, gutter_bg);
-                if let Some(raw) = section.lines[pane].get(line) {
+                if let Some(raw) = raw {
                     let n = section.numbers[pane] + line + 1;
                     let focused = self.active && i == self.selected && pane == self.side;
                     if !number.is_empty() {
@@ -406,9 +387,17 @@ impl Rows<'_> {
                             text,
                             style(if focused { FG } else { NUMBER }).bg(gutter_bg),
                         );
+                        if change.indent_marker() {
+                            put(
+                                f,
+                                rect(number.right() - 1, y, 1, 1),
+                                if self.ascii { "." } else { "·" },
+                                style(NUMBER).bg(gutter_bg),
+                            );
+                        }
                     }
-                    let ranges = if tint.is_some() && self.view.inner_diff && self.caret.is_none() {
-                        changed_ranges(section, line, pane, chunk)
+                    let fragments = if self.view.inner_diff && self.caret.is_none() {
+                        change.fragments(raw, self.read_only)
                     } else {
                         Vec::new()
                     };
@@ -416,7 +405,7 @@ impl Rows<'_> {
                     let syntax = syntax::tokens(self.file, raw);
                     let text = self
                         .view
-                        .code_line(raw, code.width, offset, line_style, &ranges, tint, &syntax);
+                        .code_line(raw, code.width, offset, line_style, &fragments, &syntax);
                     f.render_widget(Paragraph::new(text), code);
                     if !self.read_only && pane == 1 && i == self.selected {
                         if let Some((_, ch)) = self.caret.filter(|(r, _)| *r == line) {
@@ -431,7 +420,7 @@ impl Rows<'_> {
                             f.set_cursor_position((code.x, y));
                         }
                     }
-                } else if let Some(tint) = tint {
+                } else if let Some(tint) = padding_tint {
                     // A source deletion/insertion still has a visible boundary
                     // and a target even when this side contributes no lines.
                     let empty = if self.ascii { '-' } else { '─' };
@@ -441,6 +430,19 @@ impl Rows<'_> {
                             code,
                             empty.to_string().repeat(code.width as usize),
                             style(tint.marker).bg(line_bg),
+                        );
+                    }
+                    if self.read_only && !number.is_empty() {
+                        let x = if pane == 0 {
+                            number.x
+                        } else {
+                            number.right() - 1
+                        };
+                        put(
+                            f,
+                            rect(x, y, 1, 1),
+                            glyphs.edge,
+                            style(tint.marker).bg(EDITOR_BG),
                         );
                     }
                 }
@@ -479,58 +481,6 @@ fn draw_gutter(
     }
 }
 
-fn changed_ranges(
-    section: &Section<'_>,
-    row: usize,
-    pane: usize,
-    chunk: &Chunk,
-) -> Vec<Range<usize>> {
-    let mut ranges = Vec::new();
-    let Some(current) = section.lines[pane].get(row) else {
-        return ranges;
-    };
-    if pane == 1 && chunk.done() {
-        if let Some(base) = chunk.base.split_inclusive('\n').nth(row) {
-            add_changed_ranges(&mut ranges, current, base.trim_end_matches(['\n', '\r']));
-        }
-        return ranges;
-    }
-    let others: &[usize] = match pane {
-        1 => &[0, 2],
-        _ => &[1],
-    };
-    for &other in others {
-        let source = if pane == 1 { other } else { pane };
-        if !FileSide::ALL
-            .into_iter()
-            .any(|s| s.pane() == source && chunk.pending(s))
-        {
-            continue;
-        }
-        let Some(next) = section.lines[other].get(row) else {
-            continue;
-        };
-        add_changed_ranges(&mut ranges, current, next);
-    }
-    ranges
-}
-
-fn add_changed_ranges(ranges: &mut Vec<Range<usize>>, old: &str, new: &str) {
-    // A line tint is enough for generated and minified lines.
-    if old == new || old.len().max(new.len()) > 2048 {
-        return;
-    }
-    ranges.extend(
-        TextDiff::configure()
-            .timeout(std::time::Duration::from_millis(2))
-            .diff_chars(old, new)
-            .ops()
-            .iter()
-            .filter(|op| op.tag() != DiffTag::Equal)
-            .map(|op| op.old_range()),
-    );
-}
-
 pub(super) fn cell_width(s: &str) -> usize {
     if !s.contains('\t') {
         return s.width();
@@ -567,8 +517,7 @@ impl EditorView {
         width: u16,
         offset: usize,
         base: Style,
-        changes: &[Range<usize>],
-        tint: Option<Tint>,
+        changes: &[Fragment],
         syntax: &[(Range<usize>, Color)],
     ) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = Vec::new();
@@ -594,13 +543,10 @@ impl EditorView {
                 .get(syntax.partition_point(|(r, _)| r.end <= index))
                 .filter(|(r, _)| r.start <= index)
                 .map_or(base, |(_, color)| base.fg(*color));
-            let style = tint
-                .filter(|_| {
-                    changes
-                        .iter()
-                        .any(|r| r.start < index + chars && index < r.end)
-                })
-                .map_or(base, |t| base.bg(t.word));
+            let style = changes
+                .iter()
+                .find(|change| change.range.start < index + chars && index < change.range.end)
+                .map_or(base, |change| base.bg(change.background));
             index += chars;
             if matches!(symbol, " " | "\t") {
                 let w = if symbol == "\t" { TAB - x % TAB } else { 1 };
@@ -641,3 +587,6 @@ impl EditorView {
         Line::from(spans)
     }
 }
+
+#[cfg(test)]
+mod tests;

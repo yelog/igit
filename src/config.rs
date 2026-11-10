@@ -48,7 +48,13 @@ pub struct AiConfig {
     pub model: String,
     pub prompt: String,
     pub api_key_env: String,
+    /// Timeout for each AI request, in seconds.
     pub timeout_seconds: u64,
+    pub input_budget_bytes: usize,
+    /// Total requests allowed, including reductions and final generation.
+    pub max_requests: usize,
+    /// Deadline for the entire AI job, in seconds.
+    pub total_timeout_seconds: u64,
 }
 
 impl Default for AiConfig {
@@ -97,6 +103,15 @@ impl AiConfig {
         }
         if !(1..=600).contains(&self.timeout_seconds) {
             bail!("ai.timeout_seconds must be between 1 and 600")
+        }
+        if !(8_192..=2_097_152).contains(&self.input_budget_bytes) {
+            bail!("ai.input_budget_bytes must be between 8192 and 2097152")
+        }
+        if !(1..=128).contains(&self.max_requests) {
+            bail!("ai.max_requests must be between 1 and 128")
+        }
+        if !(1..=3_600).contains(&self.total_timeout_seconds) {
+            bail!("ai.total_timeout_seconds must be between 1 and 3600")
         }
         Ok(())
     }
@@ -438,18 +453,115 @@ mod tests {
     #[test]
     fn ai_configuration_merges_defaults_and_accepts_custom_prompt() {
         assert!(AppConfig::default().ai.is_none());
+        let defaults = AiConfig::default();
+        assert_eq!(defaults.timeout_seconds, 60);
+        assert_eq!(defaults.input_budget_bytes, 160_000);
+        assert_eq!(defaults.max_requests, 32);
+        assert_eq!(defaults.total_timeout_seconds, 300);
         let config = AppConfig::from_toml("[ai]\nendpoint='http://localhost:11434/v1/chat/completions'\nmodel='my-model'\nprompt='''Write a subject.\nThen explain in 中文.'''\napi_key_env='CUSTOM_LLM_KEY'\ntimeout_seconds=120").unwrap();
         let ai = config.ai.unwrap();
         assert_eq!(ai.model, "my-model");
         assert_eq!(ai.prompt, "Write a subject.\nThen explain in 中文.");
         assert_eq!(ai.api_key_env, "CUSTOM_LLM_KEY");
         assert_eq!(ai.timeout_seconds, 120);
+        assert_eq!(ai.input_budget_bytes, defaults.input_budget_bytes);
+        assert_eq!(ai.max_requests, defaults.max_requests);
+        assert_eq!(ai.total_timeout_seconds, defaults.total_timeout_seconds);
         let partial = AppConfig::from_toml("[ai]\nmodel='local'")
             .unwrap()
             .ai
             .unwrap();
         assert_eq!(partial.prompt, AiConfig::default().prompt);
         assert_eq!(partial.api_key_env, "IGIT_LLM_API_KEY");
+        assert_eq!(
+            partial,
+            AiConfig {
+                model: "local".into(),
+                ..defaults
+            }
+        );
+    }
+
+    #[test]
+    fn ai_configuration_merges_individual_limits_with_defaults() {
+        for (text, expected) in [
+            (
+                "input_budget_bytes=65536",
+                AiConfig {
+                    input_budget_bytes: 65_536,
+                    ..Default::default()
+                },
+            ),
+            (
+                "max_requests=8",
+                AiConfig {
+                    max_requests: 8,
+                    ..Default::default()
+                },
+            ),
+            (
+                "total_timeout_seconds=900",
+                AiConfig {
+                    total_timeout_seconds: 900,
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let ai = AppConfig::from_toml(&format!("[ai]\n{text}"))
+                .unwrap()
+                .ai
+                .unwrap();
+            assert_eq!(ai, expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn ai_configuration_accepts_explicit_limits_and_inclusive_boundaries() {
+        for (input_budget_bytes, max_requests, total_timeout_seconds) in
+            [(8_192, 1, 1), (65_536, 8, 900), (2_097_152, 128, 3_600)]
+        {
+            let ai = AppConfig::from_toml(&format!(
+                "[ai]\ninput_budget_bytes={input_budget_bytes}\nmax_requests={max_requests}\ntotal_timeout_seconds={total_timeout_seconds}"
+            ))
+            .unwrap()
+            .ai
+            .unwrap();
+            assert_eq!(ai.input_budget_bytes, input_budget_bytes);
+            assert_eq!(ai.max_requests, max_requests);
+            assert_eq!(ai.total_timeout_seconds, total_timeout_seconds);
+            assert_eq!(ai.timeout_seconds, 60);
+        }
+    }
+
+    #[test]
+    fn ai_configuration_rejects_out_of_range_limits() {
+        for (field, value) in [
+            ("input_budget_bytes", 0),
+            ("input_budget_bytes", 8_191),
+            ("input_budget_bytes", 2_097_153),
+            ("max_requests", 0),
+            ("max_requests", 129),
+            ("total_timeout_seconds", 0),
+            ("total_timeout_seconds", 3_601),
+        ] {
+            let text = format!("[ai]\n{field}={value}");
+            let error = AppConfig::from_toml(&text).unwrap_err().to_string();
+            assert!(error.contains(&format!("ai.{field}")), "{text}: {error}");
+        }
+    }
+
+    #[test]
+    fn ai_configuration_rejects_unknown_fields_and_inline_credentials() {
+        for text in [
+            "api_key='not-allowed'",
+            "input_budget=160000",
+            "max_request=32",
+            "total_timeout=300",
+        ] {
+            for settings in [format!("[ai]\n{text}"), format!("ai={{ {text} }}")] {
+                assert!(AppConfig::from_toml(&settings).is_err(), "{settings}");
+            }
+        }
     }
 
     #[test]
@@ -468,6 +580,15 @@ mod tests {
             "prompt='  '",
             "timeout_seconds=0",
             "timeout_seconds=601",
+            "input_budget_bytes=-1",
+            "input_budget_bytes='160000'",
+            "input_budget_bytes=160000.0",
+            "max_requests=-1",
+            "max_requests='32'",
+            "max_requests=32.0",
+            "total_timeout_seconds=-1",
+            "total_timeout_seconds='300'",
+            "total_timeout_seconds=300.0",
         ] {
             assert!(
                 AppConfig::from_toml(&format!("[ai]\n{text}")).is_err(),

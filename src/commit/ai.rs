@@ -1,129 +1,126 @@
 use super::*;
 use crate::config::AiConfig;
 use anyhow::Context as _;
-use std::{
-    io::Write,
-    process::{Command, Stdio},
-    sync::mpsc,
-};
+use std::{path::PathBuf, sync::mpsc};
 
+mod input;
 #[cfg(test)]
 mod tests;
+mod transport;
 
-pub(super) struct Patch {
-    pub name: String,
-    pub content: String,
+use super::process::Control;
+
+const PATCH_LIMIT: usize = 32 * 1024 * 1024;
+
+struct Repository {
+    path: PathBuf,
+    name: String,
+    files: Vec<Change>,
 }
 
-pub(super) struct Request {
-    pub settings: AiConfig,
-    pub patches: Vec<Patch>,
+struct Job {
+    settings: AiConfig,
+    repositories: Vec<Repository>,
+}
+
+#[derive(PartialEq, Eq)]
+struct Selection {
+    scope: crate::core::loading::Scope,
+    // Working edits to a staged file do not change the selected index source.
+    files: Vec<(usize, PathBuf, bool)>,
+}
+
+impl Selection {
+    fn new(panel: &CommitPanel, c: &Context) -> Self {
+        let mut files: Vec<_> = panel
+            .selection(c)
+            .into_iter()
+            .map(|file| (file.root, file.change.path.clone(), file.change.staged()))
+            .collect();
+        files.sort();
+        Self {
+            scope: crate::core::loading::Scope::new(c),
+            files,
+        }
+    }
+}
+
+struct Candidate {
+    message: String,
+    snapshots: Vec<backend::ai::Snapshot>,
+}
+
+enum Report {
+    Progress(String),
+    Generated(Result<Candidate, String>),
+    Checked {
+        revision: u64,
+        completed: Instant,
+        result: Result<Candidate, String>,
+    },
 }
 
 pub(super) struct Pending {
-    receiver: mpsc::Receiver<Result<String, String>>,
+    receiver: mpsc::Receiver<Report>,
+    sender: mpsc::Sender<Report>,
     message: Option<String>,
+    selection: Selection,
+    control: Control,
+    candidate: Option<Candidate>,
+    finished: Option<Result<String, String>>,
+    progress: String,
     frame: usize,
+    revision: u64,
 }
 
-impl Request {
-    fn payload(&self) -> serde_json::Value {
-        let repositories: Vec<_> = self
-            .patches
-            .iter()
-            .map(|p| serde_json::json!({"repository": p.name, "patch": p.content}))
-            .collect();
-        serde_json::json!({
-            "model": self.settings.model,
-            "stream": false,
-            "messages": [
-                {"role": "system", "content": self.settings.prompt},
-                {"role": "user", "content": serde_json::to_string(&repositories).expect("serializable patches")}
-            ]
-        })
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.control.cancel();
     }
+}
 
-    fn send(&self) -> Result<String> {
-        let credential = match std::env::var(&self.settings.api_key_env) {
-            Ok(key) => Some(key),
-            Err(std::env::VarError::NotPresent) => None,
-            Err(_) => bail!("The configured AI credential is not valid Unicode"),
+impl Job {
+    fn generate(self, control: &Control, sender: &mpsc::Sender<Report>) -> Result<Candidate> {
+        let progress = |message| {
+            let _ = sender.send(Report::Progress(message));
         };
-        self.send_with_credential(credential.as_deref())
-    }
-
-    fn send_with_credential(&self, credential: Option<&str>) -> Result<String> {
-        self.settings.validate()?;
-        let mut token_file = tempfile::NamedTempFile::new()?;
-        let credential = credential.filter(|key| !key.is_empty());
-        if let Some(token) = credential {
-            if token.chars().any(char::is_control) {
-                bail!("Invalid AI credential: control characters are not allowed")
+        let mut snapshots = Vec::new();
+        let mut files = Vec::new();
+        let mut bytes = 0usize;
+        for repository in self.repositories {
+            control.check()?;
+            progress(format!("Preparing changes · {}…", repository.name));
+            let mut snapshot =
+                backend::ai::Snapshot::capture(&repository.path, &repository.files, control)?;
+            for file in std::mem::take(&mut snapshot.files) {
+                bytes = bytes.saturating_add(file.patch.len());
+                if bytes > PATCH_LIMIT {
+                    bail!(
+                        "Selected patches exceed the 32 MiB preparation limit; select fewer files"
+                    );
+                }
+                files.push(input::File {
+                    id: files.len(),
+                    repository: repository.name.clone(),
+                    path: file.path.to_string_lossy().into_owned(),
+                    status: file.status,
+                    additions: file.additions,
+                    deletions: file.deletions,
+                    patch: file.patch,
+                });
             }
-            writeln!(token_file, "Authorization: Bearer {token}")?;
+            snapshots.push(snapshot);
         }
-        let mut curl = Command::new("curl");
-        curl.arg("-q")
-            .args([
-                "--silent",
-                "--show-error",
-                "--fail",
-                "--max-time",
-                &self.settings.timeout_seconds.to_string(),
-                "--connect-timeout",
-                "8",
-                "--header",
-                "Content-Type: application/json",
-                "--proto",
-                "=http,https",
-                "--write-out",
-                "\n%{http_code}",
-            ])
-            .env_remove(&self.settings.api_key_env)
-            .env_remove("IGIT_LLM_API_KEY");
-        if credential.is_some() {
-            curl.arg("--header")
-                .arg(format!("@{}", token_file.path().display()));
-        }
-        let mut child = curl
-            .args(["--data-binary", "@-", "--url", &self.settings.endpoint])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("Could not start curl; install curl to generate a message")?;
-        let write = child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(&serde_json::to_vec(&self.payload())?);
-        if write.is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("Could not send the selected patches to curl")
-        }
-        let output = child.wait_with_output()?;
-        let end = output
-            .stdout
-            .iter()
-            .rposition(|b| *b == b'\n')
-            .ok_or_else(|| anyhow::anyhow!("AI service returned no HTTP status"))?;
-        let (body, status) = (&output.stdout[..end], &output.stdout[end + 1..]);
-        let status = std::str::from_utf8(status)
-            .unwrap_or("")
-            .parse::<u16>()
-            .unwrap_or(0);
-        // Never echo service bodies or curl stderr: either can contain credentials or patches.
-        if status >= 300 {
-            bail!("AI service returned HTTP {status}; check the endpoint, model and credentials")
-        }
-        if !output.status.success() || status < 200 {
-            bail!(
-                "AI request failed (curl exit {}); check connectivity and ai.timeout_seconds",
-                output.status.code().unwrap_or(-1)
-            )
-        }
-        parse_response(body)
+        let client = transport::Client::new(&self.settings, control)?;
+        let message = input::generate(
+            &self.settings,
+            &files,
+            control,
+            |system, user, output_tokens| client.send(system, user, output_tokens),
+            progress,
+        )?;
+        control.check()?;
+        Ok(Candidate { message, snapshots })
     }
 }
 
@@ -131,12 +128,12 @@ fn parse_response(body: &[u8]) -> Result<String> {
     let value: serde_json::Value = serde_json::from_slice(body)
         .map_err(|_| anyhow::anyhow!("AI service returned invalid JSON"))?;
     if value.get("error").is_some_and(|error| !error.is_null()) {
-        bail!("AI service returned an error; check the endpoint, model and credentials")
+        bail!("AI service returned an error; check the endpoint, model and credentials");
     }
     let choice = &value["choices"][0];
     if let Some(reason) = choice["finish_reason"].as_str() {
         if reason != "stop" {
-            bail!("AI service did not return a complete message; adjust the prompt or model and retry")
+            bail!("AI service did not return a complete message; adjust the prompt or model and retry");
         }
     }
     let message = choice["message"]["content"]
@@ -144,7 +141,7 @@ fn parse_response(body: &[u8]) -> Result<String> {
         .filter(|message| !message.trim().is_empty())
         .ok_or_else(|| anyhow::anyhow!("AI service returned no valid message.content"))?;
     if message.contains('\0') {
-        bail!("AI service returned an invalid commit message")
+        bail!("AI service returned an invalid commit message");
     }
     Ok(message.trim().to_owned())
 }
@@ -163,6 +160,18 @@ impl CommitPanel {
         frames[self.ai_pending.as_ref().map_or(0, |p| p.frame) % frames.len()]
     }
 
+    pub(super) fn ai_progress(&self) -> &str {
+        self.ai_pending
+            .as_ref()
+            .map_or("", |pending| pending.progress.as_str())
+    }
+
+    pub(super) fn invalidate_ai_check(&mut self) {
+        if let Some(pending) = &mut self.ai_pending {
+            pending.revision = pending.revision.wrapping_add(1);
+        }
+    }
+
     pub(super) fn show_ai_error(&mut self, error: impl ToString) -> Action {
         self.ai_error = error.to_string();
         self.ai_scroll = 0;
@@ -170,72 +179,163 @@ impl CommitPanel {
         err(&self.ai_error)
     }
 
-    pub(super) fn prepare_ai(&self, c: &Context) -> Result<Request> {
+    // This captures panel state only. All Git and filesystem work is on workers.
+    fn prepare_ai(&self, c: &Context) -> Result<Job> {
         if self.ai_settings.endpoint.trim().is_empty() || self.ai_settings.model.trim().is_empty() {
-            bail!("Set ai.endpoint and ai.model in settings.toml, then restart IGit. Press S to edit AI settings for this session")
+            bail!("Set ai.endpoint and ai.model in settings.toml, then restart IGit. Press S to edit AI settings for this session");
         }
         self.ai_settings.validate()?;
-        let mut patches = vec![];
-        let mut bytes = 0;
-        for root in self.checked_repos(c) {
-            let files: Vec<_> = self
-                .selection(c)
-                .into_iter()
-                .filter(|f| f.root == root)
-                .map(|f| f.change.clone())
-                .collect();
-            let content = backend::patch(&c.repos[root].path, &files)?;
-            bytes += content.len();
-            if bytes > 160_000 {
-                bail!("Selected patches exceed 160 KB. Select fewer files before generating a message")
-            }
-            patches.push(Patch {
-                name: c.repos[root].name.clone(),
-                content,
-            });
+        let mut selected = BTreeMap::<usize, Vec<Change>>::new();
+        for file in self.selection(c) {
+            selected
+                .entry(file.root)
+                .or_default()
+                .push(file.change.clone());
         }
-        if patches.is_empty() {
-            bail!("Select files first")
+        if selected.is_empty() {
+            bail!("Select files first");
         }
-        Ok(Request {
+        Ok(Job {
             settings: self.ai_settings.clone(),
-            patches,
+            repositories: selected
+                .into_iter()
+                .map(|(root, files)| Repository {
+                    path: c.repos[root].path.clone(),
+                    name: c.repos[root].name.clone(),
+                    files,
+                })
+                .collect(),
         })
     }
 
     pub(super) fn start_ai(&mut self, c: &Context) -> Result<Action> {
         if self.ai_pending.is_some() {
-            bail!("AI request in progress. Please wait")
+            bail!("AI request in progress. Please wait");
         }
-        let request = self.prepare_ai(c)?;
-        let (tx, rx) = mpsc::channel();
+        let job = self.prepare_ai(c)?;
+        let control = Control::new(Duration::from_secs(job.settings.total_timeout_seconds));
+        let worker_control = control.clone();
+        let (sender, receiver) = mpsc::channel();
+        let worker_sender = sender.clone();
+        std::thread::Builder::new()
+            .name("igit-ai-prepare".into())
+            .spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    job.generate(&worker_control, &worker_sender)
+                }))
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("AI worker stopped unexpectedly")))
+                .map_err(|error| error.to_string());
+                let _ = worker_sender.send(Report::Generated(result));
+            })
+            .context("Cannot start the AI worker")?;
         self.ai_pending = Some(Pending {
-            receiver: rx,
+            receiver,
+            sender,
             message: self.saved.message.clone(),
+            selection: Selection::new(self, c),
+            control,
+            candidate: None,
+            finished: None,
+            progress: "Preparing changes…".into(),
             frame: 0,
+            revision: 0,
         });
         self.ai_error.clear();
-        std::thread::spawn(move || {
-            let _ = tx.send(request.send().map_err(|error| error.to_string()));
-        });
-        Ok(err("Generating one commit message. You can keep browsing"))
+        Ok(err(
+            "Generating one commit message. Preparing changes in the background",
+        ))
     }
 
     pub(super) fn poll_ai(&mut self, c: &Context) -> Action {
+        let editing = self.editing();
+        let selection = self.ai_pending.as_ref().map(|_| Selection::new(self, c));
         let Some(pending) = self.ai_pending.as_mut() else {
             return Action::None;
         };
         pending.frame = pending.frame.wrapping_add(1);
-        // Do not interrupt active input or replace an unsaved edit.
-        if self.edit.is_some() {
+        if selection.as_ref() != Some(&pending.selection) {
+            pending.control.cancel();
+            pending.finished = Some(Err(
+                "The selected files or Roots changed during generation. The original message was kept. Generate again for the current selection".into(),
+            ));
+        } else if let Err(error) = pending.control.check() {
+            if pending.finished.is_none() {
+                pending.finished = Some(Err(error.to_string()));
+            }
+        }
+        // Drain progress during editing, but defer adoption and error dialogs.
+        while let Ok(report) = pending.receiver.try_recv() {
+            if pending.finished.is_some() {
+                continue;
+            }
+            match report {
+                Report::Progress(progress) => pending.progress = progress,
+                Report::Generated(Ok(candidate)) => pending.candidate = Some(candidate),
+                Report::Checked {
+                    revision,
+                    completed,
+                    result: Ok(candidate),
+                } if !editing
+                    && revision == pending.revision
+                    && completed.elapsed() <= Duration::from_secs(1) =>
+                {
+                    pending.finished = Some(Ok(candidate.message));
+                }
+                Report::Checked {
+                    result: Ok(candidate),
+                    ..
+                } => {
+                    // Recheck after any intervening input/refresh or delayed poll,
+                    // including editors that opened and closed between ticks.
+                    pending.candidate = Some(candidate);
+                }
+                Report::Generated(Err(error))
+                | Report::Checked {
+                    result: Err(error), ..
+                } => {
+                    pending.finished = Some(Err(error));
+                }
+            }
+        }
+        if editing {
             return Action::None;
         }
-        let result = match pending.receiver.try_recv() {
-            Ok(result) => result,
-            Err(mpsc::TryRecvError::Disconnected) => Err("AI worker stopped".into()),
-            Err(mpsc::TryRecvError::Empty) => return Action::None,
+        if let Some(candidate) = pending.candidate.take() {
+            if pending.finished.is_none() {
+                let sender = pending.sender.clone();
+                let control = pending.control.clone();
+                let revision = pending.revision;
+                pending.progress = "Checking changes…".into();
+                if let Err(error) = std::thread::Builder::new()
+                    .name("igit-ai-check".into())
+                    .spawn(move || {
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            for snapshot in &candidate.snapshots {
+                                snapshot.validate(&control)?;
+                            }
+                            control.check()?;
+                            Ok(candidate)
+                        }))
+                        .unwrap_or_else(|_| {
+                            Err(anyhow::anyhow!("AI source checker stopped unexpectedly"))
+                        })
+                        .map_err(|error: anyhow::Error| error.to_string());
+                        let _ = sender.send(Report::Checked {
+                            revision,
+                            completed: Instant::now(),
+                            result,
+                        });
+                    })
+                {
+                    pending.finished =
+                        Some(Err(format!("Cannot check AI source changes: {error}")));
+                }
+            }
+        }
+        let Some(result) = pending.finished.take() else {
+            return Action::None;
         };
-        let original = self.ai_pending.take().unwrap().message;
+        let original = self.ai_pending.take().unwrap().message.clone();
         match result {
             Ok(message) => {
                 if self.saved.message != original {

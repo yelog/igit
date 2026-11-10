@@ -11,7 +11,7 @@ IGit is a Rust terminal application. Both entry points, [igit](../src/bin/igit.r
 | Why does help prioritize this area? | Internal panel `keymap` methods in [log/keymap.rs](../src/log/keymap.rs), [commit/keymap.rs](../src/commit/keymap.rs), [push/keymap.rs](../src/push/keymap.rs), and [merge/keymap.rs](../src/merge/keymap.rs) provide shortcuts for the current focus/editing state. [ui/help.rs](../src/ui/help.rs) owns Search, candidate selection, compact rendering, and hit areas. |
 | Why does a file or button use this icon? | [ui/icons.rs](../src/ui/icons.rs) maps semantics, filenames, and extensions to glyphs. Shell passes startup `IconMode` to all panels; layout and hit testing use actual terminal cell widths. Icon preferences are not written to repositories, drafts, or Git configuration. [graph/render.rs](../src/log/model/graph/render.rs) draws graph rails/nodes from topology. |
 | Why does a commit appear here? | [log/model.rs](../src/log/model.rs) reads real refs, commits, reachability, and patches; [graph.rs](../src/log/model/graph.rs) allocates rails. [log.rs](../src/log.rs) coordinates selection/events. [view.rs](../src/log/view.rs), [refs.rs](../src/log/refs.rs), and [inspector.rs](../src/log/inspector.rs) render the timeline, branch tree, and right pane. [filters.rs](../src/log/filters.rs) manages filters and session tabs. |
-| What does this commit include? | [commit.rs](../src/commit.rs): groups, checkboxes, the shared message, and batch commits. [commit/ai.rs](../src/commit/ai.rs): direct AI requests and shared message generation. [commit/tree.rs](../src/commit/tree.rs): flat/compact-directory projections and native file identity. [commit/rows.rs](../src/commit/rows.rs): row rendering and shared arrow/checkbox coordinates. [commit/view.rs](../src/commit/view.rs): changes list, messages, and default-open preview. [commit/refresh.rs](../src/commit/refresh.rs) owns background status and current-patch refresh. [commit/backend.rs](../src/commit/backend.rs): status, snapshots, plans, and execution. |
+| What does this commit include? | [commit.rs](../src/commit.rs): groups, checkboxes, the shared message, and batch commits. [commit/ai.rs](../src/commit/ai.rs): background AI jobs and shared message generation. [commit/tree.rs](../src/commit/tree.rs): flat/compact-directory projections and native file identity. [commit/rows.rs](../src/commit/rows.rs): row rendering and shared arrow/checkbox coordinates. [commit/view.rs](../src/commit/view.rs): changes list, messages, and default-open preview. [commit/refresh.rs](../src/commit/refresh.rs) owns background status and current-patch refresh. [commit/backend.rs](../src/commit/backend.rs): status, snapshots, plans, and execution. |
 | Where will this push go, and will the target have the submodule commit? | [push.rs](../src/push.rs): outgoing commits, targets, plans, background jobs, and per-repository results. [push/loading.rs](../src/push/loading.rs) schedules outgoing commit and preview reads; [push/preview.rs](../src/push/preview.rs) reads immutable file lists and comparisons. [push/diff.rs](../src/push/diff.rs) connects the current file tree to Log's revision viewer. [push/files.rs](../src/push/files.rs) parses changes and derives grouped rows from one tree; [push/display.rs](../src/push/display.rs) handles the session Group By menu; [push/view.rs](../src/push/view.rs) renders columns/hit areas. [push/submodules.rs](../src/push/submodules.rs) verifies remote availability of gitlinks in outgoing history. |
 | How do branch lists load and branch writes get reviewed? | [branch/loading.rs](../src/branch/loading.rs) reads refs and prepares tree rows in the background. [branch/operations.rs](../src/branch/operations.rs) revalidates one repository before a reviewed write. [core/loading.rs](../src/core/loading.rs) provides the bounded reader shared with Push. |
 | What will a workspace Pull or Fetch update? | [shell/update.rs](../src/shell/update.rs) owns the Roots review, selected strategy, Git worker, and structured per-repository results. [shell/update/view.rs](../src/shell/update/view.rs) renders the shared review/running/results list, responsive columns, Details, and action hit areas. |
@@ -347,7 +347,11 @@ The commit-list cursor moves in memory. During continuous navigation, [detail lo
 
 [Historical merge details](../src/log/model/merge_diff.rs) read the combined changed paths plus each parent-to-result path list, preserving NUL-delimited byte paths and a parent index for each leaf. The combined list follows [Git combined diff semantics](https://git-scm.com/docs/git-diff#_combined_diff_format): only paths modified against all parents appear there. File lists and parent subjects load in the existing preview worker, with the same generation invalidation. The [shared revision reader](../src/core/revision.rs) reads exact `ls-tree` entries and immutable blobs through `cat-file`, capped at 512 KiB each; no index, working file, merge operation or clean/smudge filter supplies its contents. Missing entries are empty sides with explicit labels. The selected commit determines the presentation: two parents use the same three versions from every file group; an ordinary commit compares its parent and itself in two panes. Initial commits have an empty Before source. Unsupported text/object types fall back to a bounded patch; in that fallback, parent leaves still select the corresponding parent explicitly.
 
-The [historical viewer](../src/merge/view/revision.rs) uses `diff3(result, parent1, parent2)` to align around the committed result; two-pane comparisons use `diff3(after, before, after)` with the duplicate alignment side hidden and excluded from focus, sharing the conflict editor's chunk row map, Unicode clipping, character ranges, folding and scrollbar machinery. The shared row renderer takes chunks instead of a writable `Document`, and historical mode suppresses resolution gutters and editing hit targets. RevisionDiff owns only text, labels and viewport state; its events can navigate, copy or close, never apply or continue. All historical change blocks use the modified palette, including disagreements with both parents. Source byte ranges project visible rows through shared text selection, while an overlay highlights the existing code rendering. Folded context stays in the underlying source and alignment padding remains decorative; copying preserves original tabs, CRLF and Unicode. The small display-only code lexer colors common source extensions without a production dependency; it is not a full language parser.
+Read-only revision views pair each parent or Before with Result or After. Patience matching uses trimmed line keys for anchors and bounded similarity pairs the remaining replacements. Alignment projects the original lines into sections with a fixed set of present panes. Every pane uses the same section offsets for drawing, line numbers, folding and search. Adjacent changed sections form one navigation stop. A single pane reduces a missing section to one row and maps the scroll position back to the same section when the layout changes. Source byte ranges keep copy and search tied to the original tabs, CRLF and Unicode. [Revision alignment](../src/merge/view/revision/alignment.rs) · [Revision viewer](../src/merge/view/revision.rs)
+
+The shared renderer uses the aligned row for read-only tint and fragment comparisons. Equivalent indentation uses the same tab stops as drawing and gets a muted gutter dot. Classification retains the original body and line endings. The renderer paints empty rows as decorations and uses change colors on the overview rail. Live source changes compare against the merge base with red priority for pending conflicts. Directional token operations distinguish replacements from insertions, using character boundaries for unspaced CJK text. [Diff highlights](../src/merge/view/highlight.rs) · [Row renderer](../src/merge/view/rows.rs)
+
+The live editor caches line pairings by section, comparison and exact text. Panes share the entries and reuse them while scrolling or resizing. Edits replace the affected entry and a new document clears the cache. Small comparisons use a fixed work limit to keep highlights stable under load. Larger comparisons use deadlines, limited lookahead and prefix and suffix sampling. Long lines use row colors when fragment analysis would exceed its limit. The display lexer includes basic single-line XML markup. [Syntax colors](../src/merge/view/syntax.rs)
 
 [List navigation](../src/log/navigation.rs) stores vertical origin and the most recently drawn usable row count. It corrects edges after every selection change so batched input and per-key redraw have identical scrolling. Rendering corrects again for new window height. `gg` and `y` sequences are recognized only in the commit list; focus changes/overlays clear prefixes. `Action::Copy` routes through Shell and the [clipboard adapter](../src/ui/clipboard.rs), using command stdin rather than interpolating text into commands or notifications. ID/name/email come from the current row. Only `ym` runs read-only `git show` for that exact repository/OID to retrieve the full message, independent of potentially pending details.
 
@@ -380,9 +384,64 @@ not retried automatically. Commit refreshes after the batch and the Stash tab
 reads saved entries on entry. This operation does not change the shared commit
 message or publish anything remotely.
 
-**AI commit messages: one request fills one shared draft.** [commit/ai.rs](../src/commit/ai.rs) snapshots the effective configuration and checked patches within the current Roots, labeled by repository, when Generate message / `A` is invoked. It limits total patch bytes to 160 KB. A background `curl` request sends the custom system prompt and a user message containing the repository/patch array. The pending request retains the original message and spinner frame; Shell redraws the active Commit pane while it runs. User `[ai]` settings from [config.rs](../src/config.rs) override legacy workspace endpoint/model/prompt on startup; `S` changes the current session and saves a workspace fallback. The credential comes from `ai.api_key_env` (default `IGIT_LLM_API_KEY`) and is passed through a temporary header file, never command arguments or persisted state. HTTP failures, invalid/empty replies and incomplete responses are reported without echoing service bodies or credentials. Shell's tick consumes completion so redraw cannot swallow errors. A successful response directly replaces and persists the shared draft without a candidate dialog. An active editor defers completion; newer saved edits are preserved. Configuration, transport, response, and persistence failures open a dismissible AI error dialog and retain the existing draft. Generation never creates commits. Tests use local mock HTTP servers and temporary repositories.
+**AI commit messages: bounded background generation fills one shared draft.**
+[commit/ai.rs](../src/commit/ai.rs) captures the effective configuration, checked
+native paths, Roots identity, and original draft before dispatching a worker.
+No Git reads run on the terminal thread for AI preparation.
+[backend/ai.rs](../src/commit/backend/ai.rs) builds one private selected index and
+immutable base/tree pair per repository, retaining staged-version priority,
+exact-path scope checks, and source fingerprints. Per-file name-status/numstat
+and patches come from those trees with explicit one-line context and zero
+inter-hunk context. Binary content remains a Git marker. Prepared patch bytes
+have a 32 MiB cap. Preparation fails if the complete selection exceeds it.
 
-Commit and AI share checked-file snapshots. Index entries match native paths exactly. Exclusions for Diff, temporary staging, and index publication match only selected-path descendants, escaping wildcards while preserving the gitlink itself. File/directory replacements validate scope against actual changed paths. If adding a file requires deleting unchecked descendants, stop and ask for a revised selection. The plan reads the live branch ref; cached branch labels do not determine the target.
+[ai/input.rs](../src/commit/ai/input.rs) measures the complete serialized request,
+including model, prompt, metadata, JSON escaping, and summary output limits.
+Small selections use one request. Larger inputs are partitioned by file, hunk,
+line, and UTF-8 fragment as needed. Internal factual-summary requests cover every
+fragment. Reductions combine oversized summaries before one final request with
+the unchanged custom system prompt and complete file manifest. Requests run
+sequentially and reserve space within `ai.max_requests` for the final one. Empty,
+incomplete, oversized, or non-shrinking intermediate output fails instead of
+becoming a commit message.
+
+[ai/transport.rs](../src/commit/ai/transport.rs) sends compatible requests through
+`curl`, enforces the byte budget again, and bounds response bytes. The credential
+comes from `ai.api_key_env` (default `IGIT_LLM_API_KEY`). The request and
+authorization header pass through anonymous stdin. Errors omit service bodies,
+curl stderr, and credentials. URL globbing is disabled so one call cannot expand
+into multiple patch uploads. Git/filter failures likewise omit raw diagnostics.
+[commit/process.rs](../src/commit/process.rs) uses file-backed IO and bounded
+reads to avoid pipe deadlocks. Git and curl share a cancellation flag and the
+`ai.total_timeout_seconds` deadline. Curl also uses the per-request
+`ai.timeout_seconds`. Cancellation signals the owned subprocess group,
+including active Git filters, when the workspace changes or IGit quits or restarts.
+
+The pending job receives phase reports while Shell redraws the active Commit
+pane. Roots or checked-source identity changes cancel obsolete work. Completion
+performs source, branch, and HEAD validation on a worker; unrelated index changes
+and unstaged edits to a staged source do not invalidate it. Active input defers
+insertion and schedules a fresh validation after editing ends. Validation reports
+carry the input/refresh revision and completion time; intervening editor sessions,
+refreshes, or delayed polling require another check. Newer drafts are preserved.
+Successful output directly replaces and persists the shared draft;
+persistence failure restores the original. Other failures open a dismissible
+error dialog with no partial adoption. Generation never commits or pushes.
+User `[ai]` settings override the legacy workspace endpoint/model/prompt on
+startup; `S` edits those three session values and their workspace fallback.
+Budget/count/time settings come from the user configuration or merged defaults.
+Tests use disposable repositories and local HTTP mocks, never users' code or
+real models.
+
+Commit and AI use checked-file snapshots. Both import selected staged entries
+and remove selected working deletions before adding working files. This gives
+Git attributes the same private-index fallback when preparing AI evidence and
+when preparing the commit. Index entries match native paths exactly. Exclusions for
+Diff, temporary staging, and index publication match only selected-path
+descendants, escaping wildcards while preserving the gitlink itself.
+File/directory replacements validate scope against actual changed paths. If
+adding a file requires deleting unchecked descendants, stop and ask for a
+revised selection. The plan reads the live branch ref to determine the target.
 
 **Push reads: responsive entry and current snapshots.** The panel queues outgoing
 reads on entry and retains its previous rows while refreshing. One batch runs at

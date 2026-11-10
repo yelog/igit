@@ -1,4 +1,7 @@
 //! A historical comparison has no writable Document, stage state, or apply path.
+pub(super) mod alignment;
+
+use super::highlight::revision_range_tint;
 use super::*;
 use crate::ui::{
     search::{Hit as SearchHit, Input, Jump, Prompt, Search},
@@ -39,6 +42,7 @@ pub(crate) struct RevisionDiff {
     scroll: usize,
     follow: bool,
     zoom: bool,
+    single_pane: Option<usize>,
     total: usize,
     page: usize,
     hits: Vec<(Rect, Target)>,
@@ -57,13 +61,14 @@ impl RevisionDiff {
         texts: [String; 3],
         annotations: [String; 3],
     ) -> Self {
-        // Use the committed result as the alignment axis. A disagreement with
-        // both parents is an ordinary historical change, not a pending conflict.
-        let chunks = diff3(&texts[1], &texts[0], &texts[2]);
+        let chunks = alignment::chunks(texts.each_ref().map(String::as_str));
         let changes: Vec<_> = chunks
             .iter()
             .enumerate()
-            .filter_map(|(i, c)| (c.left != c.result || c.right != c.result).then_some(i))
+            .filter_map(|(i, chunk)| {
+                (chunk.kind != Kind::Context && (i == 0 || chunks[i - 1].kind == Kind::Context))
+                    .then_some(i)
+            })
             .collect();
         let selected = changes.first().copied().unwrap_or(0);
         let line_ranges = texts.each_ref().map(|text| {
@@ -89,6 +94,7 @@ impl RevisionDiff {
             scroll: 0,
             follow: true,
             zoom: false,
+            single_pane: None,
             total: 0,
             page: 0,
             hits: Vec::new(),
@@ -180,7 +186,7 @@ impl RevisionDiff {
                     direction
                 };
                 let anchor = self.search_hit.as_ref().map(|hit| hit.row).or_else(|| {
-                    let map = RowMap::new(&self.chunks, &self.view, None);
+                    let map = RowMap::revision(&self.chunks, &self.view, self.single_pane);
                     map.sections
                         .iter()
                         .find(|section| section.first + section.height > self.scroll)
@@ -385,7 +391,6 @@ impl RevisionDiff {
 
         fill(f, toolbar, TOOLBAR);
         let mut tools = toolbar;
-        let current = self.changes.iter().position(|&i| i == self.selected);
         let summary = if self.three_way {
             format!(" {} changes, No conflicts ", self.changes.len())
         } else {
@@ -415,14 +420,14 @@ impl RevisionDiff {
             &mut tools,
             if ascii { " ^ " } else { " ↑ " },
             Target::Change(-1),
-            current != Some(0) && !self.changes.is_empty(),
+            self.adjacent_change(-1).is_some(),
         );
         self.button(
             f,
             &mut tools,
             if ascii { " v " } else { " ↓ " },
             Target::Change(1),
-            current != self.changes.len().checked_sub(1) && !self.changes.is_empty(),
+            self.adjacent_change(1).is_some(),
         );
         if let Some((file, count)) = files {
             self.button(f, &mut tools, " < ", Target::File(-1), file > 0);
@@ -451,7 +456,18 @@ impl RevisionDiff {
             cols[self.side] = body;
             cols
         };
-        let mut map = RowMap::new(&self.chunks, &self.view, None);
+        let single_pane = (!split).then_some(self.side);
+        let mut map = RowMap::revision(&self.chunks, &self.view, single_pane);
+        if single_pane != self.single_pane && !self.follow {
+            let previous = RowMap::revision(&self.chunks, &self.view, self.single_pane);
+            if let Some((i, section)) = previous.sections.iter().enumerate().find(|(_, section)| {
+                (section.first..section.first + section.height).contains(&self.scroll)
+            }) {
+                let local = self.scroll - section.first;
+                self.scroll = map.sections[i].first + local.min(map.sections[i].height - 1);
+            }
+        }
+        self.single_pane = single_pane;
         self.page = body.height.saturating_sub(if inline { 2 } else { 3 }) as usize;
         let position_search =
             self.reveal_search || usize::from(previous_code[self.side].height) != self.page;
@@ -472,7 +488,7 @@ impl RevisionDiff {
                 let section = &map.sections[i];
                 if !(0..section.height).any(|row| section.line_at(row) == Some(line)) {
                     self.view.expanded.insert(i);
-                    map = RowMap::new(&self.chunks, &self.view, None);
+                    map = RowMap::revision(&self.chunks, &self.view, single_pane);
                 }
                 self.selected = i;
                 self.follow = false;
@@ -653,6 +669,24 @@ impl RevisionDiff {
                     Hit::Fold(i) => Some((r, Target::Fold(i))),
                     _ => None,
                 }));
+            let rail_height = usize::from(metrics.rail.height);
+            for (chunk, section) in self.chunks.iter().zip(&map.sections) {
+                let Some(tint) = revision_range_tint(chunk, pane) else {
+                    continue;
+                };
+                let top = rail_height * section.first / map.total.max(1);
+                let end = rail_height * (section.first + section.height) / map.total.max(1);
+                for row in top..end.max(top + 1).min(rail_height) {
+                    put(
+                        f,
+                        rect(metrics.rail.x, metrics.rail.y + row as u16, 1, 1),
+                        if ascii { "-" } else { "╴" },
+                        style(tint.marker).bg(tint.line),
+                    );
+                }
+            }
+            // The thumb stays visible above the overview, including when a
+            // single large change spans most of the rail.
             for track in [
                 Track::new(
                     Scroll::Vertical,
@@ -675,16 +709,6 @@ impl RevisionDiff {
                 track.paint(f, ascii);
                 self.view.tracks.push(track);
             }
-            for &i in &self.changes {
-                let row =
-                    (self.page.saturating_sub(1) * map.sections[i].first / map.total.max(1)) as u16;
-                put(
-                    f,
-                    rect(metrics.rail.x, metrics.rail.y + row, 1, 1),
-                    if ascii { "-" } else { "╴" },
-                    style(ACCENT),
-                );
-            }
         }
         self.reveal_search = false;
         if let Some(footer) = footer {
@@ -705,21 +729,24 @@ impl RevisionDiff {
         }
     }
 
+    fn adjacent_change(&self, direction: isize) -> Option<usize> {
+        let mut anchor = self.selected;
+        if self.chunks[anchor].kind != Kind::Context {
+            anchor = self.changes[self.changes.partition_point(|&i| i <= anchor) - 1];
+        }
+        if direction > 0 {
+            self.changes.iter().copied().find(|&i| i > anchor)
+        } else {
+            self.changes.iter().copied().rfind(|&i| i < anchor)
+        }
+    }
+
     fn activate(&mut self, target: Target) -> RevisionEvent {
         match target {
             Target::Close => return RevisionEvent::Close,
             Target::File(d) => return RevisionEvent::File(d),
             Target::Change(d) => {
-                let next = if d > 0 {
-                    self.changes.iter().copied().find(|&i| i > self.selected)
-                } else {
-                    self.changes
-                        .iter()
-                        .copied()
-                        .rev()
-                        .find(|&i| i < self.selected)
-                };
-                if let Some(next) = next {
+                if let Some(next) = self.adjacent_change(d) {
                     self.selected = next;
                     self.follow = true;
                 }

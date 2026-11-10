@@ -10,6 +10,7 @@ use std::{
 use tempfile::TempDir;
 
 pub(super) mod add;
+pub(super) mod ai;
 pub(super) mod discard;
 pub(super) mod preview;
 pub(super) mod staging;
@@ -290,24 +291,6 @@ fn base_tree(repo: &Path, head: Option<&str>) -> Result<String> {
         )?)?))
     }
 }
-fn tree_patch(repo: &Path, base: &str, tree: &str) -> Result<Vec<u8>> {
-    g(
-        repo,
-        None,
-        &[
-            "diff",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--no-color",
-            "--no-renames",
-            "--ignore-submodules=none",
-            "--submodule=short",
-            base,
-            tree,
-            "--",
-        ],
-    )
-}
 /// Build the exact snapshot for the selection. Use real Git's filters, modes,
 /// ignore rules and staged blob OIDs. Never stage the user's live worktree here.
 fn snapshot(repo: &Path, files: &[Change], base: &str, di: &TempDir) -> Result<(PathBuf, String)> {
@@ -317,36 +300,55 @@ fn snapshot(repo: &Path, files: &[Change], base: &str, di: &TempDir) -> Result<(
         if f.conflict {
             bail!("Unresolved: {}", f.label())
         }
-        if f.staged() {
-            // The cached version wins, even for MM/MD.
-            let entries = exact_path(repo, None, &["ls-files", "--stage", "-z"], &f.path)?;
-            change_idx(repo, &at, &["update-index", "--force-remove"], &f.path)?;
-            if !entries.is_empty() {
-                checked(run(
-                    repo,
-                    Some(&at),
-                    &[
-                        "update-index".as_ref(),
-                        "-z".as_ref(),
-                        "--index-info".as_ref(),
-                    ],
-                    Some(&entries),
-                )?)?;
-            }
-        } else {
-            if f.xy == *b"??"
-                && repo
-                    .join(&f.path)
-                    .symlink_metadata()
-                    .is_ok_and(|m| m.is_dir())
-            {
-                bail!(
-                    "{} is a nested repository or directory; commit in its own repository",
-                    f.label()
-                )
-            }
-            exact_path(repo, Some(&at), &["add", "-A"], &f.path)?;
+    }
+    // Match AI capture: import every selected staged version before converting
+    // working files. The cached version wins, even for MM/MD, and supplies the
+    // attribute fallback when a working .gitattributes is missing.
+    for f in files.iter().filter(|f| f.staged()) {
+        let entries = exact_path(repo, None, &["ls-files", "--stage", "-z"], &f.path)?;
+        change_idx(repo, &at, &["update-index", "--force-remove"], &f.path)?;
+        if !entries.is_empty() {
+            checked(run(
+                repo,
+                Some(&at),
+                &[
+                    "update-index".as_ref(),
+                    "-z".as_ref(),
+                    "--index-info".as_ref(),
+                ],
+                Some(&entries),
+            )?)?;
         }
+    }
+    // Remove all selected working deletions before any add. In particular,
+    // deleted attribute rules must no longer affect another selected file,
+    // regardless of the order in which the user selected them.
+    for f in files.iter().filter(|f| !f.staged() && f.xy[1] == b'D') {
+        match fs::symlink_metadata(repo.join(&f.path)) {
+            Ok(metadata) if metadata.is_dir() => (),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) => {}
+            Ok(_) => bail!("Selected content changed. Refresh and try again"),
+            Err(error) => return Err(error).context("Cannot inspect the selected working file"),
+        }
+        change_idx(repo, &at, &["update-index", "--force-remove"], &f.path)?;
+    }
+    for f in files.iter().filter(|f| !f.staged() && f.xy[1] != b'D') {
+        if f.xy == *b"??"
+            && repo
+                .join(&f.path)
+                .symlink_metadata()
+                .is_ok_and(|m| m.is_dir())
+        {
+            bail!(
+                "{} is a nested repository or directory; commit in its own repository",
+                f.label()
+            )
+        }
+        exact_path(repo, Some(&at), &["add", "-A"], &f.path)?;
     }
     let tree = txt(g(repo, Some(&at), &["write-tree"])?);
     check_tree_scope(repo, base, &tree, files)?;
@@ -753,24 +755,14 @@ pub fn diff(repo: &Path, f: &Change) -> Result<String> {
     }
     Ok(txt(exact_path(repo, None, &args, &f.path)?))
 }
+#[cfg(test)]
 pub fn patch(repo: &Path, files: &[Change]) -> Result<String> {
-    check_sources(repo, files)?;
-    let h = oid(repo)?;
-    let idx = git_path(repo, "index")?;
-    let di = tempfile::Builder::new()
-        .prefix("igit-patch-")
-        .tempdir_in(idx.parent().unwrap())?;
-    let base = base_tree(repo, h.as_deref())?;
-    let (_, tree) = snapshot(repo, files, &base, &di)?;
-    let b = tree_patch(repo, &base, &tree)?;
-    if b.is_empty() {
-        bail!("No patch for the selected files")
-    }
-    if b.len() > 160_000 {
-        bail!("Selected patch exceeds 160 KB. Select fewer files before generating a message")
-    }
-    Ok(String::from_utf8_lossy(&b).into_owned())
+    let control = crate::commit::process::Control::new(std::time::Duration::from_secs(60));
+    let snapshot = ai::Snapshot::capture(repo, files, &control)?;
+    Ok(snapshot.files.into_iter().map(|file| file.patch).collect())
 }
+#[cfg(all(test, unix))]
+mod selection_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

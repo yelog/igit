@@ -12,6 +12,12 @@ const COMMENT: Color = Color::Rgb(104, 125, 101);
 
 pub(super) fn tokens(path: &str, text: &str) -> Vec<(Range<usize>, Color)> {
     let extension = path.rsplit('.').next().unwrap_or("");
+    if text.len() > 4096 {
+        return Vec::new();
+    }
+    if extension.eq_ignore_ascii_case("xml") {
+        return xml_tokens(text);
+    }
     if !matches!(
         extension,
         "js" | "jsx"
@@ -30,8 +36,7 @@ pub(super) fn tokens(path: &str, text: &str) -> Vec<(Range<usize>, Color)> {
             | "yaml"
             | "yml"
             | "sh"
-    ) || text.len() > 4096
-    {
+    ) {
         return Vec::new();
     }
     let chars: Vec<_> = text.chars().collect();
@@ -150,6 +155,66 @@ pub(super) fn tokens(path: &str, text: &str) -> Vec<(Range<usize>, Color)> {
             };
             if let Some(color) = color {
                 out.push((start..at, color));
+            }
+        } else {
+            at += 1;
+        }
+    }
+    out
+}
+
+fn xml_tokens(text: &str) -> Vec<(Range<usize>, Color)> {
+    let chars: Vec<_> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut at = 0;
+    let mut tag = false;
+    let name_start = |ch: char| ch.is_alphabetic() || matches!(ch, '_' | ':');
+    let name_char = |ch: char| name_start(ch) || ch.is_ascii_digit() || matches!(ch, '-' | '.');
+    let through = |start: usize, end: &[char]| {
+        chars[start..]
+            .windows(end.len())
+            .position(|tail| tail == end)
+            .map_or(chars.len(), |offset| start + offset + end.len())
+    };
+    while at < chars.len() {
+        let start = at;
+        let ch = chars[at];
+        if !tag {
+            if chars[at..].starts_with(&['<', '!', '-', '-']) {
+                at = through(at + 4, &['-', '-', '>']);
+                out.push((start..at, COMMENT));
+                continue;
+            }
+            if chars[at..].starts_with(&['<', '!', '[', 'C', 'D', 'A', 'T', 'A', '[']) {
+                at = through(at + 9, &[']', ']', '>']);
+                continue;
+            }
+            at += 1;
+            if ch == '<' {
+                let name = at + usize::from(matches!(chars.get(at), Some('/' | '?' | '!')));
+                if chars.get(name).copied().is_some_and(name_start) {
+                    at = name + 1;
+                    while chars.get(at).copied().is_some_and(name_char) {
+                        at += 1;
+                    }
+                    out.push((start..at, KEYWORD));
+                    tag = true;
+                }
+            }
+        } else if matches!(ch, '\'' | '"') {
+            at = through(at + 1, &[ch]);
+            out.push((start..at, STRING));
+        } else if ch == '>' {
+            at += 1;
+            out.push((start..at, KEYWORD));
+            tag = false;
+        } else if name_start(ch) {
+            at += 1;
+            while chars.get(at).copied().is_some_and(name_char) {
+                at += 1;
+            }
+            if chars[at..].iter().find(|ch| !ch.is_whitespace()) == Some(&'=') {
+                out.push((start..at, PROPERTY));
             }
         } else {
             at += 1;

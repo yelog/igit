@@ -205,6 +205,15 @@ impl Rollback {
         self.hits.clear();
     }
 
+    pub(crate) fn path_copy_target(&self, c: &Context) -> Option<crate::ui::path_copy::Target> {
+        if self.focus != Target::Tree || self.preview.is_some() || self.group_menu.is_some() {
+            return None;
+        }
+        self.rows
+            .get(self.cursor)?
+            .copy_target(c, &self.files, self.options.modules)
+    }
+
     fn current_file(&self) -> Option<&File> {
         self.rows.get(self.cursor)?.file().map(|i| &self.files[i])
     }
@@ -355,7 +364,9 @@ impl Rollback {
                 match k.code {
                     K::Esc if self.preview.is_some() => self.preview = None,
                     K::Esc | K::Char('n') => return RollbackEvent::Close,
-                    K::Char('y') if self.selected() => return RollbackEvent::Apply,
+                    K::Char('y') if self.focus != Target::Tree && self.selected() => {
+                        return RollbackEvent::Apply
+                    }
                     K::Char('?') => return RollbackEvent::Help,
                     K::Tab | K::BackTab => {
                         self.cycle(k.code == K::BackTab || k.modifiers == Mod::SHIFT)
@@ -486,6 +497,10 @@ impl Rollback {
                     ("Space", "Toggle checks at the highlighted row"),
                     ("h", "Collapse row or move to parent"),
                     ("l", "Expand row or move to child"),
+                    ("yy", "Copy absolute path"),
+                    ("yf", "Copy name"),
+                    ("yn", "Copy name without extension"),
+                    ("yr", "Copy relative path"),
                     ("PgUp", "Page up"),
                     ("PgDn", "Page down"),
                     ("v", "Preview staged and working-tree changes"),
@@ -497,7 +512,10 @@ impl Rollback {
                     ("Tab", "Focus next control"),
                     ("Shift-Tab", "Focus previous control"),
                     ("Enter", "Activate focused control"),
-                    ("y", "Roll back checked files"),
+                    (
+                        "y",
+                        "Roll back checked files when focus is outside the tree",
+                    ),
                     ("Esc", "Close without rolling back"),
                 ],
             )

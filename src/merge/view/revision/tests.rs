@@ -182,6 +182,7 @@ fn differing_lengths_deletions_and_unicode_keep_source_line_numbers() {
             .sections
             .iter()
             .flat_map(|s| s.lines[pane].iter().copied())
+            .map(rows::line_body)
             .collect::<Vec<_>>();
         assert_eq!(actual, text.lines().collect::<Vec<_>>());
     }
@@ -189,6 +190,16 @@ fn differing_lengths_deletions_and_unicode_keep_source_line_numbers() {
         .sections
         .iter()
         .any(|s| s.lines.iter().any(Vec::is_empty)));
+    let anchors = [0, 1, 2].map(|pane| {
+        map.sections.iter().find_map(|section| {
+            section.lines[pane]
+                .iter()
+                .position(|line| *line == "界\n")
+                .map(|line| section.first + line)
+        })
+    });
+    assert!(anchors[0].is_some());
+    assert_eq!(anchors, [anchors[0]; 3]);
 }
 
 #[test]
@@ -228,6 +239,225 @@ fn two_way_layout_has_two_revisions_and_never_focuses_the_hidden_alignment_side(
     key(&mut view, K::Tab);
     let small = draw(&mut view, 44, 12, IconMode::Ascii);
     assert!(text(&small).contains("Before") && !text(&small).contains("After"));
+}
+
+#[test]
+fn reformatted_mapper_lines_stay_aligned_around_insertions_and_removed_comment_lines() {
+    let before = concat!(
+        "interface Mapper {\r\n",
+        "    List<Row> all();\r\n",
+        "    /**\r\n     * Paged query\r\n     *\r\n     * @param query filter\r\n     */\r\n",
+        "    Page<Row> list(Page<?> page, Query query);\r\n\r\n",
+        "    /**\r\n     * Full query\r\n     *\r\n     * @param query filter\r\n     */\r\n",
+        "    List<Row> list(Query query);\r\n\r\n",
+        "    Result write(Query old);\r\n",
+        "}\r\n",
+    );
+    let after = concat!(
+        "interface Mapper {\r\n",
+        "\tList<Row> all();\r\n\r\n",
+        "\t/**\r\n\t * Paged query\r\n\t * @param query filter\r\n\t */\r\n",
+        "\tPage<Row> list(Page<?> page, Query query);\r\n\r\n",
+        "\t/**\r\n\t * Full query\r\n\t * @param query filter\r\n\t */\r\n",
+        "\tList<Row> list(Query query);\r\n\r\n",
+        "\tList<Row> candidates();\r\n",
+        "\tResult write(Query updated);\r\n",
+        "}\r\n",
+    );
+    let mut view = RevisionDiff::two_way(
+        "Mapper.java".into(),
+        ["Index".into(), "Working tree".into()],
+        [before.into(), after.into()],
+        Default::default(),
+    );
+    let terminal = draw_inline(&mut view, 180, 32, IconMode::Unicode);
+    let buffer = terminal.backend().buffer();
+    let [left, right, _] = view.code_areas;
+    let row = |area: Rect, needle: &str| {
+        (area.y..area.bottom())
+            .find(|&y| {
+                (area.x..area.right())
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains(needle)
+            })
+            .unwrap_or_else(|| panic!("missing {needle}"))
+    };
+    for anchor in [
+        "List<Row> all",
+        "Paged query",
+        "Full query",
+        "List<Row> list",
+    ] {
+        let y = row(left, anchor);
+        assert_eq!(row(right, anchor), y, "alignment for {anchor}");
+        assert_eq!(buffer[(left.x, y)].bg, EDITOR_BG);
+        assert_eq!(buffer[(right.x, y)].bg, EDITOR_BG);
+    }
+    let blank = row(right, "List<Row> all") + 1;
+    assert_eq!(buffer[(left.x + 2, blank)].bg, EDITOR_BG);
+    assert_eq!(buffer[(right.x, blank)].bg, Color::Rgb(38, 54, 45));
+    let added = row(right, "candidates");
+    assert_eq!(buffer[(right.x, added)].bg, Color::Rgb(38, 54, 45));
+    assert_eq!(buffer[(left.x, added)].bg, EDITOR_BG);
+    let changed = row(left, "Query old");
+    assert_eq!(row(right, "Query updated"), changed);
+    assert_eq!(buffer[(right.x, changed)].bg, Color::Rgb(31, 40, 50));
+    assert_eq!(view.changes.len(), 4);
+    let rail = buffer.area.right() - 1;
+    for color in [
+        Color::Rgb(83, 139, 99),
+        Color::Rgb(85, 132, 165),
+        Color::Rgb(116, 117, 131),
+    ] {
+        assert!((right.y..right.bottom()).any(|y| buffer[(rail, y)].fg == color));
+    }
+    view.event(&Event::Key(KeyEvent::new(K::Char('a'), M::CONTROL)));
+    assert_eq!(view.selected_text(), Some(after));
+}
+
+#[test]
+fn single_revision_view_compacts_padding_for_a_large_addition() {
+    let before = "first\nlast\n";
+    let added = (0..32)
+        .map(|i| format!("added entry {i}\n"))
+        .collect::<String>();
+    let after = format!("first\n{added}last\n");
+    let mut view = RevisionDiff::two_way(
+        "example.txt".into(),
+        Default::default(),
+        [before.into(), after],
+        Default::default(),
+    );
+    let split = draw_inline(&mut view, 120, 12, IconMode::Ascii);
+    let track = view
+        .view
+        .tracks
+        .iter()
+        .find(|track| matches!(track.axis, Scroll::Vertical) && track.area.x == 119)
+        .unwrap();
+    let thumb = &split.backend().buffer()[(track.area.x, track.area.y + track.thumb as u16)];
+    assert_eq!(thumb.symbol(), "|");
+    assert_eq!(thumb.bg, Color::Rgb(38, 54, 45));
+    key(&mut view, K::Tab);
+    for width in [120, 44] {
+        key(&mut view, K::Char('z'));
+        let terminal = draw_inline(&mut view, width, 12, IconMode::Ascii);
+        assert_eq!(view.total, 3);
+        assert!(text(&terminal).contains("last"));
+    }
+    assert!(matches!(key(&mut view, K::Char('y')), RevisionEvent::Copy(s) if s == before));
+}
+
+#[test]
+fn xml_preview_marks_equivalent_indent_but_shows_changes_to_text_and_line_endings() {
+    let before = "    <select id=\"搜索\">\r\n    SELECT 'a b'\r\n    </select>\r\n";
+    let after = concat!(
+        "\t<select id=\"搜索\">\r\n",
+        "    SELECT 'a  b'\r\n",
+        "    <if test=\"active\">AND active = 1</if><!-- filter -->\r\n",
+        "  </select>\n",
+    );
+    let mut view = RevisionDiff::two_way(
+        "Mapper.xml".into(),
+        ["Index".into(), "Working tree".into()],
+        [before.into(), after.into()],
+        Default::default(),
+    );
+    let terminal = draw_inline(&mut view, 180, 12, IconMode::Unicode);
+    let buffer = terminal.backend().buffer();
+    let code = view.code_areas[1];
+    assert_eq!(buffer[(code.x, code.y)].bg, EDITOR_BG);
+    assert_eq!(buffer[(code.x - 1, code.y)].symbol(), "·");
+    assert_eq!(
+        buffer[(code.right() - 1, code.y + 1)].bg,
+        Color::Rgb(31, 40, 50)
+    );
+    assert_eq!(
+        buffer[(code.right() - 1, code.y + 2)].bg,
+        Color::Rgb(38, 54, 45)
+    );
+    assert_eq!(
+        buffer[(code.right() - 1, code.y + 3)].bg,
+        Color::Rgb(31, 40, 50)
+    );
+    let added = after.lines().nth(2).unwrap();
+    for (needle, color) in [
+        ("<if", Color::Rgb(207, 142, 109)),
+        ("test=", Color::Rgb(199, 125, 187)),
+        ("\"active\"", Color::Rgb(106, 171, 115)),
+        ("<!--", Color::Rgb(104, 125, 101)),
+    ] {
+        let start = rows::cell_width(&added[..added.find(needle).unwrap()]);
+        assert_eq!(buffer[(code.x + start as u16, code.y + 2)].fg, color);
+    }
+    assert!(matches!(key(&mut view, K::Char('y')), RevisionEvent::Copy(s) if s == after));
+}
+
+#[test]
+fn mixed_change_colors_survive_revision_layouts_and_selection_keeps_original_bytes() {
+    let before = "\tconst 名 = old; tail\r\n";
+    let after = "\tconst 名 = new; extra tail\r\nconst added = 1;\r\n";
+    for three_way in [false, true] {
+        let mut view = if three_way {
+            RevisionDiff::new(
+                "example.js".into(),
+                ["parent 1".into(), "result".into(), "parent 2".into()],
+                [before.into(), after.into(), before.into()],
+                Default::default(),
+            )
+        } else {
+            RevisionDiff::two_way(
+                "example.js".into(),
+                ["before".into(), "after".into()],
+                [before.into(), after.into()],
+                Default::default(),
+            )
+        };
+        for (width, height) in [(180, 32), (120, 24), (80, 16), (44, 12)] {
+            for icons in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
+                let terminal = draw_inline(&mut view, width, height, icons);
+                let code = view.code_areas[1];
+                assert!(!code.is_empty());
+                let buffer = terminal.backend().buffer();
+                assert_eq!(buffer[(code.x, code.y)].bg, Color::Rgb(31, 40, 50));
+                assert_eq!(buffer[(code.x, code.y + 1)].bg, Color::Rgb(38, 54, 45));
+                for (needle, background) in [
+                    ("new", Color::Rgb(43, 66, 93)),
+                    ("extra", Color::Rgb(57, 92, 66)),
+                ] {
+                    let line = after.lines().next().unwrap();
+                    let start = rows::cell_width(&line[..line.find(needle).unwrap()]);
+                    assert_eq!(buffer[(code.x + start as u16, code.y)].bg, background);
+                }
+                view.event(&Event::Key(KeyEvent::new(K::Char('a'), M::CONTROL)));
+                assert_eq!(view.selected_text(), Some(after));
+                let selected = draw_inline(&mut view, width, height, icons);
+                assert_eq!(
+                    selected.backend().buffer()[(code.x, code.y + 1)].bg,
+                    crate::ui::idea::SELECT
+                );
+                view.clear_selection();
+                assert!(
+                    matches!(key(&mut view, K::Char('y')), RevisionEvent::Copy(s) if s == after)
+                );
+            }
+        }
+        key(&mut view, K::Char('z'));
+        let terminal = draw_inline(&mut view, 120, 24, IconMode::Unicode);
+        assert_eq!(
+            view.code_areas
+                .iter()
+                .filter(|area| !area.is_empty())
+                .count(),
+            1
+        );
+        let code = view.code_areas[1];
+        assert_eq!(
+            terminal.backend().buffer()[(code.x, code.y + 1)].bg,
+            Color::Rgb(38, 54, 45)
+        );
+    }
 }
 
 fn drag_text(view: &mut RevisionDiff, from: (u16, u16), to: (u16, u16)) -> String {

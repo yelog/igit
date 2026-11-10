@@ -4,6 +4,7 @@ pub(crate) mod icons;
 pub(crate) mod idea;
 pub(crate) mod key_sequence;
 pub(crate) mod panes;
+pub(crate) mod path_copy;
 pub(crate) mod search;
 pub(crate) mod selection;
 use crate::core::Context;

@@ -38,6 +38,39 @@ pub(super) struct Tree<'a> {
 }
 
 impl Row {
+    pub(super) fn copy_target(
+        &self,
+        c: &Context,
+        files: &[File],
+        modules: bool,
+    ) -> Option<crate::ui::path_copy::Target> {
+        use crate::ui::path_copy::Target;
+        Some(match &self.kind {
+            Kind::File(i) => {
+                let file = &files[*i];
+                Target::new(&c.repos[file.root].path, &file.change.path, false)
+            }
+            Kind::Repo(root) => Target::new(&c.repos[*root].path, Path::new(""), true),
+            Kind::Directory(path) => {
+                let file = files.get(*self.files.first()?)?;
+                let repo = &c.repos[file.root].path;
+                if modules {
+                    Target::new(repo, path, true)
+                } else {
+                    let base = directory_root(c);
+                    let absolute = base.join(path);
+                    match absolute.strip_prefix(repo) {
+                        Ok(relative) if self.files.iter().all(|&i| files[i].root == file.root) => {
+                            Target::new(repo, relative, true)
+                        }
+                        _ => Target::new(base, path, true),
+                    }
+                }
+            }
+            Kind::Group | Kind::Conflicts => return None,
+        })
+    }
+
     pub fn search_label(&self) -> Cow<'_, str> {
         match self.kind {
             Kind::Directory(_) => Cow::Owned(format!("{}/", self.label)),

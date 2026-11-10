@@ -396,6 +396,19 @@ fn label(p: &Path) -> String {
 impl PushPanel {
     const PANES: [PaneId; 3] = [PaneId::Outgoing, PaneId::PushFiles, PaneId::PushDetails];
 
+    pub(crate) fn path_copy_target(&self, c: &Context) -> Option<crate::ui::path_copy::Target> {
+        if self.focus != 1 || self.editing() {
+            return None;
+        }
+        let repo = &c.repos.get(self.selected()?.0)?.path;
+        let (path, directory) = match &self.preview.tree.selected()?.kind {
+            Kind::File(i) => (self.preview.files.get(*i)?.path.as_path(), false),
+            Kind::Directory { path, .. } => (path.as_path(), true),
+            Kind::Repository | Kind::Module => (Path::new(""), true),
+        };
+        Some(crate::ui::path_copy::Target::new(repo, path, directory))
+    }
+
     pub(crate) fn focused_pane(&self) -> PaneId {
         Self::PANES[self.focus]
     }

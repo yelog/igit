@@ -17,7 +17,14 @@ endpoint = ""
 model = ""
 prompt = "Write one concise Conventional Commit message covering exactly the selected changes across all supplied repositories. Return only the commit message, without Markdown fences or commentary."
 api_key_env = "IGIT_LLM_API_KEY"
+# Per-request timeout in seconds (1..=600).
 timeout_seconds = 60
+# Maximum input bytes per request (8 KiB..=2 MiB).
+input_budget_bytes = 160000
+# Total requests, including reductions and final generation (1..=128).
+max_requests = 32
+# Deadline for the entire AI job in seconds (1..=3600).
+total_timeout_seconds = 300
 
 [updates]
 check_on_startup = true

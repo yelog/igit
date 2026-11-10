@@ -325,12 +325,22 @@ impl CommitPanel {
             action_row = slice(actions, 1);
             x = action_row.x;
         }
-        let ai = match (short_actions, compact_actions, self.ai_pending.is_some()) {
-            (true, _, true) => "AI…",
-            (_, _, true) => "Generating…",
-            (true, _, false) => "AI",
-            (_, true, false) => "Generate",
-            _ => "Generate message",
+        let ai = if self.ai_running() {
+            if short_actions {
+                "AI…"
+            } else if self.ai_progress().width() + 4
+                > usize::from(action_row.right().saturating_sub(x))
+            {
+                "Generating…"
+            } else {
+                self.ai_progress()
+            }
+        } else if short_actions {
+            "AI"
+        } else if compact_actions {
+            "Generate"
+        } else {
+            "Generate message"
         };
         let glyph = if self.ai_running() {
             self.ai_spinner().to_string()

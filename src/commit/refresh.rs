@@ -82,6 +82,7 @@ impl Snapshot {
 impl CommitPanel {
     /// Request a fresh scan without starting a second worker.
     pub(crate) fn request_refresh(&mut self) {
+        self.invalidate_ai_check();
         self.refresh.generation = self.refresh.generation.wrapping_add(1);
         self.refresh.requested = true;
     }
@@ -139,6 +140,7 @@ impl CommitPanel {
     }
 
     fn apply_statuses(&mut self, c: &Context, mut statuses: BTreeMap<usize, Status>) -> bool {
+        self.invalidate_ai_check();
         let old_target = self
             .active()
             .map(|r| (r.id.clone(), r.file().map(|i| self.files[i].clone())));
@@ -277,6 +279,7 @@ impl CommitPanel {
                 self.refresh.report_error()?;
                 return Ok(changed);
             }
+            self.invalidate_ai_check();
             let target = self
                 .preview_open
                 .then(|| self.active())

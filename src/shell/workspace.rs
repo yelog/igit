@@ -308,12 +308,12 @@ impl Shell {
     }
 
     fn draw_workspace_overlays(&mut self, f: &mut Frame, work: Rect) {
+        self.draw_popup(f, f.area());
         if let Some(pending) = &self.pending_keys {
             self.key_picker
                 .draw_items(f, work, &pending.prefix_label(), &pending.hints());
         } else if let Some(sequence) = self.key_sequence() {
             self.key_picker.draw(f, work, sequence);
         }
-        self.draw_popup(f, f.area());
     }
 }

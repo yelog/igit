@@ -427,3 +427,92 @@ fn key_sequence_merge_hints_cancel_without_leaving_the_document_or_changing_git(
     assert!(app.key_sequence().is_none());
     assert_eq!(snapshot(), before);
 }
+
+#[test]
+fn file_tree_copy_routes_suffixes_before_global_actions_and_preserves_log_yank() {
+    use crate::ui::panes::PaneId;
+
+    let (repo, mut app) = fixture();
+    let capture = clipboard::CopyCapture::start();
+    let send = |app: &mut Shell, ch| app.dispatch(&key(KeyCode::Char(ch)));
+    let copy = |app: &mut Shell, suffix, expected: &str| {
+        let before = capture.texts().len();
+        send(app, 'y');
+        send(app, suffix);
+        assert_eq!(capture.texts().len(), before + 1);
+        assert_eq!(capture.texts().last().map(String::as_str), Some(expected));
+        assert!(app.pop.is_none());
+        assert!(app.key_sequence().is_none());
+    };
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.log.preview_wakeup().is_some() && Instant::now() < deadline {
+        app.poll();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    app.log.focus_pane(PaneId::Files);
+    copy(&mut app, 'r', "file");
+    app.log.focus_pane(PaneId::Graph);
+    let oid = git(repo.path(), &["rev-parse", "HEAD"]).unwrap();
+    copy(&mut app, 'y', &oid);
+
+    let remote = tempfile::tempdir().unwrap();
+    git(remote.path(), &["init", "--bare", "-q"]).unwrap();
+    git(
+        repo.path(),
+        &["remote", "add", "origin", remote.path().to_str().unwrap()],
+    )
+    .unwrap();
+    git(repo.path(), &["push", "origin", "HEAD~1:refs/heads/main"]).unwrap();
+    git(repo.path(), &["branch", "--set-upstream-to=origin/main"]).unwrap();
+    app.go(Push);
+    app.push.finish_loading(&app.ctx);
+    app.push.focus_pane(PaneId::PushFiles);
+    send(&mut app, 'j');
+    copy(&mut app, 'r', "file");
+
+    fs::create_dir(repo.path().join("src.v2")).unwrap();
+    fs::write(repo.path().join("src.v2/报告.tar.gz"), "new file").unwrap();
+    app.go(Commit);
+    app.refresh();
+    let screen_text = screen(&mut app, 150, 40);
+    let (x, y) = screen_text
+        .lines()
+        .enumerate()
+        .find_map(|(y, line)| {
+            line.find("报告.tar.gz")
+                .map(|x| (unicode_width::UnicodeWidthStr::width(&line[..x]), y))
+        })
+        .unwrap();
+    app.dispatch(&Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: x as u16,
+        row: y as u16,
+        modifiers: KeyModifiers::NONE,
+    }));
+    let absolute = app.ctx.repos[0].path.join("src.v2/报告.tar.gz");
+    copy(&mut app, 'y', absolute.to_str().unwrap());
+    copy(&mut app, 'f', "报告.tar.gz");
+    copy(&mut app, 'n', "报告.tar");
+    copy(&mut app, 'r', "src.v2/报告.tar.gz");
+    send(&mut app, 'h');
+    copy(&mut app, 'n', "src.v2");
+    copy(&mut app, 'r', "src.v2");
+
+    git(
+        repo.path(),
+        &["stash", "push", "--include-untracked", "--", "src.v2"],
+    )
+    .unwrap();
+    app.go(Stash);
+    app.stash.focus_pane(PaneId::Files);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.stash.preview_wakeup().is_some() {
+        app.poll();
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    copy(&mut app, 'r', "src.v2/报告.tar.gz");
+    send(&mut app, 'k');
+    copy(&mut app, 'n', "src.v2");
+}

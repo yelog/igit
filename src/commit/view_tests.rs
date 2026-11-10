@@ -674,11 +674,20 @@ fn ai_request_of_a_replaced_file_never_includes_the_unchecked_child() {
     panel.ai_settings.endpoint = "http://127.0.0.1:1/mock".into();
     panel.ai_settings.model = "test".into();
     assert_eq!(panel.selection(&c).len(), 1);
-    // Inspect the exact request without sending anything to a service.
-    let request = panel.prepare_ai(&c).unwrap();
-    let [ai::Patch { content: patch, .. }] = request.patches.as_slice() else {
-        panic!("expected one repository's patch");
-    };
+    // Inspect the exact immutable selection without contacting a service.
+    let files = panel
+        .selection(&c)
+        .into_iter()
+        .map(|file| file.change.clone())
+        .collect::<Vec<_>>();
+    let snapshot = backend::ai::Snapshot::capture(
+        &c.repos[0].path,
+        &files,
+        &process::Control::new(Duration::from_secs(30)),
+    )
+    .unwrap();
+    assert_eq!(snapshot.files.len(), 1);
+    let patch = &snapshot.files[0].patch;
     assert!(patch.contains("-tracked contents"));
     assert!(!patch.contains("private.txt") && !patch.contains("unchecked child marker"));
 }

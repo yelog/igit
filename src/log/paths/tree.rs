@@ -73,6 +73,15 @@ impl PathTree {
         }
     }
 
+    pub(in crate::log) fn copy_target(&self, c: &Context) -> Option<crate::ui::path_copy::Target> {
+        let row = self.rows.get(self.cursor)?;
+        Some(crate::ui::path_copy::Target::new(
+            &c.repos.get(row.root)?.path,
+            &row.path,
+            row.directory,
+        ))
+    }
+
     pub(super) fn can_apply(&self) -> bool {
         !self.selected.is_empty() || !self.initial.is_empty()
     }

@@ -265,6 +265,24 @@ impl LogPanel {
         }
     }
 
+    pub(crate) fn path_copy_target(&self, c: &Context) -> Option<crate::ui::path_copy::Target> {
+        if self.path_dialog.is_some() {
+            return match self.path_dialog.as_ref()? {
+                paths::Dialog::Tree(tree) => tree.copy_target(c),
+                paths::Dialog::Text(_) => None,
+            };
+        }
+        if self.focus != Pane::Files || !self.pane_visible(self.focus) || self.editing() {
+            return None;
+        }
+        self.inspector_copy_target(c)
+    }
+
+    fn inspector_copy_target(&self, c: &Context) -> Option<crate::ui::path_copy::Target> {
+        self.inspector
+            .copy_target(&self.details, c.repos.get(self.rev()?.root)?)
+    }
+
     pub(crate) fn focused_pane(&self) -> PaneId {
         self.focus.id()
     }

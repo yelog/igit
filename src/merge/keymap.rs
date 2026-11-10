@@ -54,6 +54,10 @@ impl MergePanel {
                             "Open file, fold or expand Unresolved, or review Continue",
                         ),
                         ("Y", "Preview the entire current side of the selected file"),
+                        ("yy", "Copy absolute path"),
+                        ("yf", "Copy name"),
+                        ("yn", "Copy name without extension"),
+                        ("yr", "Copy relative path"),
                         ("T", "Preview the entire incoming side of the selected file"),
                         (
                             "S",

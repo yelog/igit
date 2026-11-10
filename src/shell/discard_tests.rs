@@ -142,7 +142,11 @@ fn discard_file_prechecks_only_that_file_in_the_full_tree_and_can_include_a_sibl
     send(&mut app, "Space");
     assert!(screen(&mut app, 80, 24).contains("1 modified"));
     assert_eq!(snapshot(&repo), before);
-    send(&mut app, "y");
+    let capture = clipboard::CopyCapture::start();
+    send(&mut app, "y r");
+    assert_eq!(capture.texts(), ["mixed.txt"]);
+    assert_eq!(snapshot(&repo), before);
+    send(&mut app, "Shift-Tab Enter");
 
     assert_eq!(git(&repo, &["show", ":other.txt"]).unwrap(), "base");
     assert_eq!(std::fs::read(repo.join("other.txt")).unwrap(), b"base\n");
@@ -165,7 +169,7 @@ fn discard_newly_checked_sibling_uses_its_original_snapshot() {
     std::fs::write(repo.join("other.txt"), "changed outside dialog\n").unwrap();
     let before = snapshot(&repo);
     click_label(&mut app, "other.txt");
-    send(&mut app, "Space y");
+    send(&mut app, "Space Shift-Tab Enter");
     assert!(app.msg.contains("other.txt changed"), "{}", app.msg);
     assert_eq!(snapshot(&repo), before);
 }

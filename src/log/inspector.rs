@@ -30,7 +30,7 @@ enum Kind {
     Module,
     Summary,
     Parent(usize),
-    Directory(String),
+    Directory { label: String, raw: Vec<u8> },
     File(usize),
 }
 
@@ -57,7 +57,7 @@ impl Kind {
                     .file_name()
                     .map_or(repo.name.as_bytes(), |v| v.as_encoded_bytes()),
             )),
-            Self::Directory(name) => Cow::Borrowed(name),
+            Self::Directory { label, .. } => Cow::Borrowed(label),
             Self::Summary => Cow::Borrowed(""),
         }
     }
@@ -78,23 +78,33 @@ struct Directory<'a> {
 }
 
 impl Directory<'_> {
-    fn append(self, nodes: &mut Vec<Node>, depth: usize) {
+    fn append(self, nodes: &mut Vec<Node>, depth: usize, parent: &[u8]) {
         for (component, mut dir) in self.dirs {
+            let mut raw = parent.to_vec();
+            if !raw.is_empty() {
+                raw.push(b'/');
+            }
+            raw.extend_from_slice(component);
             let mut label = model::plain(component);
             while dir.leaves.is_empty() && dir.dirs.len() == 1 {
                 let (next, child) = dir.dirs.pop_first().unwrap();
+                raw.push(b'/');
+                raw.extend_from_slice(next);
                 label.push('/');
                 label.push_str(&model::plain(next));
                 dir = child;
             }
             let i = nodes.len();
             nodes.push(Node {
-                kind: Kind::Directory(label),
+                kind: Kind::Directory {
+                    label,
+                    raw: raw.clone(),
+                },
                 depth,
                 count: dir.count,
                 end: 0,
             });
-            dir.append(nodes, depth + 1);
+            dir.append(nodes, depth + 1, &raw);
             nodes[i].end = nodes.len();
         }
         for file in self.leaves {
@@ -149,7 +159,7 @@ impl Inspector {
                 count: files.len(),
                 end: 0,
             });
-            tree.append(&mut nodes, 2);
+            tree.append(&mut nodes, 2, b"");
             nodes[1].end = nodes.len();
             nodes[0].end = nodes.len();
         }
@@ -204,7 +214,7 @@ impl Inspector {
                 }
                 dir.leaves.push(i);
             }
-            tree.append(&mut nodes, depth + 1);
+            tree.append(&mut nodes, depth + 1, b"");
             nodes[summary].end = nodes.len();
             nodes[start].end = nodes.len();
         }
@@ -217,6 +227,24 @@ impl Inspector {
             nodes,
             ..Self::default()
         }
+    }
+
+    pub(super) fn copy_target(
+        &self,
+        details: &model::Details,
+        repo: &Repo,
+    ) -> Option<crate::ui::path_copy::Target> {
+        let (raw, directory) = match &self.nodes.get(*self.visible.get(self.cursor)?)?.kind {
+            Kind::File(i) => (details.files.get(*i)?.raw.as_slice(), false),
+            Kind::Directory { raw, .. } => (raw.as_slice(), true),
+            Kind::Repository | Kind::Module => (&[][..], true),
+            Kind::Summary | Kind::Parent(_) => return None,
+        };
+        Some(crate::ui::path_copy::Target::new(
+            &repo.path,
+            model::path_from_bytes(raw).ok()?,
+            directory,
+        ))
     }
 
     fn reflow(&mut self, keep: usize) {
@@ -537,7 +565,7 @@ impl LogPanel {
         let (icon, tint) = match &node.kind {
             Kind::Repository => (self.icons.repo(repo.submodule), repo_tint(root)),
             Kind::Module => (self.icons.folder(open), BLUE),
-            Kind::Directory(_) | Kind::Summary => (self.icons.folder(open), DIM),
+            Kind::Directory { .. } | Kind::Summary => (self.icons.folder(open), DIM),
             Kind::File(_) | Kind::Parent(_) => unreachable!(),
         };
         let min_label = label.width().min(4);
@@ -844,7 +872,7 @@ mod tests {
         let src = s
             .nodes
             .iter()
-            .position(|n| matches!(&n.kind, Kind::Directory(d) if d == "src/views"))
+            .position(|n| matches!(&n.kind, Kind::Directory { label, .. } if label == "src/views"))
             .unwrap();
         assert_eq!(s.nodes[src].count, 2);
         assert_eq!(s.nodes[0].count, 4);

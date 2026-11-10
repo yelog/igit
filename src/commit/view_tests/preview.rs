@@ -305,3 +305,32 @@ fn dragging_a_file_through_revision_preview_keeps_the_changelist_gesture() {
     assert_eq!(p.checks, checks);
     assert_eq!(fs::read(c.repos[0].path.join(".git/index")).unwrap(), index);
 }
+
+#[test]
+fn tree_motion_loads_only_the_preview_for_the_drawn_row() {
+    let (_dir, c) = fixture();
+    let mut p = CommitPanel::default();
+    p.refresh(&c).unwrap();
+    let mut t = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    let files: Vec<_> = p
+        .view
+        .iter()
+        .enumerate()
+        .filter_map(|(i, row)| row.file().map(|_| i))
+        .collect();
+    p.cursor = files[0];
+    draw(&mut p, &mut t, &c);
+    let initial_preview = p.diff_key.clone();
+    let checks = p.checks.clone();
+
+    for _ in files[0]..files[1] {
+        key(&mut p, &c, K::Char('j'));
+        assert_eq!(p.diff_key, initial_preview);
+    }
+    assert_eq!(p.cursor, files[1]);
+    assert_eq!(p.checks, checks);
+
+    draw(&mut p, &mut t, &c);
+    assert_eq!(p.diff_key, p.view[files[1]].id);
+    assert!(p.comparison_visible());
+}

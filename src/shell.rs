@@ -192,6 +192,7 @@ struct Shell {
     regions: workspace::Regions,
     pop_hits: Vec<(Rect, usize)>,
     key_picker: KeySequencePicker,
+    path_copy_pending: bool,
     window_prefix: Option<WindowPrefix>,
 }
 impl Shell {
@@ -241,6 +242,7 @@ impl Shell {
             regions: Default::default(),
             pop_hits: vec![],
             key_picker: KeySequencePicker::default(),
+            path_copy_pending: false,
             window_prefix: None,
         };
         s.log.icons = icons;
@@ -269,6 +271,9 @@ impl Shell {
         }
     }
     fn key_sequence(&self) -> Option<KeySequence> {
+        if self.path_copy_pending {
+            return Some(KeySequence::PathCopy);
+        }
         if self.pop.is_some() || self.ctx.repos.is_empty() {
             return None;
         }
@@ -282,7 +287,65 @@ impl Shell {
             _ => None,
         }
     }
+    fn path_copy_target(&self) -> Option<crate::ui::path_copy::Target> {
+        match &self.pop {
+            Some(Popup::Rollback(dialog)) => return dialog.path_copy_target(&self.ctx),
+            Some(_) => return None,
+            None => (),
+        }
+        match self.tab {
+            Commit => self.commit.path_copy_target(&self.ctx),
+            Log if self.log_load.ready() => self.log.path_copy_target(&self.ctx),
+            Push => self.push.path_copy_target(&self.ctx),
+            Stash => self.stash.path_copy_target(&self.ctx),
+            Conflicts => self.merge.path_copy_target(&self.ctx),
+            Log | Branch => None,
+        }
+    }
+
+    fn path_copy_event(&mut self, ev: &Event) -> bool {
+        if self.path_copy_pending {
+            let suffix = match self.key_picker.event(ev, KeySequence::PathCopy) {
+                SequenceEvent::Handled => return true,
+                SequenceEvent::Cancel => {
+                    self.cancel_key_sequences();
+                    return true;
+                }
+                SequenceEvent::Run(suffix) => Some(suffix),
+                SequenceEvent::Pass => match ev {
+                    Event::Key(key) if key.modifiers.is_empty() => match key.code {
+                        KeyCode::Char(ch @ ('y' | 'f' | 'n' | 'r')) => Some(ch),
+                        _ => None,
+                    },
+                    Event::Mouse(m) if m.kind == crossterm::event::MouseEventKind::Moved => {
+                        return false
+                    }
+                    _ => None,
+                },
+            };
+            self.cancel_key_sequences();
+            if let Some(suffix) = suffix {
+                if let Some(target) = self.path_copy_target() {
+                    self.action(target.copy(suffix));
+                }
+                return true;
+            }
+            return false;
+        }
+        if self.key_sequence().is_none()
+            && matches!(ev, Event::Key(key) if key.code == KeyCode::Char('y') && key.modifiers.is_empty())
+            && self.path_copy_target().is_some()
+        {
+            self.path_copy_pending = true;
+            self.key_picker =
+                KeySequencePicker::pending_with_delay(Instant::now(), self.config.hint_delay);
+            return true;
+        }
+        false
+    }
+
     fn cancel_key_sequences(&mut self) {
+        self.path_copy_pending = false;
         self.pending_keys = None;
         self.window_prefix = None;
         self.log.cancel_key_sequence();
@@ -1043,6 +1106,17 @@ impl Shell {
             _ => false,
         }
     }
+    fn list_motion(&self, event: &Event) -> bool {
+        self.pop.is_none()
+            && self.key_sequence().is_none()
+            && self.pending_keys.is_none()
+            && match self.tab {
+                Log => self.log.graph_motion(event),
+                Commit => self.commit.tree_motion(event),
+                _ => false,
+            }
+    }
+
     fn dispatch(&mut self, ev: &Event) {
         // Keep the reviewed focus/input context stable while synchronizing Kitty.
         // Resize and focus notifications still run; the worker has a short deadline.
@@ -1068,7 +1142,7 @@ impl Shell {
             self.panel_event(ev);
             return;
         }
-        if !self.configured_event(ev) {
+        if self.path_copy_pending || !self.configured_event(ev) {
             self.dispatch_builtin(ev);
         }
     }
@@ -1103,6 +1177,9 @@ impl Shell {
             && !matches!(self.pop, Some(Popup::Help { .. }))
         {
             self.open_help();
+            return;
+        }
+        if self.path_copy_event(ev) {
             return;
         }
         if self.pop.is_some() {
@@ -1783,14 +1860,11 @@ pub fn run() -> Result<()> {
                     dirty = app.config.mouse && app.hover(m.column, m.row);
                 }
                 _ => {
-                    let motion = app.tab == Log
-                        && app.pop.is_none()
-                        && app.key_sequence().is_none()
-                        && app.pending_keys.is_none()
-                        && app.log.graph_motion(&e);
+                    let motion = app.list_motion(&e);
+                    let tab = app.tab;
                     app.dispatch(&e);
                     dirty = true;
-                    if motion {
+                    if motion && app.tab == tab {
                         // Apply repeats already in the terminal in order, then paint once.
                         // A click or a command must see the new frame and its hit targets.
                         for _ in 1..64 {
@@ -1798,7 +1872,7 @@ pub fn run() -> Result<()> {
                                 break;
                             }
                             let next = event::read()?;
-                            if !app.log.graph_motion(&next) {
+                            if app.tab != tab || !app.list_motion(&next) {
                                 buffered = Some(next);
                                 break;
                             }
@@ -1836,6 +1910,9 @@ pub fn run() -> Result<()> {
         }
     }
     if let Some(executable) = app.restart.take() {
+        // exec does not run destructors. Cancel owned AI subprocess groups
+        // before replacing this process or starting the Windows successor.
+        drop(app);
         drop(term);
         drop(guard);
         let mut command = std::process::Command::new(executable);

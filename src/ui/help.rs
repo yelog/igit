@@ -137,7 +137,10 @@ impl HelpCommand {
         }
         let mut events = vec![];
         for token in sequence.split_whitespace() {
-            if matches!(token, "gg" | "yy" | "ym" | "ya" | "[c" | "]c") {
+            if matches!(
+                token,
+                "gg" | "yy" | "yf" | "yn" | "yr" | "ym" | "ya" | "[c" | "]c"
+            ) {
                 events.extend(
                     token
                         .chars()

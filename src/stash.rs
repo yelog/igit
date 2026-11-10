@@ -225,6 +225,13 @@ impl StashPanel {
         }
     }
 
+    pub(crate) fn path_copy_target(&self, c: &Context) -> Option<crate::ui::path_copy::Target> {
+        if self.focus != PaneId::Files || self.editing() {
+            return None;
+        }
+        self.files.path_copy_target(c)
+    }
+
     pub(crate) fn focused_pane(&self) -> PaneId {
         self.focus
     }
@@ -381,6 +388,10 @@ impl StashPanel {
                 ("l", "Expand directory"),
                 ("Space", "Toggle directory"),
                 ("Enter", "Open file comparison or toggle directory"),
+                ("yy", "Copy absolute path"),
+                ("yf", "Copy name"),
+                ("yn", "Copy name without extension"),
+                ("yr", "Copy relative path"),
                 ("g", "Select first row"),
                 ("G", "Select last row"),
                 ("PgDn", "Move down one page"),

@@ -1,4 +1,5 @@
 //! The merge window owns the document viewport, controls, and read-only overlays.
+mod highlight;
 mod revision;
 mod rows;
 mod syntax;
@@ -7,11 +8,12 @@ pub(crate) use revision::{RevisionDiff, RevisionEvent};
 use super::*;
 use crate::ui::idea::{clipped, clipped_path};
 use crossterm::event::MouseEvent;
+use highlight::{side_tint, HighlightCache};
 use ratatui::{
     style::Stylize,
     widgets::{Block, Clear},
 };
-use rows::{side_tint, Columns, RowMap, Rows, EDGE, EDITOR_BG};
+use rows::{Columns, RowMap, Rows, EDGE, EDITOR_BG};
 use similar::{ChangeTag, TextDiff};
 use std::collections::BTreeSet;
 
@@ -147,6 +149,7 @@ pub(super) struct EditorView {
     guides: bool,
     whitespace: bool,
     inner_diff: bool,
+    highlights: HighlightCache,
     pub overlay: Option<Overlay>,
     menu_index: usize,
     menu_hits: Vec<Hit>,
@@ -166,6 +169,7 @@ impl Default for EditorView {
             guides: true,
             whitespace: false,
             inner_diff: true,
+            highlights: HighlightCache::default(),
             overlay: None,
             menu_index: 0,
             menu_hits: Vec::new(),
@@ -178,6 +182,7 @@ impl Default for EditorView {
 
 impl EditorView {
     pub fn reset_document(&mut self) {
+        self.highlights.clear();
         self.expanded.clear();
         self.hscroll = [0; 3];
         self.limits = [0; 3];
@@ -790,7 +795,7 @@ impl MergePanel {
             self.view.limits[s] = map.widths[s].saturating_sub(code_width);
             if s == 1 {
                 if let Some((row, ch)) = caret {
-                    let raw = focus.lines[1].get(row).unwrap_or(&"");
+                    let raw = focus.lines[1].get(row).copied().map_or("", rows::line_body);
                     let prefix = raw.chars().take(ch).collect::<String>();
                     let x = rows::cell_width(&prefix);
                     // Leave room for a caret immediately after a full line.

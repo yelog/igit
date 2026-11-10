@@ -129,7 +129,10 @@ binding; the action's mouse button remains available.
 | `ai.model` | `""` | Model identifier sent to the configured service |
 | `ai.prompt` | See defaults | System prompt used to generate one message for all selected changes |
 | `ai.api_key_env` | `"IGIT_LLM_API_KEY"` | Environment variable containing the optional bearer token |
-| `ai.timeout_seconds` | `60` | Total request timeout, from `1` to `600` seconds |
+| `ai.timeout_seconds` | `60` | Timeout for each HTTP request, from `1` to `600` seconds |
+| `ai.input_budget_bytes` | `160000` | Maximum serialized JSON request bytes, from `8192` to `2097152` |
+| `ai.max_requests` | `32` | Maximum HTTP requests per generation, including summaries, reductions, and final output; from `1` to `128` |
+| `ai.total_timeout_seconds` | `300` | Whole-job deadline including preparation and final checks, from `1` to `3600` seconds |
 | `keybindings.hint_delay_ms` | `200` | Delay before showing sequence continuations, from `0` to `10000` milliseconds |
 | `keybindings.global` | See defaults | Switch workspace tabs, review Pull/Fetch, Roots, Actions, refresh, help, quit |
 | `keybindings.panes` | See defaults | Focus/cycle panes, resize/reset sizes, maximize/restore, optional Kitty synchronization, close a Log tab |
@@ -141,7 +144,7 @@ binding; the action's mouse button remains available.
 These settings do not store repository selections, message drafts, pane sizes,
 or display-menu choices. Existing workspace state remains
 under `IGIT_STATE_DIR` / `XDG_STATE_HOME/igit`; see [README](../README.md#ai-commit-messages-optional).
-API keys come only from the configured environmtent variable.
+API keys come only from the configured environment variable.
 
 `keybindings.commit.review` keeps its configuration name and defaults to `c`
 in Changes and Preview. It focuses Message and starts editing.
@@ -176,6 +179,9 @@ Return only the commit message, without Markdown fences.
 """
 api_key_env = "MY_LLM_API_KEY"
 timeout_seconds = 120
+input_budget_bytes = 160000
+max_requests = 32
+total_timeout_seconds = 300
 ```
 
 The endpoint must include the complete chat completions path. Remote services
@@ -185,30 +191,74 @@ service requires authentication. An unset or empty variable sends no bearer
 header, which supports local services without authentication. Do not put keys
 in the URL or settings file; inline `api_key` fields are not accepted.
 
-`prompt` is the system message and supports multiline Unicode text. IGit appends
-the selected patches as a separate user message: a JSON array of objects with
-`repository` and `patch` fields. No template placeholders are required. The
-response must provide a nonempty `choices[0].message.content`. Streaming and
-provider-specific native APIs are not used; configure a compatible endpoint.
+`prompt` is the final system message and supports multiline Unicode text. IGit
+appends structured selected-change data as a separate JSON user message. No
+template placeholders are required. Small selections include the complete
+per-file patch, repository, path, change kind, and line counts. Large selections
+use factual chunk summaries and a complete file manifest for the final request;
+intermediate requests use an internal summarization prompt. The response must
+provide a nonempty `choices[0].message.content`. Streaming and provider-specific
+native APIs are not used; configure a compatible endpoint.
 
 When a user `[ai]` table is present, its merged values take precedence over the
 workspace's old AI settings at startup. Without that table, saved workspace
 endpoint/model/prompt remain available. `S` edits those three values for the
 current session and saves the workspace fallback; it does not rewrite the user
-settings file. On restart, `[ai]` takes precedence again. Timeout and credential
-variable settings come from the user file or defaults.
+settings file. On restart, `[ai]` takes precedence again. Timeouts, the credential
+variable, and input limits come from the user file or defaults.
 
-**Generate message** (`A`) immediately sends one request containing only checked
-files in the current Roots, up to 160 KB of patch content in total. A staged file
-sends its index version; later unstaged edits and unchecked files are excluded.
-The button animates while waiting. Success fills and saves the shared draft
-directly, ready for normal editing. Repeated clicks do not start another request.
-Configuration, request, response, and save errors open an error dialog and keep
-the original draft. Newer edits made while waiting are also kept. Active input
-defers applying a response until editing ends. Missing endpoint/model settings
-show an error; `S` remains the explicit settings action. Restart after changing
-the user settings file. Each selected repository gets a separate Git commit
-with the shared message when you choose Commit.
+**Generate message** (`A`) immediately starts a background job for only the
+checked files in the current Roots. Private-index preparation, patch reads,
+HTTP requests, and final source checks run in the background.
+A staged file sends its index version; later unstaged edits and unchecked files
+are excluded. Git diffs use one context line and zero inter-hunk context,
+independently of personal `diff.context` settings. Binary changes use Git's
+metadata/marker, without sending raw binary contents.
+
+`input_budget_bytes` limits the actual serialized chat-completions request,
+including the system prompt, model, file metadata, and JSON escaping. The
+setting counts bytes. Choose a budget suitable for the model's context window
+and leave room for its response. If the prompt or file manifest cannot fit,
+IGit reports which input or setting to adjust.
+
+A small selection uses one request. When complete patches exceed the budget,
+IGit automatically splits at file, hunk, and line boundaries. Oversized single
+lines use explicitly labeled UTF-8 fragments. Every patch fragment is processed,
+regardless of file extension. Each chunk is
+summarized before a final request generates the shared message. If the combined
+summaries do not fit, bounded reduction requests combine them first, retaining
+the complete file manifest. Intermediate requests may use `max_tokens` to bound
+summary output, so the compatible service must support that field. Incomplete,
+oversized, or non-shrinking summaries fail without adopting partial output.
+
+Large selections therefore use more requests and may cost more and take longer.
+Requests run sequentially. `max_requests` includes all intermediate and final
+requests, with the final request reserved in advance. If the known chunk count
+already exceeds that cap, no HTTP request is sent. The existing `timeout_seconds`
+applies to each HTTP request; `total_timeout_seconds` also bounds preparation,
+all requests, and final checks. Cancellation or expiration stops active
+subprocesses. Total prepared patch content has a separate 32 MiB safety limit.
+Limit failures keep the draft and identify which setting or selection to adjust.
+
+The button animates during preparation, summarization, generation, and source
+checking. Narrow panes use a compact loading label. Browsing and message editing
+remain available, and repeated clicks do not start a second job. A change to
+Roots or the checked selection cancels the obsolete job. Before insertion, IGit
+checks the selected source versions, branch, and HEAD again; changes to unrelated
+staged files or later working edits to a selected staged file do not invalidate
+its index snapshot.
+
+Success fills and saves the shared draft directly, ready for normal editing.
+Configuration, preparation, request, response, and save errors open an error
+dialog and keep the original draft. Newer edits made while waiting are kept.
+Active editors, searches, and panel menus defer insertion and source checking
+until input ends. A completed editor session or refresh also invalidates a queued
+check; a delayed completion is checked again. The whole-job deadline continues
+while input is active. Missing endpoint/model settings show an error. Press `S`
+to edit the AI settings for the current session.
+Restart after changing the user settings file. Each selected repository gets a
+separate Git commit with the shared message when you choose Commit. Generation
+itself does not commit or push.
 
 ## Key syntax and contexts
 
