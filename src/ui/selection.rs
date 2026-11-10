@@ -493,6 +493,15 @@ pub(crate) fn copy_key(e: &Event) -> bool {
         && matches!(k.code, KeyCode::Char('c' | 'C') | KeyCode::Insert))
 }
 
+pub(crate) fn previous_word(text: &str, pos: usize) -> usize {
+    text[..pos]
+        .trim_end()
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| ch.is_whitespace())
+        .map_or(0, |(index, ch)| index + ch.len_utf8())
+}
+
 pub(crate) fn previous(text: &str, pos: usize) -> usize {
     if text[..pos].ends_with('\n') {
         return pos - 1;

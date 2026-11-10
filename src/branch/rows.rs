@@ -342,38 +342,6 @@ impl BranchPanel {
             area,
         );
     }
-
-    pub(super) fn action_enabled(&self, operation: Operation) -> bool {
-        if self.syncing() || self.read_status().is_some() {
-            return false;
-        }
-        let Some((root, branch)) = self.selection() else {
-            return false;
-        };
-        if branch.oid.is_empty() {
-            return false;
-        }
-        let locked = !branch.current && !branch.worktree.is_empty();
-        match operation {
-            Operation::Create => true,
-            Operation::Rename => !branch.remote && !locked,
-            Operation::Delete => !branch.remote && !branch.current && !locked,
-            Operation::Checkout => !branch.current && !locked,
-            Operation::Merge => {
-                !branch.current
-                    && self.repos.iter().find(|r| r.root == root).is_some_and(|r| {
-                        r.state
-                            .as_ref()
-                            .is_ok_and(|s| s.head.is_some() && s.oid.is_some())
-                    })
-            }
-            Operation::Pull => {
-                !branch.remote && !locked && branch.upstream.starts_with("refs/remotes/")
-            }
-            Operation::Push => !branch.remote && branch.upstream.starts_with("refs/remotes/"),
-            Operation::Track => branch.remote,
-        }
-    }
 }
 
 fn selection_bg(selected: bool, focused: bool) -> Color {

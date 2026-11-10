@@ -141,10 +141,11 @@ fn log_space_filters_take_priority_over_global_pull_and_keep_editor_keys() {
         app.dispatch(&key(KeyCode::Esc));
     }
     send(&mut app, ' ');
-    let hints = show_hints(&mut app, 150, 40);
+    let hints = screen(&mut app, 150, 40);
     for name in ["Branch", "User", "Date", "Paths"] {
-        assert!(hints.contains(&format!("Open {name} filter")));
+        assert!(!hints.contains(&format!("Open {name} filter")));
     }
+    assert!(app.key_picker.wakeup(Instant::now()).is_none());
     app.dispatch(&key(KeyCode::Esc));
     app.dispatch(&Event::Key(KeyEvent::new(
         KeyCode::Char('f'),
@@ -164,6 +165,137 @@ fn log_space_filters_take_priority_over_global_pull_and_keep_editor_keys() {
     }
     assert!(app.pop.is_none());
     assert!(screen(&mut app, 150, 40).contains("p f"));
+}
+
+#[test]
+fn log_space_filters_inline_navigation_and_cancellation_preserve_commit() {
+    let (repo, mut app) = fixture();
+    let head = git(repo.path(), &["rev-parse", "HEAD"]).unwrap();
+    let selected_message = |app: &mut Shell| {
+        app.log.event(&key(KeyCode::Char('y')), &app.ctx);
+        match app.log.event(&key(KeyCode::Char('m')), &app.ctx) {
+            Action::Copy { text, .. } => text,
+            _ => panic!("Expected selected commit message"),
+        }
+    };
+    let before = selected_message(&mut app);
+    for (right, context) in [
+        (0, "Log / Branch Filter"),
+        (1, "Log / User Filter"),
+        (2, "Log / Date Filter"),
+        (3, "Log / Paths Filter"),
+    ] {
+        app.dispatch(&key(KeyCode::Char(' ')));
+        screen(&mut app, 120, 36);
+        for _ in 0..right {
+            app.dispatch(&key(KeyCode::Right));
+        }
+        app.dispatch(&key(KeyCode::Enter));
+        assert_eq!(app.help_content().context(), context);
+        assert!(app.pop.is_none());
+        app.dispatch(&key(KeyCode::Esc));
+        assert_eq!(selected_message(&mut app), before);
+    }
+    for cancel in [
+        key(KeyCode::Esc),
+        Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        Event::Resize(80, 24),
+        Event::FocusLost,
+        key(KeyCode::Tab),
+        key(KeyCode::Char('o')),
+    ] {
+        app.dispatch(&key(KeyCode::Char(' ')));
+        screen(&mut app, 120, 36);
+        app.dispatch(&cancel);
+        assert!(app.key_sequence().is_none());
+        assert!(!screen(&mut app, 120, 36).contains("Filters: letter"));
+        app.dispatch(&key(KeyCode::Esc));
+    }
+    assert_eq!(selected_message(&mut app), before);
+    assert_eq!(git(repo.path(), &["rev-parse", "HEAD"]).unwrap(), head);
+    assert!(git(repo.path(), &["diff", "--cached"]).unwrap().is_empty());
+    assert!(git(repo.path(), &["diff"]).unwrap().is_empty());
+}
+
+#[test]
+fn log_space_filters_inline_focus_and_mouse_use_existing_labels() {
+    use ratatui::{backend::TestBackend, style::Modifier};
+    let (_repo, mut app) = fixture();
+    for (width, height) in [(44, 12), (80, 24), (120, 36), (180, 36)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let targets = app.log.filter_shortcut_targets().unwrap();
+        let original = terminal.backend().buffer().clone();
+        app.dispatch(&key(KeyCode::Char(' ')));
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert_eq!(app.log.filter_shortcut_targets().unwrap(), targets);
+        for (index, rect) in targets.iter().enumerate() {
+            let cell = &terminal.backend().buffer()[(rect.x, rect.y)];
+            assert_eq!(cell.symbol(), ["B", "U", "D", "P"][index]);
+            assert_eq!(cell.fg, crate::ui::ACCENT);
+            assert!(cell
+                .modifier
+                .contains(Modifier::BOLD | Modifier::UNDERLINED));
+            assert!(!terminal.backend().buffer()[(rect.x + 1, rect.y)]
+                .modifier
+                .contains(Modifier::UNDERLINED));
+            assert_eq!(
+                cell.bg,
+                if index == 0 {
+                    crate::ui::SEL
+                } else {
+                    original[(rect.x, rect.y)].bg
+                }
+            );
+        }
+        app.dispatch(&key(KeyCode::Right));
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert_eq!(
+            terminal.backend().buffer()[(targets[1].x, targets[1].y)].bg,
+            crate::ui::SEL
+        );
+        app.dispatch(&key(KeyCode::Left));
+        app.dispatch(&key(KeyCode::Enter));
+        assert_eq!(app.help_content().context(), "Log / Branch Filter");
+        app.dispatch(&key(KeyCode::Esc));
+        app.dispatch(&key(KeyCode::Char(' ')));
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        app.dispatch(&Event::Mouse(MouseEvent {
+            kind: event::MouseEventKind::Down(event::MouseButton::Left),
+            column: targets[2].x,
+            row: targets[2].y,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(app.help_content().context(), "Log / Date Filter");
+        assert!(app.key_sequence().is_none());
+        app.dispatch(&key(KeyCode::Esc));
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        for rect in targets {
+            assert!(!terminal.backend().buffer()[(rect.x, rect.y)]
+                .modifier
+                .contains(Modifier::UNDERLINED));
+        }
+    }
+}
+
+#[test]
+fn log_space_filters_file_history_retains_delayed_overlay() {
+    let (repo, mut app) = fixture();
+    app.log
+        .set_file_history(&app.ctx, &repo.path().join("file"))
+        .unwrap();
+    app.log.refresh(&app.ctx).unwrap();
+    screen(&mut app, 120, 36);
+    assert!(app.log.filter_shortcut_targets().is_none());
+    app.dispatch(&key(KeyCode::Char(' ')));
+    assert!(!screen(&mut app, 120, 36).contains("Open Paths filter"));
+    let hints = show_hints(&mut app, 120, 36);
+    for name in ["Branch", "User", "Date", "Paths"] {
+        assert!(hints.contains(&format!("Open {name} filter")));
+    }
+    app.dispatch(&key(KeyCode::Char('b')));
+    assert_eq!(app.help_content().context(), "Log / Branch Filter");
+    assert!(app.pop.is_none());
 }
 
 #[test]
@@ -346,6 +478,33 @@ fn key_sequence_context_changes_dismiss_hints_and_text_input_keeps_its_letters()
     assert!(app.log.editing());
     assert!(text.contains("gy[]"), "{text}");
     assert!(app.key_sequence().is_none());
+}
+
+#[test]
+fn search_ctrl_w_edits_queries_without_starting_window_shortcuts() {
+    let (_repo, mut app) = fixture();
+    for tab in [Commit, Log, Push, Branch, Stash] {
+        app.go(tab);
+        screen(&mut app, 120, 36);
+        app.dispatch(&key(KeyCode::Char('/')));
+        assert!(app.panel().editing(), "{tab:?}");
+        app.dispatch(&Event::Paste("retain remove   ".into()));
+        app.dispatch(&Event::Key(KeyEvent::new(
+            KeyCode::Char('w'),
+            KeyModifiers::CONTROL,
+        )));
+        let text = screen(&mut app, 120, 36);
+        assert!(
+            text.contains("retain") && !text.contains("remove"),
+            "{tab:?}: {text}"
+        );
+        assert!(app.window_prefix.is_none());
+        assert!(app.pending_keys.is_none());
+        assert!(app.key_sequence().is_none());
+        app.dispatch(&key(KeyCode::Char('x')));
+        assert!(screen(&mut app, 120, 36).contains("retain x"));
+        app.dispatch(&key(KeyCode::Esc));
+    }
 }
 
 #[test]

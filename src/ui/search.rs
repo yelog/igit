@@ -26,6 +26,7 @@ pub(crate) const BINDINGS: &[Binding] = &[
 pub(crate) const INPUT_BINDINGS: &[Binding] = &[
     ("Enter", "Find and jump to the first match"),
     ("Esc", "Cancel editing the search"),
+    ("Ctrl-w", "Delete word before cursor"),
     ("Ctrl-u", "Clear search input"),
 ];
 
@@ -274,6 +275,9 @@ impl<K: Eq> Search<K> {
                             }
                         }
                         (KeyCode::Esc, M::NONE) => self.prompt.draft = None,
+                        (KeyCode::Char('w'), M::CONTROL) => {
+                            draft.replace(selection::previous_word(text, pos)..pos, "");
+                        }
                         (KeyCode::Char('u'), M::CONTROL) => draft.replace(0..text.len(), ""),
                         (KeyCode::Char(ch), M::NONE) if !ch.is_control() => {
                             draft.replace(pos..pos, ch.encode_utf8(&mut [0; 4]))
@@ -532,6 +536,35 @@ mod tests {
             Input::Handled
         ));
         search.event(&Event::Paste(text.into()));
+    }
+
+    #[test]
+    fn search_ctrl_w_deletes_the_previous_word_and_preserves_the_suffix() {
+        for (prefix, suffix, remaining) in [
+            ("", "", ""),
+            ("   ", "", ""),
+            ("alpha beta   ", "", "alpha "),
+            ("alpha/path.rs", "", ""),
+            ("前缀\u{3000}中文\u{2003}", " suffix", "前缀\u{3000}"),
+            ("alpha e\u{301}👩‍💻 ", "界", "alpha "),
+            ("alpha be", "ta suffix", "alpha "),
+            ("", "untouched", ""),
+        ] {
+            let mut search = Search::default();
+            begin(&mut search, &format!("{prefix}{suffix}"));
+            search.prompt.draft.as_mut().unwrap().caret = prefix.len();
+            assert!(matches!(
+                search.event(&Event::Key(KeyEvent::new(KeyCode::Char('w'), M::CONTROL))),
+                Input::Handled
+            ));
+            let draft = search.prompt.draft.as_ref().unwrap();
+            let expected = format!("{remaining}{suffix}");
+            assert_eq!(draft.pattern.text, expected);
+            assert_eq!(draft.pattern.folded, fold(&expected));
+            assert_eq!(draft.caret, remaining.len());
+            search.event(&key(KeyCode::Enter));
+            assert_eq!(search.prompt.query.text, expected);
+        }
     }
 
     #[test]

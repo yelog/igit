@@ -10,6 +10,7 @@ mod preview;
 mod search;
 mod submodules;
 mod target;
+mod update;
 mod upstream;
 mod view;
 #[cfg(test)]
@@ -18,7 +19,10 @@ use crate::{
     core::{
         command, git, git_bytes,
         loading::{Load, Scope},
-        redact_remote_error, Context, Repo,
+        redact_remote_error,
+        strategy::Strategy,
+        update::published_graph,
+        Context, Repo,
     },
     ui::{
         icons::{Icon, IconMode},
@@ -63,6 +67,7 @@ struct Entry {
     tracking: Option<String>,
     config: upstream::Snapshot,
     n: usize,
+    behind: Option<usize>,
     logs: Vec<Out>,
     error: String,
 }
@@ -83,6 +88,8 @@ struct Job {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PushOutcome {
     Complete,
+    Updated(Strategy),
+    UpToDate,
     UpstreamNotSet(String),
 }
 
@@ -100,6 +107,8 @@ struct Preview {
 }
 enum Report {
     Row(usize, Result<PushOutcome, String>),
+    Phase(usize, &'static str),
+    Conflicts(usize),
     Done,
 }
 #[derive(Clone, Copy)]
@@ -122,6 +131,8 @@ enum Hit {
     Hooks,
     Tags,
     Fetch,
+    Strategy,
+    Conflicts,
     TargetSurface,
     TargetField,
     Upstream,
@@ -164,6 +175,9 @@ pub struct PushPanel {
     inflight: Option<Receiver<Report>>,
     busy: String,
     review: Vec<Job>,
+    pub(crate) strategy: Strategy,
+    review_strategy: Option<Strategy>,
+    conflicted: BTreeSet<usize>,
     follow_tags: bool,
     skip_hooks: bool,
     last_fetch: bool,
@@ -214,7 +228,39 @@ fn entry(i: usize, r: &Repo, t: Option<&Target>) -> Entry {
             .as_ref()
             .map(|h| format!("{h}..{head}"))
             .unwrap_or_else(|| head.clone());
-        let n: usize = git(&r.path, &["rev-list", "--count", &range])?.parse()?;
+        let (n, behind) = if let Some(tip) = &tracking {
+            let output = published_graph(&r.path)
+                .args([
+                    "rev-list",
+                    "--left-right",
+                    "--count",
+                    &format!("{head}...{tip}"),
+                    "--",
+                ])
+                .output()?;
+            if !output.status.success() {
+                bail!("Cannot compare the source and target history")
+            }
+            let text = String::from_utf8(output.stdout)?;
+            let mut counts = text.split_whitespace();
+            (
+                counts
+                    .next()
+                    .context("Outgoing count unavailable")?
+                    .parse()?,
+                Some(
+                    counts
+                        .next()
+                        .context("Incoming count unavailable")?
+                        .parse()?,
+                ),
+            )
+        } else {
+            (
+                git(&r.path, &["rev-list", "--count", &range])?.parse()?,
+                None,
+            )
+        };
         let logs = if n == 0 {
             Vec::new()
         } else {
@@ -238,6 +284,7 @@ fn entry(i: usize, r: &Repo, t: Option<&Target>) -> Entry {
             tracking,
             config,
             n,
+            behind,
             logs,
             error: String::new(),
         })
@@ -257,6 +304,26 @@ fn url(p: &Path, r: &str) -> Result<String> {
     }
     Ok(s)
 }
+
+fn advertised_tip(path: &Path, endpoint: &str, reference: &str) -> Result<Option<String>> {
+    let output = git(path, &["ls-remote", "--refs", "--", endpoint, reference])?;
+    let mut tip = None;
+    for line in output.lines() {
+        if let Some((oid, name)) = line.split_once('\t') {
+            if name == reference {
+                if tip.is_some()
+                    || !matches!(oid.len(), 40 | 64)
+                    || !oid.bytes().all(|byte| byte.is_ascii_hexdigit())
+                {
+                    bail!("Cannot verify the exact push target");
+                }
+                tip = Some(oid.to_owned());
+            }
+        }
+    }
+    Ok(tip)
+}
+
 fn job(repo: &Repo, x: &Entry) -> Result<Job> {
     if x.t.remote.starts_with('-')
         || x.t.remote == "."
@@ -307,6 +374,9 @@ impl Job {
             || upstream::Snapshot::read(&self.path, &self.branch)? != self.config
         {
             bail!("branch, HEAD, remote or upstream config changed; refresh and review");
+        }
+        if git(&self.path, &["ls-remote", "--get-url", "--", &self.url])? != self.url {
+            bail!("Push URL resolves to a different endpoint; inspect URL rewrite rules before retrying");
         }
         if git(
             &self.path,
@@ -366,15 +436,6 @@ impl FocusedPush {
     }
 }
 
-// Replacement refs and legacy grafts can invent parents that the remote will
-// never receive. A lease checks the old tip, not whether the update is a fast-forward.
-fn published_graph(repo: &Path) -> std::process::Command {
-    let mut cmd = command(repo);
-    cmd.env("GIT_NO_REPLACE_OBJECTS", "1")
-        .env("GIT_GRAFT_FILE", "");
-    cmd
-}
-
 fn push_one(j: &Job, tags: bool, nohooks: bool) -> Result<PushOutcome> {
     let p = &j.path;
     j.revalidate()?;
@@ -383,9 +444,9 @@ fn push_one(j: &Job, tags: bool, nohooks: bool) -> Result<PushOutcome> {
     }
     let dst = format!("refs/heads/{}", j.t.dst);
     // Query the *push* endpoint, which may differ from the fetch endpoint.
-    let actual = git(p, &["ls-remote", "--refs", "--", &j.url, &dst])
+    let actual = advertised_tip(p, &j.url, &dst)
         .map_err(|e| anyhow::anyhow!(redact_remote_error(&e.to_string(), &j.url)))?;
-    if actual.split_whitespace().next() != j.tracking.as_deref() {
+    if actual.as_deref() != j.tracking.as_deref() {
         bail!("remote tip differs from preview; Fetch, review target and retry (check push URL if different)")
     }
     if let Some(ref old) = j.tracking {
@@ -444,8 +505,72 @@ fn label(p: &Path) -> String {
         .map(|c| if c.is_control() { '�' } else { c })
         .collect()
 }
+
+fn failure_summary(error: &str) -> String {
+    const LIMIT: usize = 220;
+
+    let lines: Vec<_> = error
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let status = lines.first().copied().unwrap_or("Push failed");
+    let remote_lines = || {
+        lines
+            .iter()
+            .filter_map(|line| line.strip_prefix("remote:").map(str::trim))
+            .filter(|line| !line.is_empty())
+    };
+    let detail = remote_lines()
+        .find_map(|line| {
+            ["GL-HOOK-ERR:", "error:", "fatal:"]
+                .iter()
+                .find_map(|prefix| line.strip_prefix(prefix).map(str::trim))
+                .filter(|line| !line.is_empty())
+        })
+        .or_else(|| remote_lines().next());
+    let prefix = [
+        "Updated successfully; push failed:",
+        "Push failed:",
+        "Fetch failed; nothing pushed:",
+    ]
+    .iter()
+    .find(|prefix| status.starts_with(**prefix))
+    .copied()
+    .unwrap_or("");
+    let mut summary = match detail {
+        Some(detail) if !prefix.is_empty() => format!("{prefix} {detail}"),
+        Some(detail) => detail.to_owned(),
+        None => status.to_owned(),
+    };
+    if summary.chars().count() > LIMIT {
+        summary = summary.chars().take(LIMIT - 1).collect::<String>();
+        summary.push('…');
+    }
+    summary
+}
+
 impl PushPanel {
     const PANES: [PaneId; 3] = [PaneId::Outgoing, PaneId::PushFiles, PaneId::PushDetails];
+
+    pub(crate) fn set_strategy(&mut self, strategy: Strategy) {
+        if !self.busy() && self.strategy != strategy {
+            self.strategy = strategy;
+            self.review.clear();
+            self.review_strategy = None;
+        }
+    }
+
+    fn choose_strategy(&self) -> Action {
+        if self.busy() {
+            Action::Notice(
+                NoticeLevel::Info,
+                "Wait for update and push to finish".into(),
+            )
+        } else {
+            Action::ChooseUpdateStrategy
+        }
+    }
 
     pub(crate) fn path_copy_target(&self, c: &Context) -> Option<crate::ui::path_copy::Target> {
         if self.focus != 1 || self.editing() {
@@ -660,7 +785,13 @@ impl PushPanel {
         js.sort_by_key(|j| std::cmp::Reverse(j.path.components().count()));
         let count = js.len();
         self.review = js;
-        Action::Confirm{title:format!("Push {count} repositories?"),body:format!("{}\n\nHooks: {}   Follow annotated tags: {}\nEach repository is pushed separately; no force push.",lines.join("\n"),!self.skip_hooks,self.follow_tags),token:"push".into()}
+        self.review_strategy = Some(self.strategy);
+        let strategy_detail = if self.strategy == Strategy::Rebase {
+            "Rebase rewrites local commits and preserves merge topology."
+        } else {
+            "Merge preserves local commits and may create a merge commit."
+        };
+        Action::Confirm{title:format!("Push {count} repositories?"),body:format!("{}\n\nUpdate strategy: {}\nFetch each push target, update local commits when needed, then push.\n{}\nStop a repository on conflicts; resolve, continue and push again.\n\nHooks: {}   Follow annotated tags: {}\nEach repository is updated and pushed separately; no force push.",lines.join("\n"),self.strategy.label(),strategy_detail,!self.skip_hooks,self.follow_tags),token:"push".into()}
     }
     fn start(&mut self, c: &Context, fetch: bool) -> Action {
         if self.writes_blocked {
@@ -699,6 +830,13 @@ impl PushPanel {
                     "No reviewed push; select repositories and review again".into(),
                 );
             }
+            if self.review_strategy != Some(self.strategy) {
+                self.review.clear();
+                return Action::Notice(
+                    NoticeLevel::Warning,
+                    "Update strategy changed; review again".into(),
+                );
+            }
             if self.review.iter().any(|j| {
                 !c.scope.contains(&j.idx)
                     || c.repos.get(j.idx).is_none_or(|repo| repo.path != j.path)
@@ -728,6 +866,7 @@ impl PushPanel {
         let (tx, rx) = mpsc::channel();
         let js = std::mem::take(&mut self.review);
         let (tags, hooks) = (self.follow_tags, self.skip_hooks);
+        let strategy = self.strategy;
         let items: Vec<_> = self
             .entries
             .iter()
@@ -736,13 +875,19 @@ impl PushPanel {
             .collect();
         let parents: Vec<_> = c.repos.iter().map(|r| r.parent).collect();
         self.last_fetch = fetch;
-        self.busy = if fetch { "Fetching…" } else { "Pushing…" }.into();
+        self.busy = if fetch {
+            "Fetching…"
+        } else {
+            "Updating and pushing…"
+        }
+        .into();
         self.inflight = Some(rx);
         if fetch {
             self.results.clear()
         } else {
             for j in &js {
                 self.results.remove(&j.idx);
+                self.conflicted.remove(&j.idx);
             }
         }
         std::thread::spawn(move || {
@@ -765,7 +910,14 @@ impl PushPanel {
                     let res = if blocked.contains(&j.idx) {
                         Err("not executed: dependent submodule failed".into())
                     } else {
-                        push_one(&j, tags, hooks).map_err(|e| e.to_string())
+                        let result = update::execute(&j, strategy, tags, hooks, |phase| {
+                            let _ = tx.send(Report::Phase(j.idx, phase));
+                        })
+                        .map_err(|e| e.to_string());
+                        if result.is_err() && crate::core::update::conflicts(&j.path) {
+                            let _ = tx.send(Report::Conflicts(j.idx));
+                        }
+                        result
                     };
                     if res.is_err() {
                         let mut anc = parents[j.idx];
@@ -794,6 +946,13 @@ impl PushPanel {
                     self.progress_seq = self.progress_seq.wrapping_add(1);
                 }
                 Report::Done => finished = true,
+                Report::Phase(i, phase) => {
+                    self.busy = format!("{phase} · {}", label(Path::new(&c.repos[i].name)));
+                    self.progress_seq = self.progress_seq.wrapping_add(1);
+                }
+                Report::Conflicts(i) => {
+                    self.conflicted.insert(i);
+                }
             }
         }
         if !finished {
@@ -815,7 +974,7 @@ impl PushPanel {
         } else {
             NoticeLevel::Success
         };
-        let msg = if upstream_failures > 0 {
+        let mut msg = if upstream_failures > 0 {
             if n == 0 {
                 format!("Pushed · {upstream_failures} upstream setup failed · d details")
             } else {
@@ -824,10 +983,47 @@ impl PushPanel {
                 )
             }
         } else if n == 0 {
-            format!("{} complete", self.busy.trim_end_matches('…'))
+            if self.last_fetch {
+                "Fetching complete".into()
+            } else if self
+                .results
+                .values()
+                .any(|result| matches!(result, Ok(PushOutcome::Updated(_))))
+            {
+                format!(
+                    "Updated with {} and pushed successfully",
+                    self.strategy.label()
+                )
+            } else if self
+                .results
+                .values()
+                .all(|result| matches!(result, Ok(PushOutcome::UpToDate)))
+            {
+                "Up to date".into()
+            } else {
+                "Pushed successfully".into()
+            }
+        } else if !self.conflicted.is_empty() {
+            format!("{n} failed / not executed · Resolve conflicts, continue, then push again")
+        } else if n == 1 {
+            self.results
+                .values()
+                .find_map(|result| result.as_ref().err())
+                .map(|error| format!("1 failed · {}", failure_summary(error)))
+                .unwrap_or_else(|| "1 failed · select row for details".into())
         } else {
             format!("{n} failed / not executed · select row for details")
         };
+        for (root, result) in &self.results {
+            if let Err(error) = result {
+                let name = c
+                    .repos
+                    .get(*root)
+                    .map(|repo| label(Path::new(&repo.name)))
+                    .unwrap_or_else(|| "Repository".into());
+                msg.push_str(&format!("\n\n{name}:\n{error}"));
+            }
+        }
         let _ = self.refresh(c);
         self.inspect(c);
         Some((level, msg))
@@ -1020,6 +1216,8 @@ impl Panel for PushPanel {
                 Hit::Send => return self.review(c, false),
                 Hit::Retry => return self.review(c, true),
                 Hit::Fetch => return self.start(c, true),
+                Hit::Strategy => return self.choose_strategy(),
+                Hit::Conflicts => return Action::OpenConflicts,
                 Hit::Tags => self.follow_tags = !self.follow_tags,
                 Hit::Hooks => self.skip_hooks = !self.skip_hooks,
                 Hit::Target(i) => self.target(i),
@@ -1066,6 +1264,10 @@ impl Panel for PushPanel {
                 KeyCode::Char('P') => return self.review(c, false),
                 KeyCode::Char('R') => return self.review(c, true),
                 KeyCode::Char('F') => return self.start(c, true),
+                KeyCode::Char('s') => return self.choose_strategy(),
+                KeyCode::Char('C') if self.conflicted.iter().any(|i| c.scope.contains(i)) => {
+                    return Action::OpenConflicts
+                }
                 KeyCode::Char('v') => self.follow_tags = !self.follow_tags,
                 KeyCode::Char('x') => self.skip_hooks = !self.skip_hooks,
                 KeyCode::Char('d') => self.toggle_details(c),
@@ -1812,6 +2014,49 @@ mod tests {
             assert!(panel.poll(&context).is_none());
             panel.finish_loading(&context);
         }
+    }
+
+    #[test]
+    fn rejected_push_notification_includes_the_server_policy_reason() {
+        let directory = tempfile::tempdir().unwrap();
+        make(directory.path(), "app");
+        let context = Context::discover(directory.path()).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let mut panel = PushPanel {
+            inflight: Some(receiver),
+            busy: "Pushing…".into(),
+            results: [(
+                0,
+                Err("Push failed: remote: [01-commit-message-check] executed\nremote: GL-HOOK-ERR: Commit blocked: missing issueKey.\nTo example.invalid"
+                    .into()),
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        sender.send(Report::Done).unwrap();
+        let (_, message) = panel.poll(&context).unwrap();
+        assert_eq!(
+            message.lines().next(),
+            Some("1 failed · Push failed: Commit blocked: missing issueKey.")
+        );
+        assert!(message.contains("[01-commit-message-check]"), "{message}");
+        assert!(message.contains("To example.invalid"), "{message}");
+        panel.finish_loading(&context);
+    }
+
+    #[test]
+    fn push_failure_summary_prioritizes_errors_over_multiple_hook_banners() {
+        let error = "Updated successfully; push failed: remote: [first-check] executed\nremote: [second-check] executed\nremote:\nremote: error: Commit blocked: missing issueKey.\nerror: failed to push some refs";
+        assert_eq!(
+            failure_summary(error),
+            "Updated successfully; push failed: Commit blocked: missing issueKey."
+        );
+        assert_eq!(failure_summary("Permission denied"), "Permission denied");
+        let long = format!("Push failed:\nremote: GL-HOOK-ERR: {}", "界".repeat(250));
+        let summary = failure_summary(&long);
+        assert_eq!(summary.chars().count(), 220);
+        assert!(summary.ends_with('…'));
     }
 
     #[test]

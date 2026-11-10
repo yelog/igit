@@ -28,7 +28,7 @@ use crate::{
 };
 use anyhow::{bail, Result};
 use crossterm::{
-    cursor::Show,
+    cursor::{SetCursorStyle, Show},
     event::{
         self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
         EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -131,6 +131,7 @@ Runs Git on your local working trees; mutations require a reviewed confirmation.
 enum Popup {
     Rollback(Box<Rollback>),
     Update(update::Dialog),
+    UpdateStrategy(crate::ui::strategy::Selector),
     SoftwareUpdate,
     Scope {
         picked: BTreeSet<usize>,
@@ -211,6 +212,10 @@ struct Shell {
     window_prefix: Option<WindowPrefix>,
 }
 impl Shell {
+    fn message_cursor(&self) -> bool {
+        self.tab == Commit && self.pop.is_none() && self.commit.message_editing()
+    }
+
     #[cfg(test)]
     fn new(ctx: Context, icons: IconMode) -> Self {
         Self::with_config(
@@ -267,9 +272,16 @@ impl Shell {
         s.merge.icons = icons;
         s.branch.icons = icons;
         s.stash.icons = icons;
-        s.branch.shortcut_labels = s.config.shortcut_labels("branch");
         s.merge.shortcut_labels = s.config.shortcut_labels("merge");
         s.push.shortcut_labels = s.config.shortcut_labels("push");
+        match crate::core::strategy::load(&s.ctx.state_dir) {
+            Ok(strategy) => s.push.set_strategy(strategy),
+            Err(error) => s.notify(
+                NoticeLevel::Warning,
+                "Update strategy",
+                format!("Could not load the default strategy; using Merge: {error}"),
+            ),
+        }
         s
     }
     fn tab_available(&self, tab: Tab) -> bool {
@@ -613,6 +625,19 @@ impl Shell {
                 self.cancel_drags();
                 self.pop = self.commit.take_rollback().map(Popup::Rollback);
             }
+            Action::ChooseUpdateStrategy => {
+                if self.git_busy() {
+                    self.notice(
+                        "Wait for the Git operation before changing update strategy".into(),
+                    );
+                } else {
+                    self.cancel_key_sequences();
+                    self.cancel_drags();
+                    self.pop = Some(Popup::UpdateStrategy(crate::ui::strategy::Selector::new(
+                        self.push.strategy,
+                    )));
+                }
+            }
             Action::Confirm { title, body, token } => {
                 self.cancel_key_sequences();
                 self.pop = Some(Popup::Confirm {
@@ -733,6 +758,7 @@ impl Shell {
         match self.pop.as_ref() {
             Some(Popup::Rollback(dialog)) => dialog.keymap(),
             Some(Popup::Update(dialog)) => dialog.keymap(),
+            Some(Popup::UpdateStrategy(selector)) => selector.keymap(),
             Some(Popup::SoftwareUpdate) => self.software_update.keymap(),
             Some(Popup::Scope { .. }) => HelpContent::new(
                 HelpSection::new(
@@ -959,6 +985,31 @@ impl Shell {
             }
             return;
         }
+        if let Some(Popup::UpdateStrategy(selector)) = self.pop.as_mut() {
+            match selector.event(ev) {
+                crate::ui::strategy::Choice::Pending => (),
+                crate::ui::strategy::Choice::Cancel => self.pop = None,
+                crate::ui::strategy::Choice::Selected(strategy) => {
+                    match crate::core::strategy::save(&self.ctx.state_dir, strategy) {
+                        Ok(()) => {
+                            self.push.set_strategy(strategy);
+                            self.pop = None;
+                            self.notify(
+                                NoticeLevel::Success,
+                                "Update strategy",
+                                format!("Default update strategy: {}", strategy.label()),
+                            );
+                        }
+                        Err(error) => self.notify(
+                            NoticeLevel::Error,
+                            "Update strategy",
+                            format!("Could not save the default strategy: {error}"),
+                        ),
+                    }
+                }
+            }
+            return;
+        }
         let key = if let Event::Key(k) = ev {
             Some(k.code)
         } else {
@@ -978,7 +1029,16 @@ impl Shell {
             None
         };
         if let Some(Popup::Update(dialog)) = self.pop.as_mut() {
-            if dialog.event(ev, hit) {
+            let close = dialog.event(ev, hit);
+            let changed = dialog.strategy_changed();
+            let notice = dialog.take_notice();
+            if let Some(strategy) = changed {
+                self.push.set_strategy(strategy);
+            }
+            if let Some(message) = notice {
+                self.notify(NoticeLevel::Warning, "Update strategy", message);
+            }
+            if close {
                 self.pop = None;
             }
             return;
@@ -997,6 +1057,7 @@ impl Shell {
         self.pop = match popup {
             Popup::Rollback(_) => unreachable!("rollback events are handled above"),
             Popup::Update(_) => unreachable!("update events are handled above"),
+            Popup::UpdateStrategy(_) => unreachable!("strategy events are handled above"),
             Popup::SoftwareUpdate => unreachable!("software update events are handled above"),
             Popup::Notifications(_) => unreachable!("notification events are handled above"),
             Popup::Confirm {
@@ -1331,6 +1392,7 @@ impl Shell {
             if self.tab == Commit
                 && self.commit.message_editing()
                 && matches!(k.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::F(6))
+                && !(k.code == KeyCode::Tab && k.modifiers.is_empty())
                 && (k.modifiers.is_empty() || k.modifiers == KeyModifiers::SHIFT)
                 && !self.can_leave_panel()
             {
@@ -1491,7 +1553,7 @@ impl Shell {
         let seq = self.push.progress_seq;
         if let Some((level, message)) = self.push.poll(&self.ctx) {
             self.remote_refs_changed = true;
-            self.branch_refs_changed();
+            self.refresh();
             self.notify(level, "Push", message);
             change = true
         }
@@ -1583,6 +1645,10 @@ impl Shell {
             dialog.draw(f, a, self.icons, &mut self.pop_hits);
             return;
         }
+        if let Some(Popup::UpdateStrategy(selector)) = self.pop.as_mut() {
+            selector.draw(f, a, self.icons);
+            return;
+        }
         if let Some(Popup::Help { state, .. }) = self.pop.as_mut() {
             state.draw(f, a, self.icons);
             return;
@@ -1641,6 +1707,7 @@ impl Shell {
         let title = match pop {
             Popup::Rollback(_) => unreachable!("rollback is rendered above"),
             Popup::Update(_) => unreachable!("update is rendered above"),
+            Popup::UpdateStrategy(_) => unreachable!("strategy is rendered above"),
             Popup::SoftwareUpdate => unreachable!("software update is rendered above"),
             Popup::Scope { .. } => "Workspace roots",
             Popup::Help { .. } => "IGit · Keyboard shortcuts",
@@ -1668,6 +1735,7 @@ impl Shell {
         match pop {
             Popup::Rollback(_) => unreachable!("rollback is rendered above"),
             Popup::Update(_) => unreachable!("update is rendered above"),
+            Popup::UpdateStrategy(_) => unreachable!("strategy is rendered above"),
             Popup::SoftwareUpdate => unreachable!("software update is rendered above"),
             Popup::Confirm {
                 body: text,
@@ -1819,7 +1887,28 @@ impl Shell {
 struct Tty {
     kitty_marker: bool,
     enhanced_keys: bool,
+    message_cursor: bool,
 }
+
+fn set_message_cursor(
+    out: &mut impl io::Write,
+    current: &mut bool,
+    enabled: bool,
+) -> io::Result<()> {
+    if *current != enabled {
+        execute!(
+            out,
+            if enabled {
+                SetCursorStyle::SteadyBar
+            } else {
+                SetCursorStyle::DefaultUserShape
+            }
+        )?;
+        *current = enabled;
+    }
+    Ok(())
+}
+
 impl Tty {
     fn enter(&mut self, mouse: bool, marker: bool) -> Result<()> {
         enable_raw_mode()?;
@@ -1851,6 +1940,7 @@ impl Tty {
 
     fn leave(&mut self) -> Result<()> {
         let mut out = io::stdout();
+        let cursor = set_message_cursor(&mut out, &mut self.message_cursor, false);
         if self.kitty_marker {
             let _ = kitty::set_user_var(&mut out, false);
             self.kitty_marker = false;
@@ -1868,6 +1958,7 @@ impl Tty {
             Show
         );
         let raw = disable_raw_mode();
+        cursor?;
         screen?;
         raw?;
         Ok(())
@@ -1947,6 +2038,11 @@ pub fn run() -> Result<()> {
     let mut buffered = None;
     while !app.quit {
         let scheduled_redraw = if dirty {
+            set_message_cursor(
+                term.backend_mut(),
+                &mut guard.message_cursor,
+                app.message_cursor(),
+            )?;
             term.draw(|f| app.draw(f))?;
             app.software_update
                 .schedule(&app.ctx.state_dir, &app.config.updates)
@@ -2080,6 +2176,8 @@ mod notification_tests;
 mod startup_tests;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod update_strategy_tests;
 #[cfg(test)]
 mod update_tests;
 #[cfg(test)]

@@ -20,11 +20,13 @@ impl BranchPanel {
         if self.view_menu {
             return HelpContent::new(
                 HelpSection::new(
-                    "Branch / Group By",
+                    "Branch / View Options",
                     &[
-                        ("Space", "Toggle branch prefix grouping"),
-                        ("Enter", "Toggle branch prefix grouping"),
-                        ("Esc", "Close Group By menu"),
+                        ("j", "Select next view option"),
+                        ("k", "Select previous view option"),
+                        ("Space", "Apply selected view option"),
+                        ("Enter", "Apply selected view option"),
+                        ("Esc", "Close View Options menu"),
                     ],
                 ),
                 vec![],
@@ -73,7 +75,7 @@ impl BranchPanel {
                 ("Ctrl-b", "Move up one page"),
                 ("Ctrl-d", "Move down half a page"),
                 ("Ctrl-u", "Move up half a page"),
-                ("o", "Open Group By menu"),
+                ("o", "Open View Options menu"),
                 (":", "Open Actions (including Roots)"),
             ],
         )];

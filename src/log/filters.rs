@@ -372,6 +372,10 @@ impl LogPanel {
                 v.clear();
                 self.edit_changed(c);
             }
+            K::Char('w') if k.modifiers == Mods::CONTROL => {
+                v.truncate(crate::ui::selection::previous_word(v, v.len()));
+                self.edit_changed(c);
+            }
             K::Char(ch) if !k.modifiers.intersects(Mods::CONTROL | Mods::ALT) => {
                 v.push(ch);
                 self.edit_changed(c);

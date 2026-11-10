@@ -100,6 +100,22 @@ fn paste(p: &mut LogPanel, s: &str, c: &Context) {
 }
 
 #[test]
+fn search_ctrl_w_updates_branch_matches_before_applying() {
+    let (_dir, c, mut panel) = fixture();
+    panel.begin(Field::Branch, &c).unwrap();
+    key(&mut panel, K::Char('/'), Mods::NONE, &c);
+    paste(&mut panel, "origin/master 中文  ", &c);
+    key(&mut panel, K::Char('w'), Mods::CONTROL, &c);
+    assert!(panel.filter.branch.is_none());
+    key(&mut panel, K::Enter, Mods::CONTROL, &c);
+    assert_eq!(
+        panel.filter.branch.as_ref().unwrap().text(true),
+        "origin/master"
+    );
+    assert!(panel.branch_menu.is_none());
+}
+
+#[test]
 fn hover_cascades_star_is_independent_of_filter_and_survives_reopening() {
     let (_d, c, mut p) = fixture();
     let mut t = Terminal::new(TestBackend::new(160, 30)).unwrap();

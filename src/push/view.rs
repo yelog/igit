@@ -1,6 +1,6 @@
 //! Push presentation uses shared column geometry for text and mouse controls.
 use super::*;
-use crate::ui::idea::{button_style, clipped, clipped_path, repo_tint, CONFLICT};
+use crate::ui::idea::{button_style, clipped, clipped_path, repo_tint, tracking_spans, CONFLICT};
 use crate::ui::search::Highlight;
 use ratatui::widgets::{Block, Borders};
 use unicode_width::UnicodeWidthStr;
@@ -31,8 +31,16 @@ impl Columns {
             + 1;
         let space = width.saturating_sub(prefix);
         let arrow = icons.glyph(Icon::Right).width() + 2;
-        let branches = space >= 6 + 2 + 3 + arrow + 5;
-        let count = branches && space >= 6 + 2 + 4 + arrow + 9 + 2 + 2;
+        let tracking_width = panel
+            .entries
+            .iter()
+            .map(|entry| {
+                Line::from(tracking_spans(icons, (entry.n, entry.behind.unwrap_or(0)))).width()
+            })
+            .max()
+            .unwrap_or(0);
+        let count = tracking_width > 0 && space >= 3 + tracking_width;
+        let branches = space >= 6 + 2 + 3 + arrow + 5 + if count { tracking_width } else { 0 };
         let module = count
             && panel.entries.iter().any(|e| c.repos[e.idx].submodule)
             && space >= 8 + 2 + 4 + arrow + 10 + 2 + 2 + 2 + 9;
@@ -67,29 +75,17 @@ impl Columns {
             } else {
                 0
             },
-            if count {
-                max(
-                    panel
-                        .entries
-                        .iter()
-                        .map(|e| icons.glyph(Icon::Ahead).width() + e.n.to_string().width())
-                        .collect(),
-                    2,
-                )
-            } else {
-                0
-            },
+            if count { tracking_width } else { 0 },
             if module { 9 } else { 0 },
         ];
         let minimum = [
-            6,
+            if branches { 6 } else { 3 },
             if branches { 3 } else { 0 },
             if branches { 5 } else { 0 },
-            if count { 2 } else { 0 },
+            if count { tracking_width } else { 0 },
             if module { 9 } else { 0 },
         ];
-        let gaps =
-            usize::from(branches) * (2 + arrow) + usize::from(count) * 2 + usize::from(module) * 2;
+        let gaps = usize::from(branches) * (2 + arrow) + usize::from(module) * 2;
         while widths.iter().sum::<usize>() + gaps > space {
             let Some(i) = (0..widths.len())
                 .filter(|&i| widths[i] > minimum[i])
@@ -109,9 +105,9 @@ impl Columns {
         };
         let name = column(widths[0], 0);
         let source = column(widths[1], if branches { 2 } else { 0 });
+        let count = column(widths[3], 0);
         let arrow = column(if branches { arrow } else { 0 }, 0);
         let target = column(widths[2], 0);
-        let count = column(widths[3], usize::from(count) * 2);
         let module = column(widths[4], usize::from(module) * 2);
         Self {
             name,
@@ -244,7 +240,7 @@ impl PushPanel {
             return;
         }
         let hidden = self.checked.iter().any(|i| !c.scope.contains(i));
-        let footer_height = 2 + u16::from(self.footer_wraps(area.width)) + u16::from(hidden);
+        let footer_height = 3 + u16::from(self.footer_wraps(area.width)) + u16::from(hidden);
         let [body, controls] = Layout::vertical([C::Min(2), C::Length(footer_height)]).areas(area);
         let [outgoing, files, details] = if self.panes.maximized {
             Self::PANES.map(|id| {
@@ -348,6 +344,9 @@ impl PushPanel {
             {
                 controls.push((Icon::Undo, "Retry", Hit::Retry));
             }
+            if self.conflicted.iter().any(|root| c.scope.contains(root)) {
+                controls.push((Icon::Error, "Conflicts", Hit::Conflicts));
+            }
             self.draw_toolbar(f, toolbar, &controls);
         }
         let rows = self.rows();
@@ -448,6 +447,11 @@ impl PushPanel {
                         Style::new().fg(if e.n > 0 || selected { FG } else { MUTED }),
                         self.outgoing_search.field(&key, 1),
                     );
+                    if columns.count.width > 0 {
+                        pad_to(&mut line, columns.count.start);
+                        line.spans
+                            .extend(tracking_spans(icons, (e.n, e.behind.unwrap_or(0))));
+                    }
                     put(
                         &mut line,
                         columns.arrow,
@@ -467,12 +471,6 @@ impl PushPanel {
                             Hit::Target(id),
                         ));
                     }
-                    put(
-                        &mut line,
-                        columns.count,
-                        &format!("{}{}", icons.glyph(Icon::Ahead), e.n),
-                        muted,
-                    );
                     if repo.submodule {
                         put(&mut line, columns.module, "submodule", muted);
                     }
@@ -777,7 +775,7 @@ impl PushPanel {
     }
 
     fn draw_controls(&mut self, f: &mut Frame, area: Rect, c: &Context) {
-        if area.height < 2 {
+        if area.height < 3 {
             return;
         }
         f.render_widget(
@@ -789,7 +787,28 @@ impl PushPanel {
         let ready = self.has_push_candidate(c) && !self.busy() && self.read_status().is_none();
         let hidden = self.checked.iter().filter(|i| !c.scope.contains(i)).count();
         let wrap = self.footer_wraps(area.width);
-        let y = area.y + 1;
+        let strategy = format!(
+            " {} Update: {}",
+            self.shortcut_labels.get("s").map_or("s", String::as_str),
+            self.strategy.label()
+        );
+        let strategy_row = cell(
+            Rect::new(area.x, area.y + 1, area.width, 1),
+            0,
+            strategy.width(),
+        );
+        f.render_widget(
+            Paragraph::new(strategy).style(Style::new().fg(if self.busy() {
+                MUTED
+            } else {
+                ACCENT
+            })),
+            strategy_row,
+        );
+        if !self.busy() {
+            self.hits.push((strategy_row, Hit::Strategy));
+        }
+        let y = area.y + 2;
         let mut x = area.x;
         for (label, hit) in self.footer_options() {
             let row = cell(

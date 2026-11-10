@@ -9,6 +9,7 @@ pub(crate) mod panes;
 pub(crate) mod path_copy;
 pub(crate) mod search;
 pub(crate) mod selection;
+pub(crate) mod strategy;
 use crate::core::Context;
 use anyhow::Result;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -42,6 +43,7 @@ pub enum Action {
     OpenConflicts,
     CloseDialog,
     ReviewRollback,
+    ChooseUpdateStrategy,
     Confirm {
         title: String,
         body: String,

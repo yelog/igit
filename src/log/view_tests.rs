@@ -2,6 +2,7 @@
 mod branch_menu;
 mod column_order;
 mod commit_actions;
+mod filter_shortcuts;
 mod merge_diff;
 mod panes;
 mod path_selection;
@@ -90,6 +91,22 @@ fn navigation_rows(p: &LogPanel) -> Vec<(usize, Rect)> {
             _ => None,
         })
         .collect()
+}
+
+#[test]
+fn search_ctrl_w_updates_log_filters_without_applying_them() {
+    let (_dir, c, mut panel) = navigation_history();
+    for field in [Field::Text, Field::Refs, Field::Author, Field::Path] {
+        panel.begin(field, &c).unwrap();
+        panel.event(&Event::Paste("keep 中文 👩‍💻  ".into()), &c);
+        for expected in ["keep 中文 ", "keep ", "", ""] {
+            key(&mut panel, K::Char('w'), Mods::CONTROL, &c);
+            assert_eq!(panel.editor.as_ref().unwrap().1, expected);
+            assert!(panel.editing());
+        }
+        key(&mut panel, K::Esc, Mods::NONE, &c);
+        assert!(panel.filter.query.is_empty());
+    }
 }
 
 #[test]

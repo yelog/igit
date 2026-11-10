@@ -1,5 +1,28 @@
 use super::*;
 
+#[test]
+fn inline_message_tab_inserts_indentation_at_caret_and_replaces_selection() {
+    let (_dir, c) = fixture();
+    let mut p = CommitPanel::default();
+    p.refresh(&c).unwrap();
+    p.saved.message = Some("Subject\n中文 body".into());
+    p.edit_message(&c);
+    key(&mut p, &c, K::Home);
+    key(&mut p, &c, K::Tab);
+    assert!(p.message_editing());
+    assert_eq!(p.focused_pane(), PaneId::Message);
+    assert_eq!(p.buf, "Subject\n    中文 body");
+    assert_eq!(p.caret, "Subject\n    ".len());
+    p.event(&Event::Key(KeyEvent::new(K::Right, Mod::SHIFT)), &c);
+    p.event(&Event::Key(KeyEvent::new(K::Right, Mod::SHIFT)), &c);
+    key(&mut p, &c, K::Tab);
+    assert_eq!(p.buf, "Subject\n         body");
+    assert_eq!(p.caret, "Subject\n        ".len());
+    assert!(p.message_selection.range().is_none());
+    key(&mut p, &c, K::Esc);
+    assert_eq!(p.saved.message.as_deref(), Some("Subject\n         body"));
+}
+
 fn hit(p: &CommitPanel, predicate: impl Fn(&Hit) -> bool) -> Rect {
     p.hits.iter().find(|(_, h)| predicate(h)).unwrap().0
 }

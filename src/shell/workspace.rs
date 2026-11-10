@@ -265,6 +265,16 @@ impl Shell {
             )
         } else if self.pop.is_some() {
             ("F1 Help   Esc Back".into(), MUTED)
+        } else if self.key_sequence() == Some(KeySequence::LogFilters) {
+            (
+                if foot.width < 80 {
+                    "Filters  Esc cancel"
+                } else {
+                    "Filters: letter opens  Arrows select  Enter open  Esc cancel"
+                }
+                .into(),
+                ACCENT,
+            )
         } else if self.panel().editing() {
             (
                 if matches!(self.tab, Push | Conflicts | Branch)
@@ -323,6 +333,7 @@ impl Shell {
         );
         let search = self.focused_search().filter(|prompt| {
             self.pop.is_none()
+                && self.key_sequence() != Some(KeySequence::LogFilters)
                 && prompt.visible()
                 && (prompt.editing() || !self.commit.add_running())
         });
@@ -353,7 +364,14 @@ impl Shell {
             self.key_picker
                 .draw_items(f, work, &pending.prefix_label(), &pending.hints());
         } else if let Some(sequence) = self.key_sequence() {
-            self.key_picker.draw(f, work, sequence);
+            if let Some(targets) = (sequence == KeySequence::LogFilters)
+                .then(|| self.log.filter_shortcut_targets())
+                .flatten()
+            {
+                self.key_picker.draw_inline(f, &targets);
+            } else {
+                self.key_picker.draw(f, work, sequence);
+            }
         }
         if !matches!(self.pop, Some(Popup::Notifications(_))) {
             let mut viewport = f.area();

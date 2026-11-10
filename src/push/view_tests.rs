@@ -1,5 +1,6 @@
 use super::*;
 mod diff;
+mod strategy;
 mod text_selection;
 use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
@@ -255,7 +256,11 @@ fn push_columns_align_sources_targets_counts_and_submodules_in_terminal_cells() 
                 find_text(&buf, rows[3], "devicemate");
             }
             if width >= 180 || icons != IconMode::Ascii {
-                assert_eq!(positions(icons.glyph(Icon::Ahead), &rows).len(), 1);
+                assert_eq!(
+                    positions(icons.glyph(Icon::Ahead), &[rows[0], rows[7]]).len(),
+                    1
+                );
+                assert!(!text_at(&buf, rows[1]).contains(icons.glyph(Icon::Ahead)));
             }
             let target = find_text(&buf, rows[0], "origin:");
             assert_eq!(buf[(target, rows[0].y)].fg, ACCENT);
@@ -629,7 +634,7 @@ fn maximized_push_preserves_footer_scope_and_saved_dividers() {
         for &(other, area) in p.panes.nodes() {
             assert_eq!(!area.is_empty(), id == other);
             if other == id {
-                assert_eq!(area, Rect::new(0, 0, 120, 34));
+                assert_eq!(area, Rect::new(0, 0, 120, 33));
                 assert!(!p.panes.can_resize(area, Axis::Width));
                 assert!(!p.panes.can_resize(area, Axis::Height));
             }

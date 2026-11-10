@@ -260,6 +260,8 @@ commands! {
         "review-and-push" => "P", COMMIT;
     }
     "push" {
+        "update-strategy" => "s", PUSH;
+        "resolve-conflicts" => "C", PUSH;
         "copy-id" => "yy", PUSH_REPOS;
         "copy-message" => "ym", PUSH_REPOS;
         "copy-author" => "ya", PUSH_REPOS;

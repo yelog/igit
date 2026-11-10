@@ -84,6 +84,7 @@ fn branch_layout_tracks_roots_and_keeps_actions_on_the_selected_repository() {
     );
     assert_eq!(snapshot(&first), first_before);
     assert_eq!(snapshot(&second), second_before);
+    app.notifications.dismiss_all_live();
     ready(&mut app);
     screen(&mut app, 80, 25);
     let left = app.branch.panes.rect(PaneId::BranchRepos).unwrap();
@@ -94,7 +95,10 @@ fn branch_layout_tracks_roots_and_keeps_actions_on_the_selected_repository() {
         modifiers: KeyModifiers::NONE,
     }));
     let first_again = screen(&mut app, 80, 25);
-    assert!(first_again.contains("first-only") && !first_again.contains("second-only"));
+    assert!(
+        first_again.contains("first-only") && !first_again.contains("second-only"),
+        "{first_again}"
+    );
     app.dispatch(&Event::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: left.x + 2,
@@ -428,13 +432,25 @@ fn branch_commands_can_be_remapped_without_leaking_into_name_input_or_roots() {
     assert!(app.branch.editing());
     app.dispatch(&key(KeyCode::Esc));
     let text = screen(&mut app, 120, 36);
-    assert!(text.contains("R Rename") && text.contains("n New"));
+    let footer = text.lines().last().unwrap();
+    assert!(
+        footer.contains("R Rename") && footer.contains("n New"),
+        "{text}"
+    );
+    assert_eq!(text.matches("R Rename").count(), 1);
+    assert_eq!(text.matches("n New").count(), 1);
+    let wide = screen(&mut app, 180, 36);
+    let footer = wide.lines().last().unwrap();
+    assert!(
+        footer.contains("U Pull") && footer.contains("P Push"),
+        "{wide}"
+    );
     app.dispatch(&key(KeyCode::Char('o')));
     assert!(!app.branch.editing());
     app.dispatch(&key(KeyCode::F(9)));
-    assert_eq!(app.help_content().context(), "Branch / Group By");
+    assert_eq!(app.help_content().context(), "Branch / View Options");
     app.dispatch(&key(KeyCode::Char('n')));
-    assert_eq!(app.help_content().context(), "Branch / Group By");
+    assert_eq!(app.help_content().context(), "Branch / View Options");
     screen(&mut app, 120, 36);
     let commit = app.regions.tab(Commit);
     app.dispatch(&Event::Mouse(MouseEvent {

@@ -234,6 +234,18 @@ impl KeySequencePicker {
         self.draw_items(f, area, &prefix, &shortcuts);
     }
 
+    pub fn draw_inline(&mut self, f: &mut Frame, targets: &[Rect]) {
+        self.clear_geometry();
+        if targets.is_empty() {
+            return;
+        }
+        self.show_at = None;
+        self.columns = targets.len();
+        self.selected = self.selected.min(targets.len() - 1);
+        f.buffer_mut()
+            .set_style(targets[self.selected], Style::new().bg(SEL));
+    }
+
     pub fn draw_items(
         &mut self,
         f: &mut Frame,

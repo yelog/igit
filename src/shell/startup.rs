@@ -143,10 +143,7 @@ impl LoadingView {
         } else {
             ""
         };
-        f.render_widget(
-            Paragraph::new(title).style(Style::new().fg(MUTED)),
-            context,
-        );
+        f.render_widget(Paragraph::new(title).style(Style::new().fg(MUTED)), context);
         let frames: &[&str] = if self.icons == IconMode::Ascii {
             &["|", "/", "-", "\\"]
         } else {

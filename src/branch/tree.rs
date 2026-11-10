@@ -1,5 +1,11 @@
-use super::model::{Branch, Repository};
-use std::collections::{BTreeMap, BTreeSet};
+use super::{
+    model::{Branch, Repository},
+    recent::LastUsed,
+};
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet},
+};
 
 pub(super) enum Kind {
     Folder { open: bool, count: usize },
@@ -20,8 +26,16 @@ pub(super) struct Tree {
     pub rows: Vec<Row>,
     pub cursor: usize,
     flat: bool,
+    sort: Sort,
     collapsed: BTreeSet<String>,
     remembered: BTreeMap<usize, (String, usize)>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Sort {
+    #[default]
+    Name,
+    RecentlyUsed,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -33,8 +47,6 @@ enum Priority {
 }
 
 impl Priority {
-    const ORDER: [Self; 3] = [Self::Current, Self::Default, Self::Other];
-
     fn of(branch: &Branch, default: Option<&str>) -> Self {
         if branch.current {
             Self::Current
@@ -46,23 +58,46 @@ impl Priority {
     }
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct Order {
+    priority: Priority,
+    recent: Reverse<Option<LastUsed>>,
+}
+
+impl Sort {
+    fn order(self, branch: &Branch, repo: &Repository) -> Order {
+        let recent = self == Self::RecentlyUsed && !branch.remote;
+        Order {
+            priority: Priority::of(
+                branch,
+                repo.metadata.default_branch.as_deref().filter(|_| !recent),
+            ),
+            recent: Reverse(
+                recent
+                    .then(|| repo.metadata.last_used.get(&branch.reference).copied())
+                    .flatten(),
+            ),
+        }
+    }
+}
+
 #[derive(Default)]
 struct Node<'a> {
     children: BTreeMap<&'a str, Node<'a>>,
     branch: Option<&'a Branch>,
-    priority: Priority,
+    order: Order,
     count: usize,
 }
 
 impl<'a> Node<'a> {
-    fn insert(&mut self, branch: &'a Branch, priority: Priority) {
+    fn insert(&mut self, branch: &'a Branch, order: Order) {
         let mut node = self;
         for part in branch.name.split('/') {
-            node.priority = node.priority.min(priority);
+            node.order = node.order.min(order);
             node.count += 1;
             node = node.children.entry(part).or_default();
         }
-        node.priority = node.priority.min(priority);
+        node.order = node.order.min(order);
         node.count += 1;
         node.branch = Some(branch);
     }
@@ -83,6 +118,7 @@ impl Tree {
         }
         let mut tree = Self {
             flat: self.flat,
+            sort: self.sort,
             ..Self::default()
         };
         tree.rebuild(repo);
@@ -103,6 +139,7 @@ impl Tree {
     pub fn for_refresh(&self) -> Self {
         Self {
             flat: self.flat,
+            sort: self.sort,
             collapsed: self.collapsed.clone(),
             ..Self::default()
         }
@@ -119,6 +156,7 @@ impl Tree {
 
     pub fn install(&mut self, prepared: Self, repo: Option<&Repository>) {
         if self.flat != prepared.flat
+            || self.sort != prepared.sort
             || self.collapsed != prepared.collapsed
             || prepared.rows.first().map(|row| row.root) != repo.map(|repo| repo.root)
         {
@@ -137,7 +175,6 @@ impl Tree {
         self.clear_rows();
         let Some(repo) = repo else { return };
         let root = repo.root;
-        let default = repo.metadata.default_branch.as_deref();
         match &repo.state {
             Ok(state) => {
                 for remote in [false, true] {
@@ -161,18 +198,16 @@ impl Tree {
                             kind: Kind::Message,
                         });
                     } else if self.flat {
-                        for priority in Priority::ORDER {
-                            for branch in branches
-                                .clone()
-                                .filter(|b| Priority::of(b, default) == priority)
-                            {
-                                self.branch(root, 1, &branch.name, branch);
-                            }
+                        let mut branches: Vec<_> = branches.collect();
+                        branches
+                            .sort_by_key(|branch| (self.sort.order(branch, repo), &branch.name));
+                        for branch in branches {
+                            self.branch(root, 1, &branch.name, branch);
                         }
                     } else {
                         let mut tree = Node::default();
                         for branch in branches {
-                            tree.insert(branch, Priority::of(branch, default));
+                            tree.insert(branch, self.sort.order(branch, repo));
                         }
                         self.children(root, &id, &tree, 1);
                     }
@@ -232,15 +267,15 @@ impl Tree {
     }
 
     fn children(&mut self, root: usize, prefix: &str, node: &Node<'_>, depth: usize) {
-        for priority in Priority::ORDER {
-            for (&name, child) in node.children.iter().filter(|(_, n)| n.priority == priority) {
-                if let Some(branch) = child.branch {
-                    self.branch(root, depth, name, branch);
-                } else {
-                    let id = format!("{prefix}{name}/");
-                    if self.folder(root, &id, name, depth, child.count) {
-                        self.children(root, &id, child, depth + 1);
-                    }
+        let mut children: Vec<_> = node.children.iter().collect();
+        children.sort_by_key(|(name, child)| (child.order, *name));
+        for (&name, child) in children {
+            if let Some(branch) = child.branch {
+                self.branch(root, depth, name, branch);
+            } else {
+                let id = format!("{prefix}{name}/");
+                if self.folder(root, &id, name, depth, child.count) {
+                    self.children(root, &id, child, depth + 1);
                 }
             }
         }
@@ -248,6 +283,15 @@ impl Tree {
 
     pub fn grouped(&self) -> bool {
         !self.flat
+    }
+
+    pub fn sort(&self) -> Sort {
+        self.sort
+    }
+
+    pub fn set_sort(&mut self, sort: Sort, repo: Option<&Repository>) {
+        self.sort = sort;
+        self.rebuild(repo);
     }
 
     pub fn toggle_grouping(&mut self, repo: Option<&Repository>) {

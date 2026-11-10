@@ -27,6 +27,7 @@ pub(super) struct Metadata {
     pub default_branch: Option<String>,
     pub tracking: BTreeMap<String, (usize, usize)>,
     pub last_commits: BTreeMap<String, String>,
+    pub last_used: BTreeMap<String, super::recent::LastUsed>,
 }
 
 impl Metadata {
@@ -158,6 +159,9 @@ impl Snapshot {
                     }
                 })
             });
+        if for_display {
+            metadata.last_used = super::recent::read(repo, &branches);
+        }
         Ok((
             Self {
                 head,

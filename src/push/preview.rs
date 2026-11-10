@@ -68,12 +68,13 @@ pub(super) fn read(request: Request) -> Loaded {
         (
             outgoing_files(p, e),
             format!(
-                "{} {} {}:{}\n\n{} outgoing commits.\n{}\n\nUpstream: {}\n{}\n\n{}\n\nFiles include all outgoing commits, counted once per path.\nChanges with no cumulative diff open their latest outgoing change.",
+                "{} {} {}:{}\n\n{} outgoing commits · {} incoming commits.\n{}\n\nUpstream: {}\n{}\n\n{}\n\nFiles include all outgoing commits, counted once per path.\nChanges with no cumulative diff open their latest outgoing change.",
                 e.source,
                 request.icons.glyph(Icon::Right),
                 e.t.remote,
                 e.t.dst,
                 e.n,
+                e.behind.map_or_else(|| "unknown".into(), |count| count.to_string()),
                 e.tracking
                     .as_ref()
                     .map(|h| format!("Last fetched tip: {:.10}", h))
@@ -183,6 +184,11 @@ fn with_result(desc: &str, result: Option<&Result<PushOutcome, String>>) -> Stri
             format!("PUSH SUCCEEDED; UPSTREAM NOT SET\n{warning}\n\n{desc}")
         }
         Some(Ok(PushOutcome::Complete)) => format!("Operation completed successfully.\n\n{desc}"),
+        Some(Ok(PushOutcome::Updated(strategy))) => format!(
+            "Updated with {} and pushed successfully.\n\n{desc}",
+            strategy.label()
+        ),
+        Some(Ok(PushOutcome::UpToDate)) => format!("Up to date; nothing to push.\n\n{desc}"),
         None => desc.into(),
     }
 }

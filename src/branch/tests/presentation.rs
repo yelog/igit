@@ -293,38 +293,39 @@ fn long_names_keep_gone_status_and_narrow_details_and_clicks_target_the_same_bra
 }
 
 #[test]
-fn action_buttons_only_offer_operations_for_the_focused_branch() {
-    let (_temp, c, mut p) = fixture();
-    tracking(&c, "main", "main");
-    reload(&mut p, &c);
-    let operations = |p: &mut BranchPanel| {
-        screen(p, &c, 120, 36);
-        p.hits
-            .iter()
-            .filter_map(|(_, h)| {
-                if let Hit::Operation(op) = h {
-                    Some(*op)
-                } else {
-                    None
+fn branch_heading_replaces_action_toolbar_and_keeps_grouping_clickable() {
+    let (_temp, mut c, mut panel) = fixture();
+    for scope in [vec![0, 1], vec![0]] {
+        c.scope = scope.into_iter().collect();
+        reload(&mut panel, &c);
+        for icons in [IconMode::Ascii, IconMode::Unicode, IconMode::NerdFont] {
+            panel.icons = icons;
+            for (width, height) in [(120, 36), (80, 25), (44, 12)] {
+                let text = screen(&mut panel, &c, width, height);
+                for label in [
+                    "a New",
+                    "d Delete",
+                    "Enter Switch",
+                    "m Merge",
+                    "r Rename",
+                    "U Pull",
+                    "P Push",
+                ] {
+                    assert!(!text.contains(label), "{text}");
                 }
-            })
-            .collect::<Vec<_>>()
-    };
-    select(&mut p, 0, "refs/heads/main");
-    assert_eq!(
-        operations(&mut p),
-        [
-            Operation::Create,
-            Operation::Rename,
-            Operation::Pull,
-            Operation::Push
-        ]
-    );
-    p.tree.cursor = 0;
-    assert!(operations(&mut p).is_empty());
-    select(&mut p, 0, "refs/remotes/origin/main");
-    assert_eq!(
-        operations(&mut p),
-        [Operation::Create, Operation::Checkout, Operation::Merge]
-    );
+                let eye = hit_rect(&panel, |hit| matches!(hit, Hit::ViewOptions));
+                let pane = panel.panes.rect(PaneId::Branches).unwrap();
+                assert_eq!(eye.y, pane.y + 1);
+                assert_eq!(panel.viewport.area.y, eye.bottom());
+                let cursor = panel.tree.cursor;
+                click(&mut panel, &c, pane.x + 1, eye.y);
+                assert_eq!(panel.tree.cursor, cursor);
+                assert!(panel.input.is_none() && panel.review.is_none());
+                click(&mut panel, &c, eye.x + 1, eye.y);
+                assert!(panel.view_menu);
+                assert!(screen(&mut panel, &c, width, height).contains("Branch Prefix"));
+                key(&mut panel, &c, K::Esc);
+            }
+        }
+    }
 }

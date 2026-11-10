@@ -282,6 +282,31 @@ impl LogPanel {
             self.button(f, r, &format!(" {name} "), false, h.clone());
         }
     }
+    pub(crate) fn filter_shortcut_targets(&self) -> Option<[Rect; 4]> {
+        let mut targets = [Rect::default(); 4];
+        for (index, field) in [Field::Branch, Field::Author, Field::Date, Field::Path]
+            .into_iter()
+            .enumerate()
+        {
+            let (rect, _) = self
+                .hits
+                .iter()
+                .find(|(_, hit)| matches!(hit, Hit::Filter(candidate) if *candidate == field))?;
+            let right = self
+                .hits
+                .iter()
+                .find_map(|(clear, hit)| {
+                    matches!(hit, Hit::Clear(candidate) if *candidate == field).then_some(clear.x)
+                })
+                .unwrap_or(rect.right());
+            let width = cells(field.label()).min(right.saturating_sub(rect.x + 1));
+            if width < 2 {
+                return None;
+            }
+            targets[index] = one(rect.x, rect.y, width);
+        }
+        Some(targets)
+    }
     pub(super) fn draw_layout(&mut self, f: &mut Frame, a: Rect, c: &Context) {
         f.render_widget(Block::default().style(fg(INK).bg(PANEL)), a);
         if !self.pane_visible(self.focus) {
@@ -470,9 +495,20 @@ impl LogPanel {
             if !active && value.width <= cells(&label) {
                 label = prefix.to_owned();
             }
+            let label = clipped(&label, value.width.saturating_sub(1).into());
+            let label = if self.key_sequence()
+                == Some(crate::ui::key_sequence::KeySequence::LogFilters)
+                && label.starts_with(&prefix[..1])
+            {
+                Line::from(vec![
+                    Span::styled(label[..1].to_owned(), fg(BLUE).bold().underlined()),
+                    Span::raw(label[1..].to_owned()),
+                ])
+            } else {
+                Line::from(label)
+            };
             f.render_widget(
-                Paragraph::new(clipped(&label, value.width.saturating_sub(1).into()))
-                    .style(fg(if active { INK } else { DIM })),
+                Paragraph::new(label).style(fg(if active { INK } else { DIM })),
                 value,
             );
             self.hit(chip, Hit::Filter(k));

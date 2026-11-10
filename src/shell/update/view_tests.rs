@@ -12,6 +12,11 @@ fn fixture(kind: Kind, count: usize) -> Dialog {
     Dialog {
         kind,
         strategy: Strategy::Merge,
+        default_strategy: Strategy::Merge,
+        selector: None,
+        state_dir: PathBuf::new(),
+        changed_strategy: None,
+        notice: None,
         stage: Stage::Review(vec![]),
         ready: count,
         rows: (0..count)
@@ -138,7 +143,9 @@ fn update_panels_fit_controls_columns_and_repository_icons_in_all_modes() {
                 }
                 if kind == Kind::Pull {
                     assert!(
-                        text.contains("m Merge") && text.contains("r Rebase"),
+                        text.contains("m Merge")
+                            && text.contains("r Rebase")
+                            && text.contains("s Default: Merge"),
                         "{text}"
                     );
                     assert!(text.contains("origin:main"), "{text}");
@@ -343,5 +350,128 @@ fn update_tab_and_shift_tab_move_the_visible_button_focus() {
         assert!(!dialog.event(&key(K::Tab), None));
         assert!(dialog.event(&key(K::Enter), None));
         assert!(matches!(dialog.stage, Stage::Review(_)));
+    }
+}
+
+fn preference_context(state_dir: PathBuf) -> Context {
+    Context {
+        repos: vec![],
+        scope: Default::default(),
+        workspace: state_dir.parent().unwrap().to_path_buf(),
+        state_dir,
+    }
+}
+
+#[test]
+fn pull_inherits_the_application_default_and_keeps_radio_overrides_temporary() {
+    let directory = tempfile::tempdir().unwrap();
+    let first = preference_context(directory.path().join("first"));
+    let second = preference_context(directory.path().join("second"));
+    let initial = Dialog::new(Kind::Pull, &first);
+    assert_eq!(initial.strategy, Strategy::Merge);
+    assert_eq!(initial.default_strategy, Strategy::Merge);
+    strategy::save(&first.state_dir, Strategy::Rebase).unwrap();
+
+    let mut dialog = Dialog::new(Kind::Pull, &second);
+    assert_eq!(dialog.strategy, Strategy::Rebase);
+    assert_eq!(dialog.default_strategy, Strategy::Rebase);
+    dialog.event(&key(K::Char('m')), None);
+    assert_eq!(dialog.strategy, Strategy::Merge);
+    assert_eq!(dialog.default_strategy, Strategy::Rebase);
+    assert_eq!(dialog.strategy_changed(), None);
+    assert_eq!(strategy::load(&first.state_dir).unwrap(), Strategy::Rebase);
+    assert!(dialog.event(&key(K::Esc), None));
+    assert_eq!(Dialog::new(Kind::Pull, &first).strategy, Strategy::Rebase);
+}
+
+#[test]
+fn pull_selector_cancel_preserves_the_override_and_confirmation_updates_both_strategies() {
+    let directory = tempfile::tempdir().unwrap();
+    let context = preference_context(directory.path().join("workspace"));
+    let mut dialog = Dialog::new(Kind::Pull, &context);
+    dialog.event(&key(K::Char('r')), None);
+    dialog.event(&key(K::Char('s')), None);
+    assert_eq!(dialog.keymap().context(), "Update / Default strategy");
+    dialog.event(&key(K::Char('r')), None);
+    assert!(!dialog.event(&key(K::Esc), None));
+    assert!(dialog.selector.is_none());
+    assert_eq!(dialog.strategy, Strategy::Rebase);
+    assert_eq!(dialog.default_strategy, Strategy::Merge);
+    assert_eq!(dialog.strategy_changed(), None);
+    assert!(!directory.path().join("update-strategy.json").exists());
+
+    dialog.event(&key(K::Char('s')), None);
+    dialog.event(&key(K::Char('r')), None);
+    assert!(!dialog.event(&key(K::Enter), None));
+    assert!(dialog.selector.is_none());
+    assert_eq!(dialog.strategy, Strategy::Rebase);
+    assert_eq!(dialog.default_strategy, Strategy::Rebase);
+    assert_eq!(dialog.strategy_changed(), Some(Strategy::Rebase));
+    assert_eq!(dialog.strategy_changed(), None);
+    assert_eq!(
+        strategy::load(&context.state_dir).unwrap(),
+        Strategy::Rebase
+    );
+    let other = preference_context(directory.path().join("other-workspace"));
+    assert_eq!(Dialog::new(Kind::Pull, &other).strategy, Strategy::Rebase);
+}
+
+#[test]
+fn pull_reports_preference_read_and_save_errors_without_adopting_the_failed_default() {
+    let directory = tempfile::tempdir().unwrap();
+    let context = preference_context(directory.path().join("workspace"));
+    let file = directory.path().join("update-strategy.json");
+    std::fs::write(&file, "\"private-invalid-value\"").unwrap();
+    let mut dialog = Dialog::new(Kind::Pull, &context);
+    assert_eq!(dialog.strategy, Strategy::Merge);
+    let notice = dialog.take_notice().unwrap();
+    assert!(notice.contains("Cannot read") && !notice.contains("private-invalid-value"));
+    assert!(dialog.take_notice().is_none());
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "\"private-invalid-value\""
+    );
+
+    strategy::save(&context.state_dir, Strategy::Rebase).unwrap();
+    let mut dialog = Dialog::new(Kind::Pull, &context);
+    dialog.event(&key(K::Char('m')), None);
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir(&file).unwrap();
+    std::fs::write(file.join("keep"), "preserved").unwrap();
+    dialog.event(&key(K::Char('s')), None);
+    dialog.event(&key(K::Char('m')), None);
+    dialog.event(&key(K::Enter), None);
+    assert_eq!(dialog.default_strategy, Strategy::Rebase);
+    assert_eq!(dialog.strategy, Strategy::Merge);
+    assert_eq!(dialog.strategy_changed(), None);
+    assert!(dialog
+        .take_notice()
+        .unwrap()
+        .contains("previous default retained"));
+    assert_eq!(
+        std::fs::read_to_string(file.join("keep")).unwrap(),
+        "preserved"
+    );
+}
+
+#[test]
+fn pull_default_control_stays_visible_with_an_override_and_the_selector_owns_input() {
+    for icons in [IconMode::Ascii, IconMode::Unicode, IconMode::NerdFont] {
+        for (width, height) in [(44, 12), (80, 24), (120, 36)] {
+            let mut dialog = fixture(Kind::Pull, 3);
+            dialog.strategy = Strategy::Rebase;
+            let (_, hits, text) = draw(&mut dialog, width, height, icons);
+            assert!(text.contains("s Default: Merge"), "{text}");
+            assert!(!click(&mut dialog, &hits, DEFAULT_STRATEGY));
+            let (_, hits, text) = draw(&mut dialog, width, height, icons);
+            assert!(text.contains("Default Update Strategy"), "{text}");
+            assert!(hits.is_empty());
+            dialog.event(&key(K::Char('j')), Some(ROW + 2));
+            assert_eq!(dialog.pos, 0);
+            assert_eq!(dialog.strategy, Strategy::Rebase);
+            assert!(!dialog.event(&key(K::Esc), None));
+            assert!(dialog.selector.is_none());
+            assert!(matches!(dialog.stage, Stage::Review(_)));
+        }
     }
 }

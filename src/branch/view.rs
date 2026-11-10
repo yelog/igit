@@ -75,35 +75,8 @@ impl BranchPanel {
     }
 
     fn draw_branches(&mut self, f: &mut Frame, inner: Rect) {
-        let compact = inner.width < 44;
         let eye_label = format!(" {} ", self.icons.glyph(Icon::Preview));
         let eye_width = (eye_label.width() as u16).min(inner.width);
-        let buttons = [
-            ("a", "New", "New", Operation::Create),
-            ("d", "Delete", "Del", Operation::Delete),
-            ("Enter", "Switch", "Go", Operation::Checkout),
-            ("m", "Merge", "Merge", Operation::Merge),
-            ("r", "Rename", "Rename", Operation::Rename),
-            ("U", "Pull", "Pull", Operation::Pull),
-            ("P", "Push", "Push", Operation::Push),
-        ]
-        .map(|(key, full, short, op)| {
-            let key = self.shortcut_labels.get(key).map_or(key, String::as_str);
-            let label = if compact {
-                format!("{key} {short}")
-            } else {
-                format!(" {key} {full} ")
-            };
-            (label, op)
-        });
-        let total: usize =
-            buttons.iter().map(|(s, _)| s.width()).sum::<usize>() + buttons.len() - 1;
-        let lead = u16::from(compact);
-        let bar_height = if total + usize::from(eye_width + lead) > usize::from(inner.width) {
-            2
-        } else {
-            1
-        };
         let narrow = inner.width < 64;
         let detached = self
             .repository()
@@ -118,15 +91,19 @@ impl BranchPanel {
         } else {
             0
         };
-        let [bar, status_line, heading, list, details] = Layout::vertical([
-            Constraint::Length(bar_height),
+        let [heading, status_line, list, details] = Layout::vertical([
+            Constraint::Length(1),
             Constraint::Length(u16::from(show_status)),
-            Constraint::Length(u16::from(inner.height >= 10)),
             Constraint::Fill(1),
             Constraint::Length(detail_height),
         ])
         .areas(inner);
-        let eye = Rect::new(bar.right() - eye_width, bar.y, eye_width, bar.height.min(1));
+        let eye = Rect::new(
+            heading.right() - eye_width,
+            heading.y,
+            eye_width,
+            heading.height,
+        );
         if !eye.is_empty() {
             f.render_widget(
                 Paragraph::new(eye_label).style(button_style(self.view_menu)),
@@ -134,32 +111,10 @@ impl BranchPanel {
             );
             self.hits.push((eye, Hit::ViewOptions));
         }
-        let row_start = bar.x + lead.min(bar.width);
-        let (mut x, mut y, mut right) = (row_start, bar.y, eye.x);
-        for (label, op) in buttons {
-            let width = label.width() as u16;
-            if x > row_start && x.saturating_add(width) > right {
-                x = row_start;
-                y += 1;
-                right = bar.right();
-            }
-            if y >= bar.bottom() || x >= right {
-                break;
-            }
-            let width = width.min(right - x);
-            let rect = Rect::new(x, y, width, 1);
-            let enabled = self.action_enabled(op);
-            let style = if enabled {
-                button_style(false)
-            } else {
-                Style::new().fg(MUTED)
-            };
-            f.render_widget(Paragraph::new(label).style(style), rect);
-            if enabled {
-                self.hits.push((rect, Hit::Operation(op)));
-            }
-            x = x.saturating_add(width + 1);
-        }
+        let heading = Rect {
+            width: heading.width.saturating_sub(eye_width),
+            ..heading
+        };
         self.viewport.area = list;
         self.keep_branch_visible();
         let columns = self.branch_columns(row_width(list, len));
@@ -168,7 +123,7 @@ impl BranchPanel {
             ("Upstream", columns.upstream),
             ("Last Commit", columns.last_commit),
         ] {
-            if let Some(x) = offset {
+            if let Some(x) = offset.filter(|&x| x < heading.width) {
                 f.render_widget(
                     Paragraph::new(label).style(Style::new().fg(MUTED)),
                     Rect::new(heading.x + x, heading.y, heading.width - x, heading.height),

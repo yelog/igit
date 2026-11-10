@@ -336,13 +336,15 @@ impl Shell {
                 String::new()
             };
             return format!(
-                "{repos}{} Group By  {} New  {} Delete  {} Switch  {} Merge  {} Rename  F1 Help",
+                "{repos}{} View Options  {} New  {} Delete  {} Switch  {} Merge  {} Rename  {} Pull  {} Push  F1 Help",
                 self.config.label("branch", "view-options"),
                 self.config.label("branch", "create"),
                 self.config.label("branch", "delete"),
                 self.config.label("branch", "checkout"),
                 self.config.label("branch", "merge"),
-                self.config.label("branch", "rename")
+                self.config.label("branch", "rename"),
+                self.config.label("branch", "pull"),
+                self.config.label("branch", "push"),
             );
         }
         let conflicts = if self.tab_available(Conflicts) {

@@ -130,6 +130,8 @@ impl PushPanel {
                     ("P", "Review push for visible checked repos"),
                     ("R", "Review and retry failed visible repos only"),
                     ("F", "Fetch Push targets in Roots"),
+                    ("s", "Set default Merge / Rebase update strategy"),
+                    ("C", "Open conflicts after an interrupted update"),
                     ("v", "Toggle follow tags"),
                     ("x", "Toggle skip push hooks"),
                     ("d", "Toggle diff / details"),

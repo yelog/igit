@@ -412,6 +412,34 @@ fn history_search_keeps_rows_highlights_matches_and_preserves_ids_on_arrival() {
 }
 
 #[test]
+fn search_ctrl_w_preserves_suffix_and_supports_undo_redo() {
+    let mut center = Center::default();
+    center.push(Level::Info, "Search", "alpha tail");
+    let mut history = center.open_history(None);
+    center.history_event(&key(KeyCode::Char('/')), &mut history);
+    center.history_event(&Event::Paste("alpha 中文 👩‍💻 tail".into()), &mut history);
+    for _ in 0..4 {
+        center.history_event(&key(KeyCode::Left), &mut history);
+    }
+    let ctrl = |ch| Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL));
+    center.history_event(&ctrl('w'), &mut history);
+    assert_eq!(history.query(), "alpha 中文 tail");
+    assert_eq!(history.input.as_ref().unwrap().caret(), "alpha 中文 ".len());
+    center.history_event(&ctrl('z'), &mut history);
+    assert_eq!(history.query(), "alpha 中文 👩‍💻 tail");
+    assert_eq!(
+        history.input.as_ref().unwrap().caret(),
+        "alpha 中文 👩‍💻 ".len()
+    );
+    center.history_event(&ctrl('y'), &mut history);
+    assert_eq!(history.query(), "alpha 中文 tail");
+    center.history_event(&ctrl('w'), &mut history);
+    assert_eq!(history.query(), "alpha tail");
+    center.history_event(&key(KeyCode::Enter), &mut history);
+    assert_eq!(history.query(), "alpha tail");
+}
+
+#[test]
 fn search_edits_whole_graphemes_and_supports_undo_redo_cancel_and_no_matches() {
     let mut center = Center::default();
     let id = center.push(Level::Info, "提交", "Body");

@@ -142,7 +142,7 @@ impl CommitPanel {
                             ("Esc", "Save message and return to actions"),
                             ("Ctrl-w", "Delete word before cursor"),
                             ("Ctrl-u", "Delete to line start"),
-                            ("Tab", "Save message and focus next pane"),
+                            ("Tab", "Insert indentation (4 spaces)"),
                             ("Shift-Tab", "Save message and focus previous pane"),
                             ("F6", "Save message and focus next pane"),
                         ],

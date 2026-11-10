@@ -266,6 +266,9 @@ impl Dialog {
         self.list_area = Rect::default();
         self.detail_area = Rect::default();
         if area.is_empty() {
+            if let Some(selector) = &mut self.selector {
+                selector.draw(f, area, icons);
+            }
             return;
         }
         let available = area.inner(Margin::new(
@@ -330,8 +333,14 @@ impl Dialog {
         } else {
             0
         };
+        let toolbar_height =
+            if self.pull_review() && self.toolbar_width(icons, false) > usize::from(inner.width) {
+                2
+            } else {
+                1
+            };
         let [toolbar, summary, header, list, details] = Layout::vertical([
-            C::Length(1),
+            C::Length(toolbar_height),
             C::Length(1),
             C::Length(u16::from(inner.height >= 8)),
             C::Min(1),
@@ -378,6 +387,58 @@ impl Dialog {
         self.draw_rows(f, list, icons, &columns, hits);
         self.draw_details(f, details, icons);
         self.draw_footer(f, footer, hits);
+        if let Some(selector) = &mut self.selector {
+            hits.clear();
+            selector.draw(f, area, icons);
+        }
+    }
+
+    fn strategy_options(&self, icons: IconMode, full: bool) -> [(usize, String, bool); 2] {
+        [
+            (
+                Strategy::Merge,
+                MERGE,
+                "m",
+                if full {
+                    "Merge incoming changes"
+                } else {
+                    "Merge"
+                },
+            ),
+            (
+                Strategy::Rebase,
+                REBASE,
+                "r",
+                if full {
+                    "Rebase current branches"
+                } else {
+                    "Rebase"
+                },
+            ),
+        ]
+        .map(|(strategy, id, key, label)| {
+            let selected = self.strategy == strategy;
+            let radio = match (icons, selected) {
+                (IconMode::Ascii, true) => "(o)",
+                (IconMode::Ascii, false) => "( )",
+                (_, true) => "◉",
+                (_, false) => "○",
+            };
+            (id, format!(" {radio} {key} {label} "), selected)
+        })
+    }
+
+    fn toolbar_width(&self, icons: IconMode, full: bool) -> usize {
+        self.strategy_options(icons, full)
+            .iter()
+            .map(|(_, text, _)| text.width() + 1)
+            .sum::<usize>()
+            + 1
+            + self.default_control().width()
+    }
+
+    fn default_control(&self) -> String {
+        format!(" s Default: {} ", self.default_strategy.label())
     }
 
     fn draw_toolbar(
@@ -388,38 +449,9 @@ impl Dialog {
         hits: &mut Vec<(Rect, usize)>,
     ) {
         if self.pull_review() {
-            let full = area.width >= 66;
+            let full = self.toolbar_width(icons, true) <= usize::from(area.width);
             let mut x = area.x + u16::from(area.width > 0);
-            for (strategy, id, key, label) in [
-                (
-                    Strategy::Merge,
-                    MERGE,
-                    "m",
-                    if full {
-                        "Merge incoming changes"
-                    } else {
-                        "Merge"
-                    },
-                ),
-                (
-                    Strategy::Rebase,
-                    REBASE,
-                    "r",
-                    if full {
-                        "Rebase current branches"
-                    } else {
-                        "Rebase"
-                    },
-                ),
-            ] {
-                let selected = self.strategy == strategy;
-                let radio = match (icons, selected) {
-                    (IconMode::Ascii, true) => "(o)",
-                    (IconMode::Ascii, false) => "( )",
-                    (_, true) => "◉",
-                    (_, false) => "○",
-                };
-                let text = format!(" {radio} {key} {label} ");
+            for (id, text, selected) in self.strategy_options(icons, full) {
                 let width = (text.width() as u16).min(area.right().saturating_sub(x));
                 let row = Rect::new(x, area.y, width, area.height.min(1));
                 if row.is_empty() {
@@ -435,6 +467,22 @@ impl Dialog {
                 );
                 hits.push((row, id));
                 x = row.right().saturating_add(1);
+            }
+            let (x, y) = if area.height > 1 {
+                (area.x + u16::from(area.width > 0), area.y + 1)
+            } else {
+                (x, area.y)
+            };
+            let label = self.default_control();
+            let control = Rect::new(
+                x,
+                y,
+                (label.width() as u16).min(area.right().saturating_sub(x)),
+                u16::from(area.height > 0),
+            );
+            if !control.is_empty() {
+                f.render_widget(Paragraph::new(label).style(Style::new().fg(MUTED)), control);
+                hits.push((control, DEFAULT_STRATEGY));
             }
         } else {
             let label = match (&self.stage, self.kind, self.strategy) {
@@ -566,6 +614,13 @@ impl Dialog {
             .title(Span::styled(format!(" {title} "), Style::new().fg(MUTED)));
         let inner = block.inner(area).inner(Margin::new(1, 0));
         let mut layout = TextLayout::default();
+        if let Some(notice) = &self.notice {
+            layout.push(
+                Line::styled(notice.as_str(), Style::new().fg(CONFLICT)),
+                inner.width,
+                Wrap::Word,
+            );
+        }
         if let Some(row) = self.rows.get(self.pos) {
             let (status, color) = self.status(row);
             layout.push(

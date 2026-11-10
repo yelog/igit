@@ -5,6 +5,7 @@ mod loading;
 mod model;
 mod navigation;
 mod operations;
+mod recent;
 mod rows;
 mod search;
 mod sync;
@@ -28,8 +29,7 @@ use model::{Branch, Repository, Snapshot};
 use navigation::{Motion, Viewport};
 use operations::{Operation, Review};
 use ratatui::{layout::Rect, Frame};
-use std::collections::BTreeMap;
-use tree::{Kind, Tree};
+use tree::{Kind, Sort, Tree};
 
 pub(crate) const MERGE_REVIEW_TOKEN: &str = "branch:merge";
 
@@ -45,9 +45,9 @@ struct NameInput {
 enum Hit {
     Repository(usize),
     Row(usize),
-    Operation(Operation),
     ViewOptions,
     GroupBy,
+    Sort(Sort),
     MenuSurface,
     Submit,
     Cancel,
@@ -73,13 +73,13 @@ pub struct BranchPanel {
     loading: loading::Loading,
     goto_pending: bool,
     view_menu: bool,
+    view_menu_cursor: usize,
     hits: Vec<(Rect, Hit)>,
     input: Option<NameInput>,
     review: Option<Review>,
     syncing: Option<std::sync::mpsc::Receiver<(NoticeLevel, String)>>,
     pub(crate) panes: PaneLayout,
     pub(crate) icons: IconMode,
-    pub(crate) shortcut_labels: BTreeMap<&'static str, String>,
 }
 
 impl BranchPanel {
@@ -386,7 +386,6 @@ impl BranchPanel {
                             let repo = self.repository_index().map(|index| &self.repos[index]);
                             self.tree.toggle(repo);
                         }
-                        Some(Hit::Operation(op)) => return self.operate(op, c),
                         _ => (),
                     }
                 }
@@ -444,13 +443,13 @@ impl Panel for BranchPanel {
         } else if self.input.is_some() {
             "Enter Review   Ctrl-U Clear   Esc Cancel"
         } else if self.view_menu {
-            "Space/Enter Toggle   Esc Close   F1 Help"
+            "j/k Select   Space/Enter Apply   Esc Close   F1 Help"
         } else if self.focused_pane() == PaneId::BranchRepos {
             "j/k Repos   Enter Branches   Tab Panes   F1 Help"
         } else if self.has_repository_pane() {
-            "Tab Repos   o Group By   a New   d Delete   Enter Switch   m Merge   r Rename   U Pull   P Push   F1 Help"
+            "Tab Repos   o View Options   a New   d Delete   Enter Switch   m Merge   r Rename   U Pull   P Push   F1 Help"
         } else {
-            "o Group By   a New   d Delete   Enter Switch   m Merge   r Rename   U Pull   P Push   F1 Help"
+            "o View Options   a New   d Delete   Enter Switch   m Merge   r Rename   U Pull   P Push   F1 Help"
         }
     }
 

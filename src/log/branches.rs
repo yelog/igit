@@ -459,6 +459,13 @@ impl Menu {
                             self.query.clear();
                             self.search();
                         }
+                        K::Char('w') if k.modifiers == Mods::CONTROL => {
+                            self.query.truncate(crate::ui::selection::previous_word(
+                                &self.query,
+                                self.query.len(),
+                            ));
+                            self.search();
+                        }
                         K::Char(c) if !k.modifiers.intersects(Mods::ALT | Mods::CONTROL) => {
                             self.query.push(c);
                             self.search();

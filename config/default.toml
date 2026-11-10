@@ -215,6 +215,8 @@ review = ["c"]
 review-and-push = ["P"]
 
 [keybindings.push]
+update-strategy = ["s"]
+resolve-conflicts = ["C"]
 copy-id = ["y y"]
 copy-message = ["y m"]
 copy-author = ["y a"]

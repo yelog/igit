@@ -1,6 +1,9 @@
 pub(crate) mod loading;
+pub(crate) mod paths;
 pub(crate) mod revision;
 mod state;
+pub(crate) mod strategy;
+pub(crate) mod update;
 
 use anyhow::{bail, Context as _, Result};
 use std::{

@@ -7,6 +7,7 @@ use unicode_width::UnicodeWidthStr;
 
 mod navigation;
 mod presentation;
+mod sorting;
 mod tracking;
 
 fn folder_index(panel: &BranchPanel, id: &str) -> usize {

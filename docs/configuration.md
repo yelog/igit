@@ -73,6 +73,53 @@ indicators. Manual checks still work. The `update` binding follows the normal-mo
 remapping rules; the version label and Actions remain clickable entry points.
 Update Center's `r` bypasses the cache. See [updating](installation.md#updating).
 
+## Update strategy
+
+Pull and Push share one application-wide **Merge** / **Rebase** preference,
+initially **Merge**. In Push, press `s` or click **Update: Merge/Rebase** in
+the footer. In Pull review, press `s` or click **Default: Merge/Rebase** to
+open the same **Default Update Strategy** selector. Arrows, `j/k`, and `m/r`
+move the choice; Enter saves, clicking an option saves directly, and Esc
+cancels without changing the saved preference.
+
+The preference is stored in `update-strategy.json` directly under the global
+state root, alongside `update-check.json` and above workspace-specific state
+directories. Resolution is:
+
+1. Nonempty `$IGIT_STATE_DIR`.
+2. `$XDG_STATE_HOME/igit` when `XDG_STATE_HOME` is nonempty.
+3. `~/.local/state/igit` on macOS/Linux.
+4. On Windows, `%LOCALAPPDATA%\igit\state`, then `%APPDATA%\igit\state`,
+   `%USERPROFILE%\AppData\Local\igit\state`, then Unix-style HOME as a fallback.
+
+Saving writes a temporary file in the same directory and atomically replaces
+the preference. The choice applies across workspaces and restarts. A missing
+file uses Merge; an unreadable or invalid preference reports a read error
+without replacing the file. A failed save reports the error and retains the
+previous default.
+
+This preference is application state, outside `settings.toml` and Git config.
+Choosing it does not write `pull.rebase`, branch configuration, or repository
+files. Pull inherits the saved default whenever its review opens; its existing
+`m/r` toolbar choices override only that Pull. Saving through `s` changes both
+the current Pull strategy and the default used by future Pull and Push reviews.
+The Push review captures the strategy, and changing it requires a fresh review;
+strategy changes are unavailable while Git work is running. Branch's `U`
+continues to require a fast-forward and does not inherit this preference.
+
+The Push entry points can be remapped independently:
+
+```toml
+[keybindings.push]
+update-strategy = ["s"]
+resolve-conflicts = ["C"]
+```
+
+Pull review and the selector keep their context-owned controls. `C` or the
+clickable **Conflicts** control in Push opens the existing resolver after an
+update conflict. Apply and Continue remain separately reviewed; finishing them
+requires starting another Push. See [Push behavior](design.md#3--push-review-source-destination-and-scope).
+
 ## Example
 
 Create the selected directory and save a `settings.toml` containing just the
@@ -140,11 +187,11 @@ binding; the action's mouse button remains available.
 | `keybindings.panes` | See defaults | Focus/cycle panes, resize/reset sizes, maximize/restore, optional Kitty synchronization, close a Log tab |
 | `keybindings.log` | See defaults | Movement, paging, copying, filtering, tabs, display options |
 | `keybindings.commit` | See defaults | Movement, checkboxes, groups, preview, messages, AI and commits |
-| `keybindings.push` | See defaults | Movement, repository selection, targets, fetch, push review and retry |
+| `keybindings.push` | See defaults | Movement, repository selection, targets, fetch, update-strategy selector, conflict navigation, push review and retry |
 | `keybindings.merge` | See defaults | Conflicts tab: navigation, resolutions, undo, drafts, Apply and Continue review |
 
 These settings do not store repository selections, message drafts, pane sizes,
-or display-menu choices. Existing workspace state remains
+display-menu choices, or the shared update strategy. Existing workspace state remains
 under `IGIT_STATE_DIR` / `XDG_STATE_HOME/igit`; see [README](../README.md#ai-commit-messages-optional).
 API keys come only from the configured environment variable.
 

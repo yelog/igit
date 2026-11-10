@@ -860,7 +860,7 @@ impl Panel for CommitPanel {
     }
     fn help(&self) -> &'static str {
         if self.message_editing() {
-            "Esc Save and exit editing · Enter Newline · F1 Help"
+            "Esc Save and exit editing · Enter Newline · Tab Indent · F1 Help"
         } else if matches!(self.edit, Some(Edit::Stash)) {
             "Enter Review · Esc Cancel · F1 Help"
         } else if self.focus == Focus::Message {
@@ -964,6 +964,7 @@ impl Panel for CommitPanel {
         if self.message_editing()
             && (matches!(e, Event::Key(k)
                 if matches!(k.code, K::Tab | K::BackTab | K::F(6))
+                    && !(k.code == K::Tab && k.modifiers.is_empty())
                     && (k.modifiers.is_empty() || k.modifiers == Mod::SHIFT))
                 || matches!(e, Event::Mouse(m)
                 if matches!(m.kind, M::Down(MouseButton::Left | MouseButton::Right))
@@ -1610,6 +1611,12 @@ impl CommitPanel {
             }
             return Action::None;
         }
+        if self.message_editing() && k.code == K::Tab && k.modifiers.is_empty() {
+            self.remove_message_selection();
+            self.buf.insert_str(self.caret, "    ");
+            self.caret += 4;
+            return Action::None;
+        }
         if self.message_editing()
             && k.modifiers == Mod::CONTROL
             && matches!(k.code, K::Char('w' | 'u'))
@@ -1619,11 +1626,7 @@ impl CommitPanel {
                 let start = if k.code == K::Char('u') {
                     prefix.rfind('\n').map_or(0, |i| i + 1)
                 } else {
-                    let word = prefix.trim_end();
-                    word.char_indices()
-                        .rev()
-                        .find(|(_, ch)| ch.is_whitespace())
-                        .map_or(0, |(i, ch)| i + ch.len_utf8())
+                    crate::ui::selection::previous_word(&self.buf, self.caret)
                 };
                 self.buf.replace_range(start..self.caret, "");
                 self.caret = start;

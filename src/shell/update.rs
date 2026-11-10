@@ -4,10 +4,16 @@ mod view;
 mod view_tests;
 
 use crate::{
-    core::{command, git, redact_remote_error, revpath, Context},
+    core::{
+        command, git, redact_remote_error, revpath,
+        strategy::{self, Strategy},
+        Context,
+    },
     ui::{
         help::{HelpContent, HelpSection},
-        inside, NoticeLevel,
+        inside,
+        strategy::{Choice, Selector},
+        NoticeLevel,
     },
 };
 use anyhow::{bail, ensure, Context as _, Result};
@@ -33,12 +39,6 @@ impl Kind {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Strategy {
-    Merge,
-    Rebase,
-}
-
 #[derive(PartialEq, Eq)]
 struct Remote {
     name: String,
@@ -50,7 +50,9 @@ impl Remote {
         let url = if name == "." {
             String::new()
         } else {
-            git(repo, &["remote", "get-url", "--", name]).context("Remote URL unavailable")?
+            git(repo, &["remote", "get-url", "--", name])
+                .map_err(|error| anyhow::anyhow!(redact_remote_error(&error.to_string(), "")))
+                .context("Remote URL unavailable")?
         };
         Ok(Self {
             name: name.to_owned(),
@@ -65,6 +67,7 @@ enum Plan {
         branch: String,
         head: String,
         upstream: String,
+        tracking: String,
         remote: Remote,
     },
     Fetch(Vec<Remote>),
@@ -116,10 +119,22 @@ impl Plan {
             &["config", "--get", &format!("branch.{branch}.remote")],
         )
         .context("No upstream remote configured")?;
+        let tracking = git(repo, &["for-each-ref", "--format=%(upstream)", &reference])
+            .context("Cannot read upstream tracking reference")?;
+        ensure!(
+            (name == "." && tracking == upstream)
+                || (!name.starts_with('-')
+                    && git(repo, &["remote"])?.lines().any(|remote| remote == name)
+                    && tracking.starts_with("refs/remotes/")),
+            "Configure an upstream tracking reference before pulling"
+        );
+        git(repo, &["check-ref-format", &tracking])
+            .context("Invalid upstream tracking reference")?;
         Ok(Self::Pull {
             branch: branch.to_owned(),
             head,
             upstream,
+            tracking,
             remote: Remote::read(repo, &name)?,
         })
     }
@@ -141,37 +156,60 @@ impl Plan {
         }
     }
 
-    fn execute(&self, repo: &Path, kind: Kind, strategy: Strategy) -> Result<()> {
+    fn revalidate(&self, repo: &Path, kind: Kind) -> Result<()> {
         let current = Self::read(repo, kind)
             .map_err(|error| anyhow::anyhow!("Repository changed; review again ({error})"))?;
         ensure!(
             current == *self,
             "Branch, HEAD or remotes changed; review again"
         );
-        let (args, remotes): (Vec<&str>, &[_]) = match self {
+        Ok(())
+    }
+
+    fn execute(&self, repo: &Path, kind: Kind, strategy: Strategy) -> Result<()> {
+        self.revalidate(repo, kind)?;
+        let remotes = match self {
             Self::Pull {
-                upstream, remote, ..
-            } => (
-                vec![
-                    "pull",
-                    "--no-recurse-submodules",
-                    "--no-autostash",
-                    "--ff",
-                    if strategy == Strategy::Merge {
-                        "--no-rebase"
-                    } else {
-                        "--rebase"
-                    },
-                    "--",
-                    &remote.name,
-                    upstream,
-                ],
-                std::slice::from_ref(remote),
-            ),
-            Self::Fetch(remotes) => (vec!["fetch", "--all", "--no-recurse-submodules"], remotes),
+                upstream,
+                tracking,
+                remote,
+                ..
+            } => {
+                let refspec = if remote.name == "." {
+                    upstream.clone()
+                } else {
+                    format!("{upstream}:{tracking}")
+                };
+                git(
+                    repo,
+                    &[
+                        "fetch",
+                        "--no-tags",
+                        "--no-prune",
+                        "--no-prune-tags",
+                        "--no-recurse-submodules",
+                        "--no-write-fetch-head",
+                        "--refmap=",
+                        "--",
+                        &remote.name,
+                        &refspec,
+                    ],
+                )
+                .map_err(|error| {
+                    anyhow::anyhow!(redact_remote_error(&error.to_string(), &remote.url))
+                })?;
+                self.revalidate(repo, kind)?;
+                let target = git(
+                    repo,
+                    &["rev-parse", "--verify", &format!("{tracking}^{{commit}}")],
+                )
+                .context("Fetched upstream commit unavailable")?;
+                return crate::core::update::integrate(repo, &target, strategy);
+            }
+            Self::Fetch(remotes) => remotes,
         };
         let output = command(repo)
-            .args(args)
+            .args(["fetch", "--all", "--no-recurse-submodules"])
             .output()
             .context("Cannot launch Git")?;
         if !output.status.success() {
@@ -300,11 +338,17 @@ const CANCEL: usize = 0;
 const CONFIRM: usize = 1;
 const MERGE: usize = 2;
 const REBASE: usize = 3;
-const ROW: usize = 4;
+const DEFAULT_STRATEGY: usize = 4;
+const ROW: usize = 5;
 
 pub(super) struct Dialog {
     kind: Kind,
     strategy: Strategy,
+    default_strategy: Strategy,
+    selector: Option<Selector>,
+    state_dir: PathBuf,
+    changed_strategy: Option<Strategy>,
+    notice: Option<String>,
     stage: Stage,
     ready: usize,
     rows: Vec<RepositoryRow>,
@@ -344,9 +388,27 @@ impl Dialog {
             })
             .collect();
         let ready = targets.iter().filter(|target| target.plan.is_ok()).count();
+        let (default_strategy, notice) = if kind == Kind::Pull {
+            match strategy::load(&ctx.state_dir) {
+                Ok(strategy) => (strategy, None),
+                Err(_) => (
+                    Strategy::default(),
+                    Some(
+                        "Cannot read default update strategy; using Merge for this review.".into(),
+                    ),
+                ),
+            }
+        } else {
+            (Strategy::default(), None)
+        };
         Self {
             kind,
-            strategy: Strategy::Merge,
+            strategy: default_strategy,
+            default_strategy,
+            selector: None,
+            state_dir: ctx.state_dir.clone(),
+            changed_strategy: None,
+            notice,
             stage: Stage::Review(targets),
             ready,
             rows,
@@ -358,6 +420,14 @@ impl Dialog {
             detail_max_scroll: 0,
             confirm_focused: ready > 0,
         }
+    }
+
+    pub(super) fn strategy_changed(&mut self) -> Option<Strategy> {
+        self.changed_strategy.take()
+    }
+
+    pub(super) fn take_notice(&mut self) -> Option<String> {
+        self.notice.take()
     }
 
     pub(super) fn poll(&mut self) -> Option<(Kind, NoticeLevel, String)> {
@@ -429,6 +499,32 @@ impl Dialog {
     }
 
     pub(super) fn event(&mut self, event: &Event, hit: Option<usize>) -> bool {
+        if let Some(selector) = &mut self.selector {
+            match selector.event(event) {
+                Choice::Pending => (),
+                Choice::Cancel => self.selector = None,
+                Choice::Selected(selected) => {
+                    self.selector = None;
+                    match strategy::save(&self.state_dir, selected) {
+                        Ok(()) => {
+                            if self.default_strategy != selected {
+                                self.changed_strategy = Some(selected);
+                            }
+                            self.default_strategy = selected;
+                            self.strategy = selected;
+                            self.notice = None;
+                        }
+                        Err(_) => {
+                            self.notice = Some(
+                                "Cannot save default update strategy; previous default retained."
+                                    .into(),
+                            );
+                        }
+                    }
+                }
+            }
+            return false;
+        }
         let key = match event {
             Event::Key(k) if k.modifiers.is_empty() || k.modifiers == M::SHIFT => Some(k.code),
             _ => None,
@@ -485,6 +581,10 @@ impl Dialog {
             return true;
         }
         if self.pull_review() {
+            if hit == Some(DEFAULT_STRATEGY) || key == Some(K::Char('s')) {
+                self.selector = Some(Selector::new(self.default_strategy));
+                return false;
+            }
             if hit == Some(MERGE) || key == Some(K::Char('m')) {
                 self.strategy = Strategy::Merge;
             }
@@ -519,6 +619,9 @@ impl Dialog {
     }
 
     pub(super) fn keymap(&self) -> HelpContent {
+        if let Some(selector) = &self.selector {
+            return selector.keymap();
+        }
         let (title, bindings): (_, &[_]) = match self.stage {
             Stage::Review(_) => (
                 "Update / Review",
@@ -565,6 +668,7 @@ impl Dialog {
                 &[
                     ("m", "Merge incoming changes"),
                     ("r", "Rebase current branches"),
+                    ("s", "Choose default Pull and Push strategy"),
                 ],
             )]
         } else {

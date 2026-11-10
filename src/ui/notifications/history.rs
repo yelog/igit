@@ -98,6 +98,13 @@ impl SearchInput {
                     self.undo.push(std::mem::replace(&mut self.edit, next));
                 }
             }
+            (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
+                self.replace(
+                    selection::previous_word(&self.edit.text, position),
+                    position,
+                    "",
+                );
+            }
             (KeyCode::Char('u'), KeyModifiers::CONTROL) => self.replace(0, length, ""),
             (KeyCode::Char('a'), KeyModifiers::CONTROL) | (KeyCode::Home, KeyModifiers::NONE) => {
                 self.edit.caret = 0;
@@ -150,6 +157,7 @@ impl History {
                     ("Delete", "Delete next character"),
                     ("Ctrl-a", "Move cursor to start"),
                     ("Ctrl-e", "Move cursor to end"),
+                    ("Ctrl-w", "Delete word before cursor"),
                     ("Ctrl-u", "Clear search input"),
                     ("Ctrl-z", "Undo search edit"),
                     ("Ctrl-y", "Redo search edit"),

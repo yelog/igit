@@ -1,5 +1,30 @@
 use super::*;
 
+#[test]
+fn message_cursor_uses_a_bar_and_restores_the_terminal_default() {
+    let (_dir, mut app) = fixture();
+    let mut output = Vec::new();
+    let mut current = false;
+    let update = |app: &Shell, output: &mut Vec<u8>, current: &mut bool| {
+        set_message_cursor(output, current, app.message_cursor()).unwrap();
+    };
+    update(&app, &mut output, &mut current);
+    assert!(output.is_empty());
+    app.dispatch(&key(KeyCode::Char('i')));
+    update(&app, &mut output, &mut current);
+    update(&app, &mut output, &mut current);
+    assert_eq!(output, b"\x1b[6 q");
+    app.dispatch(&key(KeyCode::F(1)));
+    update(&app, &mut output, &mut current);
+    assert_eq!(output, b"\x1b[6 q\x1b[0 q");
+    app.dispatch(&key(KeyCode::Esc));
+    update(&app, &mut output, &mut current);
+    assert_eq!(output, b"\x1b[6 q\x1b[0 q\x1b[6 q");
+    app.dispatch(&key(KeyCode::Esc));
+    update(&app, &mut output, &mut current);
+    assert_eq!(output, b"\x1b[6 q\x1b[0 q\x1b[6 q\x1b[0 q");
+}
+
 fn position(text: &str, needle: &str) -> (u16, u16) {
     text.lines()
         .enumerate()
@@ -69,7 +94,7 @@ fn inline_message_keyboard_edits_saves_and_commits_only_on_enter() {
 }
 
 #[test]
-fn inline_message_mouse_and_tab_leave_the_field_with_a_saved_draft() {
+fn inline_message_mouse_and_navigation_leave_the_field_with_a_saved_draft() {
     let (_dir, mut app) = fixture();
     let before = snapshot(&app.ctx.repos[0].path);
     for (w, h) in [(120, 36), (80, 24), (44, 12)] {
@@ -91,7 +116,7 @@ fn inline_message_mouse_and_tab_leave_the_field_with_a_saved_draft() {
         assert!(!app.commit.editing());
         saved(&app, "inline draft");
 
-        for code in [KeyCode::Tab, KeyCode::BackTab, KeyCode::F(6)] {
+        for code in [KeyCode::BackTab, KeyCode::F(6)] {
             app.go(Commit);
             screen(&mut app, w, h);
             app.dispatch(&key(KeyCode::Char('i')));
@@ -115,6 +140,31 @@ fn inline_message_mouse_and_tab_leave_the_field_with_a_saved_draft() {
             app.commit.focus_pane(PaneId::Changes);
             saved(&app, "saved by navigation");
         }
+    }
+    assert_eq!(snapshot(&app.ctx.repos[0].path), before);
+}
+
+#[test]
+fn inline_message_tab_indents_without_leaving_the_editor() {
+    let (_dir, mut app) = fixture();
+    let before = snapshot(&app.ctx.repos[0].path);
+    for (width, height) in [(120, 36), (80, 24), (44, 12)] {
+        screen(&mut app, width, height);
+        app.dispatch(&key(KeyCode::Char('i')));
+        app.dispatch(&Event::Key(KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL,
+        )));
+        app.dispatch(&Event::Paste("Subject\n中文".into()));
+        app.dispatch(&key(KeyCode::Home));
+        app.dispatch(&key(KeyCode::Tab));
+        assert!(app.commit.message_editing());
+        assert_eq!(app.commit.focused_pane(), PaneId::Message);
+        app.dispatch(&Event::Paste("Indented ".into()));
+        app.dispatch(&key(KeyCode::Esc));
+        saved(&app, "Subject\n    Indented 中文");
+        app.dispatch(&key(KeyCode::Tab));
+        assert_eq!(app.commit.focused_pane(), PaneId::Changes);
     }
     assert_eq!(snapshot(&app.ctx.repos[0].path), before);
 }

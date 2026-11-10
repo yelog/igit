@@ -406,13 +406,7 @@ impl HelpState {
                             self.filtered();
                         }
                         'w' => {
-                            let prefix = &self.query[..self.caret];
-                            let end = prefix.trim_end().len();
-                            let start = prefix[..end]
-                                .char_indices()
-                                .rev()
-                                .find(|(_, ch)| ch.is_whitespace())
-                                .map_or(0, |(i, ch)| i + ch.len_utf8());
+                            let start = super::selection::previous_word(&self.query, self.caret);
                             self.query.replace_range(start..self.caret, "");
                             self.caret = start;
                             self.filtered();

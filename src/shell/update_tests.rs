@@ -397,3 +397,177 @@ fn workspace_update_enter_runs_the_default_action_and_refreshes_upstream_counts_
         "{text}"
     );
 }
+
+#[test]
+fn workspace_pull_fetches_only_the_reviewed_upstream_from_the_fetch_endpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let (local, writer) = pair(dir.path(), "project");
+    let base = head(&local);
+    let push_remote = dir.path().join("push-only.git");
+    g(
+        dir.path(),
+        &[
+            "clone",
+            "--bare",
+            "-q",
+            dir.path().join("project.git").to_str().unwrap(),
+            push_remote.to_str().unwrap(),
+        ],
+    );
+    g(
+        &local,
+        &[
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            push_remote.to_str().unwrap(),
+        ],
+    );
+    g(&local, &["config", "fetch.prune", "true"]);
+    g(&local, &["config", "fetch.pruneTags", "true"]);
+    g(&local, &["tag", "local-only"]);
+    g(&local, &["update-ref", "refs/remotes/origin/other", &base]);
+    g(&local, &["update-ref", "refs/remotes/origin/stale", &base]);
+    let fetched_head = incoming(&writer, "remote.txt");
+    g(&writer, &["branch", "other"]);
+    g(&writer, &["tag", "remote-only"]);
+    g(&writer, &["push", "origin", "other", "--tags"]);
+    let fetch_head = fs::read(local.join(".git/FETCH_HEAD")).unwrap();
+
+    let mut app = Shell::new(workspace(dir.path()), IconMode::Ascii);
+    press(&mut app, 'p');
+    app.dispatch(&key(KeyCode::Enter));
+    let text = finish(&mut app);
+    assert!(text.contains("project: OK"), "{text}");
+    assert_eq!(head(&local), fetched_head);
+    assert_eq!(tracking(&local), fetched_head);
+    assert_eq!(g(&push_remote, &["rev-parse", "main"]), base);
+    assert_eq!(g(&local, &["rev-parse", "refs/remotes/origin/other"]), base);
+    assert_eq!(g(&local, &["rev-parse", "refs/remotes/origin/stale"]), base);
+    assert_eq!(g(&local, &["tag", "--list"]), "local-only");
+    assert_eq!(fs::read(local.join(".git/FETCH_HEAD")).unwrap(), fetch_head);
+}
+
+#[test]
+fn workspace_pull_supports_a_reviewed_local_upstream_without_writing_fetch_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let (local, _) = pair(dir.path(), "project");
+    g(&local, &["switch", "-qc", "release"]);
+    let incoming_head = commit(&local, "local-upstream.txt", "local upstream\n");
+    g(&local, &["switch", "-q", "main"]);
+    g(&local, &["config", "branch.main.remote", "."]);
+    g(
+        &local,
+        &["config", "branch.main.merge", "refs/heads/release"],
+    );
+    let fetch_head = fs::read(local.join(".git/FETCH_HEAD")).unwrap();
+    let mut app = Shell::new(workspace(dir.path()), IconMode::Ascii);
+    press(&mut app, 'p');
+    assert!(screen(&mut app, 120, 30).contains(".:release"));
+    app.dispatch(&key(KeyCode::Enter));
+    let text = finish(&mut app);
+    assert!(text.contains("project: OK"), "{text}");
+    assert_eq!(head(&local), incoming_head);
+    assert_eq!(g(&local, &["rev-parse", "release"]), incoming_head);
+    assert_eq!(fs::read(local.join(".git/FETCH_HEAD")).unwrap(), fetch_head);
+}
+
+#[test]
+fn workspace_pull_refuses_dirty_tracked_content_and_preserves_mixed_staging() {
+    for strategy in ['m', 'r'] {
+        let dir = tempfile::tempdir().unwrap();
+        let (local, writer) = pair(dir.path(), "project");
+        let incoming_head = incoming(&writer, "remote.txt");
+        fs::write(local.join("base.txt"), "staged\n").unwrap();
+        fs::write(local.join("other.txt"), "unselected staged\n").unwrap();
+        g(&local, &["add", "--", "base.txt", "other.txt"]);
+        fs::write(local.join("base.txt"), "unstaged\n").unwrap();
+        g(&local, &["config", "merge.autostash", "true"]);
+        g(&local, &["config", "rebase.autostash", "true"]);
+        let before = snapshot(&local);
+        let mut app = Shell::new(workspace(dir.path()), IconMode::Ascii);
+        press(&mut app, 'p');
+        press(&mut app, strategy);
+        app.dispatch(&key(KeyCode::Enter));
+        let text = finish(&mut app);
+        assert!(
+            text.contains("project: Failed") && text.contains("clean index"),
+            "{text}"
+        );
+        assert_eq!(snapshot(&local), before);
+        assert_eq!(tracking(&local), incoming_head);
+        assert!(g(&local, &["stash", "list"]).is_empty());
+        assert!(!local.join("remote.txt").exists());
+    }
+}
+
+#[test]
+fn workspace_pull_redacts_the_fetch_url_when_the_remote_is_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let (local, _) = pair(dir.path(), "project");
+    let unavailable = dir
+        .path()
+        .join("private-fetch-endpoint")
+        .join("missing.git");
+    g(
+        &local,
+        &["remote", "set-url", "origin", unavailable.to_str().unwrap()],
+    );
+    let before = snapshot(&local);
+    let mut app = Shell::new(workspace(dir.path()), IconMode::Ascii);
+    press(&mut app, 'p');
+    app.dispatch(&key(KeyCode::Enter));
+    let text = finish(&mut app);
+    assert!(
+        text.contains("project: Failed") && text.contains("<remote>"),
+        "{text}"
+    );
+    assert!(!text.contains("private-fetch-endpoint"), "{text}");
+    assert_eq!(snapshot(&local), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn workspace_pull_revalidates_the_branch_after_fetch_before_integrating() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (local, writer) = pair(dir.path(), "project");
+    let incoming_head = incoming(&writer, "remote.txt");
+    g(&local, &["branch", "changed-during-fetch"]);
+    let uploadpack = dir.path().join("upload-pack.sh");
+    fs::write(
+        &uploadpack,
+        format!(
+            "#!/bin/sh\ngit -C '{}' symbolic-ref HEAD refs/heads/changed-during-fetch\nexec git-upload-pack \"$@\"\n",
+            local.to_str().unwrap().replace('\'', "'\\''")
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&uploadpack, fs::Permissions::from_mode(0o700)).unwrap();
+    g(
+        &local,
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            &format!("'{}'", uploadpack.to_str().unwrap().replace('\'', "'\\''")),
+        ],
+    );
+    let before = snapshot(&local);
+    let mut app = Shell::new(workspace(dir.path()), IconMode::Ascii);
+    press(&mut app, 'p');
+    app.dispatch(&key(KeyCode::Enter));
+    let text = finish(&mut app);
+    assert!(
+        text.contains("project: Failed") && text.contains("review again"),
+        "{text}"
+    );
+    assert_eq!(snapshot(&local), before);
+    assert_eq!(tracking(&local), incoming_head);
+    assert_eq!(
+        g(&local, &["symbolic-ref", "--short", "HEAD"]),
+        "changed-during-fetch"
+    );
+    assert!(!local.join("remote.txt").exists());
+}
