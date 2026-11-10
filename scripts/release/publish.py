@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from distribution import checksums
@@ -119,9 +120,15 @@ def publish(root, tag, directory, repository):
                 str(notes),
                 *(["--prerelease"] if info["prerelease"] else []),
             )
+        # GitHub may acknowledge creation before the draft appears in listings.
         release = find_release(repository, tag)
-    if release is None:
-        raise ValueError("created draft release could not be found")
+        for delay in (1, 2, 4, 8, 16):
+            if release is not None:
+                break
+            time.sleep(delay)
+            release = find_release(repository, tag)
+        if release is None:
+            raise ValueError("created draft release was not visible after retries")
     endpoint = f"repos/{repository}/releases/{release['id']}"
     if release["tag_name"] != tag or release["target_commitish"] != info["sha"]:
         raise ValueError("existing release does not identify this exact tagged commit")

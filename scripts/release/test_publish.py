@@ -3,7 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import publish
 
@@ -25,7 +25,7 @@ class PublishTests(unittest.TestCase):
                     "sha": "source-sha",
                     "prerelease": prerelease,
                 }
-                state = {"release": None}
+                state = {"release": None, "stale_draft_reads": 2}
                 mutations = []
 
                 def api(path, missing_ok=False, state=state):
@@ -47,6 +47,9 @@ class PublishTests(unittest.TestCase):
                     prerelease=prerelease,
                 ):
                     if args[0] == "api":
+                        if state["release"] and state["stale_draft_reads"]:
+                            state["stale_draft_reads"] -= 1
+                            return json.dumps([[]])
                         return json.dumps(
                             [[state["release"]] if state["release"] else []]
                         )
@@ -82,9 +85,11 @@ class PublishTests(unittest.TestCase):
                     ),
                     patch.object(publish, "api", side_effect=api),
                     patch.object(publish, "gh", side_effect=gh),
+                    patch.object(publish.time, "sleep") as sleep,
                 ):
                     publish.publish(root, tag, root, "yelog/igit")
                     self.assertFalse(state["release"]["draft"])
+                    self.assertEqual(sleep.call_args_list, [call(1), call(2)])
                     self.assertEqual(
                         [args[1] for args in mutations], ["create", "upload", "edit"]
                     )
