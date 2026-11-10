@@ -270,7 +270,7 @@ fn stash_tab_header_keyboard_mouse_panes_and_help_work_at_supported_sizes() {
     }
     assert_eq!(snapshot(&app.ctx.repos[0].path), before);
     app.go(Push);
-    app.dispatch(&key(KeyCode::Esc));
+    click_push_cancel(&mut app, 80, 24);
     assert_eq!(app.tab, Stash);
 }
 

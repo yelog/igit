@@ -932,7 +932,7 @@ fn pane_search_remaps_owns_text_input_and_keeps_other_pane_commands() {
 }
 
 #[test]
-fn pane_search_escape_clears_push_search_before_returning_to_commit() {
+fn pane_search_escape_clears_push_search_and_cancel_returns_to_commit() {
     let (_dir, mut app) = fixture();
     app.go(Push);
     screen(&mut app, 80, 24);
@@ -944,5 +944,7 @@ fn pane_search_escape_clears_push_search_before_returning_to_commit() {
     assert_eq!(app.tab, Push);
     assert!(!app.push.focused_search().unwrap().visible());
     send(&mut app, "Esc");
+    assert_eq!(app.tab, Push);
+    click_push_cancel(&mut app, 80, 24);
     assert_eq!(app.tab, Commit);
 }

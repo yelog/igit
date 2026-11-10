@@ -92,6 +92,22 @@ pub(super) fn screen(app: &mut Shell, width: u16, height: u16) -> String {
         .join("\n")
 }
 
+pub(super) fn click_push_cancel(app: &mut Shell, width: u16, height: u16) {
+    let text = screen(app, width, height);
+    let (row, line) = text
+        .lines()
+        .enumerate()
+        .find(|(_, line)| line.contains(" Cancel "))
+        .expect("Push footer has a Cancel button");
+    let column = line[..line.find("Cancel").unwrap()].width() as u16;
+    app.dispatch(&Event::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row: row as u16,
+        modifiers: KeyModifiers::NONE,
+    }));
+}
+
 pub(super) fn snapshot(repo: &Path) -> Vec<String> {
     [
         vec!["rev-parse", "HEAD"],

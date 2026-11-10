@@ -398,7 +398,7 @@ fn branch_review_cancel_and_confirm_refresh_current_branch_without_staging_chang
         "rename must keep HEAD, index and working changes"
     );
     app.go(Push);
-    app.dispatch(&key(KeyCode::Esc));
+    click_push_cancel(&mut app, 80, 24);
     assert_eq!(app.tab, Branch);
 }
 

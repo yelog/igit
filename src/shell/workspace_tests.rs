@@ -247,7 +247,8 @@ fn pane_navigation_keyboard_and_drag_resize_the_drawn_splits_and_reset() {
     assert_eq!(app.push.focused_pane(), PaneId::PushFiles);
     app.dispatch(&key(KeyCode::Tab));
     assert_eq!(app.push.focused_pane(), PaneId::Outgoing);
-    app.dispatch(&key(KeyCode::Esc));
+    click_push_cancel(&mut app, 120, 36);
+    assert_eq!(app.tab, Log);
     assert_eq!(size(&mut app), (w, h));
     assert_eq!(snapshot(&app.ctx.repos[0].path), before);
 }

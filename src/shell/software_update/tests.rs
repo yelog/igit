@@ -267,11 +267,11 @@ fn update_center_defaults_to_close_and_preserves_editing_and_git_state() {
 fn update_shortcut_respects_remapping_and_other_reviews() {
     let (_dir, mut app) = fixture();
     app.software_update.state = State::Report(report(Status::UpToDate));
-    app.config = AppConfig::from_toml("[keybindings.global]\nupdate=['U U']").unwrap();
+    app.config = AppConfig::from_toml("[keybindings.global]\nupdate=['F10 F10']").unwrap();
     app.dispatch(&key(KeyCode::F(9)));
     assert!(app.pop.is_none());
-    app.dispatch(&key(KeyCode::Char('U')));
-    app.dispatch(&key(KeyCode::Char('U')));
+    app.dispatch(&key(KeyCode::F(10)));
+    app.dispatch(&key(KeyCode::F(10)));
     assert!(matches!(app.pop, Some(Popup::SoftwareUpdate)));
     app.dispatch(&key(KeyCode::Esc));
     open_review(&mut app);
