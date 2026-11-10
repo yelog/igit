@@ -297,6 +297,8 @@ mod tests {
             ("core.autocrlf", "false"),
             ("core.filemode", "true"),
             ("core.fsmonitor", "false"),
+            ("maintenance.auto", "false"),
+            ("gc.auto", "0"),
             ("core.attributesFile", ".git/info/attributes"),
         ] {
             g(dir.path(), None, &["config", key, value]).unwrap();
@@ -318,7 +320,11 @@ mod tests {
         fn walk(repo: &Path, dir: &Path, files: &mut BTreeMap<PathBuf, Contents>) {
             for entry in fs::read_dir(dir).unwrap() {
                 let path = entry.unwrap().path();
-                let kind = fs::symlink_metadata(&path).unwrap().file_type();
+                let kind = fs::symlink_metadata(&path)
+                    .unwrap_or_else(|error| {
+                        panic!("snapshot metadata for {}: {error}", path.display())
+                    })
+                    .file_type();
                 let contents = if kind.is_symlink() {
                     Contents::Link(fs::read_link(&path).unwrap())
                 } else if kind.is_dir() {

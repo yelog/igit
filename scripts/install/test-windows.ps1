@@ -146,6 +146,8 @@ try {
         }
         $Unmanaged = $true
         $FromExecutable = ''
+        # Clear the dot-sourced parameter and its ValidateSet for this no-channel case.
+        Remove-Variable -Name Channel
         $Channel = ''
         $Version = ''
         $InstallRoot = Join-Path $temporary 'unmanaged-root'
