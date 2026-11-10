@@ -45,6 +45,8 @@ decimal rollover policy described in [Releasing](docs/releasing.md).
 - [`f4f7af1`](https://github.com/yelog/igit/commit/f4f7af1b291852fb1be6b3dbcd9ee72ef8463e5c) feat: extend branch and log workflows
 - [`07a26de`](https://github.com/yelog/igit/commit/07a26de1f9bef0b1b8f768a1c28d27e74ce38c2f) fix(log): remove redundant width cast
 - [`4e4c4de`](https://github.com/yelog/igit/commit/4e4c4deb2d8327642a3c48aed73fe469f1c413bb) test(shell): align Push and Update Center interactions
+- [`bafa295`](https://github.com/yelog/igit/commit/bafa2957b6edfb6cf5f15bd389cad23c3411821f) chore(release): prepare v0.1.1
+- [`c9e068e`](https://github.com/yelog/igit/commit/c9e068e3f3e59ca7d8f8572e259089df4df12837) test: isolate preview snapshots and installer channel state
 
 ## [0.1.0] - 2026-11-07
 
