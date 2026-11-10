@@ -3,6 +3,49 @@
 Release notes follow Keep a Changelog categories. Versions use the project's
 decimal rollover policy described in [Releasing](docs/releasing.md).
 
+## [0.1.1] - 2026-11-10
+
+### Added
+
+- Open Update Center from the workspace to check for updates, review installation, and track progress.
+- Stage individual hunks, add untracked files, and open working files in an external editor from Commit.
+- Search workspace trees and diff previews with Vim-style navigation, and copy file paths.
+- Switch and sync branches, inspect upstream divergence, set upstream on first push, and cherry-pick multiple commits from Log.
+- Abort or skip supported in-progress Git operations from Conflicts.
+
+### Changed
+
+- Show aligned Before/After previews in Commit and Push, with exact staged content available in Commit.
+- Run Add to Git, commits, and Log reloads in the background. Keep local commit and push review separate.
+- Generate AI commit-message drafts with input budgeting and protection for existing drafts.
+- Standardize tree expand and collapse controls and simplify the Stash list.
+
+### Fixed
+
+- Preserve file bytes when applying supported stash conflict resolutions with Git line-ending attributes.
+
+### Internal
+
+- Serialize local Cargo commands and isolate their build artifacts.
+
+### Commits
+
+- [`3fec9a5`](https://github.com/yelog/igit/commit/3fec9a529679d199947b254038d3a4769c4bbd11) feat(update): add version footer and update center
+- [`d6bd639`](https://github.com/yelog/igit/commit/d6bd63962f749be761b0764e76658c54cfb14555) feat: improve commit actions and stash conflict handling
+- [`b53cc52`](https://github.com/yelog/igit/commit/b53cc52d8ad4569153a9192ace3a4756d1182688) feat(branch): show upstream ahead and behind counts
+- [`fe6d335`](https://github.com/yelog/igit/commit/fe6d3351438936f99f85b62e16986fb48057de36) feat: extend Git workflows and improve workspace responsiveness
+- [`db72fc6`](https://github.com/yelog/igit/commit/db72fc6503515529ff2ee3e45e2da6b6a18aebbb) feat: streamline commit actions and repository previews
+- [`feae58d`](https://github.com/yelog/igit/commit/feae58df8b87190a60d1984b22b640c016533a6a) feat(update): show install progress in Update Center
+- [`673ebe4`](https://github.com/yelog/igit/commit/673ebe44bd449fe4e152b956e33b6741407484ef) style(ui): unify tree expand and collapse controls
+- [`7492b2a`](https://github.com/yelog/igit/commit/7492b2a785f27bbf27d80eddb86626c1320ae2fe) feat(search): add Vim-style find to workspace panes
+- [`9e89748`](https://github.com/yelog/igit/commit/9e89748b5cd8fbf5fdab0ca98464a3443602dc02) style(update): match Update Center to the workspace palette
+- [`d952ce4`](https://github.com/yelog/igit/commit/d952ce4f0eb4a9f4fee27afba046240173737488) feat: add split commit previews and streamline workspace behavior
+- [`2531184`](https://github.com/yelog/igit/commit/253118442342766249ecde31846adb964c1a2ce7) feat: improve commit previews and workspace workflows
+- [`7732e5b`](https://github.com/yelog/igit/commit/7732e5b780a5da8db1a1470936f72a7e01abb942) build: serialize local Cargo commands
+- [`f4f7af1`](https://github.com/yelog/igit/commit/f4f7af1b291852fb1be6b3dbcd9ee72ef8463e5c) feat: extend branch and log workflows
+- [`07a26de`](https://github.com/yelog/igit/commit/07a26de1f9bef0b1b8f768a1c28d27e74ce38c2f) fix(log): remove redundant width cast
+- [`4e4c4de`](https://github.com/yelog/igit/commit/4e4c4deb2d8327642a3c48aed73fe469f1c413bb) test(shell): align Push and Update Center interactions
+
 ## [0.1.0] - 2026-11-07
 
 ### Added
