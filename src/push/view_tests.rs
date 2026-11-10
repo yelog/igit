@@ -51,6 +51,7 @@ fn fixture(icons: IconMode) -> (PushPanel, Context) {
         path: path.into(),
         previous: None,
         status,
+        commit: None,
     })
     .collect::<Vec<_>>();
     let p = PushPanel {
@@ -460,6 +461,7 @@ fn file_tree_mouse_keyboard_scrolling_and_pane_cycle_keep_push_selection() {
             path: format!("src/locales/extra-{i}/system.ts").into(),
             previous: None,
             status: b'M',
+            commit: None,
         }));
         p.preview.tree = FileTree::new(&p.preview.files, p.grouping);
         draw(&mut p, &c, 80, 24);

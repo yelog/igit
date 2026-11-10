@@ -540,9 +540,13 @@ snapshot; Cancel, tab switching, and quit remain available. Refresh preserves
 checked repositories and the highlighted commit, and unchanged data retains the
 current file and Diff scroll.
 
-The read-only **Repository Diff** shows the last fetched target and the local tip
-for a repository row, or the first parent and the selected commit for a commit
-row. New targets and initial commits start with an empty Before side. Use
+Repository **Changed files** includes every path changed by outgoing commits,
+counted once per path, including commits beyond the 60 displayed rows. Remote-only
+changes are excluded. The read-only **Repository Diff** compares the common
+ancestor of the fetched target and local tip with the local tip, or the first
+parent with the selected commit for a commit row. Paths with no cumulative change
+remain listed and open their latest outgoing change. New targets and unrelated
+histories use an empty cumulative Before side; initial commits also start empty. Use
 `n/p` for changes, `[/]` for files, `f` to fold or unfold context, and `z` to
 zoom a revision. In a narrow terminal, `Tab` switches the visible revision.
 `Esc` or **Close** returns to the file tree.

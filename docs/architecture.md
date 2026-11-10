@@ -458,8 +458,17 @@ and replaces queued work. Shell polls channels at up to 16ms intervals while
 reads are pending. Workspace/Roots identity also invalidates results when scope
 changes while Push is inactive. File lists and file comparisons use a separate single
 reader over immutable OIDs, coalescing navigation and discarding obsolete results.
-For the Before side, a repository row uses its stored tracking tip and a commit
-row uses its first parent; rename/copy records supply the old path. The worker
+Repository file lists read the complete stored tracking-tip..HEAD range in one
+NUL-delimited log command, using the same first-parent merge differences as
+individual commit previews. Native paths are deduplicated, independently of the
+60-row history limit. Cumulative statuses and rename sources come from the
+merge-base-to-HEAD diff, restricted to those outgoing paths. The tracking tip
+itself remains unchanged for push validation. New targets and unrelated histories
+use an empty cumulative base. Paths absent from the cumulative diff retain their
+latest outgoing commit for a historical comparison, so reverted changes and
+intermediate rename paths remain inspectable.
+For the Before side, a cumulative repository file uses the merge base and a commit
+file uses its first parent; rename/copy records supply the old path. The worker
 prepares the shared two-pane revision viewer or a bounded Git patch with a reason.
 Closing the viewer invalidates any pending file result. No Git commands run in Push's
 tab-entry or read-completion path.

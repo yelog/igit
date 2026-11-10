@@ -421,7 +421,23 @@ The right defaults to a full-height repository → directory → file tree, avoi
 
 Click the eye or press `o` for the Group By menu. Directory and Repository start enabled; Module (the repository's content root) starts disabled and can be enabled independently. All eight combinations remain available. Without Directory, files sort flat by name, then repository-relative path, with gray parent paths at the end. Disabling Repository or Module only removes that level. Switching preserves the selected file; if a selected container is hidden, a still-visible parent is preferred. Grouping persists across repository/commit changes, refresh, and reopening Push within the workspace session.
 
-Repository rows compare the last fetched target with the local branch tip. Commit rows compare the first parent with that commit, including merges. A new target or initial commit has an empty Before side. If the current repository has no outgoing commits or no row is selected, the file area centers `No commits selected` without empty repository nodes; read failures still show specific reasons. The push unit is always the repository's target branch; an intermediate commit cannot be pushed alone. At most 60 recent commits per repository are displayed, but counts and execution use the full branch.
+Repository rows show the union of changed paths across all outgoing commits,
+counting repeated paths once. They exclude remote-only history, including when
+the branches have diverged. Commit rows compare the first parent with that commit,
+including merges. Repository file comparisons use the common ancestor of the
+fetched target and local tip as Before and the local tip as After. Paths without
+a cumulative change, including reverted edits, remain listed and open their
+latest outgoing change; the Before description identifies this historical view.
+A new target or unrelated history uses an empty cumulative Before side, as does
+an initial commit. Rename destinations count as paths; intermediate names remain
+available through their historical changes.
+
+If the current repository has no outgoing commits or no row is selected, the file
+area centers `No commits selected` without empty repository nodes; read failures
+still show specific reasons. The push unit is always the repository's target
+branch; an intermediate commit cannot be pushed alone. At most 60 recent commits
+per repository are displayed, but file aggregation, counts, and execution use
+the full outgoing history.
 
 Opening a file fills the workspace with Log's read-only **Repository Diff**.
 Before and After share aligned line numbers, syntax and change highlighting,

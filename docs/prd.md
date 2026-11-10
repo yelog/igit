@@ -390,6 +390,16 @@ Automatic resolution recheck (R2, R4, R8): use a temporary conflict with three n
 
 Push grouping recheck (A11): toggle Directory, Repository, and Module in the eye menu. Directory / Repository start enabled and Module starts disabled, removing the repeated root; all eight combinations must change only the right-side hierarchy. Without Directory, parent paths distinguish three `system.ts` files. Open one Diff, close it, and change grouping; the same file stays selected. Repository/commit changes preserve grouping, without affecting left-side checkboxes or review scope. Run `cargo test --locked push::` for grouping combinations, collapsed navigation, and real Git comparisons.
 
+Push outgoing file scope (A11, R3): repository Changed files is the union of paths
+changed by all outgoing commits, with repeated paths counted once. A divergent
+remote must not introduce remote-only changes. The repository's cumulative Diff
+starts at the common ancestor with the fetched target, while individual commits
+use their first parent. Reverted changes and intermediate rename paths remain
+listed with their latest outgoing comparison. Include history beyond the 60
+visible commits and new targets; preserve checks, HEAD, index, working files,
+and refs while browsing. Run
+`python3 scripts/cargo_serial.py test --locked --lib repository_preview_`.
+
 Push loading recheck (A11, R1/R4/R7/R8): open the 11-repository Push practice workspace and switch to Push, including while Git reads are delayed. The loading frame must appear before outgoing reads finish; Cancel, another tab, and quit stay available. Returning retains cached rows, while Push/Retry/Fetch wait for fresh results. Change Roots or target during a delayed scan and rapidly browse commits/files: only current results may appear, at most one repository batch and one preview run, with no more than four concurrent repository readers. Retain checks, grouping, and selected commit OID; an unchanged snapshot also retains the current file, folds, and Diff scroll. Check Commit and Push reseeding, reader failure/retry, no-outgoing repositories, and unchanged HEAD, real index, working files, and remote refs. Run `cargo test --locked push::` and `cargo test --locked push_entry_renders_loading`.
 
 Push design recheck (A11, R1/R4/R8): one contextual window title, aligned pane toolbars, outgoing Target / Fetch and conditional Retry, and a shared footer with quiet options plus Cancel / Push. File type icons retain their independent colors; filenames carry change colors without appended status letters. At 44×12, 80×24, 120×36, and 180×36 in each icon mode, controls must fit without overlapping; narrow footers wrap actions and retain hidden-selection notices. Push is enabled only when a visible, eligible repository is checked and no remote operation is running. Cancel from the tree or Details restores the original workspace pane without Git writes. A file opens Log's Before/After viewer with line numbers, highlights and folds. Check previous/next files, narrow-terminal Tab, and Close returning to the last viewed file. Verify empty Before on a new target, a bounded patch for binary content, and unchanged index and working files. See the [design plan](plans/2026-11-05-push-dialog-design.md) for verification.

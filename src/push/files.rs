@@ -11,6 +11,7 @@ pub(super) struct Change {
     pub path: PathBuf,
     pub previous: Option<PathBuf>,
     pub status: u8,
+    pub commit: Option<String>,
 }
 
 fn path(raw: &[u8]) -> PathBuf {
@@ -32,6 +33,7 @@ pub(super) fn added_paths(raw: Vec<u8>) -> Vec<Change> {
             path: path(p),
             previous: None,
             status: b'A',
+            commit: None,
         })
         .collect()
 }
@@ -40,22 +42,51 @@ pub(super) fn name_status(raw: Vec<u8>) -> Vec<Change> {
     let mut fields = raw.split(|&b| b == 0);
     let mut files = Vec::new();
     while let Some(status) = fields.next().and_then(|s| s.first()).copied() {
-        let Some(first) = fields.next().filter(|p| !p.is_empty()) else {
+        let Some(change) = read_change(status, &mut fields) else {
             break;
         };
-        let (path, previous) = if matches!(status, b'R' | b'C') {
-            let Some(next) = fields.next().filter(|p| !p.is_empty()) else {
-                break;
-            };
-            (path(next), Some(path(first)))
-        } else {
-            (path(first), None)
+        files.push(change);
+    }
+    files
+}
+
+fn read_change<'a>(status: u8, fields: &mut impl Iterator<Item = &'a [u8]>) -> Option<Change> {
+    let first = fields.next().filter(|path| !path.is_empty())?;
+    let (path, previous) = if matches!(status, b'R' | b'C') {
+        let next = fields.next().filter(|path| !path.is_empty())?;
+        (path(next), Some(path(first)))
+    } else {
+        (path(first), None)
+    };
+    Some(Change {
+        path,
+        previous,
+        status,
+        commit: None,
+    })
+}
+
+pub(super) fn outgoing_changes(raw: Vec<u8>) -> BTreeMap<PathBuf, Change> {
+    let mut fields = raw.split(|&byte| byte == 0);
+    let mut files = BTreeMap::new();
+    let mut commit = None;
+    while let Some(field) = fields.next() {
+        if field.is_empty() {
+            commit = fields
+                .next()
+                .filter(|oid| !oid.is_empty())
+                .map(|oid| String::from_utf8_lossy(oid).into_owned());
+            continue;
+        }
+        let status = field.strip_prefix(b"\n").unwrap_or(field);
+        let Some(mut change) = status
+            .first()
+            .and_then(|&status| read_change(status, &mut fields))
+        else {
+            break;
         };
-        files.push(Change {
-            path,
-            previous,
-            status,
-        });
+        change.commit = commit.clone();
+        files.insert(change.path.clone(), change);
     }
     files
 }
@@ -374,6 +405,7 @@ mod tests {
                 path: path.into(),
                 previous: None,
                 status: b'M',
+                commit: None,
             })
             .collect()
     }
@@ -535,6 +567,28 @@ mod tests {
         tree.fold_all(false);
         assert_eq!(tree.visible.len() + 1, tree.nodes.len());
         assert_eq!(tree.file_index(), None);
+    }
+
+    #[test]
+    fn outgoing_changes_preserve_byte_paths_and_latest_commit_after_empty_commits() {
+        let files = outgoing_changes(
+            b"\0first\0\nM\0repeat\0A\0bad-\xff\t\n.ts\0\0empty\0\0last\0\nR100\0old\nname\0new\tname\0D\0repeat\0"
+                .to_vec(),
+        );
+        assert_eq!(files.len(), 3);
+        let repeated = &files[Path::new("repeat")];
+        assert_eq!(repeated.status, b'D');
+        assert_eq!(repeated.commit.as_deref(), Some("last"));
+        let renamed = &files[Path::new("new\tname")];
+        assert_eq!(renamed.previous.as_deref(), Some(Path::new("old\nname")));
+        assert_eq!(renamed.commit.as_deref(), Some("last"));
+        let unusual = &files[&path(b"bad-\xff\t\n.ts")];
+        assert_eq!(unusual.commit.as_deref(), Some("first"));
+        #[cfg(unix)]
+        assert_eq!(
+            unusual.path.as_os_str().as_encoded_bytes(),
+            b"bad-\xff\t\n.ts"
+        );
     }
 
     #[test]

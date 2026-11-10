@@ -1367,7 +1367,14 @@ mod tests {
         );
         p.refresh(&c).unwrap();
         p.finish_loading(&c);
-        assert!(p.preview.files.iter().all(|f| f.status == b'A'));
+        assert!(p.preview.files.iter().all(|file| {
+            file.status
+                == if file.path == Path::new("dev/old.conf") {
+                    b'D'
+                } else {
+                    b'A'
+                }
+        }));
         assert_eq!(p.preview.tree.visible.len(), p.preview.files.len());
         select(&mut p, "src/a/index.vue");
         assert_eq!(compared_revisions(&mut p, &c), ["", "first final\n"]);
@@ -1380,6 +1387,203 @@ mod tests {
         select(&mut p, "a");
         assert_eq!(compared_revisions(&mut p, &c), ["", "base"]);
         assert_eq!(snapshot(), before);
+    }
+
+    #[test]
+    fn repository_preview_excludes_remote_only_changes_after_divergence() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = make(td.path(), "app");
+        let head = g(&repo, &["rev-parse", "HEAD"]);
+        g(&repo, &["switch", "-qc", "remote-work", "origin/main"]);
+        fs::write(repo.join("remote-only"), "remote content\n").unwrap();
+        g(&repo, &["add", "remote-only"]);
+        g(&repo, &["commit", "-qm", "remote addition"]);
+        fs::write(repo.join("a"), "remote version\n").unwrap();
+        g(&repo, &["commit", "-qam", "remote edit"]);
+        g(&repo, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        g(&repo, &["switch", "-q", "main"]);
+        fs::write(repo.join("a"), "staged\n").unwrap();
+        g(&repo, &["add", "a"]);
+        fs::write(repo.join("a"), "unstaged\n").unwrap();
+        let snapshot = || {
+            [
+                g(&repo, &["show-ref"]),
+                g(&repo, &["status", "--porcelain=v1", "-z"]),
+                g(&repo, &["ls-files", "--stage", "-z"]),
+                g(&repo, &["diff", "--binary"]),
+                g(&repo, &["diff", "--cached", "--binary"]),
+            ]
+        };
+        let before = snapshot();
+        let c = Context::discover(td.path()).unwrap();
+        let mut panel = PushPanel::default();
+        panel.refresh(&c).unwrap();
+        panel.finish_loading(&c);
+        assert_eq!(panel.entries[0].n, 1);
+        assert_eq!(panel.entries[0].logs[0].id, head);
+        let tracking = panel.entries[0].tracking.clone();
+        for pos in [0, 1, 0] {
+            panel.pos = pos;
+            panel.inspect(&c);
+            panel.finish_loading(&c);
+            assert_eq!(panel.preview.files.len(), 1);
+            assert_eq!(panel.preview.files[0].path, Path::new("a"));
+            let row = panel
+                .preview
+                .tree
+                .visible
+                .iter()
+                .position(|&node| matches!(panel.preview.tree.nodes[node].kind, Kind::File(_)))
+                .unwrap();
+            panel.activate_file(row, false, &c);
+            panel.finish_loading(&c);
+            assert_eq!(compared_revisions(&mut panel, &c), ["base", "next"]);
+            assert_eq!(panel.checked, BTreeSet::from([0]));
+            assert_eq!(panel.entries[0].tracking, tracking);
+        }
+        assert_eq!(snapshot(), before);
+    }
+
+    #[test]
+    fn repository_preview_unions_repeated_and_reverted_paths() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = make(td.path(), "app");
+        fs::write(repo.join("a"), "base").unwrap();
+        fs::write(repo.join("temporary"), "intermediate content\n").unwrap();
+        g(&repo, &["add", "--all"]);
+        g(&repo, &["commit", "-qm", "revert a and add temporary"]);
+        fs::remove_file(repo.join("temporary")).unwrap();
+        fs::write(repo.join("final"), "final content\n").unwrap();
+        g(&repo, &["add", "--all"]);
+        g(&repo, &["commit", "-qm", "remove temporary and add final"]);
+        let c = Context::discover(td.path()).unwrap();
+        let mut panel = PushPanel::default();
+        panel.refresh(&c).unwrap();
+        panel.finish_loading(&c);
+        assert_eq!(panel.entries[0].n, 3);
+        let statuses: BTreeMap<_, _> = panel
+            .preview
+            .files
+            .iter()
+            .map(|file| (label(&file.path), file.status))
+            .collect();
+        assert_eq!(
+            statuses,
+            BTreeMap::from([
+                ("a".into(), b'M'),
+                ("final".into(), b'A'),
+                ("temporary".into(), b'D'),
+            ])
+        );
+        for (path, old, new) in [
+            ("a", "next", "base"),
+            ("temporary", "intermediate content\n", ""),
+            ("final", "", "final content\n"),
+        ] {
+            let row = panel
+                .preview
+                .tree
+                .visible
+                .iter()
+                .position(|&node| match panel.preview.tree.nodes[node].kind {
+                    Kind::File(index) => panel.preview.files[index].path == Path::new(path),
+                    _ => false,
+                })
+                .unwrap();
+            panel.activate_file(row, false, &c);
+            panel.finish_loading(&c);
+            assert_eq!(compared_revisions(&mut panel, &c), [old, new], "{path}");
+        }
+    }
+
+    #[test]
+    fn repository_preview_includes_changes_older_than_the_visible_commit_limit() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = make(td.path(), "app");
+        let tree = g(&repo, &["rev-parse", "HEAD^{tree}"]);
+        let mut head = g(&repo, &["rev-parse", "HEAD"]);
+        for _ in 0..61 {
+            head = g(
+                &repo,
+                &["commit-tree", &tree, "-p", &head, "-m", "empty follow-up"],
+            );
+        }
+        g(&repo, &["update-ref", "refs/heads/main", &head]);
+        fs::write(repo.join("newest"), "newest content\n").unwrap();
+        g(&repo, &["add", "newest"]);
+        g(&repo, &["commit", "-qm", "newest change"]);
+        let c = Context::discover(td.path()).unwrap();
+        let mut panel = PushPanel::default();
+        panel.refresh(&c).unwrap();
+        panel.finish_loading(&c);
+        assert_eq!(panel.entries[0].n, 63);
+        assert_eq!(panel.entries[0].logs.len(), 60);
+        assert_eq!(
+            panel
+                .preview
+                .files
+                .iter()
+                .map(|file| label(&file.path))
+                .collect::<Vec<_>>(),
+            ["a", "newest"]
+        );
+    }
+
+    #[test]
+    fn repository_preview_keeps_rename_history_and_cumulative_sources() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = make(td.path(), "app");
+        let base = "line one\nline two\nline three\n";
+        let next = "line one\nline two\nline three\nline four\n";
+        fs::write(repo.join("a"), base).unwrap();
+        g(&repo, &["commit", "-qam", "rename baseline"]);
+        g(&repo, &["push", "-q", "origin", "main"]);
+        fs::write(repo.join("a"), next).unwrap();
+        g(&repo, &["commit", "-qam", "edit before renaming"]);
+        g(&repo, &["mv", "a", "middle"]);
+        g(&repo, &["commit", "-qm", "first rename"]);
+        g(&repo, &["mv", "middle", "last"]);
+        g(&repo, &["commit", "-qm", "second rename"]);
+        let c = Context::discover(td.path()).unwrap();
+        let mut panel = PushPanel::default();
+        panel.refresh(&c).unwrap();
+        panel.finish_loading(&c);
+        assert_eq!(
+            panel
+                .preview
+                .files
+                .iter()
+                .map(|file| label(&file.path))
+                .collect::<Vec<_>>(),
+            ["a", "last", "middle"]
+        );
+        let last = panel
+            .preview
+            .files
+            .iter()
+            .find(|file| file.path == Path::new("last"))
+            .unwrap();
+        assert!(last.commit.is_none());
+        assert_eq!(last.previous.as_deref(), Some(Path::new("a")));
+        for (path, old, new) in [
+            ("a", base, next),
+            ("middle", next, next),
+            ("last", base, next),
+        ] {
+            let row = panel
+                .preview
+                .tree
+                .visible
+                .iter()
+                .position(|&node| match panel.preview.tree.nodes[node].kind {
+                    Kind::File(index) => panel.preview.files[index].path == Path::new(path),
+                    _ => false,
+                })
+                .unwrap();
+            panel.activate_file(row, false, &c);
+            panel.finish_loading(&c);
+            assert_eq!(compared_revisions(&mut panel, &c), [old, new], "{path}");
+        }
     }
 
     fn compared_revisions(p: &mut PushPanel, c: &Context) -> [String; 2] {
@@ -1416,6 +1620,14 @@ mod tests {
         let mut p = PushPanel::default();
         p.refresh(&c).unwrap();
         p.finish_loading(&c);
+        assert_eq!(
+            p.preview
+                .files
+                .iter()
+                .map(|file| label(&file.path))
+                .collect::<Vec<_>>(),
+            ["a", "main.ts", "side.ts"]
+        );
         p.pos = 1;
         p.inspect(&c);
         p.finish_loading(&c);

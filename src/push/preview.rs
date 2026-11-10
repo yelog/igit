@@ -65,27 +65,10 @@ pub(super) fn read(request: Request) -> Loaded {
             .unwrap_or_default(),
         )
     } else {
-        let paths = if let Some(base) = &e.tracking {
-            git_bytes(
-                p,
-                &[
-                    "diff",
-                    "--name-status",
-                    "-z",
-                    "--find-renames",
-                    base,
-                    &e.head,
-                    "--",
-                ],
-            )
-            .map(files::name_status)
-        } else {
-            git_bytes(p, &["ls-tree", "-r", "--name-only", "-z", &e.head]).map(files::added_paths)
-        };
         (
-            paths,
+            outgoing_files(p, e),
             format!(
-                "{} {} {}:{}\n\n{} outgoing commits.\n{}\n\nUpstream: {}\n{}\n\n{}",
+                "{} {} {}:{}\n\n{} outgoing commits.\n{}\n\nUpstream: {}\n{}\n\n{}\n\nFiles include all outgoing commits, counted once per path.\nChanges with no cumulative diff open their latest outgoing change.",
                 e.source,
                 request.icons.glyph(Icon::Right),
                 e.t.remote,
@@ -123,6 +106,76 @@ pub(super) fn read(request: Request) -> Loaded {
     Loaded::Files { files, summary }
 }
 
+fn repository_base(p: &Path, entry: &Entry) -> Result<Option<String>> {
+    let Some(tracking) = &entry.tracking else {
+        return Ok(None);
+    };
+    let output = command(p)
+        .args(["merge-base", tracking, &entry.head])
+        .output()?;
+    if output.status.success() {
+        Ok(Some(String::from_utf8(output.stdout)?.trim().into()))
+    } else if output.status.code() == Some(1) {
+        Ok(None)
+    } else {
+        bail!("Unable to find the outgoing history base");
+    }
+}
+
+fn outgoing_files(p: &Path, entry: &Entry) -> Result<Vec<Change>> {
+    if entry.n == 0 {
+        return Ok(Vec::new());
+    }
+    let range = entry
+        .tracking
+        .as_ref()
+        .map(|tracking| format!("{tracking}..{}", entry.head))
+        .unwrap_or_else(|| entry.head.clone());
+    let mut files = files::outgoing_changes(git_bytes(
+        p,
+        &[
+            "log",
+            "--format=%x00%H",
+            "--no-show-signature",
+            "--no-notes",
+            "--name-status",
+            "-z",
+            "--root",
+            "--diff-merges=first-parent",
+            "--find-renames",
+            "--reverse",
+            "--topo-order",
+            &range,
+            "--",
+        ],
+    )?);
+    let cumulative = if let Some(base) = repository_base(p, entry)? {
+        files::name_status(git_bytes(
+            p,
+            &[
+                "diff",
+                "--name-status",
+                "-z",
+                "--find-renames",
+                &base,
+                &entry.head,
+                "--",
+            ],
+        )?)
+    } else {
+        files::added_paths(git_bytes(
+            p,
+            &["ls-tree", "-r", "--name-only", "-z", &entry.head],
+        )?)
+    };
+    for change in cumulative {
+        if let Some(file) = files.get_mut(&change.path) {
+            *file = change;
+        }
+    }
+    Ok(files.into_values().collect())
+}
+
 fn with_result(desc: &str, result: Option<&Result<PushOutcome, String>>) -> String {
     match result {
         Some(Err(error)) => format!("FAILED: {error}\n\n{desc}"),
@@ -135,7 +188,8 @@ fn with_result(desc: &str, result: Option<&Result<PushOutcome, String>>) -> Stri
 }
 
 fn file_diff(p: &Path, x: &Entry, commit: Option<&Out>, file: &Change) -> Result<FileDiff> {
-    let (before, after, empty_note) = if let Some(h) = commit {
+    let selected_commit = commit.map(|commit| &commit.id).or(file.commit.as_ref());
+    let (before, after, empty_note) = if let Some(oid) = selected_commit {
         let parents = git(
             p,
             &[
@@ -144,17 +198,21 @@ fn file_diff(p: &Path, x: &Entry, commit: Option<&Out>, file: &Change) -> Result
                 "--no-show-signature",
                 "--no-notes",
                 "--format=%P",
-                &h.id,
+                oid,
                 "--",
             ],
         )?;
         (
             parents.split_whitespace().next().map(str::to_owned),
-            &h.id,
+            oid,
             "No parent · initial commit",
         )
     } else {
-        (x.tracking.clone(), &x.head, "New target · no tracking ref")
+        (
+            repository_base(p, x)?,
+            &x.head,
+            "Empty tree · no shared history",
+        )
     };
     let sources = (|| -> Result<[Source; 2]> {
         let mut old = if let Some(oid) = &before {
@@ -167,6 +225,9 @@ fn file_diff(p: &Path, x: &Entry, commit: Option<&Out>, file: &Change) -> Result
         };
         if let Some(previous) = &file.previous {
             old.description.push_str(&format!(" · {}", label(previous)));
+        }
+        if commit.is_none() && file.commit.is_some() {
+            old.description.push_str(" · Latest outgoing change");
         }
         Ok([old, revision::source(p, after, &file.path)?])
     })();
