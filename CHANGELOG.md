@@ -22,6 +22,7 @@ decimal rollover policy described in [Releasing](docs/releasing.md).
 
 ### Fixed
 
+- Set or replace a branch upstream after Push on Windows.
 - Preserve file bytes when applying supported stash conflict resolutions with Git line-ending attributes.
 
 ### Internal
@@ -47,6 +48,8 @@ decimal rollover policy described in [Releasing](docs/releasing.md).
 - [`4e4c4de`](https://github.com/yelog/igit/commit/4e4c4deb2d8327642a3c48aed73fe469f1c413bb) test(shell): align Push and Update Center interactions
 - [`bafa295`](https://github.com/yelog/igit/commit/bafa2957b6edfb6cf5f15bd389cad23c3411821f) chore(release): prepare v0.1.1
 - [`c9e068e`](https://github.com/yelog/igit/commit/c9e068e3f3e59ca7d8f8572e259089df4df12837) test: isolate preview snapshots and installer channel state
+- [`41350dd`](https://github.com/yelog/igit/commit/41350dd89bfe5c87fed965bdc581976ddb666a1e) chore(release): refresh v0.1.1 changelog
+- [`2682913`](https://github.com/yelog/igit/commit/26829138c1e8476d7a7d94907b131203fe0acbe4) fix(push): write upstream config with a relative lock path
 
 ## [0.1.0] - 2026-11-07
 
