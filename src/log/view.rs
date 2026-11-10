@@ -390,7 +390,7 @@ impl LogPanel {
         }
         if self.pick_mode && !self.picks.is_empty() && a.width >= 25 {
             let label = format!(" Pick {} ", self.picks.len());
-            let r = take_right(&mut a, cells(&label) as u16);
+            let r = take_right(&mut a, cells(&label));
             self.button(f, r, &label, false, Hit::ReviewPicks);
         }
         let input = self
