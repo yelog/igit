@@ -193,7 +193,10 @@ impl CommitPanel {
                 label: "file revision",
             },
             RevisionEvent::Close => self.launch(Hit::Show(Focus::Tree), c),
-            RevisionEvent::None | RevisionEvent::File(_) => Action::None,
+            RevisionEvent::None
+            | RevisionEvent::File(_)
+            | RevisionEvent::Apply(_)
+            | RevisionEvent::ApplyAll => Action::None,
         })
     }
 }

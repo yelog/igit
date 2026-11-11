@@ -12,6 +12,7 @@ impl LogPanel {
                     &[
                         ("Tab", "Focus commit history"),
                         ("e", "Show File at Revision"),
+                        ("D", "Compare with Local"),
                         ("[", "Focus previous revision"),
                         ("]", "Focus next revision"),
                         ("n", "Next change"),
@@ -32,6 +33,29 @@ impl LogPanel {
         }
         let modal = if let Some(dialog) = &self.commit_dialog {
             Some(dialog.help())
+        } else if self.diff.as_ref().and_then(|d| d.local.as_ref()).is_some() {
+            Some(Section::new(
+                "Log / Compare with Local",
+                &[
+                    ("L", "Apply selected revision change to local"),
+                    ("A", "Review and apply all revision changes to local"),
+                    ("Tab", "Focus next revision pane"),
+                    ("Shift-Tab", "Focus previous revision pane"),
+                    ("n", "Next change"),
+                    ("p", "Previous change"),
+                    ("/", "Find text in either pane"),
+                    ("N", "Previous search match"),
+                    ("j", "Scroll both revisions down"),
+                    ("k", "Scroll both revisions up"),
+                    ("h", "Scroll focused revision left"),
+                    ("l", "Scroll focused revision right"),
+                    ("f", "Fold or unfold unchanged regions"),
+                    ("z", "Zoom focused revision / restore split panes"),
+                    ("Ctrl-a", "Select the complete focused revision"),
+                    ("y", "Copy selection or the complete focused revision"),
+                    ("Esc", "Clear selection; otherwise close and refresh"),
+                ],
+            ))
         } else if self.diff.as_ref().is_some_and(|d| d.comparison.is_some()) {
             Some(Section::new(
                 if self
@@ -286,6 +310,9 @@ impl LogPanel {
                     ("v", "Toggle commit selection mode"),
                     ("Space", "Toggle commit checkbox in selection mode"),
                     ("C", "Review cherry-pick"),
+                    ("d", "Drop commit"),
+                    ("u", "Undo commit"),
+                    ("R", "Revert commit"),
                     ("Esc", "Clear commit selection mode"),
                     ("F2", "Edit commit message"),
                     ("Enter", "Open commit file diff"),
@@ -371,7 +398,10 @@ impl LogPanel {
         if self.filter.file_history.is_some() {
             content.sections.insert(
                 1,
-                Section::new("Log / File History", &[("e", "Show File at Revision")]),
+                Section::new(
+                    "Log / File History",
+                    &[("e", "Show File at Revision"), ("D", "Compare with Local")],
+                ),
             );
             content.sections.insert(1, HISTORY_SCROLL);
         }

@@ -1,7 +1,9 @@
 //! A file-scoped history tab and its adjacent immutable revision preview.
+mod compare;
 use super::*;
 use crate::ui::preview_scroll_key;
-use anyhow::{ensure, Context as _};
+use anyhow::{anyhow, ensure, Context as _};
+pub(super) use compare::LocalCompare;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,6 +67,126 @@ impl Target {
 }
 
 impl LogPanel {
+    pub(super) fn open_local_compare(&mut self, c: &Context) -> Result<Action> {
+        self.require_current_history(c)?;
+        let target = self
+            .filter
+            .file_history
+            .as_ref()
+            .context("Open a File History tab first")?;
+        let rev = self.rev().context("No commit selected")?;
+        let local = LocalCompare::prepare(c, rev, target)?;
+        self.diff = Some(local.diff()?);
+        self.local_review = None;
+        self.focus = Pane::Info;
+        Ok(Action::None)
+    }
+
+    pub(super) fn apply_local_compare(&mut self, c: &Context, change: Option<usize>) -> Result<()> {
+        self.require_current_history(c)?;
+        let (local, text, query) = {
+            let diff = self
+                .diff
+                .as_ref()
+                .context("Open Compare with Local first")?;
+            let local = diff
+                .local
+                .as_ref()
+                .context("Open Compare with Local first")?;
+            let comparison = diff
+                .comparison
+                .as_ref()
+                .context("The local comparison is unavailable")?;
+            let rev = self.rev().context("No commit selected")?;
+            let target = self
+                .filter
+                .file_history
+                .as_ref()
+                .context("Open a File History tab first")?;
+            local.ensure_matches(c, rev, target)?;
+            if change.is_none() {
+                ensure!(
+                    local.revision_present(),
+                    "The selected revision deleted this file; choose individual changes or use an external checkout"
+                );
+            }
+            let text = comparison
+                .merged_local_text(change)
+                .context("Select a changed block first")?;
+            (local.clone(), text, comparison.search_prompt().clone())
+        };
+        local.write(&text)?;
+        self.local_review = None;
+        let mut next = local.refresh().map_err(|error| {
+            self.mark_local_changed();
+            anyhow!(
+                "The working file was updated, but the comparison could not refresh: {error:#}. Close it to refresh the workspace."
+            )
+        })?;
+        next.mark_changed();
+        let mut diff = next.diff().map_err(|error| {
+            self.mark_local_changed();
+            anyhow!(
+                "The working file was updated, but the comparison could not be rebuilt: {error:#}. Close it to refresh the workspace."
+            )
+        })?;
+        if let Some(comparison) = diff.comparison.as_mut() {
+            comparison.inherit_query(&query);
+        }
+        self.diff = Some(diff);
+        Ok(())
+    }
+
+    pub(super) fn review_local_apply_all(&mut self, c: &Context) -> Result<Action> {
+        self.require_current_history(c)?;
+        let diff = self
+            .diff
+            .as_ref()
+            .context("Open Compare with Local first")?;
+        let local = diff
+            .local
+            .as_ref()
+            .context("Open Compare with Local first")?;
+        let comparison = diff
+            .comparison
+            .as_ref()
+            .context("The local comparison is unavailable")?;
+        let rev = self.rev().context("No commit selected")?;
+        let target = self
+            .filter
+            .file_history
+            .as_ref()
+            .context("Open a File History tab first")?;
+        local.ensure_matches(c, rev, target)?;
+        ensure!(
+            local.revision_present(),
+            "The selected revision deleted this file; choose individual changes or use an external checkout"
+        );
+        ensure!(
+            comparison.change_count() > 0,
+            "There are no revision changes to apply"
+        );
+        let count = comparison.change_count();
+        self.local_review_serial = self.local_review_serial.wrapping_add(1);
+        let token = format!("{LOCAL_APPLY_TOKEN_PREFIX}{}", self.local_review_serial);
+        self.local_review = Some(token.clone());
+        Ok(Action::Confirm {
+            title: "Apply revision changes to Local".into(),
+            body: format!(
+                "{}\n\nApply {count} revision change{} to the working file.\nThis updates only the working tree; content is not staged.",
+                model::plain(target.path.as_os_str().as_encoded_bytes()),
+                if count == 1 { "" } else { "s" },
+            ),
+            token,
+        })
+    }
+
+    fn mark_local_changed(&mut self) {
+        if let Some(local) = self.diff.as_mut().and_then(|diff| diff.local.as_mut()) {
+            local.mark_changed();
+        }
+    }
+
     pub(super) fn show_file_at_revision(&mut self, c: &Context) -> Result<Action> {
         self.require_current_history(c)?;
         let target = self
@@ -188,7 +310,10 @@ impl LogPanel {
                     self.focus = Pane::Graph;
                     Action::None
                 }
-                RevisionEvent::None | RevisionEvent::File(_) => Action::None,
+                RevisionEvent::None
+                | RevisionEvent::File(_)
+                | RevisionEvent::Apply(_)
+                | RevisionEvent::ApplyAll => Action::None,
             });
         }
         if let Some(action) = diff.selection.key(event, true) {

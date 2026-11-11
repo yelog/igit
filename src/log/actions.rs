@@ -9,6 +9,24 @@ use crate::ui::{help::HelpSection, idea::button_style};
 const SELECT_ROW: usize = Kind::ALL.len();
 use crossterm::event::{KeyEvent, KeyEventKind};
 
+fn shortcut(kind: Kind) -> Option<&'static str> {
+    match kind {
+        Kind::CherryPick => Some("C"),
+        Kind::Undo => Some("u"),
+        Kind::Revert => Some("R"),
+        Kind::Drop => Some("d"),
+        Kind::Edit => Some("F2"),
+        Kind::Branch | Kind::Tag | Kind::Checkout => None,
+    }
+}
+
+fn action_label(kind: Kind) -> String {
+    shortcut(kind).map_or_else(
+        || kind.title().to_owned(),
+        |key| format!("{}  {key}", kind.title()),
+    )
+}
+
 pub(super) struct Dialog {
     target: Target,
     anchor: Option<(u16, u16)>,
@@ -194,11 +212,10 @@ impl Dialog {
                 let h = usize::from(inner.height - 1);
                 let start = window(*row, h, SELECT_ROW + 1);
                 for i in (start..=SELECT_ROW).take(h) {
-                    let label = match Kind::ALL.get(i) {
-                        Some(Kind::CherryPick) => "Cherry-pick Commit  C",
-                        Some(kind) => kind.title(),
-                        None => "Select Commits  v",
-                    };
+                    let label = Kind::ALL.get(i).map_or_else(
+                        || "Select Commits  v".to_owned(),
+                        |kind| action_label(*kind),
+                    );
                     let r = line(inner.y + 1 + (i - start) as u16);
                     f.render_widget(
                         Paragraph::new(format!(" {label}")).style(fg(INK).bg(if i == *row {
@@ -309,10 +326,57 @@ impl LogPanel {
         })
     }
 
+    fn prepare_commit_action(
+        &mut self,
+        c: &Context,
+        target: Target,
+        kind: Kind,
+        input: String,
+    ) -> Result<Action> {
+        let (review, body) = Review::prepare(c, target, kind, input)?;
+        self.commit_review = Some(review);
+        self.commit_dialog = None;
+        Ok(Action::Confirm {
+            title: kind.title().into(),
+            body,
+            token: REVIEW_TOKEN.into(),
+        })
+    }
+
+    pub(super) fn shortcut_commit_action(
+        &mut self,
+        key: &KeyEvent,
+        c: &Context,
+    ) -> Result<Option<Action>> {
+        if self.focus != Pane::Graph
+            || self.editing()
+            || !matches!(key.modifiers, Mods::NONE | Mods::SHIFT)
+        {
+            return Ok(None);
+        }
+        let kind = match key.code {
+            K::Char('d') => Kind::Drop,
+            K::Char('u') => Kind::Undo,
+            K::Char('R') => Kind::Revert,
+            _ => return Ok(None),
+        };
+        self.require_current_history(c)?;
+        let target = {
+            let rev = self
+                .rev()
+                .ok_or_else(|| anyhow::anyhow!("No commit selected"))?;
+            Target::new(c, rev)?
+        };
+        self.prepare_commit_action(c, target, kind, String::new())
+            .map(Some)
+    }
+
     pub(crate) fn pick_hint(&self, c: &Context, revision_key: &str) -> Option<String> {
         if !self.pick_mode {
             if self.filter.file_history.is_some() && !self.editing() {
-                return Some(format!("{revision_key} Show File at Revision  F1 Help"));
+                return Some(format!(
+                    "{revision_key} Show File at Revision  D Compare with Local  F1 Help"
+                ));
             }
             return (self.focus == Pane::Graph && !self.editing())
                 .then(|| "C Cherry-pick  v Select commits  F1 Help".to_owned());
@@ -425,14 +489,8 @@ impl LogPanel {
             Input::Choose(kind) => (kind, String::new()),
             Input::Review(kind, input) => (kind, input),
         };
-        let (review, body) = Review::prepare(c, dialog.target.clone(), kind, input)?;
-        self.commit_review = Some(review);
-        self.commit_dialog = None;
-        Ok(Action::Confirm {
-            title: kind.title().into(),
-            body,
-            token: REVIEW_TOKEN.into(),
-        })
+        let target = dialog.target.clone();
+        self.prepare_commit_action(c, target, kind, input)
     }
 
     pub(super) fn confirm_commit_action(&mut self, token: &str, c: &Context) -> Action {

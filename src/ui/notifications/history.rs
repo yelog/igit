@@ -3,7 +3,7 @@ use crate::{
     config::keys::normalize,
     ui::{
         help::{HelpContent, HelpSection},
-        inside, selection,
+        inside, selection, Action,
     },
 };
 use crossterm::event::{
@@ -27,9 +27,20 @@ pub(crate) struct History {
     pub(super) input: Option<SearchInput>,
     pub(super) clear_confirm: bool,
     pub(super) detail: Option<Detail>,
+    pub(super) preview: Preview,
+    pub(super) selection: Box<selection::TextSelection>,
     pub(super) rows: Vec<(Rect, u64)>,
     pub(super) list_area: Rect,
+    pub(super) content_area: Rect,
     pub(super) close_area: Rect,
+    pub(super) page_size: usize,
+}
+
+#[derive(Clone, Default)]
+pub(super) struct Preview {
+    pub(super) id: Option<u64>,
+    pub(super) scroll: usize,
+    pub(super) max_scroll: usize,
     pub(super) page_size: usize,
 }
 
@@ -169,13 +180,18 @@ impl History {
                 &[
                     ("j", "Scroll detail down"),
                     ("k", "Scroll detail up"),
+                    ("J", "Scroll detail down"),
+                    ("K", "Scroll detail up"),
                     ("Down", "Scroll detail down"),
                     ("Up", "Scroll detail up"),
                     ("PgDn", "Scroll detail down one page"),
                     ("PgUp", "Scroll detail up one page"),
                     ("Home", "Scroll to start of detail"),
                     ("End", "Scroll to end of detail"),
-                    ("y", "Copy complete notification"),
+                    ("y", "Copy complete notification or selection"),
+                    ("Ctrl-a", "Select all detail text"),
+                    ("Ctrl-c", "Copy selected text"),
+                    ("Ctrl-Insert", "Copy selected text"),
                     ("Esc", "Back to notification history"),
                     ("q", "Back to notification history"),
                 ],
@@ -186,6 +202,8 @@ impl History {
                 &[
                     ("j", "Select next notification"),
                     ("k", "Select previous notification"),
+                    ("J", "Scroll preview down"),
+                    ("K", "Scroll preview up"),
                     ("Down", "Select next notification"),
                     ("Up", "Select previous notification"),
                     ("PgDn", "Select next page"),
@@ -196,7 +214,10 @@ impl History {
                     ("n", "Next search match"),
                     ("N", "Previous search match"),
                     ("Enter", "Open complete notification"),
-                    ("y", "Copy complete notification"),
+                    ("y", "Copy complete notification or selection"),
+                    ("Ctrl-a", "Select all preview text"),
+                    ("Ctrl-c", "Copy selected text"),
+                    ("Ctrl-Insert", "Copy selected text"),
                     ("c", "Clear notifications with confirmation"),
                     ("Esc", "Close notification history"),
                     ("q", "Close notification history"),
@@ -209,8 +230,10 @@ impl History {
     pub(crate) fn clear_hits(&mut self) {
         self.rows.clear();
         self.list_area = Rect::default();
+        self.content_area = Rect::default();
         self.close_area = Rect::default();
         self.page_size = 0;
+        self.preview.page_size = 0;
         if let Some(detail) = &mut self.detail {
             detail.page_size = 0;
         }
@@ -223,27 +246,31 @@ impl History {
     }
 
     pub(super) fn reconcile(&mut self, center: &Center) {
+        let previous = self.selected_id;
         if center.history.is_empty() {
             self.selected = 0;
             self.selected_id = None;
             self.offset = 0;
-            return;
+        } else {
+            self.selected = self
+                .selected_id
+                .and_then(|id| center.history.iter().position(|entry| entry.id == id))
+                .unwrap_or(self.selected.min(center.history.len() - 1));
+            self.selected_id = Some(center.history[self.selected].id);
+            if self.page_size != 0 {
+                self.offset = self
+                    .offset
+                    .min(center.history.len().saturating_sub(self.page_size));
+                if self.selected < self.offset {
+                    self.offset = self.selected;
+                } else if self.selected >= self.offset + self.page_size.max(1) {
+                    self.offset = self.selected + 1 - self.page_size.max(1);
+                }
+            }
         }
-        self.selected = self
-            .selected_id
-            .and_then(|id| center.history.iter().position(|entry| entry.id == id))
-            .unwrap_or(self.selected.min(center.history.len() - 1));
-        self.selected_id = Some(center.history[self.selected].id);
-        if self.page_size == 0 {
-            return;
-        }
-        self.offset = self
-            .offset
-            .min(center.history.len().saturating_sub(self.page_size));
-        if self.selected < self.offset {
-            self.offset = self.selected;
-        } else if self.selected >= self.offset + self.page_size.max(1) {
-            self.offset = self.selected + 1 - self.page_size.max(1);
+        if self.selected_id != previous && self.detail.is_none() {
+            self.preview = Preview::default();
+            self.selection.reset();
         }
     }
 
@@ -261,6 +288,16 @@ impl History {
                 .min(detail.max_scroll);
         } else {
             self.select(center, self.selected.saturating_add_signed(delta));
+        }
+    }
+
+    fn scroll_preview(&mut self, delta: isize) {
+        if self.detail.is_none() && !self.content_area.is_empty() {
+            self.preview.scroll = self
+                .preview
+                .scroll
+                .saturating_add_signed(delta)
+                .min(self.preview.max_scroll);
         }
     }
 
@@ -301,7 +338,15 @@ impl History {
                 max_scroll: 0,
                 page_size: self.page_size.max(1),
             });
+            self.selection.clear();
         }
+    }
+}
+
+fn copy_event(action: Action) -> HistoryEvent {
+    match action {
+        Action::Copy { text, .. } => HistoryEvent::Copy(text),
+        _ => HistoryEvent::Handled,
     }
 }
 
@@ -317,6 +362,9 @@ impl Center {
 
     pub(crate) fn history_event(&mut self, event: &Event, state: &mut History) -> HistoryEvent {
         state.reconcile(self);
+        if matches!(event, Event::FocusLost) {
+            state.selection.clear();
+        }
         if let Event::Mouse(mouse) = event {
             if let MouseEventKind::Down(button) = mouse.kind {
                 self.captured_button = Some(button);
@@ -324,6 +372,7 @@ impl Center {
         }
         if let Event::Resize(..) = event {
             state.clear_hits();
+            state.selection.cancel_mouse();
         }
         if matches!(event, Event::Mouse(mouse)
             if mouse.kind == MouseEventKind::Down(MouseButton::Left)
@@ -333,6 +382,8 @@ impl Center {
                 state.clear_confirm = false;
             } else if state.detail.take().is_none() {
                 return HistoryEvent::Close;
+            } else {
+                state.selection.clear();
             }
             return HistoryEvent::Handled;
         }
@@ -368,6 +419,11 @@ impl Center {
                 }
                 return HistoryEvent::Handled;
             }
+            if !state.content_area.is_empty() {
+                if let Some(action) = state.selection.key(event, true) {
+                    return copy_event(action);
+                }
+            }
             if key.modifiers != KeyModifiers::NONE {
                 return HistoryEvent::Handled;
             }
@@ -381,6 +437,7 @@ impl Center {
                     if state.detail.take().is_none() {
                         return HistoryEvent::Close;
                     }
+                    state.selection.clear();
                 }
                 KeyCode::Char('y') => {
                     if let Some(entry) = state
@@ -394,6 +451,10 @@ impl Center {
                 }
                 KeyCode::Down | KeyCode::Char('j') => state.move_by(self, 1),
                 KeyCode::Up | KeyCode::Char('k') => state.move_by(self, -1),
+                KeyCode::Char('J') if state.detail.is_some() => state.move_by(self, 1),
+                KeyCode::Char('K') if state.detail.is_some() => state.move_by(self, -1),
+                KeyCode::Char('J') => state.scroll_preview(1),
+                KeyCode::Char('K') => state.scroll_preview(-1),
                 KeyCode::PageDown => state.move_by(self, page),
                 KeyCode::PageUp => state.move_by(self, -page),
                 KeyCode::Home => state.move_by(self, isize::MIN),
@@ -422,29 +483,50 @@ impl Center {
                         input.insert(text);
                     }
                 }
-                Event::Mouse(mouse) if state.input.is_none() => match mouse.kind {
-                    MouseEventKind::ScrollDown => state.move_by(self, 3),
-                    MouseEventKind::ScrollUp => state.move_by(self, -3),
-                    MouseEventKind::Down(MouseButton::Left) if state.detail.is_none() => {
-                        let target = state
-                            .rows
-                            .iter()
-                            .find(|(area, _)| inside(*area, mouse.column, mouse.row))
-                            .map(|(_, id)| *id);
-                        if let Some(id) = target {
-                            if let Some(index) =
-                                self.history.iter().position(|entry| entry.id == id)
+                Event::Mouse(mouse) if state.input.is_none() => {
+                    if let Some(action) = state.selection.mouse(mouse) {
+                        return copy_event(action);
+                    }
+                    match mouse.kind {
+                        MouseEventKind::ScrollDown => {
+                            if state.detail.is_some()
+                                || !inside(state.content_area, mouse.column, mouse.row)
                             {
-                                if state.selected_id == Some(id) {
-                                    state.open_detail(self);
-                                } else {
-                                    state.select(self, index);
+                                state.move_by(self, 3);
+                            } else {
+                                state.scroll_preview(3);
+                            }
+                        }
+                        MouseEventKind::ScrollUp => {
+                            if state.detail.is_some()
+                                || !inside(state.content_area, mouse.column, mouse.row)
+                            {
+                                state.move_by(self, -3);
+                            } else {
+                                state.scroll_preview(-3);
+                            }
+                        }
+                        MouseEventKind::Down(MouseButton::Left) if state.detail.is_none() => {
+                            let target = state
+                                .rows
+                                .iter()
+                                .find(|(area, _)| inside(*area, mouse.column, mouse.row))
+                                .map(|(_, id)| *id);
+                            if let Some(id) = target {
+                                if let Some(index) =
+                                    self.history.iter().position(|entry| entry.id == id)
+                                {
+                                    if state.selected_id == Some(id) {
+                                        state.open_detail(self);
+                                    } else {
+                                        state.select(self, index);
+                                    }
                                 }
                             }
                         }
+                        _ => {}
                     }
-                    _ => {}
-                },
+                }
                 _ => {}
             }
         }

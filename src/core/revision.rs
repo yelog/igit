@@ -23,6 +23,22 @@ pub(crate) fn source(repo: &Path, oid: &str, path: &Path) -> Result<Source> {
 }
 
 pub(crate) fn file(repo: &Path, oid: &str, path: &Path) -> Result<Option<Source>> {
+    file_with_mode(repo, oid, path).map(|entry| entry.map(|(source, _)| source))
+}
+
+/// Read a revision only when it is an ordinary text file. Symlink blobs are
+/// valid history entries but must not be replaced by their link text locally.
+pub(crate) fn regular_file(repo: &Path, oid: &str, path: &Path) -> Result<Option<Source>> {
+    let Some((source, mode)) = file_with_mode(repo, oid, path)? else {
+        return Ok(None);
+    };
+    if mode == "120000" {
+        bail!("Compare with Local does not use symlink revisions; edit the link externally");
+    }
+    Ok(Some(source))
+}
+
+fn file_with_mode(repo: &Path, oid: &str, path: &Path) -> Result<Option<(Source, String)>> {
     let output = reader(repo)
         .args(["--literal-pathspecs", "ls-tree", "-z", oid, "--"])
         .arg(path)
@@ -46,7 +62,7 @@ pub(crate) fn file(repo: &Path, oid: &str, path: &Path) -> Result<Option<Source>
     if kind != "blob" {
         bail!("File revision is unavailable for {kind} entries");
     }
-    self::blob(repo, blob, mode).map(Some)
+    self::blob(repo, blob, mode).map(|source| Some((source, mode.to_owned())))
 }
 
 fn reader(repo: &Path) -> Command {

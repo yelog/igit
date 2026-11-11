@@ -162,7 +162,7 @@ pub(super) fn line_body(line: &str) -> &str {
 pub(super) struct Columns {
     pub code: Rect,
     pub numbers: Rect,
-    controls: Rect,
+    pub(super) controls: Rect,
     pub rail: Rect,
     pub scrollbar: Rect,
     rule: Option<u16>,

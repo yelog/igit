@@ -24,6 +24,15 @@ fn label_at(t: &Terminal<TestBackend>, label: &str) -> (u16, u16) {
     panic!("Missing rendered label: {label}");
 }
 
+fn select_commit(panel: &mut LogPanel, oid: &str) {
+    let row = panel
+        .visible
+        .iter()
+        .position(|&i| panel.hist.revs[i].oid == oid)
+        .unwrap();
+    panel.select_row(row);
+}
+
 #[test]
 fn right_click_targets_the_actual_row_even_when_another_root_has_the_same_oid() {
     let d = tempfile::tempdir().unwrap();
@@ -115,6 +124,278 @@ fn message_editor_owns_input_and_previews_multiline_unicode_before_writing() {
         git(repo, &["show", "-s", "--format=%B", "HEAD"]),
         "Original title\n\nOriginal body"
     );
+}
+
+#[test]
+fn graph_shortcuts_open_reviews_for_the_highlighted_commit_without_writing() {
+    let d = init();
+    let repo = d.path();
+    for (file, message) in [
+        ("base.txt", "Base"),
+        ("middle.txt", "Middle"),
+        ("tip.txt", "Tip"),
+    ] {
+        commit(repo, file, message);
+    }
+    let base = git(repo, &["rev-parse", "HEAD^"]);
+    let tip = git(repo, &["rev-parse", "HEAD"]);
+    let c = Context::discover(repo).unwrap();
+    let mut panel = LogPanel::default();
+    panel.refresh(&c).unwrap();
+    for (code, oid, title) in [
+        (K::Char('d'), tip.as_str(), "Drop Commit"),
+        (K::Char('u'), tip.as_str(), "Undo Commit"),
+        (K::Char('R'), base.as_str(), "Revert Commit"),
+    ] {
+        select_commit(&mut panel, oid);
+        let Action::Confirm {
+            title: actual,
+            body,
+            token,
+        } = key(&mut panel, code, Mods::NONE, &c)
+        else {
+            panic!("{title} should open a review");
+        };
+        assert_eq!(actual, title);
+        assert_eq!(token, REVIEW_TOKEN);
+        assert!(body.contains(&oid[..8]), "{body}");
+        assert_eq!(git(repo, &["rev-parse", "HEAD"]), tip);
+        assert_eq!(git(repo, &["status", "--porcelain"]), "");
+        assert!(panel.commit_review.is_some());
+        assert!(panel.commit_dialog.is_none());
+    }
+    assert!(matches!(
+        panel.event(
+            &Event::Key(KeyEvent::new_with_kind(
+                K::Char('d'),
+                Mods::NONE,
+                crossterm::event::KeyEventKind::Release,
+            )),
+            &c
+        ),
+        Action::None
+    ));
+    assert_eq!(git(repo, &["rev-parse", "HEAD"]), tip);
+}
+
+#[test]
+fn shortcut_revert_targets_the_highlighted_repository_when_oids_match() {
+    let d = tempfile::tempdir().unwrap();
+    let source = init();
+    commit(source.path(), "file", "Shared commit");
+    let left = d.path().join("left");
+    let right = d.path().join("right");
+    for repo in [&left, &right] {
+        git(
+            d.path(),
+            &[
+                "clone",
+                "-q",
+                source.path().to_str().unwrap(),
+                repo.to_str().unwrap(),
+            ],
+        );
+    }
+    let c = Context::discover(d.path()).unwrap();
+    let mut panel = LogPanel::default();
+    panel.refresh(&c).unwrap();
+    let right_id = c
+        .repos
+        .iter()
+        .position(|repo| repo.name == "right")
+        .unwrap();
+    let right_row = panel
+        .visible
+        .iter()
+        .position(|&i| panel.hist.revs[i].root == right_id)
+        .unwrap();
+    panel.select_row(right_row);
+    let oid = panel.rev().unwrap().oid.clone();
+    let Action::Confirm { title, body, .. } = key(&mut panel, K::Char('R'), Mods::NONE, &c) else {
+        panic!("R should review a revert");
+    };
+    assert_eq!(title, "Revert Commit");
+    assert!(body.contains("Repository: right"), "{body}");
+    assert!(body.contains(&oid[..8]), "{body}");
+    for repo in [&left, &right] {
+        assert!(git(repo, &["status", "--porcelain"]).is_empty());
+        assert_eq!(git(repo, &["rev-parse", "HEAD"]), oid);
+    }
+}
+
+#[test]
+fn filter_prefix_and_control_modifiers_take_priority_over_commit_shortcuts() {
+    let (_d, c, mut panel) = navigation_history();
+    let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    render(&mut panel, &mut t, &c);
+    let start = panel.cursor;
+    assert!(matches!(
+        key(&mut panel, K::Char('d'), Mods::CONTROL, &c),
+        Action::None
+    ));
+    assert!(panel.commit_review.is_none());
+    assert!(panel.cursor > start);
+    let paged = panel.cursor;
+    assert!(matches!(
+        key(&mut panel, K::Char('u'), Mods::CONTROL, &c),
+        Action::None
+    ));
+    assert!(panel.commit_review.is_none());
+    assert_eq!(panel.cursor, start);
+    assert!(paged > start);
+
+    assert!(matches!(filter_key(&mut panel, 'd', &c), Action::None));
+    assert!(matches!(panel.editor, Some((Field::Date, _))));
+    assert!(panel.commit_review.is_none());
+    key(&mut panel, K::Esc, Mods::NONE, &c);
+    assert!(matches!(filter_key(&mut panel, 'u', &c), Action::None));
+    assert!(matches!(panel.editor, Some((Field::Author, _))));
+    assert!(panel.commit_review.is_none());
+    key(&mut panel, K::Esc, Mods::NONE, &c);
+
+    for modifiers in [Mods::CONTROL, Mods::ALT, Mods::SUPER] {
+        for code in [K::Char('d'), K::Char('u'), K::Char('R')] {
+            assert!(matches!(key(&mut panel, code, modifiers, &c), Action::None));
+            assert!(panel.commit_review.is_none());
+        }
+    }
+}
+
+#[test]
+fn editors_menu_info_and_diff_own_commit_shortcut_keys() {
+    let d = init();
+    commit(d.path(), "file", "Original");
+    let c = Context::discover(d.path()).unwrap();
+    let mut panel = LogPanel::default();
+    panel.refresh(&c).unwrap();
+    finish_preview(&mut panel, &c);
+
+    key(&mut panel, K::Char('a'), Mods::NONE, &c);
+    for code in [K::Char('d'), K::Char('u'), K::Char('R')] {
+        assert!(matches!(
+            key(&mut panel, code, Mods::NONE, &c),
+            Action::None
+        ));
+        assert!(panel.commit_dialog.is_some());
+        assert!(panel.commit_review.is_none());
+    }
+    key(&mut panel, K::Esc, Mods::NONE, &c);
+    assert!(panel.commit_dialog.is_none());
+
+    key(&mut panel, K::F(2), Mods::NONE, &c);
+    assert_eq!(panel.keymap().context(), "Log / Edit Commit Message");
+    for code in [K::Char('d'), K::Char('u'), K::Char('R')] {
+        assert!(matches!(
+            key(&mut panel, code, Mods::NONE, &c),
+            Action::None
+        ));
+        assert!(panel.commit_dialog.is_some());
+        assert!(panel.commit_review.is_none());
+    }
+    key(&mut panel, K::Esc, Mods::NONE, &c);
+
+    panel.focus = Pane::Info;
+    for code in [K::Char('d'), K::Char('u'), K::Char('R')] {
+        assert!(matches!(
+            key(&mut panel, code, Mods::NONE, &c),
+            Action::None
+        ));
+        assert!(panel.commit_review.is_none());
+    }
+    panel.focus = Pane::Graph;
+
+    key(&mut panel, K::Enter, Mods::NONE, &c);
+    assert!(panel.diff.is_some());
+    for code in [K::Char('d'), K::Char('u'), K::Char('R')] {
+        assert!(matches!(
+            key(&mut panel, code, Mods::NONE, &c),
+            Action::None
+        ));
+        assert!(panel.diff.is_some());
+        assert!(panel.commit_review.is_none());
+    }
+    key(&mut panel, K::Esc, Mods::NONE, &c);
+}
+
+#[test]
+fn invalid_shortcut_surfaces_the_backend_notice_without_a_review() {
+    let d = init();
+    let repo = d.path();
+    for (file, message) in [("base", "Base"), ("middle", "Middle"), ("tip", "Tip")] {
+        commit(repo, file, message);
+    }
+    let head = git(repo, &["rev-parse", "HEAD"]);
+    let middle = git(repo, &["rev-parse", "HEAD^"]);
+    let c = Context::discover(repo).unwrap();
+    let mut panel = LogPanel::default();
+    panel.refresh(&c).unwrap();
+    select_commit(&mut panel, &middle);
+    let Action::Notice(level, message) = key(&mut panel, K::Char('u'), Mods::NONE, &c) else {
+        panic!("Undo should report an ineligible highlighted commit");
+    };
+    assert_eq!(level, NoticeLevel::Error);
+    assert!(message.contains("current branch tip"), "{message}");
+    assert!(panel.commit_review.is_none());
+    assert!(panel.commit_dialog.is_none());
+    assert_eq!(git(repo, &["rev-parse", "HEAD"]), head);
+}
+
+#[test]
+fn shortcuts_target_the_highlighted_commit_instead_of_checked_cherry_picks() {
+    let d = init();
+    let repo = d.path();
+    for (file, message) in [("base", "Base"), ("middle", "Middle"), ("tip", "Tip")] {
+        commit(repo, file, message);
+    }
+    let middle = git(repo, &["rev-parse", "HEAD^"]);
+    let tip = git(repo, &["rev-parse", "HEAD"]);
+    let c = Context::discover(repo).unwrap();
+    let mut panel = LogPanel::default();
+    panel.refresh(&c).unwrap();
+    panel.set_pick_mode(true);
+    select_commit(&mut panel, &middle);
+    panel.toggle_pick(&c).unwrap();
+    select_commit(&mut panel, &tip);
+    let Action::Confirm { title, body, .. } = key(&mut panel, K::Char('R'), Mods::NONE, &c) else {
+        panic!("R should review the highlighted commit");
+    };
+    assert_eq!(title, "Revert Commit");
+    assert!(body.contains(&tip[..8]), "{body}");
+    assert_eq!(panel.picks.len(), 1);
+    assert_eq!(panel.picks[0].oid, middle);
+    assert!(panel.pick_mode);
+}
+
+#[test]
+fn action_menu_and_graph_help_show_commit_shortcuts() {
+    let d = init();
+    let repo = d.path();
+    commit(repo, "file", "Commit");
+    let c = Context::discover(repo).unwrap();
+    let mut panel = LogPanel::default();
+    panel.refresh(&c).unwrap();
+    let bindings = panel
+        .keymap()
+        .sections
+        .iter()
+        .flat_map(|section| section.bindings.iter())
+        .map(|(key, _)| *key)
+        .collect::<Vec<_>>();
+    for key in ["d", "u", "R", "F2"] {
+        assert!(bindings.contains(&key), "{key}");
+    }
+
+    key(&mut panel, K::Char('a'), Mods::NONE, &c);
+    let mut t = Terminal::new(TestBackend::new(44, 12)).unwrap();
+    render(&mut panel, &mut t, &c);
+    for label in [
+        "Drop Commit  d",
+        "Undo Commit  u",
+        "Revert Commit  R",
+        "Edit Commit Message  F2",
+    ] {
+        label_at(&t, label);
+    }
 }
 
 fn cherry_pick_panel(conflict: bool) -> (tempfile::TempDir, Context, LogPanel, String, String) {

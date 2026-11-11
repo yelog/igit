@@ -101,6 +101,7 @@ impl PushPanel {
                     label: "revision diff",
                 };
             }
+            RevisionEvent::Apply(_) | RevisionEvent::ApplyAll => (),
         }
         Action::None
     }

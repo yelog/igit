@@ -164,7 +164,7 @@ impl Rollback {
             cursor: 0,
             offset: 0,
             page: 1,
-            focus: Target::Close,
+            focus: Target::Apply,
             delete_added: false,
             group_menu: None,
             preview: None,

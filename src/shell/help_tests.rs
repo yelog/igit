@@ -38,6 +38,23 @@ fn check_context(app: &mut Shell, expected: &str) {
 }
 
 #[test]
+fn help_search_puts_notification_history_before_scattered_matches() {
+    let (_dir, mut app) = fixture();
+    app.go(Commit);
+    app.dispatch(&key(KeyCode::F(1)));
+    assert_eq!(context(&app), "Commit / Changes");
+    app.dispatch(&Event::Paste("noti".into()));
+    let text = screen(&mut app, 120, 36);
+    assert!(
+        text.lines()
+            .any(|line| line.contains("> F8") && line.contains("Open notification history")),
+        "{text}"
+    );
+    app.dispatch(&key(KeyCode::Enter));
+    assert!(matches!(app.pop, Some(Popup::Notifications(_))));
+}
+
+#[test]
 fn text_selection_mouse_release_copies_without_shortcut_and_keeps_message_caret() {
     let (_dir, mut app) = fixture();
     let capture = clipboard::CopyCapture::start();

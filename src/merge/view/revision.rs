@@ -1,4 +1,4 @@
-//! A historical comparison has no writable Document, stage state, or apply path.
+//! Read-only historical comparisons plus an optional reviewed local write path.
 pub(super) mod alignment;
 
 use super::highlight::revision_range_tint;
@@ -14,6 +14,8 @@ pub(crate) enum RevisionEvent {
     Close,
     File(isize),
     Copy(String),
+    Apply(usize),
+    ApplyAll,
 }
 
 #[derive(Clone, Copy)]
@@ -26,6 +28,8 @@ enum Target {
     Pane(usize),
     Row(usize, usize),
     Fold(usize),
+    Apply(usize),
+    ApplyAll,
 }
 
 pub(crate) struct RevisionDiff {
@@ -52,6 +56,8 @@ pub(crate) struct RevisionDiff {
     search: Search<(usize, usize)>,
     search_hit: Option<SearchHit<(usize, usize)>>,
     reveal_search: bool,
+    local_merge: bool,
+    local_apply_all: bool,
 }
 
 impl RevisionDiff {
@@ -105,6 +111,8 @@ impl RevisionDiff {
             search: Search::default(),
             search_hit: None,
             reveal_search: false,
+            local_merge: false,
+            local_apply_all: false,
         }
     }
 
@@ -129,8 +137,73 @@ impl RevisionDiff {
         diff
     }
 
+    /// Compare an immutable revision with the working file and allow the
+    /// revision side to replace selected aligned blocks.
+    pub(crate) fn local(
+        name: String,
+        revision: String,
+        revision_text: String,
+        local_text: String,
+        revision_note: String,
+        local_note: String,
+        apply_all: bool,
+    ) -> Self {
+        let mut diff = Self::two_way(
+            name,
+            [revision, String::new()],
+            [revision_text, local_text],
+            [revision_note, local_note],
+        );
+        diff.local_merge = true;
+        diff.local_apply_all = apply_all;
+        diff
+    }
+
     pub(crate) fn is_three_way(&self) -> bool {
         self.three_way
+    }
+
+    pub(crate) fn local_merge(&self) -> bool {
+        self.local_merge
+    }
+
+    pub(crate) fn selected_change(&self) -> Option<usize> {
+        self.change_at(self.selected)
+            .or_else(|| self.adjacent_change(1))
+            .or_else(|| self.adjacent_change(-1))
+    }
+
+    pub(crate) fn change_count(&self) -> usize {
+        self.changes.len()
+    }
+
+    /// Build the local text with one aligned change, or every change, taken
+    /// from the revision. The hidden alignment pane equals Local, so `result`
+    /// is the visible right-hand text for each section.
+    pub(crate) fn merged_local_text(&self, change: Option<usize>) -> Option<String> {
+        if !self.local_merge {
+            return None;
+        }
+        match change {
+            None => Some(self.texts[0].clone()),
+            Some(index) => {
+                let start = self.change_at(index)?;
+                let end = self.change_end(start);
+                (start < end).then(|| {
+                    self.chunks
+                        .iter()
+                        .enumerate()
+                        .map(|(i, chunk)| {
+                            if (start..end).contains(&i) {
+                                chunk.left.as_str()
+                            } else {
+                                chunk.result.as_str()
+                            }
+                        })
+                        .collect()
+                })
+            }
+        }
     }
 
     pub(crate) fn selected_text(&self) -> Option<&str> {
@@ -384,13 +457,15 @@ impl RevisionDiff {
             let close = right(&mut title_space, 7.min(title.width));
             put(f, close, " Close ", style(MUTED).bg(CHROME));
             self.hits.push((close, Target::Close));
+            let title = if self.local_merge {
+                format!(" Compare with Local: {}", self.name)
+            } else {
+                format!(" Repository Diff: {}", self.name)
+            };
             put(
                 f,
                 title_space,
-                clipped(
-                    &format!(" Repository Diff: {}", self.name),
-                    title_space.width as usize,
-                ),
+                clipped(&title, title_space.width as usize),
                 style(FG).bg(CHROME),
             );
             (toolbar, body, Some(footer))
@@ -436,7 +511,7 @@ impl RevisionDiff {
             Target::Change(1),
             self.adjacent_change(1).is_some(),
         );
-        if let Some((file, count)) = files {
+        if let Some((file, count)) = files.filter(|(_, count)| !self.local_merge || *count > 1) {
             self.button(f, &mut tools, " < ", Target::File(-1), file > 0);
             let counter = format!("{}/{} files", file + 1, count);
             if tools.width >= counter.width() as u16 {
@@ -447,6 +522,22 @@ impl RevisionDiff {
         }
         self.button(f, &mut tools, fold, Target::FoldAll, true);
         self.button(f, &mut tools, zoom, Target::Zoom, true);
+        if self.local_merge {
+            self.button(
+                f,
+                &mut tools,
+                " Apply ",
+                Target::Apply(self.selected_change().unwrap_or(0)),
+                self.selected_change().is_some(),
+            );
+            self.button(
+                f,
+                &mut tools,
+                " All ",
+                Target::ApplyAll,
+                self.local_apply_all && !self.changes.is_empty(),
+            );
+        }
 
         let split = area.width >= if self.three_way { 72 } else { 48 } && !self.zoom;
         let cols = if split {
@@ -520,7 +611,9 @@ impl RevisionDiff {
         }
         self.scroll = self.scroll.min(self.total.saturating_sub(self.page));
         for (pane, col) in cols.into_iter().enumerate().filter(|(_, c)| !c.is_empty()) {
-            let role = if self.three_way {
+            let role = if self.local_merge {
+                ["Revision", "Local", ""][pane]
+            } else if self.three_way {
                 ["Parent 1", "Result", "Parent 2"][pane]
             } else {
                 ["Before", "After", ""][pane]
@@ -532,7 +625,11 @@ impl RevisionDiff {
             } else {
                 revision
             };
-            let mut caption = format!(" {} {}  {role}", icons.glyph(Icon::Locked), short);
+            let mut caption = if self.local_merge && pane == 1 {
+                format!(" {role}")
+            } else {
+                format!(" {} {}  {role}", icons.glyph(Icon::Locked), short)
+            };
             if inline {
                 if pane == 1 {
                     let name = if caption.width() + 2 + self.name.width() <= col.width as usize {
@@ -581,7 +678,11 @@ impl RevisionDiff {
                 }
             }
             let numbers = map.numbers[pane].max(1).ilog10() as u16 + 1;
-            let mut metrics = Columns::read_only(pane, col, numbers, split);
+            let mut metrics = if self.local_merge && pane == 0 {
+                Columns::new(pane, col, numbers, split)
+            } else {
+                Columns::read_only(pane, col, numbers, split)
+            };
             if inline {
                 // The inline view has one revision heading and no annotation
                 // row. Keep the same gutters and scrollbar, reclaiming its row.
@@ -676,6 +777,30 @@ impl RevisionDiff {
                     Hit::Fold(i) => Some((r, Target::Fold(i))),
                     _ => None,
                 }));
+            if self.local_merge && pane == 0 && !metrics.controls.is_empty() {
+                let label = if ascii { " >> " } else { " » " };
+                let width = label.width() as u16;
+                for (i, section) in map.sections.iter().enumerate() {
+                    if self.change_at(i) != Some(i)
+                        || section.first >= self.scroll + usize::from(metrics.controls.height)
+                        || section.first + section.height <= self.scroll
+                    {
+                        continue;
+                    }
+                    let row = section.first.max(self.scroll) - self.scroll;
+                    let button = rect(
+                        metrics.controls.right().saturating_sub(width),
+                        metrics.controls.y + row as u16,
+                        width,
+                        1,
+                    )
+                    .intersection(metrics.controls);
+                    put(f, button, label, style(ACCENT).bg(BUTTON));
+                    if !button.is_empty() {
+                        self.hits.push((button, Target::Apply(i)));
+                    }
+                }
+            }
             let rail_height = usize::from(metrics.rail.height);
             for (chunk, section) in self.chunks.iter().zip(&map.sections) {
                 let Some(tint) = revision_range_tint(chunk, pane) else {
@@ -720,7 +845,15 @@ impl RevisionDiff {
         self.reveal_search = false;
         if let Some(footer) = footer {
             fill(f, footer, CHROME);
-            let hint = if footer.width >= 105 {
+            if self.local_merge && self.search.prompt().visible() {
+                self.search.prompt().draw(f, footer);
+                return;
+            }
+            let hint = if self.local_merge && footer.width >= 105 {
+                " Esc Close · L Apply change · A Apply all · n/p Change · Tab Pane · f Fold · z Zoom"
+            } else if self.local_merge {
+                " Esc Close · L Apply · A Apply all · n/p Change"
+            } else if footer.width >= 105 {
                 " Esc Close · Tab Pane · n/p Change · [/] File · f Fold · z Zoom · h/l Scroll · y Copy"
             } else if footer.width >= 65 {
                 " Esc Close · Tab Pane · n/p Change · [/] File · f Fold · z Zoom"
@@ -748,10 +881,33 @@ impl RevisionDiff {
         }
     }
 
+    fn change_at(&self, index: usize) -> Option<usize> {
+        if self.chunks.get(index)?.kind == Kind::Context {
+            return None;
+        }
+        let next = self.changes.partition_point(|&i| i <= index);
+        (next > 0).then(|| self.changes[next - 1])
+    }
+
+    fn change_end(&self, start: usize) -> usize {
+        self.changes
+            .iter()
+            .copied()
+            .find(|&i| i > start)
+            .unwrap_or(self.chunks.len())
+    }
+
     fn activate(&mut self, target: Target) -> RevisionEvent {
         match target {
             Target::Close => return RevisionEvent::Close,
             Target::File(d) => return RevisionEvent::File(d),
+            Target::Apply(i) => {
+                let i = self.change_at(i).unwrap_or(i);
+                self.selected = i;
+                self.follow = true;
+                return RevisionEvent::Apply(i);
+            }
+            Target::ApplyAll => return RevisionEvent::ApplyAll,
             Target::Change(d) => {
                 if let Some(next) = self.adjacent_change(d) {
                     self.selected = next;
@@ -852,6 +1008,16 @@ impl RevisionDiff {
             K::Char('p') => Some(Target::Change(-1)),
             K::Char('[') => Some(Target::File(-1)),
             K::Char(']') => Some(Target::File(1)),
+            K::Char('L') if self.local_merge => {
+                return self
+                    .selected_change()
+                    .map_or(RevisionEvent::None, RevisionEvent::Apply);
+            }
+            K::Char('A')
+                if self.local_merge && self.local_apply_all && !self.changes.is_empty() =>
+            {
+                return RevisionEvent::ApplyAll;
+            }
             K::Char('f') if !ctrl => Some(Target::FoldAll),
             K::Char('z') => Some(Target::Zoom),
             K::Tab => Some(Target::Pane((self.side + 1) % self.pane_count())),

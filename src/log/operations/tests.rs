@@ -4,6 +4,8 @@ use std::fs;
 use tempfile::TempDir;
 
 mod cherry_pick;
+mod reword;
+mod tip;
 
 fn history() -> (TempDir, Context, [String; 3]) {
     let dir = init();
@@ -77,12 +79,20 @@ fn dirty_index(repo: &Path) -> String {
 fn undo_moves_only_the_tip_and_preserves_the_real_index_and_worktree() {
     let (dir, c, [_, middle, head]) = history();
     let repo = dir.path();
-    let index = dirty_index(repo);
+    dirty_index(repo);
+    fs::write(repo.join("middle"), "Unrelated staged sibling").unwrap();
+    git(repo, &["add", "middle"]);
+    let index = git(repo, &["ls-files", "--stage"]);
     assert!(error(prepare(&c, &middle, Kind::Undo, "")).contains("current branch tip"));
     execute(&c, &head, Kind::Undo, "");
     assert_eq!(git(repo, &["rev-parse", "HEAD"]), middle);
     assert_eq!(git(repo, &["rev-parse", "ORIG_HEAD"]), head);
     assert_eq!(git(repo, &["ls-files", "--stage"]), index);
+    assert_eq!(
+        git(repo, &["diff", "--cached", "--name-only"]),
+        "base\nlater\nmiddle"
+    );
+    assert_eq!(git(repo, &["show", ":middle"]), "Unrelated staged sibling");
     assert_eq!(
         fs::read_to_string(repo.join("base")).unwrap(),
         "working content"
@@ -110,26 +120,30 @@ fn revert_keeps_history_and_creates_a_new_inverse_commit() {
 }
 
 #[test]
-fn drop_preserves_later_commits_and_leaves_other_refs_in_place() {
-    let (dir, c, [base, middle, head]) = history();
+fn drop_removes_only_the_unpublished_tip_and_leaves_other_refs_in_place() {
+    let (dir, c, [_, middle, head]) = history();
     let repo = dir.path();
-    git(repo, &["config", "rebase.updateRefs", "true"]);
-    git(repo, &["config", "rebase.autoSquash", "true"]);
     git(repo, &["branch", "keep-old", &head]);
-    git(repo, &["update-ref", "refs/remotes/origin/main", &head]);
+    git(repo, &["update-ref", "refs/remotes/origin/main", &middle]);
     fs::write(repo.join(".git/info/exclude"), "local.log\n").unwrap();
     fs::write(repo.join("local.log"), "unrelated").unwrap();
-    let (review, body) = prepare(&c, &middle, Kind::Drop, "").unwrap();
-    assert!(body.contains("remote-tracking branch contains"));
+    assert!(error(prepare(&c, &middle, Kind::Drop, "")).contains("current branch tip"));
+    let (review, body) = prepare(&c, &head, Kind::Drop, "").unwrap();
+    assert!(body.contains("discard its committed changes"));
     review.execute(&c).unwrap();
-    assert_eq!(git(repo, &["rev-parse", "HEAD^"]), base);
-    assert_eq!(git(repo, &["log", "-2", "--format=%s"]), "later\nbase");
+    assert_eq!(git(repo, &["rev-parse", "HEAD"]), middle);
+    assert_eq!(git(repo, &["rev-parse", "ORIG_HEAD"]), head);
+    assert_eq!(git(repo, &["log", "-2", "--format=%s"]), "middle\nbase");
     assert_eq!(
         git(repo, &["ls-tree", "--name-only", "HEAD"]),
-        "base\nlater"
+        "base\nmiddle"
     );
     assert_eq!(git(repo, &["rev-parse", "keep-old"]), head);
-    assert_eq!(git(repo, &["rev-parse", "refs/remotes/origin/main"]), head);
+    assert_eq!(
+        git(repo, &["rev-parse", "refs/remotes/origin/main"]),
+        middle
+    );
+    assert!(!repo.join("later").exists());
     assert_eq!(
         fs::read_to_string(repo.join("local.log")).unwrap(),
         "unrelated"
@@ -209,7 +223,8 @@ fn stale_reviews_do_not_write_and_publication_is_rechecked() {
     git(repo, &["update-ref", "refs/remotes/origin/main", &head]);
     assert!(format!("{:#}", edit.execute(&c).unwrap_err()).contains("remote-tracking branch"));
     assert_eq!(git(repo, &["rev-parse", "HEAD"]), head);
-    let (drop, _) = prepare(&c, &middle, Kind::Drop, "").unwrap();
+    git(repo, &["update-ref", "refs/remotes/origin/main", &middle]);
+    let (drop, _) = prepare(&c, &head, Kind::Drop, "").unwrap();
     fs::write(repo.join("base"), "dirty after review").unwrap();
     assert!(format!("{:#}", drop.execute(&c).unwrap_err()).contains("tracked working tree"));
     assert_eq!(git(repo, &["rev-parse", "HEAD"]), head);
@@ -225,7 +240,7 @@ fn revert_and_drop_protect_ignored_paths_and_checkout_defers_to_git() {
     fs::write(repo.join(".git/info/exclude"), "middle\n").unwrap();
     fs::write(repo.join("middle"), "local ignored content").unwrap();
     assert!(error(prepare(&c, &head, Kind::Revert, "")).contains("may be overwritten"));
-    assert!(error(prepare(&c, &middle, Kind::Drop, "")).contains("may be overwritten"));
+    assert!(error(prepare(&c, &head, Kind::Drop, "")).contains("may be overwritten"));
     let (checkout, _) = prepare(&c, &middle, Kind::Checkout, "").unwrap();
     assert!(checkout.execute(&c).is_err());
     assert_eq!(git(repo, &["rev-parse", "HEAD"]), head);
@@ -236,32 +251,173 @@ fn revert_and_drop_protect_ignored_paths_and_checkout_defers_to_git() {
 }
 
 #[test]
-fn replay_refuses_to_flatten_a_merge() {
-    let (dir, c, [base, middle, _]) = history();
-    let repo = dir.path();
-    git(repo, &["switch", "-c", "side", &base]);
-    commit(repo, "side", "side");
-    git(repo, &["switch", "main"]);
-    git(repo, &["merge", "--no-ff", "-qm", "Merge side", "side"]);
-    let merge = git(repo, &["rev-parse", "HEAD"]);
-    assert!(error(prepare(&c, &middle, Kind::Drop, "")).contains("across a merge"));
-    assert!(error(prepare(&c, &middle, Kind::Edit, "Changed")).contains("across a merge"));
-    assert_eq!(git(repo, &["rev-parse", "HEAD"]), merge);
+fn tip_removal_uses_a_merges_first_parent_and_revert_refuses_merges() {
+    for kind in [Kind::Drop, Kind::Undo] {
+        let (dir, c, [base, middle, _]) = history();
+        let repo = dir.path();
+        let main = git(repo, &["rev-parse", "HEAD"]);
+        git(repo, &["switch", "-c", "side", &base]);
+        commit(repo, "side", "side");
+        let side = git(repo, &["rev-parse", "HEAD"]);
+        git(repo, &["switch", "main"]);
+        git(repo, &["merge", "--no-ff", "-qm", "Merge side", "side"]);
+        let merge = git(repo, &["rev-parse", "HEAD"]);
+        assert!(error(prepare(&c, &middle, kind, "")).contains("current branch tip"));
+        assert!(error(prepare(&c, &merge, Kind::Revert, "")).contains("mainline parent"));
+        let (review, body) = prepare(&c, &merge, kind, "").unwrap();
+        assert!(body.contains("relative to its first parent"));
+        assert_eq!(git(repo, &["rev-parse", "HEAD"]), merge);
+        review.execute(&c).unwrap();
+        assert_eq!(git(repo, &["rev-parse", "HEAD"]), main);
+        assert_eq!(git(repo, &["rev-parse", "side"]), side);
+        assert_eq!(repo.join("side").exists(), kind == Kind::Undo);
+        assert_eq!(
+            git(repo, &["diff", "--cached", "--name-only"]),
+            if kind == Kind::Undo { "side" } else { "" }
+        );
+    }
 }
 
 #[test]
-fn a_drop_conflict_leaves_native_rebase_state_and_keeps_the_branch_tip() {
+fn published_tips_are_refused_on_any_remote_before_and_after_review() {
+    for kind in [Kind::Drop, Kind::Undo, Kind::Edit] {
+        let (dir, c, [_, middle, head]) = history();
+        let repo = dir.path();
+        git(repo, &["update-ref", "refs/remotes/origin/main", &middle]);
+        let (review, _) = prepare(&c, &head, kind, "Changed").unwrap();
+        git(
+            repo,
+            &["update-ref", "refs/remotes/upstream/release", &head],
+        );
+        let index = fs::read(repo.join(".git/index")).unwrap();
+        assert!(error(prepare(&c, &head, kind, "Changed")).contains("remote-tracking branch"));
+        assert!(format!("{:#}", review.execute(&c).unwrap_err()).contains("remote-tracking branch"));
+        assert_eq!(git(repo, &["rev-parse", "HEAD"]), head);
+        assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index);
+        assert_eq!(fs::read_to_string(repo.join("later")).unwrap(), "later");
+    }
+}
+
+#[test]
+fn published_commits_are_revertible_and_revert_conflicts_remain_native() {
     let (dir, c, [_, middle, _]) = history();
     let repo = dir.path();
-    commit(repo, "middle", "Edit the file added by the commit to drop");
+    commit(
+        repo,
+        "middle",
+        "Edit the file added by the commit to revert",
+    );
     let head = git(repo, &["rev-parse", "HEAD"]);
-    let (review, _) = prepare(&c, &middle, Kind::Drop, "").unwrap();
+    git(repo, &["update-ref", "refs/remotes/origin/main", &head]);
+    let (review, _) = prepare(&c, &middle, Kind::Revert, "").unwrap();
     assert!(review.execute(&c).is_err());
-    assert!(repo.join(".git/rebase-merge").is_dir());
+    assert!(repo.join(".git/REVERT_HEAD").is_file());
     assert!(!git(repo, &["ls-files", "--unmerged"]).is_empty());
     assert_eq!(git(repo, &["rev-parse", "refs/heads/main"]), head);
     assert!(error(prepare(&c, &middle, Kind::Checkout, "")).contains("current Git operation"));
-    git(repo, &["rebase", "--abort"]);
+    git(repo, &["revert", "--abort"]);
     assert_eq!(git(repo, &["rev-parse", "HEAD"]), head);
     assert!(git(repo, &["status", "--porcelain"]).is_empty());
+    execute(&c, &head, Kind::Revert, "");
+    assert_eq!(git(repo, &["rev-parse", "HEAD^"]), head);
+    assert_eq!(git(repo, &["show", "HEAD:middle"]), "middle");
+}
+
+#[test]
+fn drop_rechecks_dirty_files_and_index_flags_without_losing_local_content() {
+    for change in [
+        "staged",
+        "unstaged",
+        "--skip-worktree",
+        "--assume-unchanged",
+    ] {
+        let (dir, c, [_, _, head]) = history();
+        let repo = dir.path();
+        let (review, _) = prepare(&c, &head, Kind::Drop, "").unwrap();
+        if change.starts_with("--") {
+            git(repo, &["update-index", change, "later"]);
+        }
+        fs::write(repo.join("later"), "Keep local content").unwrap();
+        if change == "staged" {
+            git(repo, &["add", "later"]);
+        }
+        let index = fs::read(repo.join(".git/index")).unwrap();
+        assert!(prepare(&c, &head, Kind::Drop, "").is_err());
+        assert!(review.execute(&c).is_err());
+        assert_eq!(git(repo, &["rev-parse", "HEAD"]), head);
+        assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index);
+        assert_eq!(
+            fs::read_to_string(repo.join("later")).unwrap(),
+            "Keep local content"
+        );
+    }
+}
+
+#[test]
+fn initial_tip_can_be_removed_or_restored_to_staging_without_detaching() {
+    for kind in [Kind::Undo, Kind::Drop] {
+        let dir = init();
+        let repo = dir.path();
+        commit(repo, "file", "Initial commit");
+        let head = git(repo, &["rev-parse", "HEAD"]);
+        fs::write(repo.join("untracked"), "Keep untracked").unwrap();
+        let c = Context::discover(repo).unwrap();
+        execute(&c, &head, kind, "");
+        assert!(
+            optional(repo, &["rev-parse", "--verify", "--quiet", "HEAD"])
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(git(repo, &["symbolic-ref", "HEAD"]), "refs/heads/main");
+        assert_eq!(git(repo, &["rev-parse", "ORIG_HEAD"]), head);
+        assert_eq!(repo.join("file").exists(), kind == Kind::Undo);
+        assert_eq!(
+            git(repo, &["ls-files"]),
+            if kind == Kind::Undo { "file" } else { "" }
+        );
+        assert_eq!(
+            fs::read_to_string(repo.join("untracked")).unwrap(),
+            "Keep untracked"
+        );
+    }
+}
+
+#[test]
+fn initial_drop_restores_files_if_the_branch_cannot_be_removed() {
+    let dir = init();
+    let repo = dir.path();
+    commit(repo, "file", "Initial commit");
+    let head = git(repo, &["rev-parse", "HEAD"]);
+    let c = Context::discover(repo).unwrap();
+    let (review, _) = prepare(&c, &head, Kind::Drop, "").unwrap();
+    let index = fs::read(repo.join(".git/index")).unwrap();
+    fs::write(repo.join(".git/refs/heads/main.lock"), "External lock").unwrap();
+    assert!(review.execute(&c).is_err());
+    assert_eq!(git(repo, &["rev-parse", "HEAD"]), head);
+    assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index);
+    assert_eq!(git(repo, &["show", ":file"]), "Initial commit");
+    assert_eq!(
+        fs::read_to_string(repo.join("file")).unwrap(),
+        "Initial commit"
+    );
+    assert!(git(repo, &["status", "--porcelain"]).is_empty());
+}
+
+#[test]
+fn replacement_refs_cannot_hide_publication_or_change_the_parent_to_remove() {
+    for published in [false, true] {
+        let (dir, c, [base, middle, head]) = history();
+        let repo = dir.path();
+        if published {
+            git(repo, &["update-ref", "refs/remotes/origin/main", &head]);
+            git(repo, &["replace", &head, &base]);
+            assert!(error(prepare(&c, &middle, Kind::Edit, "Changed"))
+                .contains("remote-tracking branch"));
+            assert!(error(prepare(&c, &head, Kind::Drop, "")).contains("remote-tracking branch"));
+        } else {
+            git(repo, &["replace", &head, &base]);
+            execute(&c, &head, Kind::Undo, "");
+            assert_eq!(git(repo, &["rev-parse", "HEAD"]), middle);
+        }
+    }
 }

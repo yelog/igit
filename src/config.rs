@@ -445,6 +445,10 @@ mod tests {
         assert_eq!(config.hint_delay, Duration::from_millis(200));
         assert_eq!(config.label("commit", "review"), "Ctrl-r");
         assert_eq!(config.label("global", "quit"), "q");
+        assert_eq!(config.label("log", "edit-message"), "F2");
+        assert_eq!(config.label("log", "drop-commit"), "d");
+        assert_eq!(config.label("log", "undo-commit"), "u");
+        assert_eq!(config.label("log", "revert-commit"), "R");
         assert!(!AppConfig::default().changed());
         assert_eq!(config.commands.len(), COMMANDS.len());
         let disabled = AppConfig::from_toml("[keybindings.commit]\nreview = []").unwrap();

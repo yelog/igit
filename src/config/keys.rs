@@ -195,6 +195,9 @@ commands! {
         "copy-author" => "ya", LOG_GRAPH;
         "commit-actions" => "a", LOG_GRAPH;
         "edit-message" => "F2", LOG_GRAPH;
+        "drop-commit" => "d", LOG_GRAPH;
+        "undo-commit" => "u", LOG_GRAPH;
+        "revert-commit" => "R", LOG_GRAPH;
         "show-file-at-revision" => "e", LOG_GRAPH | LOG_INFO;
         "open" => "Enter", LOG;
         "search" => "/", LOG_GRAPH | LOG_INFO;

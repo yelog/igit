@@ -357,9 +357,13 @@ the inline Diff. For example, set `show-file-at-revision = ["Ctrl-e"]` under
 read-only Neovim buffer or a temporary snapshot in the configured external
 editor. It is inactive in the ordinary Log tab.
 
-In the Log commit list, `[keybindings.log]` exposes `commit-actions` (`a`)
-and `edit-message` (`F2`). The action menu and message editor keep their
-own controls.
+In the Log commit list, `[keybindings.log]` exposes `commit-actions` (`a`),
+`drop-commit` (`d`), `undo-commit` (`u`), `revert-commit` (`R`), and
+`edit-message` (`F2`). These actions use the highlighted commit and open the
+same review as the menu. Drop/Undo require the current unpublished tip; editing
+requires an unpublished commit on the current branch; Revert requires a
+non-merge commit. The action menu and message editor keep their own controls.
+`Space d/u` still opens filters and `Ctrl-D/U` still pages.
 
 Branch navigation commands include `first-item` (`g g`, Home), `last-item`
 (`G`, End), `screen-top` / `screen-middle` / `screen-bottom` (`H/M/L`),

@@ -339,3 +339,275 @@ fn show_file_at_revision_rejects_empty_hidden_history_and_does_not_use_preview_p
         Action::Notice(_, _)
     ));
 }
+
+#[test]
+fn compare_with_local_applies_selected_and_remaining_changes_without_staging() {
+    let tmp = init();
+    let name = "file with spaces.ts";
+    let revision = "a\nrevision\nc\nkeep\ne\n";
+    commit(tmp.path(), name, revision);
+    let head = git(tmp.path(), &["rev-parse", "HEAD"]);
+    let path = tmp.path().join(name);
+    fs::write(&path, "a\nlocal\ninserted\nc\nlocal-only\ne\n").unwrap();
+    let index = fs::read(tmp.path().join(".git/index")).unwrap();
+    let c = Context::discover(tmp.path()).unwrap();
+    let mut p = LogPanel::default();
+    p.set_file_history(&c, &path).unwrap();
+    p.refresh(&c).unwrap();
+    finish_preview(&mut p, &c);
+    p.focus = Pane::Graph;
+
+    assert!(matches!(key(&mut p, &c, K::Char('D')), Action::None));
+    assert!(p.diff.as_ref().unwrap().local.is_some());
+    let screen = render(&mut p, &c, 180, 36);
+    assert!(screen.contains("Local"), "{screen}");
+    assert!(screen.contains("Revision"), "{screen}");
+    assert!(screen.contains("difference"), "{screen}");
+    for (width, height) in [(120, 24), (80, 16), (44, 12), (16, 6), (1, 1)] {
+        render(&mut p, &c, width, height);
+    }
+    assert!(matches!(
+        key(&mut p, &c, K::Char('y')),
+        Action::Copy { text, .. } if text == "a\nlocal\ninserted\nc\nlocal-only\ne\n"
+    ));
+    key(&mut p, &c, K::Tab);
+    assert!(matches!(
+        key(&mut p, &c, K::Char('y')),
+        Action::Copy { text, .. } if text == revision
+    ));
+
+    assert!(matches!(key(&mut p, &c, K::Char('L')), Action::None));
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "a\nrevision\nc\nlocal-only\ne\n"
+    );
+    assert!(p.diff.as_ref().unwrap().local.as_ref().unwrap().changed());
+
+    let Action::Confirm { body, token, .. } = key(&mut p, &c, K::Char('A')) else {
+        panic!("expected Apply All review");
+    };
+    assert!(body.contains("not staged"), "{body}");
+    assert!(matches!(p.confirm(&token, &c), Action::None));
+    assert_eq!(fs::read_to_string(&path).unwrap(), revision);
+    assert!(matches!(
+        key(&mut p, &c, K::Esc),
+        Action::Refresh(NoticeLevel::Info, message)
+            if message.contains("Applied revision changes")
+    ));
+    assert!(p.diff.is_none());
+    assert_eq!(git(tmp.path(), &["rev-parse", "HEAD"]), head);
+    assert_eq!(fs::read(tmp.path().join(".git/index")).unwrap(), index);
+}
+
+#[test]
+fn compare_with_local_rejects_a_working_file_changed_after_opening() {
+    let tmp = init();
+    let path = tmp.path().join("file.ts");
+    commit(tmp.path(), "file.ts", "revision\n");
+    fs::write(&path, "local\n").unwrap();
+    let c = Context::discover(tmp.path()).unwrap();
+    let mut p = LogPanel::default();
+    p.set_file_history(&c, &path).unwrap();
+    p.refresh(&c).unwrap();
+    finish_preview(&mut p, &c);
+    p.focus = Pane::Graph;
+    key(&mut p, &c, K::Char('D'));
+    fs::write(&path, "external\n").unwrap();
+    assert!(matches!(
+        key(&mut p, &c, K::Char('L')),
+        Action::Notice(NoticeLevel::Error, message) if message.contains("changed")
+    ));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "external\n");
+}
+
+#[test]
+fn compare_with_local_matches_crlf_and_preserves_it_when_applying() {
+    let tmp = init();
+    let path = tmp.path().join("file.ts");
+    commit(tmp.path(), "file.ts", "a\nb\nc\n");
+    fs::write(&path, "a\r\nlocal\r\nc\r\n").unwrap();
+    let c = Context::discover(tmp.path()).unwrap();
+    let mut p = LogPanel::default();
+    p.set_file_history(&c, &path).unwrap();
+    p.refresh(&c).unwrap();
+    finish_preview(&mut p, &c);
+    p.focus = Pane::Graph;
+    key(&mut p, &c, K::Char('D'));
+    let screen = render(&mut p, &c, 180, 36);
+    assert!(screen.contains("1 difference"), "{screen}");
+    assert!(matches!(key(&mut p, &c, K::Char('L')), Action::None));
+    assert_eq!(fs::read(&path).unwrap(), b"a\r\nb\r\nc\r\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn compare_with_local_rejects_an_ancestor_symlink_replacement() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = init();
+    fs::create_dir(tmp.path().join("src")).unwrap();
+    let name = "src/file.ts";
+    commit(tmp.path(), name, "revision\n");
+    let path = tmp.path().join(name);
+    fs::write(&path, "local\n").unwrap();
+    let c = Context::discover(tmp.path()).unwrap();
+    let mut p = LogPanel::default();
+    p.set_file_history(&c, &path).unwrap();
+    p.refresh(&c).unwrap();
+    finish_preview(&mut p, &c);
+    p.focus = Pane::Graph;
+    key(&mut p, &c, K::Char('D'));
+
+    let outside = tempfile::tempdir().unwrap();
+    fs::create_dir(outside.path().join("src")).unwrap();
+    let outside_file = outside.path().join(name);
+    fs::write(&outside_file, "outside\n").unwrap();
+    fs::remove_dir_all(tmp.path().join("src")).unwrap();
+    symlink(outside.path().join("src"), tmp.path().join("src")).unwrap();
+
+    assert!(matches!(
+        key(&mut p, &c, K::Char('L')),
+        Action::Notice(NoticeLevel::Error, message) if message.contains("symlink")
+    ));
+    assert_eq!(fs::read_to_string(outside_file).unwrap(), "outside\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn compare_with_local_rejects_a_symlink_revision() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = init();
+    symlink("target", tmp.path().join("link")).unwrap();
+    git(tmp.path(), &["add", "link"]);
+    git(tmp.path(), &["commit", "-qm", "link"]);
+    let path = tmp.path().join("link");
+    let c = Context::discover(tmp.path()).unwrap();
+    let mut p = LogPanel::default();
+    p.set_file_history(&c, &path).unwrap();
+    p.refresh(&c).unwrap();
+    finish_preview(&mut p, &c);
+    p.focus = Pane::Graph;
+    assert!(matches!(
+        key(&mut p, &c, K::Char('D')),
+        Action::Notice(NoticeLevel::Error, message) if message.contains("symlink revision")
+    ));
+    assert_eq!(
+        fs::read_link(&path).unwrap(),
+        std::path::Path::new("target")
+    );
+}
+
+#[test]
+fn compare_with_local_rejects_custom_git_filters_and_changed_attributes() {
+    let tmp = init();
+    let path = tmp.path().join("file.ts");
+    commit(tmp.path(), "file.ts", "revision\n");
+    fs::write(&path, "local\n").unwrap();
+    let c = Context::discover(tmp.path()).unwrap();
+    let mut p = LogPanel::default();
+    p.set_file_history(&c, &path).unwrap();
+    p.refresh(&c).unwrap();
+    finish_preview(&mut p, &c);
+    p.focus = Pane::Graph;
+
+    fs::write(tmp.path().join(".gitattributes"), "*.ts filter=mutate\n").unwrap();
+    assert!(matches!(
+        key(&mut p, &c, K::Char('D')),
+        Action::Notice(NoticeLevel::Error, message) if message.contains("filter=mutate")
+    ));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "local\n");
+
+    fs::write(tmp.path().join(".gitattributes"), "*.ts text eol=lf\n").unwrap();
+    assert!(matches!(key(&mut p, &c, K::Char('D')), Action::None));
+    fs::write(
+        tmp.path().join(".gitattributes"),
+        "*.ts text eol=lf filter=mutate\n",
+    )
+    .unwrap();
+    assert!(matches!(
+        key(&mut p, &c, K::Char('L')),
+        Action::Notice(NoticeLevel::Error, message) if message.contains("filter=mutate")
+    ));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "local\n");
+}
+
+#[test]
+fn compare_with_local_rechecks_scope_and_consumes_review_tokens() {
+    let tmp = init();
+    let path = tmp.path().join("file.ts");
+    commit(tmp.path(), "file.ts", "revision\n");
+    fs::write(&path, "local\n").unwrap();
+    let mut c = Context::discover(tmp.path()).unwrap();
+    let mut p = LogPanel::default();
+    p.set_file_history(&c, &path).unwrap();
+    p.refresh(&c).unwrap();
+    finish_preview(&mut p, &c);
+    p.focus = Pane::Graph;
+    key(&mut p, &c, K::Char('D'));
+
+    let Action::Confirm { token, .. } = key(&mut p, &c, K::Char('A')) else {
+        panic!("expected Apply All review");
+    };
+    assert!(matches!(key(&mut p, &c, K::Char('L')), Action::None));
+    assert!(matches!(
+        p.confirm(&token, &c),
+        Action::Notice(NoticeLevel::Warning, message) if message.contains("stale")
+    ));
+
+    let root = p.rev().unwrap().root;
+    c.scope.remove(&root);
+    let change = p
+        .diff
+        .as_ref()
+        .unwrap()
+        .comparison
+        .as_ref()
+        .unwrap()
+        .selected_change();
+    let error = p.apply_local_compare(&c, change).unwrap_err().to_string();
+    assert!(error.contains("outside the current scope"), "{error}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "revision\n");
+}
+
+#[test]
+fn compare_with_local_supports_revision_search() {
+    let tmp = init();
+    let path = tmp.path().join("file.ts");
+    commit(tmp.path(), "file.ts", "revision needle\n");
+    fs::write(&path, "local needle\n").unwrap();
+    let c = Context::discover(tmp.path()).unwrap();
+    let mut p = LogPanel::default();
+    p.set_file_history(&c, &path).unwrap();
+    p.refresh(&c).unwrap();
+    finish_preview(&mut p, &c);
+    p.focus = Pane::Graph;
+    key(&mut p, &c, K::Char('D'));
+    key(&mut p, &c, K::Char('/'));
+    p.event(&Event::Paste("needle".into()), &c);
+    key(&mut p, &c, K::Enter);
+    let comparison = p.diff.as_ref().unwrap().comparison.as_ref().unwrap();
+    assert!(comparison.search_prompt().visible());
+    let screen = render(&mut p, &c, 180, 36);
+    assert!(screen.contains("1/"), "{screen}");
+    assert_eq!(p.filter.query, "");
+}
+
+#[test]
+fn compare_with_local_rejects_mixed_line_endings() {
+    let tmp = init();
+    let path = tmp.path().join("file.ts");
+    commit(tmp.path(), "file.ts", "a\nb\n");
+    fs::write(&path, "a\r\nb\n").unwrap();
+    let c = Context::discover(tmp.path()).unwrap();
+    let mut p = LogPanel::default();
+    p.set_file_history(&c, &path).unwrap();
+    p.refresh(&c).unwrap();
+    finish_preview(&mut p, &c);
+    p.focus = Pane::Graph;
+    assert!(matches!(
+        key(&mut p, &c, K::Char('D')),
+        Action::Notice(NoticeLevel::Error, message) if message.contains("Mixed line endings")
+    ));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "a\r\nb\n");
+}

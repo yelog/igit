@@ -1,16 +1,30 @@
 //! A review binds one Git operation to one commit and working tree.
 use super::model::{plain, Rev};
 use crate::core::{
-    command, git, git_bytes, paths::protect as protect_paths, revpath, Context, Repo,
+    paths::protect as protect_paths, revpath, update::published_graph as command, Context, Repo,
 };
 use crate::ui::NoticeLevel;
 use anyhow::{bail, ensure, Context as _, Result};
 use std::{
     io::Write,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::Output,
 };
 use tempfile::NamedTempFile;
+
+mod reword;
+mod tip;
+mod transaction;
+
+fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    checked(command(repo).args(args).output()?)
+}
+
+fn git(repo: &Path, args: &[&str]) -> Result<String> {
+    Ok(String::from_utf8(git_bytes(repo, args)?)?
+        .trim_end_matches(['\r', '\n'])
+        .to_owned())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Kind {
@@ -159,18 +173,15 @@ enum Plan {
     Ref,
     Checkout(Head),
     CherryPick(Head),
-    Undo {
+    RemoveTip {
         head: Head,
-        parent: String,
-        published: bool,
+        parent: Option<String>,
+        merge: bool,
     },
     Revert(Head),
-    Amend(Head),
-    Replay {
+    Reword {
         head: Head,
-        base: Option<String>,
         commits: Vec<String>,
-        published: bool,
     },
 }
 
@@ -209,6 +220,24 @@ fn clean(repo: &Path) -> Result<()> {
         )?
         .is_empty(),
         "Commit or stash tracked working tree and index changes first"
+    );
+    Ok(())
+}
+
+fn ensure_unpublished(repo: &Path, oid: &str) -> Result<()> {
+    ensure!(
+        git(
+            repo,
+            &[
+                "for-each-ref",
+                &format!("--contains={oid}"),
+                "--count=1",
+                "--format=%(refname)",
+                "refs/remotes",
+            ],
+        )?
+        .is_empty(),
+        "A remote-tracking branch already contains this commit; fetch and review again if needed"
     );
     Ok(())
 }
@@ -282,44 +311,25 @@ impl Plan {
                 Self::Revert(head)
             });
         }
-        if kind == Kind::Undo {
+        if matches!(kind, Kind::Undo | Kind::Drop) {
             ensure!(
                 head.oid == oid,
-                "Undo Commit is only available for the current branch tip"
-            );
-            ensure!(
-                parents.len() == 1,
-                "Undo Commit needs a commit with one parent"
+                "{} is only available for the current branch tip",
+                kind.title()
             );
         }
-        let published = !git(
-            repo,
-            &[
-                "for-each-ref",
-                &format!("--contains={oid}"),
-                "--count=1",
-                "--format=%(refname)",
-                "refs/remotes",
-            ],
-        )?
-        .is_empty();
-        if kind == Kind::Undo {
-            return Ok(Self::Undo {
+        ensure_unpublished(repo, oid)?;
+        if matches!(kind, Kind::Undo | Kind::Drop) {
+            if kind == Kind::Drop {
+                clean(repo)?;
+                protect_paths(repo, oid, true)?;
+            }
+            return Ok(Self::RemoveTip {
                 head,
-                parent: parents[0].to_owned(),
-                published,
+                parent: parents.first().map(|parent| (*parent).to_owned()),
+                merge: parents.len() > 1,
             });
         }
-        if kind == Kind::Edit {
-            ensure!(
-                !published,
-                "A remote-tracking branch already contains this commit"
-            );
-            if head.oid == oid {
-                return Ok(Self::Amend(head));
-            }
-        }
-        ensure!(parents.len() <= 1, "Cannot replay a merge commit");
         let ancestor = command(repo)
             .args(["merge-base", "--is-ancestor", oid, &head.oid])
             .output()?;
@@ -328,43 +338,20 @@ impl Plan {
             "Selected commit is outside the current branch"
         );
         checked(ancestor)?;
-        let base = parents.first().map(|p| (*p).to_owned());
         let suffix = git(
             repo,
             &[
                 "rev-list",
-                "--parents",
                 "--reverse",
-                "--first-parent",
+                "--topo-order",
+                "--ancestry-path",
                 &format!("{oid}..{}", head.oid),
                 "--",
             ],
         )?;
         let mut commits = vec![oid.to_owned()];
-        for line in suffix.lines() {
-            let mut fields = line.split_whitespace();
-            let commit = fields.next().context("Invalid commit range")?;
-            ensure!(
-                fields.next() == commits.last().map(String::as_str) && fields.next().is_none(),
-                "Cannot rewrite across a merge commit"
-            );
-            commits.push(commit.to_owned());
-        }
-        ensure!(
-            kind != Kind::Drop || base.is_some() || commits.len() > 1,
-            "Cannot drop the only commit on this branch"
-        );
-        clean(repo)?;
-        let span = base
-            .as_ref()
-            .map_or_else(|| head.oid.clone(), |p| format!("{p}..{}", head.oid));
-        protect_paths(repo, &span, false)?;
-        Ok(Self::Replay {
-            head,
-            base,
-            commits,
-            published,
-        })
+        commits.extend(suffix.lines().map(str::to_owned));
+        Ok(Self::Reword { head, commits })
     }
 }
 
@@ -470,47 +457,38 @@ impl Review {
                 head.oid,
                 target.oid,
             ),
-            Plan::Undo { head, parent, .. } => format!(
-                "Undo the tip of {} and keep its changes.\nIndex and working files stay intact.\nNew tip: {parent}",
-                head.label()
-            ),
+            Plan::RemoveTip { head, parent, merge } => {
+                let effect = if kind == Kind::Drop {
+                    "Remove this commit and discard its committed changes.\nTracked files and index return to the previous tree."
+                } else {
+                    "Remove this commit and keep its changes staged.\nExisting index and working files stay intact."
+                };
+                let destination = parent.as_ref().map_or_else(
+                    || "The branch returns to its initial, unborn state.".to_owned(),
+                    |parent| format!("New tip: {parent}"),
+                );
+                let mainline = if *merge { "\nThis merge is removed relative to its first parent." } else { "" };
+                format!("Branch: {}\n{effect}\n{destination}{mainline}", head.label())
+            }
             Plan::Revert(head) => format!(
                 "Create a new commit on {} that reverses the selected commit.\nIf Git stops, resolve the files in Conflicts.",
                 head.label(),
             ),
-            Plan::Amend(head) => format!(
-                "Rewrite the tip of {} with this message:\n\n{input}",
-                head.label(),
-            ),
-            Plan::Replay { head, commits, .. } => {
+            Plan::Reword { head, commits } => {
                 let later = commits.len() - 1;
-                let change = if kind == Kind::Drop {
-                    "Remove the selected commit and its changes.".to_owned()
-                } else {
-                    format!("Replace the selected commit's message:\n\n{input}")
-                };
                 format!(
-                    "Rewrite {} and replay {later} later commit(s).\n{change}",
+                    "Edit the message on {} and rewrite {later} descendant commit(s).\nFile trees, merge topology, index and working files stay intact.\nOther branches and tags stay in place. Rewritten signatures are removed.\n\n{input}",
                     head.label(),
                 )
             }
         };
-        let published = if matches!(
-            &plan,
-            Plan::Undo {
-                published: true,
-                ..
-            } | Plan::Replay {
-                published: true,
-                ..
-            }
-        ) {
-            "\n\nA remote-tracking branch contains this commit. A regular push may be rejected."
+        let publication = if matches!(kind, Kind::Undo | Kind::Drop | Kind::Edit) {
+            "\n\nUnpublished according to local remote-tracking refs; this does not fetch."
         } else {
             ""
         };
         let body = format!(
-            "Repository: {}\nCommit: {} · {}\n{effect}{published}\n\nPath: {}",
+            "Repository: {}\nCommit: {} · {}\n{effect}{publication}\n\nPath: {}",
             repo.name,
             target.short(),
             target.subject,
@@ -554,85 +532,56 @@ impl Review {
             "-c",
             "merge.directoryRenames=false",
         ]);
-        let mut message_file = None;
-        let mut todo_file = None;
-        if self.kind == Kind::Edit {
-            let file = write_temp(format!("{}\n", self.input).as_bytes())?;
-            cmd.args([
-                "-c",
-                "commit.cleanup=verbatim",
-                "-c",
-                "notes.rewrite.amend=false",
-                "-c",
-                "i18n.commitEncoding=UTF-8",
-            ]);
-            cmd.env("IGIT_LOG_MESSAGE", file.path());
-            message_file = Some(file);
-        }
-        match &self.plan {
-            Plan::Ref if self.kind == Kind::Branch => {
-                cmd.args(["branch", "--no-track", "--", &self.input, oid]);
+        let result = match &self.plan {
+            Plan::Reword { head, commits } => {
+                reword::execute(&repo.path, head, commits, &self.input)
             }
-            Plan::Ref => {
-                cmd.args(["-c", "tag.gpgSign=false", "tag", "--", &self.input, oid]);
+            Plan::RemoveTip { head, parent, .. } => {
+                tip::execute(&repo.path, head, parent.as_deref(), self.kind)
             }
-            Plan::Checkout(_) => {
-                cmd.args([
-                    "switch",
-                    "--detach",
-                    "--no-overwrite-ignore",
-                    "--no-recurse-submodules",
-                    "--",
-                    oid,
-                ]);
-            }
-            Plan::CherryPick(_) => {
-                cmd.args([
-                    "-c",
-                    "merge.autoStash=false",
-                    "-c",
-                    "rebase.autoStash=false",
-                    "cherry-pick",
-                    "--no-edit",
-                    "--no-rerere-autoupdate",
-                    "--",
-                ]);
-                if self.picks.is_empty() {
-                    cmd.arg(oid);
-                } else {
-                    cmd.args(self.picks.iter().map(|pick| &pick.oid));
+            _ => {
+                match &self.plan {
+                    Plan::Ref if self.kind == Kind::Branch => {
+                        cmd.args(["branch", "--no-track", "--", &self.input, oid]);
+                    }
+                    Plan::Ref => {
+                        cmd.args(["-c", "tag.gpgSign=false", "tag", "--", &self.input, oid]);
+                    }
+                    Plan::Checkout(_) => {
+                        cmd.args([
+                            "switch",
+                            "--detach",
+                            "--no-overwrite-ignore",
+                            "--no-recurse-submodules",
+                            "--",
+                            oid,
+                        ]);
+                    }
+                    Plan::CherryPick(_) => {
+                        cmd.args([
+                            "-c",
+                            "merge.autoStash=false",
+                            "-c",
+                            "rebase.autoStash=false",
+                            "cherry-pick",
+                            "--no-edit",
+                            "--no-rerere-autoupdate",
+                            "--",
+                        ]);
+                        if self.picks.is_empty() {
+                            cmd.arg(oid);
+                        } else {
+                            cmd.args(self.picks.iter().map(|pick| &pick.oid));
+                        }
+                    }
+                    Plan::Revert(_) => {
+                        cmd.args(["revert", "--no-edit", "--no-rerere-autoupdate", "--", oid]);
+                    }
+                    Plan::RemoveTip { .. } | Plan::Reword { .. } => unreachable!(),
                 }
+                checked(cmd.output().context("Cannot start Git")?).map(|_| ())
             }
-            Plan::Undo { parent, .. } => {
-                cmd.args(["reset", "--soft", parent]);
-            }
-            Plan::Revert(_) => {
-                cmd.args(["revert", "--no-edit", "--no-rerere-autoupdate", "--", oid]);
-            }
-            Plan::Amend(_) => {
-                let file = message_file.as_ref().context("Message file missing")?;
-                cmd.args(["commit", "--amend", "--only", "--allow-empty", "-F"])
-                    .arg(file.path());
-            }
-            Plan::Replay { base, commits, .. } => {
-                let mut todo = format!(
-                    "{} {oid}\n",
-                    if self.kind == Kind::Drop {
-                        "drop"
-                    } else {
-                        "reword"
-                    },
-                );
-                for commit in &commits[1..] {
-                    todo.push_str(&format!("pick {commit}\n"));
-                }
-                let file = write_temp(todo.as_bytes())?;
-                configure_rebase(&mut cmd, base.as_deref(), &file, message_file.is_some());
-                todo_file = Some(file);
-            }
-        }
-        let result = checked(cmd.output().context("Cannot start Git")?);
-        drop((message_file, todo_file));
+        };
         if let Plan::CherryPick(head) = &self.plan {
             if !self.picks.is_empty() {
                 let count = self.picks.len();
@@ -710,29 +659,10 @@ fn write_temp(data: &[u8]) -> Result<NamedTempFile> {
     Ok(file)
 }
 
-fn configure_rebase(cmd: &mut Command, base: Option<&str>, todo: &NamedTempFile, edit: bool) {
-    cmd.args([
-        "-c",
-        "rebase.updateRefs=false",
-        "-c",
-        "notes.rewrite.rebase=false",
-        "rebase",
-        "--interactive",
-        "--no-autosquash",
-        "--no-autostash",
-        "--no-rebase-merges",
-        "--keep-empty",
-        "--empty=keep",
-        "--reapply-cherry-picks",
-        "--no-rerere-autoupdate",
-        base.unwrap_or("--root"),
-    ])
-    // Git appends its editor's file argument to these fixed shell commands.
-    .env("GIT_SEQUENCE_EDITOR", "cat \"$IGIT_LOG_TODO\" >")
-    .env("IGIT_LOG_TODO", todo.path());
-    if edit {
-        cmd.env("GIT_EDITOR", "cat \"$IGIT_LOG_MESSAGE\" >");
-    }
+fn git_input(repo: &Path, args: &[&str], data: &[u8]) -> Result<String> {
+    let file = write_temp(data)?;
+    let output = checked(command(repo).args(args).stdin(file.reopen()?).output()?)?;
+    Ok(String::from_utf8(output)?.trim_end().to_owned())
 }
 
 fn checked(output: Output) -> Result<Vec<u8>> {

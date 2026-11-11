@@ -21,6 +21,7 @@ pub(crate) enum Wrap {
     Word,
 }
 
+#[derive(Clone)]
 pub(crate) struct TextRow {
     pub line: Line<'static>,
     pub column: usize,
@@ -30,7 +31,7 @@ pub(crate) struct TextRow {
     tab_stop: Option<usize>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct TextLayout {
     text: String,
     pub rows: Vec<TextRow>,
@@ -188,7 +189,7 @@ fn glyph_width(symbol: &str, column: usize, tab_stop: Option<usize>) -> usize {
     symbol.width()
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct TextSelection {
     layout: TextLayout,
     area: Rect,

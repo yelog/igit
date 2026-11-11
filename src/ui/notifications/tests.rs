@@ -47,6 +47,18 @@ fn text(buffer: &Buffer) -> String {
         .join("\n")
 }
 
+fn find(buffer: &Buffer, area: Rect, needle: &str) -> (u16, u16) {
+    for y in area.y..area.bottom() {
+        let row: String = (area.x..area.right())
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        if let Some(index) = row.find(needle) {
+            return (area.x + row[..index].width() as u16, y);
+        }
+    }
+    panic!("{needle:?} is not visible in {area:?}");
+}
+
 #[test]
 fn capacities_order_and_ids_survive_clear() {
     let mut center = Center::default();
@@ -564,6 +576,118 @@ fn detail_scrolls_wrapped_rows_and_copies_the_complete_sanitized_body() {
         center.history_event(&key(KeyCode::Char('q')), &mut history),
         HistoryEvent::Close
     );
+}
+
+#[test]
+fn uppercase_j_k_scroll_the_right_content_without_changing_history_selection() {
+    let mut center = Center::default();
+    let body = (0..40)
+        .map(|line| format!("diagnostic line {line:02}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    center.push(Level::Info, "Commit", "Older notification");
+    let newest = center.push(Level::Error, "Push", &body);
+    let mut history = center.open_history(None);
+    draw_history(&mut center, &mut history, 100, 26);
+    let selected = history.selected_id;
+    let index = history.selected;
+    assert_eq!(selected, Some(newest));
+    assert!(history.preview.max_scroll > 3);
+
+    for _ in 0..3 {
+        center.history_event(&key(KeyCode::Char('J')), &mut history);
+    }
+    assert_eq!(history.preview.scroll, 3);
+    assert_eq!(history.selected_id, selected);
+    assert_eq!(history.selected, index);
+    center.history_event(&key(KeyCode::Char('K')), &mut history);
+    assert_eq!(history.preview.scroll, 2);
+
+    let preview = history.content_area;
+    center.history_event(
+        &mouse(MouseEventKind::ScrollDown, preview.x, preview.y),
+        &mut history,
+    );
+    assert_eq!(history.preview.scroll, 5);
+    assert_eq!(history.selected_id, selected);
+    let row = history.rows[0].0;
+    center.history_event(
+        &mouse(MouseEventKind::ScrollDown, row.x, row.y),
+        &mut history,
+    );
+    assert_ne!(history.selected_id, selected);
+
+    center.history_event(&key(KeyCode::Home), &mut history);
+    center.history_event(&key(KeyCode::Enter), &mut history);
+    draw_history(&mut center, &mut history, 100, 26);
+    let scroll = history.detail.as_ref().unwrap().scroll;
+    center.history_event(&key(KeyCode::Char('J')), &mut history);
+    assert!(history.detail.as_ref().unwrap().scroll > scroll);
+    center.history_event(&key(KeyCode::Char('K')), &mut history);
+    assert_eq!(history.detail.as_ref().unwrap().scroll, scroll);
+}
+
+#[test]
+fn right_content_mouse_drag_copies_exact_text_and_keyboard_copy_uses_the_selection() {
+    for (width, detail) in [(100, false), (100, true)] {
+        let mut center = Center::default();
+        center.push(Level::Error, "Push", "alpha beta gamma");
+        let mut history = center.open_history(None);
+        if detail {
+            center.history_event(&key(KeyCode::Enter), &mut history);
+        }
+        let buffer = draw_history(&mut center, &mut history, width, 26);
+        let area = history.content_area;
+        let (x, y) = find(&buffer, area, "alpha");
+        let end = x + "alpha".width() as u16;
+        center.history_event(
+            &mouse(MouseEventKind::Down(MouseButton::Left), x, y),
+            &mut history,
+        );
+        draw_history(&mut center, &mut history, width, 26);
+        center.history_event(
+            &mouse(MouseEventKind::Drag(MouseButton::Left), end, y),
+            &mut history,
+        );
+        draw_history(&mut center, &mut history, width, 26);
+        let copied = center.history_event(
+            &mouse(MouseEventKind::Up(MouseButton::Left), end, y),
+            &mut history,
+        );
+        assert_eq!(copied, HistoryEvent::Copy("alpha".into()));
+        assert_eq!(
+            history.selected_id,
+            center.history().next().map(|entry| entry.id)
+        );
+        let buffer = draw_history(&mut center, &mut history, width, 26);
+        assert_ne!(buffer[(x, y)].bg, idea::SELECT);
+        assert!(history.selection.selected_text().is_none());
+
+        center.history_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            &mut history,
+        );
+        let selected = history
+            .selection
+            .selected_text()
+            .expect("right content is selectable")
+            .to_owned();
+        assert!(selected.contains("ERROR  Push"));
+        assert!(selected.contains("alpha beta gamma"));
+        assert_eq!(
+            center.history_event(
+                &Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL,)),
+                &mut history,
+            ),
+            HistoryEvent::Copy(selected)
+        );
+        assert_eq!(
+            center.history_event(&key(KeyCode::Esc), &mut history),
+            HistoryEvent::Handled
+        );
+        assert!(history.selection.selected_text().is_none());
+        assert_eq!(history.detail.is_some(), detail);
+    }
 }
 
 #[test]

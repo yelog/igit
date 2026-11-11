@@ -248,6 +248,24 @@ Pull/Fetch, while workspace navigation, pane controls, and review guards remain
 available. The Lua companion plugin uses argv-based Neovim terminal jobs and
 window-local options; it performs no Git operations itself.
 
+File History's `D` action opens **Compare with Local** using the selected
+immutable revision and a working-file snapshot from
+[compare.rs](../src/log/file_history/compare.rs). The snapshot records bytes and
+permissions, rejects symlinks, binaries, non-UTF-8 content, and files over
+512 KiB, and becomes the stale-write guard for later applies. The shared
+[RevisionDiff](../src/merge/view/revision.rs) local-merge mode renders
+`Revision` and `Local`, exposes `»`, `Apply`, and `All`, and builds replacement
+text by taking a complete aligned change group from the revision side. Writes
+recheck the repository scope, complete snapshot, permissions, ancestor paths,
+nested repositories, and Git conversion attributes; they use a same-directory
+temporary file, preserve uniform LF/CRLF layout, and never update the index.
+Slices with custom filters, working-tree encodings, or mixed line endings are
+rejected. A separate confirmation covers **All**, which is unavailable when
+the revision omitted the file; each successful apply rebuilds the comparison
+from the new working file; closing it
+returns `Action::Refresh` so Commit and the workspace see the changed bytes.
+HEAD and immutable objects are never modified.
+
 ### Editing working files
 
 Commit returns `Action::EditFile` for the highlighted native repository/path,
@@ -412,7 +430,11 @@ Loaded refs remain cached in `History`; the [reference tree](../src/log/refs.rs)
 
 The commit-list cursor moves in memory. During continuous navigation, [detail loading](../src/log/preview.rs) waits for selection to remain stable for 60ms, then reads changed files, body, and containing branches and builds the file tree in the background. At most one detail query runs at a time, with only the latest pending row retained. Selection changes/refresh invalidate older requests. Branches reload even when the SHA remains identical across refresh. Shell handles queued consecutive movement keys in order and redraws their final position once; before other actions it redraws, so mouse hit testing sees the current row.
 
-[Commit actions](../src/log/actions.rs) capture one row's root, worktree path and full OID independently of filters, viewport and preview. Names and messages use the [shared Log editor](../src/log/input.rs); Shell confirms a single-use [operation plan](../src/log/operations.rs). Execution rechecks scope, target, branch/HEAD and operation eligibility. Ref creation uses the immutable commit; checkout suppresses submodule recursion and protects ignored files. Undo resets softly. Revert and older history rewrites preflight tracked changes and paths that may be overwritten. The rebase todo names only commits in the reviewed linear range and disables automatic ref updates, autosquash and autostash. Editing the tip amends only the message. Git owns ref and index locking and retains native conflict state. The result refreshes Log, Commit, Branch data and Conflicts.
+[Commit actions](../src/log/actions.rs) capture one row's root, worktree path and full OID independently of filters, viewport and preview. Names and messages use the [shared Log editor](../src/log/input.rs); Shell confirms a single-use [operation plan](../src/log/operations.rs). The menu and graph-focused `d/u/R/F2` paths share preparation and confirmation. Execution rechecks scope, target, branch/HEAD and operation eligibility. All operation history reads and writes bypass replacement refs and grafts. Drop, Undo, and message editing reject any commit contained by a locally known remote-tracking branch; review never fetches.
+
+[Tip removal](../src/log/operations/tip.rs) restricts Drop/Undo to the checked-out unpublished tip. A [prepared ref transaction](../src/log/operations/transaction.rs) compares the reviewed OID, locks HEAD and its referent, then checks the branch identity and publication again before touching files. Undo updates only refs, retaining soft-reset semantics. Drop requires a clean tracked index/worktree and protected-path preflight, then uses the non-forcing two-tree `read-tree -m -u` transition while the refs remain locked. Merge tips use the first parent; initial commits use an empty tree and delete the branch ref while retaining symbolic HEAD. `ORIG_HEAD` updates in the same transaction. Failed preparations leave files/index untouched; a failed commit restores files only when HEAD still matches the reviewed state. Native Revert protects local paths and preserves conflict state for the existing Conflicts workflow. Checkout suppresses submodule recursion and protects ignored files.
+
+[Message rewriting](../src/log/operations/reword.rs) walks only the selected commit and its descendants reachable from the current HEAD in parent-first order. Raw commit reconstruction replaces the selected message and changed parent IDs, preserving every tree, parent order, author/committer metadata, descendant message bytes, and unrelated headers. Invalidated commit signatures and merge-tag attestations are removed; an edited message uses UTF-8. No patch replay, checkout, index changes, signing, or commit hooks are involved. The same prepared transaction locks HEAD and the branch, rechecks branch/publication, and atomically records `ORIG_HEAD` and the replacement tip. Other local branches and tags stay in place. Git owns object/ref/index locking; all results refresh Log, Commit, Branch data, and Conflicts.
 
 [Historical merge details](../src/log/model/merge_diff.rs) read the combined changed paths plus each parent-to-result path list, preserving NUL-delimited byte paths and a parent index for each leaf. The combined list follows [Git combined diff semantics](https://git-scm.com/docs/git-diff#_combined_diff_format): only paths modified against all parents appear there. File lists and parent subjects load in the existing preview worker, with the same generation invalidation. The [shared revision reader](../src/core/revision.rs) reads exact `ls-tree` entries and immutable blobs through `cat-file`, capped at 512 KiB each; no index, working file, merge operation or clean/smudge filter supplies its contents. Missing entries are empty sides with explicit labels. The selected commit determines the presentation: two parents use the same three versions from every file group; an ordinary commit compares its parent and itself in two panes. Initial commits have an empty Before source. Unsupported text/object types fall back to a bounded patch; in that fallback, parent leaves still select the corresponding parent explicitly.
 

@@ -313,6 +313,10 @@ fn discard_full_tree_keeps_unsupported_and_ignored_rows_read_only() {
 
     select_file(&mut panel, 0, "outside");
     let mut rollback = review(&mut panel, &c);
+    assert!(matches!(
+        rollback.event(&Event::Key(KeyEvent::new(K::Enter, Mod::NONE)), &c),
+        RollbackEvent::Keep
+    ));
     let body = render(&mut rollback, &c);
     assert!(
         body.contains("outside") && body.contains("ignored.log") && body.contains("mixed"),

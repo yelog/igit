@@ -1,5 +1,9 @@
-//! Contextual shortcut palette, matching LazyDB's KEYMAP panel.
-use super::{icons::IconMode, idea::clipped, inside};
+//! Contextual shortcut palette using IGit's shared window palette.
+use super::{
+    icons::IconMode,
+    idea::{clipped, BLUE, DIM, GOLD, INK, PANEL, SELECT, TAG},
+    inside,
+};
 use crate::config::keys::{self, CommandAction};
 use crossterm::event::{
     Event, KeyCode as K, KeyEvent, KeyModifiers as M, MouseButton, MouseEventKind,
@@ -13,17 +17,10 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-// LazyDB's deep_space palette, scoped to this explicitly matching panel.
-const SURFACE: Color = Color::Rgb(17, 28, 43);
-const TITLE_BG: Color = Color::Rgb(12, 19, 30);
-const TEXT: Color = Color::Rgb(215, 226, 237);
-const MUTED: Color = Color::Rgb(105, 126, 146);
-const ACCENT: Color = Color::Rgb(99, 230, 216);
-const ACTION: Color = Color::Rgb(101, 167, 255);
 const SEARCH_MATCH: Style = Style::new()
-    .fg(Color::Rgb(255, 207, 126))
-    .bg(Color::Rgb(57, 44, 33))
-    .add_modifier(Modifier::BOLD);
+    .fg(GOLD)
+    .add_modifier(Modifier::BOLD)
+    .add_modifier(Modifier::UNDERLINED);
 
 /// Each sequence is executable and represents exactly one action.
 pub(crate) type Binding = (&'static str, &'static str);
@@ -272,7 +269,7 @@ impl HelpState {
 
     fn entries(&self) -> Vec<(String, &'static str, CommandAction)> {
         let tokens = self.search_tokens();
-        let mut entries = vec![];
+        let mut ranked: Vec<(SearchRank, usize, (String, &'static str, CommandAction))> = vec![];
         let mut seen = std::collections::BTreeSet::new();
         let mut displayed = std::collections::BTreeSet::new();
         for section in &self.content.sections {
@@ -288,20 +285,24 @@ impl HelpState {
                 if !displayed.insert(keys.clone()) {
                     continue;
                 }
-                if matches_search(&[section.title, &keys, binding.1], &tokens) {
-                    entries.push((keys, binding.1, CommandAction::Keys(binding.0)));
+                if let Some(rank) = search_rank(&[section.title, &keys, binding.1], &tokens) {
+                    let order = ranked.len();
+                    ranked.push((
+                        rank,
+                        order,
+                        (keys, binding.1, CommandAction::Keys(binding.0)),
+                    ));
                 }
             }
         }
-        entries.extend(
-            self.native_commands
-                .iter()
-                .filter(|(keys, description, _)| {
-                    matches_search(&["Panes", keys, description], &tokens)
-                })
-                .cloned(),
-        );
-        entries
+        for (keys, description, action) in &self.native_commands {
+            if let Some(rank) = search_rank(&["Panes", keys, description], &tokens) {
+                let order = ranked.len();
+                ranked.push((rank, order, (keys.clone(), description, *action)));
+            }
+        }
+        ranked.sort_by_key(|(rank, order, _)| (*rank, *order));
+        ranked.into_iter().map(|(_, _, entry)| entry).collect()
     }
 
     fn command(&self) -> Option<HelpCommand> {
@@ -513,8 +514,8 @@ impl HelpState {
         }
         // Avoid color changes that reset modifiers when Crossterm suppresses colors.
         let monochrome = crossterm::style::Colored::ansi_color_disabled_memoized();
-        let [surface, title_bg, ink, muted, accent, action] =
-            [SURFACE, TITLE_BG, TEXT, MUTED, ACCENT, ACTION].map(|color| {
+        let [surface, title_bg, ink, muted, accent, action, selected] =
+            [PANEL, TAG, INK, DIM, BLUE, BLUE, SELECT].map(|color| {
                 if monochrome {
                     Color::Reset
                 } else {
@@ -601,8 +602,6 @@ impl HelpState {
         };
         let description_width = usize::from(self.viewport.width).saturating_sub(key_width + 2);
         let tokens = self.search_tokens();
-        let key_style = Style::new().fg(action).add_modifier(Modifier::BOLD);
-        let description_style = Style::new().fg(ink);
         let match_style = if monochrome {
             Style::new()
                 .add_modifier(Modifier::BOLD)
@@ -617,18 +616,33 @@ impl HelpState {
             .take(self.viewport.height as usize)
             .map(|(i, (keys, description, _))| {
                 let marker = if i == self.selected { "> " } else { "  " };
+                let background = if i == self.selected {
+                    selected
+                } else {
+                    surface
+                };
+                let key_style = Style::new()
+                    .fg(action)
+                    .bg(background)
+                    .add_modifier(Modifier::BOLD);
+                let description_style = Style::new().fg(ink).bg(background);
                 let key = clipped(keys, key_width);
                 let padding = key_width.saturating_sub(key.width());
+                let description_text = clipped(description, description_width);
+                let fill = description_width.saturating_sub(description_text.width());
                 let mut spans = vec![Span::styled(marker, key_style)];
                 spans.extend(search_spans(keys, key, &tokens, key_style, match_style));
                 spans.push(Span::styled(" ".repeat(padding), key_style));
                 spans.extend(search_spans(
                     description,
-                    clipped(description, description_width),
+                    description_text,
                     &tokens,
                     description_style,
                     match_style,
                 ));
+                if fill > 0 {
+                    spans.push(Span::styled(" ".repeat(fill), description_style));
+                }
                 Line::from(spans)
             })
             .collect();
@@ -687,15 +701,51 @@ impl HelpState {
     }
 }
 
-fn matches_search(fields: &[&str], tokens: &[String]) -> bool {
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum MatchKind {
+    Exact,
+    Prefix,
+    Substring,
+    Fuzzy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct SearchRank {
+    fuzzies: usize,
+    substrings: usize,
+    prefixes: usize,
+    leftmost: usize,
+}
+
+fn search_rank(fields: &[&str], tokens: &[String]) -> Option<SearchRank> {
     let fields: Vec<_> = fields.iter().map(|text| text.to_lowercase()).collect();
-    tokens
-        .iter()
-        .all(|token| fields.iter().any(|text| search_hits(text, token).is_some()))
+    let mut rank = SearchRank {
+        fuzzies: 0,
+        substrings: 0,
+        prefixes: 0,
+        leftmost: usize::MAX,
+    };
+    for token in tokens {
+        let (kind, start) = fields
+            .iter()
+            .filter_map(|text| {
+                let (kind, hits) = search_hits(text, token)?;
+                Some((kind, hits.first()?.start))
+            })
+            .min()?;
+        rank.leftmost = rank.leftmost.min(start);
+        match kind {
+            MatchKind::Exact => {}
+            MatchKind::Prefix => rank.prefixes += 1,
+            MatchKind::Substring => rank.substrings += 1,
+            MatchKind::Fuzzy => rank.fuzzies += 1,
+        }
+    }
+    Some(rank)
 }
 
 /// Both inputs are lowercase; returned ranges index bytes in `text`.
-fn search_hits(text: &str, token: &str) -> Option<Vec<std::ops::Range<usize>>> {
+fn search_hits(text: &str, token: &str) -> Option<(MatchKind, Vec<std::ops::Range<usize>>)> {
     // Preserve all contiguous occurrences before falling back to a subsequence.
     let mut hits: Vec<_> = text
         .char_indices()
@@ -705,8 +755,13 @@ fn search_hits(text: &str, token: &str) -> Option<Vec<std::ops::Range<usize>>> {
                 .then_some(start..start + token.len())
         })
         .collect();
-    if !hits.is_empty() {
-        return Some(hits);
+    if let Some(first) = hits.first() {
+        let kind = match first.start {
+            0 if text.len() == token.len() => MatchKind::Exact,
+            0 => MatchKind::Prefix,
+            _ => MatchKind::Substring,
+        };
+        return Some((kind, hits));
     }
 
     let mut chars = text.char_indices();
@@ -714,7 +769,7 @@ fn search_hits(text: &str, token: &str) -> Option<Vec<std::ops::Range<usize>>> {
         let (start, ch) = chars.find(|(_, ch)| *ch == wanted)?;
         hits.push(start..start + ch.len_utf8());
     }
-    Some(hits)
+    Some((MatchKind::Fuzzy, hits))
 }
 
 fn search_spans(
@@ -731,7 +786,7 @@ fn search_spans(
     let lower = text.to_lowercase();
     let mut hits = vec![false; lower.len()];
     for token in tokens {
-        if let Some(ranges) = search_hits(&lower, token) {
+        if let Some((_, ranges)) = search_hits(&lower, token) {
             for range in ranges {
                 hits[range].fill(true);
             }
@@ -835,7 +890,7 @@ mod tests {
     }
 
     #[test]
-    fn help_opens_with_search_cursor_and_uses_lazydb_flat_keymap_style() {
+    fn help_opens_with_search_cursor_and_uses_the_shared_window_palette() {
         let mut help = help();
         let text = draw(&mut help, 120, 36);
         assert!(text.contains("KEYMAP // LOG / FILE TREE"));
@@ -845,6 +900,30 @@ mod tests {
         assert!(!text.contains("Current pane ·"));
         assert!(!text.contains("Global Actions"));
         assert!(text.contains('╭') && text.contains('╰'));
+        let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+        terminal
+            .draw(|f| help.draw(f, f.area(), IconMode::Unicode))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let popup = Rect::new(23, 1, 74, 34);
+        assert_eq!(buffer[(popup.x, popup.y)].fg, BLUE);
+        assert_eq!(buffer[(popup.x + 1, popup.y)].fg, BLUE);
+        assert_eq!(buffer[(popup.x + 1, popup.y)].bg, TAG);
+        assert_eq!(
+            buffer[(help.viewport.x + 2, help.viewport.y)].fg,
+            BLUE,
+            "shortcut keys use the shared blue action color"
+        );
+        assert_eq!(
+            buffer[(help.viewport.x + 2, help.viewport.y)].bg,
+            SELECT,
+            "the selected row uses the shared selection background"
+        );
+        assert_eq!(
+            buffer[(help.viewport.x + 20, help.viewport.y)].fg,
+            INK,
+            "descriptions use the shared body text color"
+        );
         help.event(&key(K::Char('j')));
         assert_eq!(help.query, "j", "letters edit Search instead of navigating");
         assert_eq!(help.event(&key(K::Enter)), HelpEvent::Keep);
@@ -960,6 +1039,47 @@ mod tests {
     }
 
     #[test]
+    fn help_search_orders_match_quality_before_position() {
+        let mut help = HelpState::new(HelpContent::new(
+            HelpSection::new(
+                "Actions",
+                &[
+                    ("z", "Find in log entries"),
+                    ("q", "Save current file"),
+                    ("file", "Exact key"),
+                    ("files", "Prefix key"),
+                    ("m", "File menu"),
+                    ("n", "Open file now"),
+                ],
+            ),
+            vec![],
+        ));
+        help.event(&Event::Paste("file".into()));
+        let entries = help.entries();
+        let labels: Vec<_> = entries.iter().map(|entry| entry.0.as_str()).collect();
+        assert_eq!(labels, ["file", "files", "m", "n", "q", "z"]);
+    }
+
+    #[test]
+    fn help_search_ranks_multiple_terms_by_the_weakest_match() {
+        let mut help = HelpState::new(HelpContent::new(
+            HelpSection::new(
+                "Actions",
+                &[
+                    ("a", "Save frequent items in log entries"),
+                    ("b", "File save"),
+                    ("c", "Save prompt"),
+                ],
+            ),
+            vec![],
+        ));
+        help.event(&Event::Paste("save file".into()));
+        let entries = help.entries();
+        let labels: Vec<_> = entries.iter().map(|entry| entry.0.as_str()).collect();
+        assert_eq!(labels, ["b", "a"]);
+    }
+
+    #[test]
     fn help_search_renders_fuzzy_hits_in_keys_and_descriptions() {
         for (width, height) in [(44, 12), (80, 24), (120, 36)] {
             let mut help = HelpState::new(HelpContent::new(
@@ -982,11 +1102,10 @@ mod tests {
                 let start = row[..row.find(label).expect("matching label is visible")].width();
                 for offset in 0..label.len() {
                     let cell = &buffer[((start + offset) as u16, y)];
-                    let highlighted = if crossterm::style::Colored::ansi_color_disabled_memoized() {
-                        cell.modifier.contains(Modifier::UNDERLINED)
-                    } else {
-                        Some(cell.bg) == SEARCH_MATCH.bg
-                    };
+                    let highlighted = cell.modifier.contains(Modifier::UNDERLINED);
+                    if !crossterm::style::Colored::ansi_color_disabled_memoized() {
+                        assert_eq!(cell.fg, GOLD, "{width}x{height}: {label} at {offset}");
+                    }
                     assert_eq!(
                         highlighted,
                         hits.contains(&offset),
@@ -999,7 +1118,7 @@ mod tests {
 
     #[test]
     fn help_search_highlights_fuzzy_characters_and_preserves_exact_matches() {
-        let base = Style::new().fg(TEXT);
+        let base = Style::new().fg(INK);
         for (text, query, expected) in [
             ("Save current file", "scf", vec!["S", "c", "f"]),
             (
@@ -1035,7 +1154,7 @@ mod tests {
 
     #[test]
     fn help_search_fuzzy_highlights_survive_clipping_and_monochrome() {
-        let base = Style::new().fg(ACTION).add_modifier(Modifier::BOLD);
+        let base = Style::new().fg(BLUE).add_modifier(Modifier::BOLD);
         let monochrome = Style::new().add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
         for highlight in [SEARCH_MATCH, monochrome] {
             let spans = search_spans(

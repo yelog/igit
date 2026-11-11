@@ -70,3 +70,76 @@ fn log_actions_review_cancels_by_default_and_revert_conflict_refreshes_workspace
     assert!(repo.join(".git/REVERT_HEAD").is_file());
     assert!(!run(&["ls-files", "--unmerged"]).is_empty());
 }
+
+#[test]
+fn log_shortcut_remap_opens_review_and_cancellation_keeps_repository_unchanged() {
+    let (_temp, mut app) = fixture();
+    let repo = app.ctx.repos[0].path.clone();
+    let run = |args: &[&str]| git(&repo, args).unwrap();
+    for (key, value) in [
+        ("user.name", "Log shortcut tester"),
+        ("user.email", "shortcut@example.invalid"),
+        ("commit.gpgsign", "false"),
+        ("core.hooksPath", "/dev/null"),
+    ] {
+        run(&["config", key, value]);
+    }
+    run(&["restore", "--staged", "--worktree", "."]);
+    for text in ["base change", "middle change", "tip change"] {
+        std::fs::write(repo.join("mixed.txt"), text).unwrap();
+        run(&["commit", "-am", text]);
+    }
+    let before = snapshot(&repo);
+    app.config = AppConfig::from_toml(
+        "[keybindings.global]\nnotification-history=[]\n[keybindings.log]\ndrop-commit=['F8']",
+    )
+    .unwrap();
+    app.go(Log);
+    app.dispatch(&key(KeyCode::F(5)));
+    screen(&mut app, 44, 12);
+    app.dispatch(&key(KeyCode::Char('g')));
+    app.dispatch(&key(KeyCode::Char('g')));
+
+    app.dispatch(&key(KeyCode::Char('d')));
+    assert!(app.pop.is_none());
+    assert_eq!(snapshot(&repo), before);
+
+    app.dispatch(&key(KeyCode::F(8)));
+    let Some(Popup::Confirm {
+        owner: Log,
+        yes: false,
+        title,
+        ..
+    }) = &app.pop
+    else {
+        panic!(
+            "Expected remapped Drop review: {}",
+            app.notifications.latest_body()
+        );
+    };
+    assert_eq!(title, "Drop Commit");
+    assert_eq!(snapshot(&repo), before);
+    app.dispatch(&key(KeyCode::Esc));
+    assert!(app.pop.is_none());
+    assert_eq!(snapshot(&repo), before);
+
+    app.dispatch(&key(KeyCode::Char('u')));
+    assert!(matches!(
+        &app.pop,
+        Some(Popup::Confirm { owner: Log, yes: false, title, .. })
+            if title == "Undo Commit"
+    ));
+    app.dispatch(&key(KeyCode::Esc));
+    assert!(app.pop.is_none());
+    assert_eq!(snapshot(&repo), before);
+
+    app.dispatch(&key(KeyCode::Char('R')));
+    assert!(matches!(
+        &app.pop,
+        Some(Popup::Confirm { owner: Log, yes: false, title, .. })
+            if title == "Revert Commit"
+    ));
+    app.dispatch(&key(KeyCode::Enter));
+    assert!(app.pop.is_none());
+    assert_eq!(snapshot(&repo), before);
+}

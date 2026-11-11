@@ -185,6 +185,7 @@ impl SnapshotPreview {
                         label: "stash revision",
                     })
                 }
+                RevisionEvent::Apply(_) | RevisionEvent::ApplyAll => (),
             }
             return Ok(Action::None);
         }

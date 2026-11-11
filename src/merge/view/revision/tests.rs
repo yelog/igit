@@ -242,6 +242,88 @@ fn two_way_layout_has_two_revisions_and_never_focuses_the_hidden_alignment_side(
 }
 
 #[test]
+fn local_merge_treats_adjacent_alignment_chunks_as_one_change_group() {
+    let revision = "alpha\nbeta\ngamma\ndelta\n";
+    let local = "alpha\nBETA\ninserted\ngamma\ndelta\n";
+    let mut view = RevisionDiff::local(
+        "sample.ts".into(),
+        "11111111".into(),
+        revision.into(),
+        local.into(),
+        "LF".into(),
+        "LF".into(),
+        true,
+    );
+    assert_eq!(
+        view.change_count(),
+        1,
+        "{:?}",
+        view.chunks
+            .iter()
+            .map(|chunk| (chunk.kind, chunk.left.as_str(), chunk.result.as_str()))
+            .collect::<Vec<_>>()
+    );
+    let start = view.changes[0];
+    assert_ne!(view.chunks[start + 1].kind, Kind::Context);
+    assert_eq!(
+        view.merged_local_text(Some(start)).as_deref(),
+        Some(revision)
+    );
+    assert_eq!(
+        view.merged_local_text(Some(start + 1)).as_deref(),
+        Some(revision)
+    );
+
+    draw(&mut view, 120, 24, IconMode::Unicode);
+    let applies: Vec<_> = view
+        .hits
+        .iter()
+        .filter_map(|(rect, target)| {
+            (matches!(target, Target::Apply(_)) && rect.y >= view.code_areas[0].y).then_some(*rect)
+        })
+        .collect();
+    assert_eq!(applies.len(), 1);
+    let gutter = applies[0];
+    assert!(matches!(
+        view.event(&Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: gutter.x,
+            row: gutter.y,
+            modifiers: M::NONE,
+        })),
+        RevisionEvent::Apply(index) if index == start
+    ));
+    view.selected = start + 1;
+    assert!(matches!(
+        key(&mut view, K::Char('L')),
+        RevisionEvent::Apply(index) if index == start
+    ));
+}
+
+#[test]
+fn local_merge_disables_apply_all_when_the_revision_deleted_the_file() {
+    let mut view = RevisionDiff::local(
+        "sample.ts".into(),
+        "11111111".into(),
+        String::new(),
+        "local\n".into(),
+        "Absent".into(),
+        "LF".into(),
+        false,
+    );
+    draw(&mut view, 120, 24, IconMode::Unicode);
+    assert!(!view
+        .hits
+        .iter()
+        .any(|(_, target)| matches!(target, Target::ApplyAll)));
+    assert!(matches!(key(&mut view, K::Char('A')), RevisionEvent::None));
+    assert_eq!(
+        view.merged_local_text(Some(view.changes[0])).as_deref(),
+        Some("")
+    );
+}
+
+#[test]
 fn reformatted_mapper_lines_stay_aligned_around_insertions_and_removed_comment_lines() {
     let before = concat!(
         "interface Mapper {\r\n",

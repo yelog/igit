@@ -94,8 +94,12 @@ additional **History: filename** Log tab: commits on the left, a live read-only
 Diff on the right. Ordinary commits show Before/After; two-parent merges show
 Parent 1/Result/Parent 2. History follows Git's rename detection. Use `Tab` or
 `Ctrl-W h/l` between history and Diff; inside Diff, `[/]` selects a revision,
-`n/p` selects a change, and `Esc` returns to history. Close a history tab with
-its close control or `Ctrl-W c` to return to the normal Log tab.
+`n/p` selects a change, and `Esc` returns to history. Press `D` in either File
+History pane to compare the selected revision with the working file. In that
+comparison, `L` writes the selected revision block to the file and `A` writes
+all revision blocks; `Esc` returns to history and refreshes the workspace.
+Writes update only the working file and never stage content. Close a history
+tab with its close control or `Ctrl-W c` to return to the normal Log tab.
 
 Press `e` in either File History pane for **Show File at Revision**. It opens
 the selected commit's complete file using its historical path. In `igit.nvim`,
@@ -106,6 +110,18 @@ until the file is closed. A deletion commit has no file to open: select an earli
 commit. Empty files are supported; binary, non-UTF-8, and files over 512 KiB report
 an error. Customize the shortcut with `keybindings.log.show-file-at-revision`.
 Both the native binary and companion plugin need this feature's implementation.
+
+**Compare with Local.** `D` opens a two-pane comparison between the selected
+immutable revision and the current working file. The revision side shows its
+short hash and the right side is labeled **Local**. `n/p` visits aligned
+changes; the `»` control, `L`, or the toolbar **Apply** button replaces that
+whole change group in the working file with the revision text. **All** or `A`
+reviews and applies every revision block; it is disabled when the selected
+revision did not contain the file. Each write verifies that the working file
+and its parent path are still safe, matches the opened snapshot, preserves its
+permissions, and updates only the working tree. Binary, non-UTF-8, symlink,
+oversized, externally changed, custom-filter, or mixed-line-ending files are
+rejected with an explanation.
 
 **Choose terminal icons.** The default uses Nerd Font icons for repositories, branches, file types, and actions. If icons appear as boxes, try `ig --icons unicode`; for text markers such as `[x]`, use `ig --icons ascii`. Both commands accept `--icons mode [directory]`. The selected mode applies to all panels and any workspace reopened during the same run.
 
@@ -330,7 +346,7 @@ Keyboard selection still supports `Ctrl-A` to select all and `Ctrl-C` / `Ctrl-In
 
 Use `n/p` for changes, `Tab` for panes, `h/l` for horizontal scrolling, `f` to fold, `z` to zoom and `[/]` for files. Narrow and zoomed views show one revision and reduce empty alignment spans to one boundary row. Drag to select and copy, `Ctrl-A` to select the focused revision, or `y` to copy the selection or full revision. Copy preserves the original text. Unsupported binary/large files show a patch with an explanation.
 
-**Context help:** `?` or `F1` opens a lazydb-style `KEYMAP // current area` panel with Search focused. Type a shortcut, description, or area name to filter. Search ignores case and matches characters in order, including nonadjacent characters; space-separated terms must all match. Matched characters in shortcuts and descriptions are highlighted, preferring contiguous matches when available. A row can also match its area name without a highlight in its visible text. Actions for the current area come first, followed by panel-wide and global actions; each row represents one action. `↑/↓` selects, and `Enter` closes help and executes the selected shortcut. `PgUp/PgDn` changes selection by a page; click to select, or use the wheel/scrollbar to browse. Search supports left/right, Home/End, deletion, and `Ctrl-W/U/A/E` editing. `Esc/F1` cancels help and restores the original focus, draft, or dialog. `F1` also works in input fields, Diff, Roots, and review dialogs. Choosing Commit starts the local commit; Push and Apply file still open their reviews.
+**Context help:** `?` or `F1` opens a lazydb-style `KEYMAP // current area` panel with Search focused and IGit's shared window palette. Type a shortcut, description, or area name to filter. Search ignores case and matches characters in order, including nonadjacent characters; space-separated terms must all match. Matched characters in shortcuts and descriptions are highlighted, preferring contiguous matches when available. A row can also match its area name without a highlight in its visible text. With no query, actions for the current area come first, followed by panel-wide and global actions. Search ranks full-field matches first, followed by field prefixes, contiguous substrings, and nonadjacent matches. Earlier match positions break ties, followed by catalogue order. Each row represents one action. `↑/↓` selects, and `Enter` closes help and executes the selected shortcut. `PgUp/PgDn` changes selection by a page; click to select, or use the wheel/scrollbar to browse. Search supports left/right, Home/End, deletion, and `Ctrl-W/U/A/E` editing. `Esc/F1` cancels help and restores the original focus, draft, or dialog. `F1` also works in input fields, Diff, Roots, and review dialogs. Choosing Commit starts the local commit; Push and Apply file still open their reviews.
 
 **Key sequence hints:** In normal mode, press `Ctrl-W`; in Branch, press `g`; in the Log commit list, press `g` / `y`; or in a Merge conflict document, press `[` / `]`. If no other key arrives for 200ms, a bottom overlay lists valid continuation keys and descriptions. Type the next key to execute; quickly completed sequences do not flash a hint. Once visible, use arrow keys and `Enter`, or click a candidate. `Esc/Ctrl-C` cancels only the pending prefix. Switching panels/focus, opening a menu, pasting, or resizing also dismisses it; another prefix restarts the timer. The overlay uses one to three columns according to width. Letters in text fields and single-key actions in Commit/Push keep their existing meanings.
 
@@ -488,7 +504,18 @@ The left branch/tag tree follows the applied Paths scope: local branches, remote
 
 **Push commit copying:** With the left outgoing list focused and a commit highlighted, `yy`, `ym`, and `ya` copy its full ID, full message, and `Name <email>`, just like Log. The `y` prefix shows the same delayed chooser, and F1 lists these actions. Copying uses the highlighted commit even while its preview loads; it does not change repository checkboxes. Repository rows do not copy commit data. The right file tree keeps its path-copy shortcuts. Customize these commands with `copy-id`, `copy-message`, and `copy-author` under `[keybindings.push]`.
 
-**Log commit actions:** Right-click a commit, click the list's `...` button, or press `a` with the list focused. Create a local branch or lightweight tag at that revision, check it out in detached HEAD, undo the current branch tip while keeping staged and unstaged work, revert a commit with a new inverse commit, cherry-pick it onto the current branch, or drop it and replay its descendants. Press `C` to review the highlighted commit. For a batch, press `v` or choose **Select Commits**, toggle same-repository checkboxes with `Space` or the mouse, then press `C` or click **Pick N**. Review shows the checked-out destination and application order. Cherry-pick requires a clean tracked index/worktree and non-merge source commits; native conflicts remain in Conflicts for separate Continue, Abort, or Skip reviews. `F2` edits the full commit message, including its body. Press `F2` or `Ctrl-S` in the editor to review. Confirmations name the commit's repository and start on Cancel. See [commit action behavior](docs/design.md#commit-actions) for history and conflict limits.
+**Log commit actions:** Right-click a commit, click the list's `...` button, or press `a` with the list focused. The menu also creates a local branch or lightweight tag, checks out a revision in detached HEAD, and cherry-picks commits. These direct shortcuts address the highlighted commit in its repository:
+
+| Shortcut | Action | Availability and result |
+| --- | --- | --- |
+| `d` | Drop Commit | Only the checked-out branch's unpublished tip. Removes its committed changes; requires a clean tracked worktree and index. |
+| `u` | Undo Commit | Only the checked-out branch's unpublished tip. Removes the commit while keeping its changes staged and preserving existing staged and unstaged work. |
+| `R` | Revert Commit | Any non-merge commit, including published history. Creates an inverse commit on the checked-out branch; requires a clean tracked worktree and index. |
+| `F2` | Edit Commit Message | Any unpublished commit on the checked-out branch, including initial and merge commits. Changes the full subject/body and affected descendant IDs while preserving file trees, merge topology, index, and working files. |
+
+All four actions require review and start on Cancel. In the message editor, Enter inserts a newline; `F2` or `Ctrl-S` opens review. Publication checks use all locally known remote-tracking branches and run again at confirmation; use Fetch to update this knowledge. Removing a merge tip uses its first parent; removing the initial commit returns the branch to its unborn state. Message editing leaves other branches/tags in place and removes invalidated signatures from rewritten commits. `Space d/u` still opens Date/User filters, and `Ctrl-D/U` still pages.
+
+Press `C` to review a cherry-pick of the highlighted commit. For a batch, press `v` or choose **Select Commits**, toggle same-repository checkboxes with `Space` or the mouse, then press `C` or click **Pick N**. Review shows the checked-out destination and application order. Cherry-pick requires a clean tracked index/worktree and non-merge source commits; native conflicts remain in Conflicts for separate Continue, Abort, or Skip reviews. See [commit action behavior](docs/design.md#commit-actions) for history and conflict limits.
 
 Log refresh, Git filter changes, and filter-tab switching load history and graph
 data in the background. Cached rows remain browsable while **Refreshing
@@ -655,7 +682,7 @@ explicit replacement.
 ## Commit and Push Semantics
 
 - All checked files in the current Roots use the same commit message. Each repository gets its own Git commit or push; batches are not atomic across repositories. Successful repositories are not automatically rolled back.
-- In Commit's Changes list, `d` opens **Rollback Changes** with the full tree for the current Roots. It prechecks the highlighted file or the eligible members of the highlighted directory, repository, or changelist. Other rows remain visible; use Space or click a checkbox to add or remove files, `v` for a file's Diff, and `o` for Group By. **Close** is focused initially. Press `Esc` to close, or activate **Rollback** to apply. The single-key `y` shortcut applies only when focus is outside the file tree. Only checked files are affected: tracked files return to HEAD in both index and working tree, untracked files are deleted, and added files are unstaged. Check **Delete local copies of added files** to remove those copies as well. Rollback has no undo. Changed snapshots and unsupported paths require another review or separate handling.
+- In Commit's Changes list, `d` opens **Rollback Changes** with the full tree for the current Roots. It prechecks the highlighted file or the eligible members of the highlighted directory, repository, or changelist. Other rows remain visible; use Space or click a checkbox to add or remove files, `v` for a file's Diff, and `o` for Group By. **Rollback** is focused initially, so pressing `Enter` immediately confirms the checked files. Press `Esc` to close, or `Tab` / `Shift-Tab` to focus another control. The single-key `y` shortcut applies only when focus is outside the file tree. Only checked files are affected: tracked files return to HEAD in both index and working tree, untracked files are deleted, and added files are unstaged. Check **Delete local copies of added files** to remove those copies as well. Rollback has no undo. Changed snapshots and unsupported paths require another review or separate handling.
 - Selection is per file. Files with staged changes use the **index version**; otherwise, they use the **working-tree version**. If line A was staged and line B changed afterward, only A is committed. Unselected staged entries in the real index remain intact. When a tracked file is replaced by a directory of the same name, selecting only the old file's deletion does not include files inside the new directory; AI patches use the same scope. This version does not offer manual line selection or split one file across multiple changelists.
 - Clicking **Commit** starts a local batch with the current selection and message. If the branch, HEAD, or selected content no longer matches the prepared batch, IGit stops the affected commit. Refresh with `F5` and check the selection before retrying.
 - Commits run real hooks. Amend is blocked for commits contained in known remote-tracking refs; local tracking records are not absolute proof of the server's publication state. Signing, hooks, or credential helpers that need interaction must use a system-configured agent / pinentry. The workspace does not collect Git passwords.

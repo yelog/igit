@@ -112,24 +112,19 @@ impl Center {
                 inner.width,
                 inner.height.saturating_sub(1),
             );
-            let rows = detail_lines(&detail.entry, content.width, icons, &state.query);
+            let layout = detail_layout(&detail.entry, content.width, icons, &state.query);
             detail.page_size = usize::from(content.height);
-            detail.max_scroll = rows.len().saturating_sub(detail.page_size);
+            detail.max_scroll = layout.rows.len().saturating_sub(detail.page_size);
             detail.scroll = detail.scroll.min(detail.max_scroll);
-            frame.render_widget(
-                Paragraph::new(
-                    rows.into_iter()
-                        .skip(detail.scroll)
-                        .take(detail.page_size)
-                        .collect::<Vec<_>>(),
-                ),
-                content,
-            );
+            state.content_area = content;
+            state
+                .selection
+                .render(frame, content, layout, detail.scroll, 0);
             footer(
                 frame,
                 inner,
                 &[
-                    "j/k scroll  y copy  Esc/q back",
+                    "j/k or J/K scroll  y copy  Esc/q back",
                     "y copy  Esc/q back",
                     "Esc back",
                 ],
@@ -187,11 +182,27 @@ impl Center {
                     .border_style(Style::new().fg(EDGE));
                 let text = block.inner(preview);
                 frame.render_widget(block, preview);
-                frame.render_widget(
-                    Paragraph::new(detail_lines(entry, text.width, icons, state.query())),
-                    text,
-                );
+                if state.preview.id != Some(entry.id) {
+                    state.preview = super::history::Preview {
+                        id: Some(entry.id),
+                        ..Default::default()
+                    };
+                    state.selection.reset();
+                }
+                let layout = detail_layout(entry, text.width, icons, state.query());
+                state.preview.page_size = usize::from(text.height);
+                state.preview.max_scroll =
+                    layout.rows.len().saturating_sub(state.preview.page_size);
+                state.preview.scroll = state.preview.scroll.min(state.preview.max_scroll);
+                state.content_area = text;
+                state
+                    .selection
+                    .render(frame, text, layout, state.preview.scroll, 0);
             }
+        } else {
+            state.content_area = Rect::default();
+            state.preview.page_size = 0;
+            state.selection.reset();
         }
         if state.clear_confirm {
             footer(
@@ -216,17 +227,22 @@ impl Center {
                 DIM,
             );
         } else {
-            footer(
-                frame,
-                inner,
+            let hints: &[&str] = if narrow {
                 &[
-                    "j/k select  / search  n/N match  Enter detail  y copy  c clear  Esc/q close",
                     "/ search  Enter detail  y copy  c clear  Esc/q close",
                     "Enter detail  Esc/q close",
                     "Esc/q close",
-                ],
-                DIM,
-            );
+                ]
+            } else {
+                &[
+                    "j/k select  / search  n/N match  J/K scroll  Enter detail  y copy  c clear  Esc/q close",
+                    "/ search  J/K scroll  Enter detail  y copy  c clear  Esc/q close",
+                    "/ search  Enter detail  y copy  c clear  Esc/q close",
+                    "Enter detail  Esc/q close",
+                    "Esc/q close",
+                ]
+            };
+            footer(frame, inner, hints, DIM);
         }
     }
 }
@@ -412,12 +428,7 @@ fn draw_history_row(
     frame.render_widget(Paragraph::new(Line::from(spans)).style(base), area);
 }
 
-fn detail_lines(
-    entry: &Notification,
-    width: u16,
-    icons: IconMode,
-    query: &str,
-) -> Vec<Line<'static>> {
+fn detail_layout(entry: &Notification, width: u16, icons: IconMode, query: &str) -> TextLayout {
     let mut layout = TextLayout::default();
     let mut header = vec![Span::styled(
         format!(
@@ -460,7 +471,7 @@ fn detail_lines(
             Wrap::Word,
         );
     }
-    layout.rows.into_iter().map(|row| row.line).collect()
+    layout
 }
 
 fn wrapped(text: &str, width: u16, query: &str) -> Vec<Line<'static>> {

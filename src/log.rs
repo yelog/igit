@@ -44,6 +44,7 @@ use std::time::{Duration, Instant};
 use view::*;
 
 pub(crate) const REVIEW_TOKEN: &str = "log-commit-action";
+pub(super) const LOCAL_APPLY_TOKEN_PREFIX: &str = "log-local-apply-all:";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 enum Pane {
@@ -145,6 +146,7 @@ struct DiffView {
     selection: TextSelection,
     file: Option<usize>,
     comparison: Option<crate::merge::RevisionDiff>,
+    local: Option<file_history::LocalCompare>,
 }
 pub struct LogPanel {
     pub(crate) icons: IconMode,
@@ -189,6 +191,8 @@ pub struct LogPanel {
     history_mouse: bool,
     commit_dialog: Option<actions::Dialog>,
     commit_review: Option<operations::Review>,
+    local_review: Option<String>,
+    local_review_serial: u64,
     pick_mode: bool,
     picks: Vec<operations::Target>,
     hits: Vec<(Rect, Hit)>,
@@ -243,6 +247,8 @@ impl Default for LogPanel {
             history_mouse: false,
             commit_dialog: None,
             commit_review: None,
+            local_review: None,
+            local_review_serial: 0,
             pick_mode: false,
             picks: Vec::new(),
             hits: vec![],
@@ -795,6 +801,20 @@ impl Panel for LogPanel {
         self.draw_overlays(f, a, c);
     }
     fn confirm(&mut self, token: &str, c: &Context) -> Action {
+        if token.starts_with(LOCAL_APPLY_TOKEN_PREFIX) {
+            if self.local_review.as_deref() != Some(token) {
+                return Action::Notice(
+                    NoticeLevel::Warning,
+                    "Log: This Compare with Local review is stale; reopen it from the comparison"
+                        .into(),
+                );
+            }
+            self.local_review = None;
+            return self.apply_local_compare(c, None).map_or_else(
+                |error| Action::Notice(NoticeLevel::Error, format!("Log: {error:#}")),
+                |()| Action::None,
+            );
+        }
         if token == REVIEW_TOKEN {
             if let Err(error) = self.require_current_history(c) {
                 self.commit_review = None;
@@ -825,13 +845,30 @@ impl Panel for LogPanel {
         }
         if let Some(merge) = self.diff.as_mut().and_then(|d| d.comparison.as_mut()) {
             use crate::merge::RevisionEvent;
+            if merge.local_merge() && merge.search_event(e) {
+                self.cancel_key_sequence();
+                return Action::None;
+            }
             let event = merge.event(e);
             self.cancel_key_sequence();
             return match event {
                 RevisionEvent::None => Action::None,
                 RevisionEvent::Close => {
+                    let changed = self
+                        .diff
+                        .as_ref()
+                        .and_then(|diff| diff.local.as_ref())
+                        .is_some_and(file_history::LocalCompare::changed);
                     self.diff = None;
-                    Action::None
+                    self.local_review = None;
+                    if changed {
+                        Action::Refresh(
+                            NoticeLevel::Info,
+                            "Applied revision changes to the local file".into(),
+                        )
+                    } else {
+                        Action::None
+                    }
                 }
                 RevisionEvent::File(delta) => self.diff_file(c, delta).map_or_else(
                     |error| Action::Notice(NoticeLevel::Error, error.to_string()),
@@ -841,6 +878,15 @@ impl Panel for LogPanel {
                     text,
                     label: "revision",
                 },
+                RevisionEvent::Apply(change) => {
+                    self.apply_local_compare(c, Some(change)).map_or_else(
+                        |error| Action::Notice(NoticeLevel::Error, format!("Log: {error:#}")),
+                        |()| Action::None,
+                    )
+                }
+                RevisionEvent::ApplyAll => self.review_local_apply_all(c).unwrap_or_else(|error| {
+                    Action::Notice(NoticeLevel::Error, format!("Log: {error:#}"))
+                }),
             };
         }
         if matches!(
@@ -1020,6 +1066,16 @@ impl Panel for LogPanel {
                 self.view_menu_key(k, c)?;
                 return Ok(());
             }
+            if key == K::Char('D')
+                && !k
+                    .modifiers
+                    .intersects(Mods::ALT | Mods::CONTROL | Mods::SUPER)
+                && self.filter.file_history.is_some()
+                && matches!(self.focus, Pane::Graph | Pane::Info)
+            {
+                action = self.open_local_compare(c)?;
+                return Ok(());
+            }
             if key == K::Char('e')
                 && k.modifiers.is_empty()
                 && self.filter.file_history.is_some()
@@ -1053,6 +1109,10 @@ impl Panel for LogPanel {
                 return Ok(());
             }
             if let Some(a) = self.graph_key(k, c)? {
+                action = a;
+                return Ok(());
+            }
+            if let Some(a) = self.shortcut_commit_action(k, c)? {
                 action = a;
                 return Ok(());
             }

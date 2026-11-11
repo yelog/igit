@@ -69,13 +69,13 @@ fn discard_changes_group_opens_rollback_dialog() {
 }
 
 #[test]
-fn discard_confirmation_defaults_to_cancel_and_refreshes_only_after_confirmation() {
+fn discard_confirmation_defaults_to_rollback_and_refreshes_only_after_confirmation() {
     let (_dir, mut app) = fixture();
     let repo = app.ctx.repos[0].path.clone();
     let before = snapshot(&repo);
     focus_commit_file(&mut app, "mixed.txt");
     send(&mut app, "Space");
-    for cancel in ["Esc", "Enter", "n"] {
+    for cancel in ["Esc", "n", "Shift-Tab Enter"] {
         send(&mut app, "d");
         assert!(
             matches!(&app.pop, Some(Popup::Rollback(_))),
@@ -101,13 +101,17 @@ fn discard_confirmation_defaults_to_cancel_and_refreshes_only_after_confirmation
         assert!(app.pop.is_none());
         assert_eq!(snapshot(&repo), before);
     }
-    send(&mut app, "d y");
+    send(&mut app, "d Enter");
     assert!(app.pop.is_none());
     assert_eq!(git(&repo, &["show", ":mixed.txt"]).unwrap(), "base");
     assert_eq!(std::fs::read(repo.join("mixed.txt")).unwrap(), b"base\n");
     assert_eq!(
         git(&repo, &["show", ":other.txt"]).unwrap(),
         "unselected staged"
+    );
+    assert_eq!(
+        std::fs::read(repo.join("other.txt")).unwrap(),
+        b"unselected staged\n"
     );
     assert_eq!(git(&repo, &["rev-parse", "HEAD"]).unwrap(), before[0]);
     assert!(
