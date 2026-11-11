@@ -289,6 +289,27 @@ impl LogPanel {
                 .with_selection(self.selected_text().is_some(), true);
         }
         let current = match self.focus {
+            Pane::Graph if self.filter.comparison.is_some() => Section::new(
+                "Log / Branch Comparison",
+                &[
+                    ("j", "Select next commit"),
+                    ("k", "Select previous commit"),
+                    ("gg", "Select first commit"),
+                    ("G", "Select last commit"),
+                    ("H", "Select top visible commit"),
+                    ("M", "Select middle visible commit"),
+                    ("L", "Select bottom visible commit"),
+                    ("Ctrl-f", "Page down"),
+                    ("Ctrl-b", "Page up"),
+                    ("Ctrl-d", "Half page down"),
+                    ("Ctrl-u", "Half page up"),
+                    ("yy", "Copy full commit ID"),
+                    ("ym", "Copy full commit message"),
+                    ("ya", "Copy author name and email"),
+                    ("Enter", "Open commit file diff"),
+                    ("/", "Search commit text or hash"),
+                ],
+            ),
             Pane::Graph => Section::new(
                 "Log / Commits",
                 &[
@@ -395,6 +416,26 @@ impl LogPanel {
                 ],
             )],
         );
+        if self.filter.comparison.is_some() {
+            content.sections[1] = Section::new(
+                "Log / Comparison Controls",
+                &[
+                    ("Tab", "Focus next comparison pane"),
+                    ("Shift-Tab", "Focus previous comparison pane"),
+                    ("[", "Focus other comparison side"),
+                    ("]", "Focus other comparison side"),
+                    ("Space u", "Open User filter"),
+                    ("Space d", "Open Date filter"),
+                    ("Space p", "Open Paths filter"),
+                    ("x", "Clear filters in this comparison side"),
+                    ("o", "Open Show / Highlight options"),
+                    ("I", "Toggle inspector sidebar"),
+                    ("+", "Load more commits in this comparison side"),
+                    ("F5", "Refresh both branches"),
+                    ("Esc", "Close comparison and return to branches"),
+                ],
+            );
+        }
         if self.filter.file_history.is_some() {
             content.sections.insert(
                 1,

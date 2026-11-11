@@ -249,6 +249,9 @@ impl LogPanel {
     }
 
     pub(super) fn toggle_view_item(&mut self, item: Item, c: &Context) -> Result<()> {
+        if self.filter.comparison.is_some() && item == Item::BranchOrTag {
+            return Ok(());
+        }
         let v = match item {
             Item::BranchOrTag => &mut self.show_refs,
             Item::CommitDetails => &mut self.show_info,
@@ -453,9 +456,10 @@ impl LogPanel {
                     ),
                     _ => {
                         let item = Item::ALL[if i < Item::DIVIDER_ROW { i - 1 } else { i - 3 }];
-                        let enabled = item != Item::NotCherryPicked
+                        let enabled = (item != Item::NotCherryPicked
                             || self.cherry_available()
-                            || self.options.not_cherry_picked;
+                            || self.options.not_cherry_picked)
+                            && !(item == Item::BranchOrTag && self.filter.comparison.is_some());
                         let style =
                             fg(if enabled { INK } else { DIM }).bg(if m.row == item as usize {
                                 SELECT

@@ -4,7 +4,10 @@ use std::borrow::Cow;
 
 impl BranchPanel {
     pub(crate) fn focused_search(&self) -> Option<&Prompt> {
-        if self.input.is_some() || self.view_menu {
+        if let Some(comparison) = &self.comparison {
+            return comparison.active().focused_search();
+        }
+        if self.input.is_some() || self.view_menu || self.compare_menu.is_some() {
             return None;
         }
         Some(if self.searching_repositories() {

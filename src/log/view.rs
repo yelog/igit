@@ -63,6 +63,31 @@ pub(super) fn fold_slot(icons: IconMode, open: Option<bool>) -> String {
     let mark = open.map_or("", |open| icons.disclosure(open));
     format!("{mark}{}", " ".repeat(width + 1 - mark.width()))
 }
+
+pub(super) fn compact_split_handle(
+    frame: &mut Frame,
+    panes: &mut PaneLayout,
+    split: SplitId,
+    first: Rect,
+    second: Rect,
+) {
+    if first.height.min(second.height) > 4
+        || second.is_empty()
+        || !panes.can_resize(first, Axis::Height)
+    {
+        return;
+    }
+    let handle = if first.height > 4 {
+        one(first.x, first.bottom() - 1, first.width)
+    } else if second.height > 4 {
+        one(second.x, second.y, second.width)
+    } else {
+        let grip = one(first.right() - 1, first.bottom() - 1, 1);
+        frame.buffer_mut()[(grip.x, grip.y)].set_symbol("┤");
+        grip
+    };
+    panes.handle(split, handle);
+}
 // Reserve the close target before clipping or scrolling the input, so even a wide
 // icon cannot cover its last character. Return the cells actually occupied by it.
 pub(super) fn toolbar_field(
@@ -241,6 +266,9 @@ fn subject_spans(s: &str) -> Vec<Span<'_>> {
 }
 impl LogPanel {
     pub(super) fn pane_visible(&self, pane: Pane) -> bool {
+        if self.filter.comparison.is_some() && pane == Pane::Refs {
+            return false;
+        }
         if self.filter.file_history.is_some() {
             return matches!(pane, Pane::Graph | Pane::Info);
         }
@@ -378,23 +406,7 @@ impl LogPanel {
                 Pane::Info => self.draw_info(f, r, c),
             }
         }
-        if files.height.min(info.height) <= 4
-            && !info.is_empty()
-            && self.panes.can_resize(files, Axis::Height)
-        {
-            // Short frames only draw sides. Use whichever horizontal border is
-            // visible or mark a grip on the right edge; never cover a content row.
-            let handle = if files.height > 4 {
-                one(files.x, files.bottom() - 1, files.width)
-            } else if info.height > 4 {
-                one(info.x, info.y, info.width)
-            } else {
-                let grip = one(files.right() - 1, files.bottom() - 1, 1);
-                f.buffer_mut()[(grip.x, grip.y)].set_symbol("┤");
-                grip
-            };
-            self.panes.handle(SplitId::LogDetails, handle);
-        }
+        compact_split_handle(f, &mut self.panes, SplitId::LogDetails, files, info);
     }
     fn graph_toolbar(&mut self, f: &mut Frame, area: Rect, c: &Context) -> u16 {
         if self.filter.file_history.is_some() {
@@ -403,7 +415,7 @@ impl LogPanel {
         let two = area.width < 56 && area.height >= 5;
         let mut a = one(area.x, area.y, area.width);
         self.view_button(f, &mut a);
-        if a.width >= 27 && self.rev().is_some() {
+        if a.width >= 27 && self.rev().is_some() && self.filter.comparison.is_none() {
             let r = take_right(&mut a, 4);
             self.button(
                 f,
@@ -463,10 +475,14 @@ impl LogPanel {
         if two {
             a = one(area.x, area.y + 1, area.width);
         }
-        let fields = [Field::Branch, Field::Author, Field::Date, Field::Path];
+        let fields: &[Field] = if self.filter.comparison.is_some() {
+            &[Field::Author, Field::Date, Field::Path]
+        } else {
+            &[Field::Branch, Field::Author, Field::Date, Field::Path]
+        };
         let down = self.icons.disclosure(true);
         let close = self.icons.glyph(Icon::Close);
-        for (i, k) in fields.into_iter().enumerate() {
+        for (i, k) in fields.iter().copied().enumerate() {
             if a.width == 0 {
                 break;
             }
@@ -517,7 +533,7 @@ impl LogPanel {
             }
         }
         let mut ops = vec![(Icon::Refresh, Hit::Refresh, false)];
-        if self.limit < 3200
+        if (self.limit < 3200 || self.filter.comparison.is_some())
             && self
                 .hist
                 .more
@@ -723,13 +739,30 @@ impl LogPanel {
         if area.is_empty() {
             return;
         }
-        let tools = self.graph_toolbar(f, area, c).min(area.height);
+        let mut tools = self.graph_toolbar(f, area, c).min(area.height);
+        if let Some(range) = &self.filter.comparison {
+            if tools < area.height {
+                let icon = self.icons.glyph(Icon::Warning);
+                let label = Line::from(vec![
+                    Span::styled(format!(" {icon}"), fg(GOLD)),
+                    Span::raw(range.banner(area.width.saturating_sub(cells(icon) + 1))),
+                ]);
+                f.render_widget(
+                    Paragraph::new(label).style(fg(INK).bg(Color::Rgb(70, 51, 31))),
+                    one(area.x, area.y + tools, area.width),
+                );
+                tools += 1;
+            }
+        }
         let errors = self
             .hist
             .errors
             .iter()
-            .find_map(|(id, e)| self.filter.includes_root(*id).then_some(e.as_str()));
-        let status = self.history_status().or(errors).map(str::to_owned);
+            .find_map(|(id, e)| self.filter.includes_root(*id).then_some(e.clone()));
+        let status = self
+            .history_status()
+            .or(errors.as_deref())
+            .map(str::to_owned);
         let warning = u16::from(status.is_some() && area.height > tools + 1);
         let avail = area.height.saturating_sub(tools + warning) as usize;
         self.graph_height = avail;
@@ -761,6 +794,41 @@ impl LogPanel {
                         one(area.x, area.y + tools, area.width),
                     );
                 }
+                return;
+            }
+            if let Some(range) = &self.filter.comparison {
+                let message = if let Some(error) = errors {
+                    error
+                } else if !c
+                    .scope
+                    .iter()
+                    .any(|root| c.repos[*root].path == range.repository)
+                {
+                    "Comparison repository is outside Roots".into()
+                } else if !self.filter.query.is_empty()
+                    || !self.filter.author.is_empty()
+                    || self.filter.date.is_some()
+                    || !self.filter.paths.is_empty()
+                    || self.filter.roots.is_some()
+                {
+                    "No matching commits · x clear filters".into()
+                } else {
+                    format!(
+                        "{} contains all commits from {}",
+                        range.exclude_name, range.include_name
+                    )
+                };
+                let row = one(
+                    area.x,
+                    area.y + tools + (avail as u16).saturating_sub(1) / 2,
+                    area.width,
+                );
+                f.render_widget(
+                    Paragraph::new(clipped(&message, area.width.into()))
+                        .centered()
+                        .style(fg(DIM)),
+                    row,
+                );
                 return;
             }
             if let Some(file) = &self.filter.file_history {

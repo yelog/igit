@@ -64,11 +64,17 @@ pub(super) enum Motion {
 
 impl BranchPanel {
     pub(crate) fn key_sequence(&self) -> Option<KeySequence> {
+        if let Some(comparison) = &self.comparison {
+            return comparison.active().key_sequence();
+        }
         (self.goto_pending && self.input.is_none()).then_some(KeySequence::BranchGoto)
     }
 
     pub(crate) fn cancel_key_sequence(&mut self) {
         self.goto_pending = false;
+        if let Some(comparison) = &mut self.comparison {
+            comparison.active_mut().cancel_key_sequence();
+        }
     }
 
     pub(super) fn keep_branch_visible(&mut self) {

@@ -18,6 +18,7 @@ impl std::error::Error for HistoryUnavailable {}
 
 struct Request {
     tab: usize,
+    comparison: Option<compare::Range>,
     file: Option<file_history::Target>,
     author: String,
     date: Option<DateFilter>,
@@ -32,6 +33,7 @@ impl Request {
     fn new(p: &LogPanel) -> Self {
         Self {
             tab: p.view_index,
+            comparison: p.filter.comparison.clone(),
             file: p.filter.file_history.clone(),
             author: p.filter.author.clone(),
             date: p.filter.date.clone(),
@@ -45,6 +47,7 @@ impl Request {
 
     fn matches(&self, p: &LogPanel) -> bool {
         self.tab == p.view_index
+            && self.comparison == p.filter.comparison
             && self.file == p.filter.file_history
             && self.author == p.filter.author
             && self.date == p.filter.date
@@ -176,6 +179,17 @@ impl LogPanel {
 
     pub(crate) fn history_pending(&self) -> bool {
         self.history_load.enabled && self.history_load.task.pending()
+    }
+
+    pub(super) fn suspend_history(&mut self) {
+        self.history_load.task.cancel();
+        self.history_load.project = None;
+        self.history_load.stale = true;
+        self.history_load.error = None;
+    }
+
+    pub(super) fn drain_suspended_history(&mut self) {
+        let _ = self.history_load.task.take_result();
     }
 
     pub(super) fn history_selection(&self) -> Selected {

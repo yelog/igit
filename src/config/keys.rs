@@ -172,6 +172,7 @@ commands! {
         "checkout" => "Enter", BRANCH;
         "merge" => "m", BRANCH;
         "rename" => "r", BRANCH;
+        "compare" => "c", BRANCH;
         "pull" => "U", BRANCH;
         "push" => "P", BRANCH;
     }
@@ -334,7 +335,7 @@ commands! {
 
 pub fn context(title: &str) -> u16 {
     match title {
-        "Log / Commits" => LOG_GRAPH,
+        "Log / Commits" | "Log / Branch Comparison" => LOG_GRAPH,
         "Log / Branch Tree" => LOG_REFS,
         "Log / File Tree" => LOG_FILES,
         "Log / Commit Details" | "Log / File History Diff" => LOG_INFO,

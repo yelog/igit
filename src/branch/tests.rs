@@ -5,6 +5,7 @@ use ratatui::{backend::TestBackend, Terminal};
 use std::{fs, path::Path};
 use unicode_width::UnicodeWidthStr;
 
+mod compare;
 mod navigation;
 mod presentation;
 mod sorting;

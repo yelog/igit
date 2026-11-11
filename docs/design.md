@@ -697,9 +697,9 @@ includes one repository, its branch tree fills the tab without a repository
 header or path. With multiple repositories, a narrow **Repositories** pane on
 the left selects the tree on the right. The tiled layout works at all supported
 terminal sizes and uses the standard divider and pane shortcuts. The tree has
-action controls above it and details for the selected row below; with several
-repositories, details also show the selected repository path. Controls wrap
-at narrow widths. Mouse row selection never starts a Git write.
+column headings and View Options above it, with details for the selected row
+below; with several repositories, details also show the selected repository
+path. Mouse row selection never starts a Git write.
 
 Branch paints before Git reads finish. The first visit shows **Loading branches…**;
 returning to the same Roots keeps the cached tree browsable with **Refreshing branches…**.
@@ -806,6 +806,50 @@ unchecked-out branch without switching. A branch checked out in another
 worktree cannot be pulled here.
 Branch's `U` stays fast-forward-only regardless of the shared Pull/Push
 Merge/Rebase preference.
+
+### Comparing a branch with the current branch
+
+On a non-current local or remote leaf, `c` and the right-click
+**Compare with &lt;current branch&gt;** item open a read-only workspace inside
+Branch. The branch browser keeps its repository, selected ref, folds, and
+scroll position. The current leaf, folders, loading snapshots, detached HEAD,
+and unborn current branches do not offer the menu item.
+
+The title identifies the selected branch, current branch, and repository.
+Two Log views stack vertically: **selected minus current** above, **current
+minus selected** below. Each left-hand timeline has its own toolbar and amber
+direction banner; the right side contains that timeline's changed-file tree
+above its commit details. The shared column divider aligns both inspectors,
+the row divider changes the two comparison heights, and each inspector has
+its own file/details divider. Narrow layouts shorten the direction banner
+and keep both commit lists visible.
+
+The views reuse Log's graph, reference labels, columns, search, author/date/path
+filters, file tree, selectable details, and ordinary/merge revision Diff.
+The comparison fixes both endpoints, so Branch filtering, ref sidebars, Log
+tab creation, and commit write actions are unavailable. Each list starts with
+160 commits; `+` extends only that list by 160 without a comparison-specific
+total limit. Clear filters retains the repository and comparison direction.
+If the upper list is empty and the lower list has commits, initial keyboard
+focus goes to the lower list.
+
+An empty unfiltered side centers **&lt;excluded&gt; contains all commits from
+&lt;included&gt;**. A filter with no matches instead offers **x clear filters**.
+Unavailable refs and out-of-Roots repositories show errors, never a successful
+empty comparison. Loading reads keep the workspace responsive and cancellable.
+Both lists use the same resolved pair of immutable OIDs. Refresh resolves the
+original named pair again, keeping each side's applied filters and commit
+selection where it still exists.
+
+Tab/Shift-Tab cycles the enabled panes in upper graph/files/details then lower
+graph/files/details order. `Ctrl-W h/j/k/l` uses actual geometry. `[` and `]`
+switch sides while retaining each side's focus. Mouse and wheel events target
+the pane under the pointer; text drags stay with their original inspector.
+Enter or double-click opens the active side's Diff across the workspace.
+Esc first dismisses a local editor, search, selection, or Diff; otherwise it
+returns to the saved Branch browser. The title's Esc target provides the mouse
+close path. F1 describes the focused Log controls, and remapped Log shortcuts
+continue to work.
 
 Reviews identify one repository path, source/destination branches and commits.
 Merge uses a compact, content-sized dialog with bold **From** and **Into**

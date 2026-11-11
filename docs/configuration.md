@@ -337,7 +337,11 @@ available if this command is unbound. Reusing F8 for another command requires
 rebinding `notification-history` or disabling it with
 `notification-history = []`. `[keybindings.branch]` controls `create`
 (`a`), `delete` (`d`), `checkout` (`Enter`), `merge` (`m`), `rename` (`r`),
-`view-options` (`o`, opens Group By), and tree navigation. The global `roots`
+`compare` (`c`, compares a non-current branch with the current branch),
+`view-options` (`o`, opens Group By), and tree navigation. The comparison's
+embedded timelines use Log bindings: `search` for commit text, `find` for the
+file tree, and the usual navigation, filters, copy, columns, and Diff controls.
+The global `roots`
 binding is inactive in Branch because `r`
 renames; use Actions → Roots there. Branch name entry and confirmation retain
 their fixed controls. For example:

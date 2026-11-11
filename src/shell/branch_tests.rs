@@ -6,6 +6,90 @@ fn ready(app: &mut Shell) {
     app.branch.finish_loading(&app.ctx);
 }
 
+fn ready_compare(app: &mut Shell) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.branch.comparison_pending() || app.branch.preview_wakeup().is_some() {
+        app.poll();
+        assert!(Instant::now() < deadline, "comparison did not finish");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn branch_compare_routes_configured_keys_help_focus_and_return_without_loading_log() {
+    let (_temp, original) = fixture();
+    let repo = original.ctx.repos[0].path.clone();
+    let tree = git(&repo, &["rev-parse", "HEAD^{tree}"]).unwrap();
+    let target = git(
+        &repo,
+        &[
+            "commit-tree",
+            &tree,
+            "-p",
+            "HEAD",
+            "-m",
+            "comparison target",
+        ],
+    )
+    .unwrap();
+    git(&repo, &["update-ref", "refs/heads/topic", &target]).unwrap();
+    let before = snapshot(&repo);
+    let config = AppConfig::from_toml(
+        "[keybindings.branch]\ncompare=['C']\n[keybindings.log]\nsearch=['F7']",
+    )
+    .unwrap();
+    let mut app = Shell::unloaded(original.ctx.clone(), config);
+    app.go(Branch);
+    ready(&mut app);
+    app.dispatch(&key(KeyCode::Char('j')));
+    app.dispatch(&key(KeyCode::Char('c')));
+    assert!(!app.branch.comparing());
+    app.dispatch(&key(KeyCode::Char('C')));
+    assert!(app.branch.comparing());
+    assert!(screen(&mut app, 120, 36).contains("Loading comparison"));
+    ready_compare(&mut app);
+    assert!(matches!(app.log_load, startup::LogLoad::Dormant));
+    for (width, height) in [(44, 12), (80, 25), (120, 36), (184, 48)] {
+        let text = screen(&mut app, width, height);
+        assert!(text.contains("comparison"), "{text}");
+    }
+    assert_eq!(app.branch.focused_pane(), PaneId::CompareTargetGraph);
+    app.dispatch(&key(KeyCode::Tab));
+    assert_eq!(app.branch.focused_pane(), PaneId::CompareTargetFiles);
+    app.dispatch(&key(KeyCode::Tab));
+    app.dispatch(&key(KeyCode::Tab));
+    assert_eq!(app.branch.focused_pane(), PaneId::CompareCurrentGraph);
+    app.dispatch(&key(KeyCode::Char('[')));
+    assert_eq!(app.branch.focused_pane(), PaneId::CompareTargetInfo);
+    app.dispatch(&Event::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::SHIFT,
+    )));
+    app.dispatch(&Event::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::SHIFT,
+    )));
+    assert_eq!(app.branch.focused_pane(), PaneId::CompareTargetGraph);
+    app.dispatch(&key(KeyCode::Char('/')));
+    assert!(!app.branch.editing());
+    app.dispatch(&key(KeyCode::F(7)));
+    assert!(app.branch.editing());
+    app.dispatch(&key(KeyCode::Esc));
+    assert!(!app.branch.editing() && app.branch.comparing());
+    app.dispatch(&key(KeyCode::F(1)));
+    let text = screen(&mut app, 120, 36);
+    assert!(text.contains("BRANCH COMPARISON"), "{text}");
+    assert!(
+        !text.contains("Drop commit") && !text.contains("Cherry-pick"),
+        "{text}"
+    );
+    app.dispatch(&key(KeyCode::Esc));
+    app.dispatch(&key(KeyCode::Esc));
+    assert!(!app.branch.comparing());
+    assert_eq!(app.tab, Branch);
+    assert_eq!(snapshot(&repo), before);
+}
+
 #[test]
 fn branch_layout_tracks_roots_and_keeps_actions_on_the_selected_repository() {
     let (temp, single) = fixture();

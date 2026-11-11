@@ -326,8 +326,9 @@ impl Shell {
             Log if self.log_load.ready() => self.log.path_copy_target(&self.ctx),
             Push => self.push.path_copy_target(&self.ctx),
             Stash => self.stash.path_copy_target(&self.ctx),
+            Branch => self.branch.path_copy_target(&self.ctx),
             Conflicts => self.merge.path_copy_target(&self.ctx),
-            Log | Branch => None,
+            Log => None,
         }
     }
 
@@ -1255,6 +1256,7 @@ impl Shell {
             && self.pending_keys.is_none()
             && match self.tab {
                 Log => self.log.graph_motion(event),
+                Branch => self.branch.comparison_motion(event),
                 Commit => self.commit.tree_motion(event),
                 _ => false,
             }
@@ -1545,6 +1547,13 @@ impl Shell {
                 change = true;
             }
         }
+        match self.branch.poll_comparison(&self.ctx) {
+            Ok(redraw) => change |= redraw && self.tab == Branch,
+            Err(error) => {
+                self.notify(NoticeLevel::Error, "Compare", format!("{error:#}"));
+                change = true;
+            }
+        }
         if let Some((level, message)) = self.branch.poll_sync() {
             self.refresh();
             self.notify(level, "Branch", message);
@@ -1599,6 +1608,7 @@ impl Shell {
             || self.commit.execution_running()
             || self.push.reads_pending()
             || self.tab == Branch && self.branch.reads_pending()
+            || self.branch.comparison_pending()
         {
             Duration::from_millis(16)
         } else if self.commit.add_running() {
@@ -1614,6 +1624,7 @@ impl Shell {
             .preview_wakeup()
             .unwrap_or(idle)
             .min(self.stash.preview_wakeup().unwrap_or(idle))
+            .min(self.branch.preview_wakeup().unwrap_or(idle))
             .min(update_timeout.unwrap_or(idle))
             .min(idle);
         self.key_picker

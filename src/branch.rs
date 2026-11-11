@@ -1,4 +1,5 @@
 //! Repository-scoped branch browsing and reviewed local Git operations.
+mod compare;
 mod display;
 mod keymap;
 mod loading;
@@ -51,6 +52,7 @@ enum Hit {
     MenuSurface,
     Submit,
     Cancel,
+    Compare,
 }
 
 #[derive(Default, PartialEq, Eq)]
@@ -77,6 +79,8 @@ pub struct BranchPanel {
     hits: Vec<(Rect, Hit)>,
     input: Option<NameInput>,
     review: Option<Review>,
+    comparison: Option<Box<crate::log::compare::Comparison>>,
+    compare_menu: Option<(u16, u16)>,
     syncing: Option<std::sync::mpsc::Receiver<(NoticeLevel, String)>>,
     pub(crate) panes: PaneLayout,
     pub(crate) icons: IconMode,
@@ -106,6 +110,9 @@ impl BranchPanel {
     }
 
     pub(crate) fn focused_pane(&self) -> PaneId {
+        if let Some(comparison) = &self.comparison {
+            return comparison.focused_pane();
+        }
         if self.focus == Focus::Repositories && self.has_repository_pane() {
             PaneId::BranchRepos
         } else {
@@ -114,6 +121,10 @@ impl BranchPanel {
     }
 
     pub(crate) fn focus_pane(&mut self, id: PaneId) {
+        if let Some(comparison) = &mut self.comparison {
+            comparison.focus_pane(id);
+            return;
+        }
         match id {
             PaneId::BranchRepos if self.has_repository_pane() => self.focus = Focus::Repositories,
             PaneId::Branches => self.focus = Focus::Branches,
@@ -282,6 +293,16 @@ impl BranchPanel {
         if matches!(event, Event::Key(k) if k.kind == KeyEventKind::Release) {
             return Ok(Action::None);
         }
+        if let Some(comparison) = &mut self.comparison {
+            if comparison.wants_close(event) {
+                self.close_comparison();
+                return Ok(Action::None);
+            }
+            return Ok(comparison.event(event, c, &self.panes));
+        }
+        if self.compare_menu.is_some() {
+            return self.compare_menu_event(event, c);
+        }
         if self.input.is_some() {
             self.cancel_key_sequence();
             match event {
@@ -367,12 +388,23 @@ impl BranchPanel {
                     K::Char('d') => return self.operate(Operation::Delete, c),
                     K::Char('m') => return self.operate(Operation::Merge, c),
                     K::Char('r') => return self.operate(Operation::Rename, c),
+                    K::Char('c') => return self.open_comparison(c),
                     K::Char('U') => return self.operate(Operation::Pull, c),
                     K::Char('P') => return self.operate(Operation::Push, c),
                     _ => (),
                 }
             }
             Event::Mouse(m) => match m.kind {
+                M::Down(MouseButton::Right) => {
+                    if let Some(Hit::Row(row)) = self.hit_at(m.column, m.row) {
+                        self.focus = Focus::Branches;
+                        self.tree.cursor = row;
+                        self.cancel_key_sequence();
+                        if self.comparison_label().is_some() {
+                            self.compare_menu = Some((m.column, m.row));
+                        }
+                    }
+                }
                 M::Down(MouseButton::Left) => {
                     if let Some(id) = self.panes.at(m.column, m.row) {
                         self.focus_pane(id);
@@ -413,13 +445,27 @@ impl BranchPanel {
 }
 
 impl Panel for BranchPanel {
+    fn cancel_mouse(&mut self) {
+        if let Some(comparison) = &mut self.comparison {
+            comparison.active_mut().cancel_mouse();
+        }
+    }
+
     fn refresh(&mut self, c: &Context) -> Result<()> {
         self.request_load(c);
+        if let Some(comparison) = &mut self.comparison {
+            comparison.refresh(c);
+        }
         Ok(())
     }
 
-    fn draw(&mut self, f: &mut Frame, area: Rect, _c: &Context) {
+    fn draw(&mut self, f: &mut Frame, area: Rect, c: &Context) {
+        if let Some(comparison) = &mut self.comparison {
+            comparison.draw(f, area, c, &mut self.panes);
+            return;
+        }
         self.draw_content(f, area);
+        self.draw_compare_menu(f, area);
     }
 
     fn event(&mut self, e: &Event, c: &Context) -> Action {
@@ -428,13 +474,21 @@ impl Panel for BranchPanel {
     }
 
     fn editing(&self) -> bool {
+        if let Some(comparison) = &self.comparison {
+            return comparison.active().editing();
+        }
         self.input.is_some()
             || self.view_menu
+            || self.compare_menu.is_some()
             || self.focused_search().is_some_and(|prompt| prompt.editing())
     }
 
     fn help(&self) -> &'static str {
-        if self
+        if self.comparison.is_some() {
+            "Tab Panes   [/] Compare sides   / Search   Enter Diff   Esc Branches   F1 Help"
+        } else if self.compare_menu.is_some() {
+            "Enter Compare   Esc Close   F1 Help"
+        } else if self
             .input
             .as_ref()
             .is_some_and(|input| input.operation == Operation::Track)
@@ -447,10 +501,14 @@ impl Panel for BranchPanel {
         } else if self.focused_pane() == PaneId::BranchRepos {
             "j/k Repos   Enter Branches   Tab Panes   F1 Help"
         } else if self.has_repository_pane() {
-            "Tab Repos   o View Options   a New   d Delete   Enter Switch   m Merge   r Rename   U Pull   P Push   F1 Help"
+            "Tab Repos   c Compare   o View Options   a New   d Delete   Enter Switch   m Merge   r Rename   U Pull   P Push   F1 Help"
         } else {
-            "o View Options   a New   d Delete   Enter Switch   m Merge   r Rename   U Pull   P Push   F1 Help"
+            "c Compare   o View Options   a New   d Delete   Enter Switch   m Merge   r Rename   U Pull   P Push   F1 Help"
         }
+    }
+
+    fn selected_text(&self) -> Option<&str> {
+        self.comparison.as_ref()?.active().selected_text()
     }
 
     fn confirm(&mut self, token: &str, c: &Context) -> Action {

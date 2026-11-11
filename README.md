@@ -443,18 +443,40 @@ Use `h/l` to collapse/expand or move to parent/child, and Space to toggle groups
 Clicking a branch selects it. Toolbar and keyboard actions require focus on a
 branch row and use that row's repository:
 
-| Key | Branch action (review required) |
+| Key | Branch action |
 | --- | --- |
 | `a` | Create a local branch at the focused branch's commit, keeping the current branch checked out. |
 | `d` | Delete the focused local branch with Git's safe deletion check. |
 | `Enter` | Switch to the local branch; for a remote branch, create a named tracking branch or switch to its matching local tracking branch. On groups, toggle expansion. |
 | `m` | Merge the focused local or remote branch into the current local branch. |
 | `r` | Rename the focused local branch, retaining its upstream. |
+| `c` | Compare a non-current local or remote branch with the current branch (read-only). |
 | `U` | Review a fast-forward pull from the focused local branch’s configured upstream. |
 | `P` | Review a push of the focused local branch to its configured upstream. |
 
 Branch's `U` remains fast-forward-only, independently of the saved Pull/Push
 update strategy.
+
+**Compare branches:** Select a non-current branch and press `c`, or right-click
+it and choose **Compare with main** (`main` is replaced by the actual current
+branch name). Branch opens a comparison workspace with two vertically stacked
+Log views. The upper list contains commits in the selected branch but absent
+from the current branch; the lower list contains the reverse difference.
+Each side has its own search, User/Date/Paths filters, colored graph, changed
+file tree, and commit details. Enter or double-click opens Log's read-only
+Before/After or merge Diff. An empty unfiltered list explains which branch
+contains all commits from the other.
+
+`Tab` and `Ctrl-W h/j/k/l` move between the six panes; `[` or `]` switches sides.
+Drag dividers or use the pane resize shortcuts. `/` searches the focused list,
+`Space u/d/p` opens its filters, `x` clears only that side's filters, and `+`
+loads another 160 commits. `F5` or either refresh button reloads both branch tips.
+Esc closes an editor or Diff first, then returns to the original Branch
+selection; the title's Esc button also closes the comparison. Comparisons
+stay within the selected repository and use locally available refs without
+fetching. Detached HEAD and unborn current branches cannot start a comparison.
+Customize the entry key with `compare` under `[keybindings.branch]`; comparison
+navigation and filtering use Log bindings.
 
 Switching branches runs immediately. When a new tracking branch needs a name,
 Enter submits the name and switches to it. The name editor accepts Unicode,

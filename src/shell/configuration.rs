@@ -321,6 +321,14 @@ impl Shell {
             );
         }
         if self.tab == Branch {
+            if self.branch.comparing() {
+                return format!(
+                    "{} Panes  [/] Compare sides  {} Search  {} Diff  Esc Branches  F1 Help",
+                    self.config.label("panes", "focus-next"),
+                    self.config.label("log", "search"),
+                    self.config.label("log", "open"),
+                );
+            }
             if self.branch.focused_pane() == PaneId::BranchRepos {
                 return format!(
                     "{}/{} Repos  {} Branches  {} Panes  F1 Help",
@@ -336,7 +344,7 @@ impl Shell {
                 String::new()
             };
             return format!(
-                "{repos}{} View Options  {} New  {} Delete  {} Switch  {} Merge  {} Rename  {} Pull  {} Push  F1 Help",
+                "{repos}{} View Options  {} New  {} Delete  {} Switch  {} Merge  {} Rename  {} Pull  {} Push  {} Compare  F1 Help",
                 self.config.label("branch", "view-options"),
                 self.config.label("branch", "create"),
                 self.config.label("branch", "delete"),
@@ -345,6 +353,7 @@ impl Shell {
                 self.config.label("branch", "rename"),
                 self.config.label("branch", "pull"),
                 self.config.label("branch", "push"),
+                self.config.label("branch", "compare"),
             );
         }
         let conflicts = if self.tab_available(Conflicts) {

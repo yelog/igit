@@ -30,6 +30,7 @@ pub(super) fn plain(v: &[u8]) -> String {
 }
 #[derive(Clone, Default)]
 pub(super) struct Filter {
+    pub comparison: Option<super::compare::Range>,
     pub file_history: Option<super::file_history::Target>,
     pub query: String,
     pub author: String,
@@ -257,12 +258,14 @@ fn revisions(
         "--decorate-refs=refs/remotes/*".into(),
         "--decorate-refs=refs/tags/*".into(),
         "--decorate-refs-exclude=refs/remotes/*/HEAD".into(),
-        "--ignore-missing".into(),
         "--date=format-local:%Y/%m/%d, %H:%M".into(),
         "-z".into(),
         format!("--max-count={limit}"),
         "--format=%H%x00%P%x00%ct%x00%cd%x00%an%x00%s%x00%D%x00%ae%x00%ad".into(),
     ];
+    if f.comparison.is_none() {
+        a.push("--ignore-missing".into());
+    }
     if f.author.eq_ignore_ascii_case("me") {
         // Include the delimiters: an email with dots or '+' is a literal identity,
         // not an author regex or a substring of a teammate's address.
@@ -530,11 +533,18 @@ pub(super) fn load_with_cancel(
     limit: usize,
     cancelled: &impl Fn() -> bool,
 ) -> History {
-    let mut file_context;
-    let c = if let Some(file) = &f.file_history {
-        file_context = c.clone();
-        file_context.scope.retain(|root| *root == file.root);
-        &file_context
+    let mut scoped_context;
+    let c = if f.file_history.is_some() || f.comparison.is_some() {
+        scoped_context = c.clone();
+        scoped_context.scope.retain(|root| {
+            f.file_history
+                .as_ref()
+                .is_none_or(|file| file.root == *root)
+                && f.comparison
+                    .as_ref()
+                    .is_none_or(|range| c.repos[*root].path == range.repository)
+        });
+        &scoped_context
     } else {
         c
     };
@@ -567,12 +577,20 @@ pub(super) fn load_with_cancel(
         if cancelled() {
             return h;
         }
-        let tips = match &f.branch {
-            Some(b) => match b.tips(&h.branches[start..]) {
-                Some(tips) => tips,
-                None => continue,
-            },
-            None => all_tips(),
+        let tips = if let Some(range) = &f.comparison {
+            vec![
+                "--end-of-options".into(),
+                range.include.clone(),
+                format!("^{}", range.exclude),
+            ]
+        } else {
+            match &f.branch {
+                Some(b) => match b.tips(&h.branches[start..]) {
+                    Some(tips) => tips,
+                    None => continue,
+                },
+                None => all_tips(),
+            }
         };
         match revisions(&r.path, i, f, &tips, limit.saturating_add(1)) {
             Ok(mut v) => {

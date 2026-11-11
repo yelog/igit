@@ -70,6 +70,10 @@ impl BranchPanel {
     }
 
     pub(crate) fn invalidate_reads(&mut self, c: &Context) {
+        self.compare_menu = None;
+        if let Some(comparison) = &mut self.comparison {
+            comparison.refresh(c);
+        }
         if !self.clear_outdated_scope(c) {
             self.loading.task.cancel();
         }
@@ -101,6 +105,7 @@ impl BranchPanel {
     }
 
     pub(super) fn request_load(&mut self, c: &Context) {
+        self.compare_menu = None;
         self.clear_outdated_scope(c);
         self.cancel_key_sequence();
         self.repo_root = self

@@ -403,6 +403,30 @@ preference.
 Branch Push reuses the Push executor with a pinned local branch ref and OID.
 Shell blocks overlapping writes and refreshes workspace state after completion.
 
+[Branch comparison entry](../src/branch/compare.rs) derives one exact repository
+path and two full refs from a ready Branch snapshot. Its dynamic context menu
+and configured `compare` key open a session-only
+[comparison workspace](../src/log/compare.rs), owned by Branch. A generation-safe
+background reader resolves both refs together and validates the initial current
+branch. Both embedded Log panels receive the same immutable OID pair in opposite
+directions. Their normal history workers, graph projections, debounced previews,
+filters, file inspectors, and read-only revision viewers are reused.
+
+The additional Log filter binds history to the original repository path before
+loading topology or refs, and supplies explicit included/excluded OIDs to Git.
+It survives filter resets and participates in history-request identity, so an
+older range cannot publish into a newer one. Comparison contexts intersect
+global Roots; changing scope cancels old work and clears stale row identities.
+Missing refs and hidden repositories produce explicit errors. Refresh resolves
+the originally named pair again; no fetch or Git write occurs.
+
+Comparison owns the tiled geometry and maps six distinct workspace pane IDs
+to each embedded Log's graph/files/info panes. Shell retains standard focus,
+resize, copy, help, configuration, and polling routes. Only the active child's
+overlays receive input, and its Diff uses the full comparison work area.
+Comparison mode prevents commit-write menus and shortcuts from entering Log's
+review flow. Closing drops the readers and restores the resident Branch tree.
+
 [operations.rs](../src/branch/operations.rs) prepares a single-repository operation. Checkout and tracking run without a
 confirmation dialog. Execution rechecks Roots, worktree path, refs, HEAD, upstreams, worktree ownership and
 pending Git operations before executing. Create and merge use the reviewed

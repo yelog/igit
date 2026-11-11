@@ -79,6 +79,7 @@ impl Shell {
         match self.tab {
             Commit => self.commit.hover_at(x, y),
             Log if self.log.editing() => self.log.hover_menu_at(x, y),
+            Branch => self.branch.hover_comparison(x, y),
             Push => self.push.hover_group_at(x, y),
             _ => false,
         }

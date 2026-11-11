@@ -127,6 +127,7 @@ delete = ["d"]
 checkout = ["Enter"]
 merge = ["m"]
 rename = ["r"]
+compare = ["c"]
 pull = ["U"]
 push = ["P"]
 

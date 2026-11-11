@@ -17,6 +17,10 @@ impl BranchPanel {
     }
 
     pub(crate) fn dismiss_view_menu(&mut self) {
+        self.compare_menu = None;
+        if let Some(comparison) = &mut self.comparison {
+            comparison.active_mut().dismiss_filter_dropdown();
+        }
         if std::mem::take(&mut self.view_menu) {
             self.hits
                 .retain(|(_, hit)| !matches!(hit, Hit::GroupBy | Hit::Sort(_) | Hit::MenuSurface));

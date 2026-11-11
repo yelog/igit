@@ -91,6 +91,29 @@ fn refresh_queues_reads_and_keeps_cached_rows_browsable_without_preview_reads() 
 }
 
 #[test]
+fn compare_suspension_keeps_one_worker_until_obsolete_history_is_drained() {
+    let context = context();
+    let mut panel = panel(&context);
+    panel.refresh(&context).unwrap();
+    let reply = hold(&mut panel);
+    let obsolete = loaded(&panel, "obsolete comparison");
+    for _ in 0..5 {
+        panel.suspend_history();
+        assert!(panel.history_pending());
+        assert!(!panel.history_load.task.needs_start());
+    }
+    reply.send(obsolete).unwrap();
+    panel.drain_suspended_history();
+    assert!(!panel.history_pending());
+    assert!(panel.rev().unwrap().subject.starts_with("cached"));
+    panel.refresh(&context).unwrap();
+    let reply = hold(&mut panel);
+    reply.send(loaded(&panel, "fresh comparison")).unwrap();
+    assert!(panel.poll_history(&context).unwrap());
+    assert!(panel.rev().unwrap().subject.starts_with("fresh comparison"));
+}
+
+#[test]
 fn superseded_success_and_error_cannot_replace_the_latest_generation() {
     let c = context();
     let mut p = panel(&c);

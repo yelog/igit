@@ -302,6 +302,9 @@ impl LogPanel {
     }
 
     pub(super) fn review_picks(&mut self, c: &Context, target: Option<Target>) -> Result<Action> {
+        if self.filter.comparison.is_some() {
+            return Ok(Action::None);
+        }
         self.require_current_history(c)?;
         let picks = if self.pick_mode {
             self.picks.clone()
@@ -348,7 +351,8 @@ impl LogPanel {
         key: &KeyEvent,
         c: &Context,
     ) -> Result<Option<Action>> {
-        if self.focus != Pane::Graph
+        if self.filter.comparison.is_some()
+            || self.focus != Pane::Graph
             || self.editing()
             || !matches!(key.modifiers, Mods::NONE | Mods::SHIFT)
         {
@@ -416,6 +420,9 @@ impl LogPanel {
         at: Option<(u16, u16)>,
         mode: Mode,
     ) -> Result<()> {
+        if self.filter.comparison.is_some() {
+            return Ok(());
+        }
         let rev = self
             .rev()
             .ok_or_else(|| anyhow::anyhow!("No commit selected"))?;
@@ -431,6 +438,9 @@ impl LogPanel {
     }
 
     pub(super) fn edit_commit_message(&mut self, c: &Context) -> Result<()> {
+        if self.filter.comparison.is_some() {
+            return Ok(());
+        }
         let rev = self
             .rev()
             .ok_or_else(|| anyhow::anyhow!("No commit selected"))?;

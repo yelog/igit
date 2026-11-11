@@ -1,6 +1,7 @@
 //! Multi-root history: preserve each root's topology and operate on the selected root's objects.
 mod actions;
 mod branches;
+pub(crate) mod compare;
 mod display;
 mod file_history;
 mod filters;
@@ -604,17 +605,23 @@ impl LogPanel {
             Hit::Tab(i) => self.switch_tab(i, c)?,
             Hit::CloseTab => self.close_tab(c)?,
             Hit::Reset => {
+                let comparison = self.filter.comparison.clone();
                 self.filter = self
                     .filter
                     .file_history
                     .as_ref()
                     .map_or_else(Filter::default, file_history::Target::filter);
+                self.filter.comparison = comparison;
                 self.ref_query.clear();
                 self.reload(c, false)?
             }
             Hit::Diff => self.open_diff(c)?,
             Hit::More => {
-                self.limit = self.limit.saturating_add(160).min(3200);
+                self.limit = if self.filter.comparison.is_some() {
+                    self.limit.saturating_add(160)
+                } else {
+                    self.limit.saturating_add(160).min(3200)
+                };
                 self.reload(c, true)?
             }
             Hit::Parent(i) => {
@@ -1084,7 +1091,10 @@ impl Panel for LogPanel {
                 action = self.show_file_at_revision(c)?;
                 return Ok(());
             }
-            if self.focus == Pane::Graph && matches!(k.modifiers, Mods::NONE | Mods::SHIFT) {
+            if self.filter.comparison.is_none()
+                && self.focus == Pane::Graph
+                && matches!(k.modifiers, Mods::NONE | Mods::SHIFT)
+            {
                 match key {
                     K::Char('v') => {
                         self.set_pick_mode(!self.pick_mode);

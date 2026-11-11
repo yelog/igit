@@ -3,6 +3,21 @@ use crate::ui::help::{HelpContent, HelpSection};
 
 impl BranchPanel {
     pub(crate) fn keymap(&self) -> HelpContent {
+        if let Some(comparison) = &self.comparison {
+            return comparison.active().keymap();
+        }
+        if self.compare_menu.is_some() {
+            return HelpContent::new(
+                HelpSection::new(
+                    "Branch / Compare",
+                    &[
+                        ("Enter", "Compare with current branch"),
+                        ("Esc", "Close branch menu"),
+                    ],
+                ),
+                vec![],
+            );
+        }
         if self.input.is_some() {
             return HelpContent::new(
                 HelpSection::new(
@@ -56,6 +71,7 @@ impl BranchPanel {
                     ("Enter", "Switch branch or toggle group"),
                     ("m", "Merge focused branch into current branch"),
                     ("r", "Rename focused local branch"),
+                    ("c", "Compare focused branch with current branch"),
                     ("U", "Review fast-forward pull for focused local branch"),
                     ("P", "Review push for focused local branch"),
                 ],

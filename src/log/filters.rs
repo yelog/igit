@@ -97,6 +97,9 @@ impl LogPanel {
         }
     }
     pub(super) fn begin(&mut self, k: Field, c: &Context) -> Result<()> {
+        if self.filter.comparison.is_some() && matches!(k, Field::Branch | Field::Refs) {
+            return Ok(());
+        }
         if k == Field::Path && self.filter.file_history.is_some() {
             return Ok(());
         }
@@ -442,6 +445,9 @@ impl LogPanel {
         self.reload_history(c, s.selected)
     }
     pub(super) fn new_tab(&mut self, c: &Context) -> Result<()> {
+        if self.filter.comparison.is_some() {
+            return Ok(());
+        }
         self.views[self.view_index] = self.snapshot();
         self.views.push(ViewState::default());
         self.view_index = self.views.len() - 1;
