@@ -29,6 +29,7 @@ fn edit_file_uses_highlight_not_checked_paths_and_keeps_index_head_and_draft() {
     let before = snapshot(&repo);
     focus_file(&mut app, "mixed.txt");
     send(&mut app, "Space");
+    app.flush_notification_prefix();
     let before_screen = screen(&mut app, 140, 36);
     for binding in ["e", "E"] {
         send(&mut app, binding);

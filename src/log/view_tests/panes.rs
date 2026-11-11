@@ -13,6 +13,71 @@ fn assert_frames(p: &LogPanel, t: &Terminal<TestBackend>, focused: Option<PaneId
 }
 
 #[test]
+fn enter_from_commit_list_focuses_diff_files_before_opening_a_comparison() {
+    let d = init();
+    commit(d.path(), "file", "first commit");
+    commit(d.path(), "file", "second commit");
+    let c = Context::discover(d.path()).unwrap();
+    for (width, height) in [(120, 36), (80, 24), (44, 12)] {
+        for inspector_visible in [true, false] {
+            let mut p = LogPanel::default();
+            p.refresh(&c).unwrap();
+            finish_preview(&mut p, &c);
+            p.show_info = inspector_visible;
+            let selected = p.rev().unwrap().oid.clone();
+            let file = p.file_index();
+            let mut t = Terminal::new(TestBackend::new(width, height)).unwrap();
+            render(&mut p, &mut t, &c);
+
+            assert!(matches!(
+                key(&mut p, K::Enter, Mods::NONE, &c),
+                Action::None
+            ));
+            render(&mut p, &mut t, &c);
+            assert_eq!(p.focused_pane(), PaneId::Files);
+            assert_frames(&p, &t, Some(PaneId::Files));
+            assert!(p.diff.is_none() && !p.editing());
+            assert_eq!(p.rev().unwrap().oid, selected);
+            assert_eq!(p.file_index(), file);
+
+            key(&mut p, K::Enter, Mods::NONE, &c);
+            assert!(p.diff.as_ref().unwrap().comparison.is_some());
+            key(&mut p, K::Esc, Mods::NONE, &c);
+            assert!(p.diff.is_none());
+            assert_eq!(p.focused_pane(), PaneId::Files);
+        }
+    }
+}
+
+#[test]
+fn escape_keeps_log_side_panes_focused_without_changing_selection() {
+    let d = init();
+    commit(d.path(), "file", "first commit");
+    let c = Context::discover(d.path()).unwrap();
+    let mut p = LogPanel::default();
+    p.refresh(&c).unwrap();
+    finish_preview(&mut p, &c);
+    let selected = p.rev().unwrap().oid.clone();
+    let file = p.file_index();
+    for (width, height) in [(120, 36), (80, 24), (44, 12)] {
+        let mut t = Terminal::new(TestBackend::new(width, height)).unwrap();
+        for pane in [PaneId::Refs, PaneId::Files, PaneId::Info] {
+            p.focus_pane(pane);
+            render(&mut p, &mut t, &c);
+            for _ in 0..2 {
+                assert!(matches!(key(&mut p, K::Esc, Mods::NONE, &c), Action::None));
+                render(&mut p, &mut t, &c);
+                assert_eq!(p.focused_pane(), pane);
+                assert_frames(&p, &t, Some(pane));
+                assert_eq!(p.rev().unwrap().oid, selected);
+                assert_eq!(p.file_index(), file);
+                assert!(!p.editing());
+            }
+        }
+    }
+}
+
+#[test]
 fn log_panes_stay_tiled_with_one_focus_frame_at_all_sizes() {
     let d = init();
     commit(d.path(), "one", "first commit");

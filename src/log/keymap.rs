@@ -5,6 +5,9 @@ const HISTORY_SCROLL: Section = Section::new("Log / File History Preview", PREVI
 
 impl LogPanel {
     pub(crate) fn keymap(&self) -> HelpContent {
+        if let Some(comparison) = &self.workspace_comparison {
+            return comparison.keymap();
+        }
         if self.filter.file_history.is_some() && self.focus == Pane::Info && !self.editing() {
             return HelpContent::new(
                 Section::new(
@@ -328,6 +331,7 @@ impl LogPanel {
                     ("ym", "Copy full commit message"),
                     ("ya", "Copy author name and email"),
                     ("a", "Open commit actions"),
+                    ("D", "Compare with Local"),
                     ("v", "Toggle commit selection mode"),
                     ("Space", "Toggle commit checkbox in selection mode"),
                     ("C", "Review cherry-pick"),
@@ -336,7 +340,7 @@ impl LogPanel {
                     ("R", "Revert commit"),
                     ("Esc", "Clear commit selection mode"),
                     ("F2", "Edit commit message"),
-                    ("Enter", "Open commit file diff"),
+                    ("Enter", "Focus Diff pane"),
                     ("/", "Search commit text or hash"),
                 ],
             ),
@@ -381,7 +385,7 @@ impl LogPanel {
                 &[
                     ("Ctrl-a", "Select all commit details"),
                     ("/", "Search commit text or hash"),
-                    ("Esc", "Clear selection; otherwise return to commits"),
+                    ("Esc", "Clear text selection"),
                     ("j", "Scroll commit details down"),
                     ("k", "Scroll commit details up"),
                     ("g", "Go to details start"),
@@ -412,7 +416,6 @@ impl LogPanel {
                     ("]", "Switch to next Log tab"),
                     ("Ctrl-t", "New Log tab"),
                     ("+", "Load more history"),
-                    ("Esc", "Focus commit list"),
                 ],
             )],
         );

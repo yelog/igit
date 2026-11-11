@@ -4,8 +4,24 @@ use crate::ui::key_sequence::KeySequence;
 use crossterm::event::KeyEvent;
 
 impl LogPanel {
+    pub(crate) fn begin_filter_prefix_on_space(&mut self) -> bool {
+        if self.key_prefix.is_some()
+            || self.editing()
+            || self.workspace_comparison.is_some()
+            || self.branch_menu.is_some()
+            || self.path_dialog.is_some()
+            || self.date_range.is_some()
+            || self.history_diff.is_some()
+            || self.pick_mode && self.focus == Pane::Graph
+        {
+            return false;
+        }
+        self.key_prefix = Some(' ');
+        true
+    }
+
     pub(crate) fn key_sequence(&self) -> Option<KeySequence> {
-        if self.editing() {
+        if self.editing() || self.workspace_comparison.is_some() {
             return None;
         }
         match self.key_prefix {

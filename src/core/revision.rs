@@ -1,4 +1,9 @@
 //! Read bounded text revisions without filters or writes.
+mod working;
+pub(crate) use working::load as working;
+#[cfg(test)]
+pub(crate) use working::UNTRACKED_LIMIT;
+
 use super::command;
 use anyhow::{bail, Context as _, Result};
 use std::{

@@ -1249,6 +1249,13 @@ impl LogPanel {
         }
     }
     pub(crate) fn draw_tabs(&mut self, f: &mut Frame, header: Rect, c: &Context) {
+        if self.workspace_comparison.is_some() {
+            f.render_widget(
+                Paragraph::new(clipped(" Comparison", header.width.into())).style(fg(DIM)),
+                header,
+            );
+            return;
+        }
         let mut a = header;
         let multi = self.views.len() > 1;
         let mut controls = Vec::new();

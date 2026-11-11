@@ -34,6 +34,7 @@ enum Target {
 
 pub(crate) struct RevisionDiff {
     three_way: bool,
+    titles: [&'static str; 3],
     name: String,
     revisions: [String; 3],
     annotations: [String; 3],
@@ -89,6 +90,7 @@ impl RevisionDiff {
         });
         Self {
             three_way: true,
+            titles: ["Parent 1", "Result", "Parent 2"],
             name,
             revisions,
             texts,
@@ -134,6 +136,18 @@ impl RevisionDiff {
             [old_note, new_note, String::new()],
         );
         diff.three_way = false;
+        diff.titles = ["Before", "After", ""];
+        diff
+    }
+
+    pub(crate) fn working_tree(
+        name: String,
+        revision: String,
+        texts: [String; 2],
+        annotations: [String; 2],
+    ) -> Self {
+        let mut diff = Self::two_way(name, [revision, String::new()], texts, annotations);
+        diff.titles = ["Commit", "Working tree", ""];
         diff
     }
 
@@ -156,6 +170,7 @@ impl RevisionDiff {
         );
         diff.local_merge = true;
         diff.local_apply_all = apply_all;
+        diff.titles = ["Revision", "Local", ""];
         diff
     }
 
@@ -611,13 +626,7 @@ impl RevisionDiff {
         }
         self.scroll = self.scroll.min(self.total.saturating_sub(self.page));
         for (pane, col) in cols.into_iter().enumerate().filter(|(_, c)| !c.is_empty()) {
-            let role = if self.local_merge {
-                ["Revision", "Local", ""][pane]
-            } else if self.three_way {
-                ["Parent 1", "Result", "Parent 2"][pane]
-            } else {
-                ["Before", "After", ""][pane]
-            };
+            let role = self.titles[pane];
             let heading = rect(col.x, col.y, col.width, 1);
             let revision = &self.revisions[pane];
             let short = if revision.len() > 8 && revision.chars().all(|c| c.is_ascii_hexdigit()) {

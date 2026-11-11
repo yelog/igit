@@ -454,7 +454,7 @@ impl LogPanel {
         self.restore(c)
     }
     pub(crate) fn can_close_tab(&self) -> bool {
-        self.views.len() > 1
+        self.workspace_comparison.is_none() && self.views.len() > 1
     }
     pub(crate) fn close_tab(&mut self, c: &Context) -> Result<()> {
         if !self.can_close_tab() {

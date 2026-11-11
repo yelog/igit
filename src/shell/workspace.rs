@@ -253,6 +253,7 @@ impl Shell {
                 self.log.pick_hint(
                     &self.ctx,
                     &self.config.label("log", "show-file-at-revision"),
+                    &self.config.label("log", "compare-with-local"),
                 )
             })
             .flatten();
@@ -269,13 +270,15 @@ impl Shell {
         } else if self.key_sequence() == Some(KeySequence::LogFilters) {
             (
                 if foot.width < 80 {
-                    "Filters  Esc cancel"
+                    "b/u/d/p Filters  Esc"
                 } else {
-                    "Filters: letter opens  Arrows select  Enter open  Esc cancel"
+                    "Filters: b/u/d/p open  Arrows select  Enter open  Esc cancel"
                 }
                 .into(),
                 ACCENT,
             )
+        } else if let Some(hint) = self.notification_prefix_hint() {
+            (hint, ACCENT)
         } else if self.panel().editing() {
             (
                 if matches!(self.tab, Push | Conflicts | Branch)
@@ -299,6 +302,7 @@ impl Shell {
         } else if let Some(hint) = pick_hint {
             (hint, MUTED)
         } else if self.config.changed()
+            || self.tab == Log && self.log.comparing_workspace()
             || self.tab == Commit && self.commit.file_comparison_focused()
         {
             (self.configured_footer(), MUTED)
@@ -307,13 +311,13 @@ impl Shell {
         } else {
             (
                 if foot.width < 60 {
-                    "F8 Notices  F1 Help"
+                    "Space n Notices  F1 Help".into()
                 } else if foot.width < 100 {
-                    "Tab Panes  p Pull  f Fetch  F1 Help"
+                    "Tab Panes  p Pull  f Fetch  F1 Help".to_string()
                 } else {
-                    "Tab Panes  Ctrl-W Pane keys  p Pull  f Fetch  F8 Notices  F9 Updates  F1 Help"
-                }
-                .into(),
+                    "Tab Panes  Ctrl-W Pane keys  p Pull  f Fetch  Space n Notices  F9 Updates  F1 Help"
+                        .into()
+                },
                 MUTED,
             )
         };

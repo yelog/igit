@@ -29,6 +29,7 @@ pub const ALL: u16 = 32767;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommandAction {
     Keys(&'static str),
+    OpenNotifications,
     SmartFocus(Direction),
     SmartResize(Direction),
     SmartMaximize,
@@ -38,7 +39,10 @@ impl CommandAction {
     pub fn keys(self) -> Option<&'static str> {
         match self {
             Self::Keys(keys) => Some(keys),
-            Self::SmartFocus(_) | Self::SmartResize(_) | Self::SmartMaximize => None,
+            Self::OpenNotifications
+            | Self::SmartFocus(_)
+            | Self::SmartResize(_)
+            | Self::SmartMaximize => None,
         }
     }
 
@@ -49,8 +53,13 @@ impl CommandAction {
         )
     }
 
+    pub fn is_direct(self) -> bool {
+        matches!(self, Self::OpenNotifications)
+    }
+
     pub fn description(self) -> &'static str {
         match self {
+            Self::OpenNotifications => "Open notification history",
             Self::SmartFocus(Direction::Left) => "Focus left pane or Kitty window",
             Self::SmartFocus(Direction::Down) => "Focus pane or Kitty window below",
             Self::SmartFocus(Direction::Up) => "Focus pane or Kitty window above",
@@ -75,6 +84,7 @@ pub struct Command {
 
 macro_rules! commands {
     (@action (maximize)) => { CommandAction::SmartMaximize };
+    (@action (notifications)) => { CommandAction::OpenNotifications };
     (@action $keys:literal) => { CommandAction::Keys($keys) };
     (@action $direction:ident) => { CommandAction::SmartFocus(Direction::$direction) };
     (@action (resize $direction:ident)) => { CommandAction::SmartResize(Direction::$direction) };
@@ -96,7 +106,7 @@ commands! {
         "pull" => "p", ALL;
         "fetch" => "f", ALL;
         "update" => "F9", ALL;
-        "notification-history" => "F8", ALL;
+        "notification-history" => (notifications), ALL;
         "roots" => "r", ALL & !BRANCH;
         "actions" => ":", ALL;
         "refresh" => "F5", ALL;
@@ -195,6 +205,7 @@ commands! {
         "copy-message" => "ym", LOG_GRAPH;
         "copy-author" => "ya", LOG_GRAPH;
         "commit-actions" => "a", LOG_GRAPH;
+        "compare-with-local" => "D", LOG_GRAPH | LOG_INFO;
         "edit-message" => "F2", LOG_GRAPH;
         "drop-commit" => "d", LOG_GRAPH;
         "undo-commit" => "u", LOG_GRAPH;
@@ -337,8 +348,8 @@ pub fn context(title: &str) -> u16 {
     match title {
         "Log / Commits" | "Log / Branch Comparison" => LOG_GRAPH,
         "Log / Branch Tree" => LOG_REFS,
-        "Log / File Tree" => LOG_FILES,
-        "Log / Commit Details" | "Log / File History Diff" => LOG_INFO,
+        "Log / File Tree" | "Log / Workspace Files" => LOG_FILES,
+        "Log / Commit Details" | "Log / File History Diff" | "Log / Workspace Diff" => LOG_INFO,
         "Commit / Changes" => CHANGES,
         "Commit / Message" => MESSAGE,
         "Commit / Preview" => PREVIEW,

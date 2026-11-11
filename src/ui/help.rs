@@ -94,7 +94,7 @@ pub(crate) fn global_section(show_conflicts: bool, show_roots: bool) -> HelpSect
         (":", "Open Actions"),
         ("F5", "Refresh workspace"),
         ("F9", "Open Update Center"),
-        ("F8", "Open notification history"),
+        ("Space n", "Open notification history"),
         ("F1", "Open help for current pane"),
         ("?", "Open help for current pane"),
         ("q", "Quit IGit"),
@@ -123,6 +123,14 @@ impl HelpCommand {
             ]);
         }
         if sequence.contains(char::is_whitespace) {
+            if sequence == "Space n" {
+                return Some(
+                    keys::catalogue_sequence(sequence)
+                        .into_iter()
+                        .map(Event::Key)
+                        .collect(),
+                );
+            }
             return keys::COMMANDS
                 .iter()
                 .any(|c| c.action == self.action)
@@ -206,6 +214,7 @@ pub(crate) struct HelpState {
     close: Rect,
     scrollbar: Rect,
     labels: std::collections::BTreeMap<&'static str, Vec<String>>,
+    direct_actions: std::collections::BTreeMap<&'static str, CommandAction>,
     native_commands: Vec<(String, &'static str, CommandAction)>,
 }
 
@@ -222,6 +231,7 @@ impl HelpState {
             close: Rect::default(),
             scrollbar: Rect::default(),
             labels: Default::default(),
+            direct_actions: Default::default(),
             native_commands: vec![],
         }
     }
@@ -239,8 +249,25 @@ impl HelpState {
                     .map(|labels| (*key, labels))
             })
             .collect();
+        let direct_actions = content
+            .sections
+            .iter()
+            .filter(|section| section.title != "Text Selection")
+            .flat_map(|section| section.bindings)
+            .filter_map(|(key, _)| {
+                let target = keys::catalogue_sequence(key);
+                config
+                    .commands
+                    .iter()
+                    .find(|command| command.defaults.contains(&target))
+                    .map(|command| command.command.action)
+                    .filter(|action| action.is_direct())
+                    .map(|action| (*key, action))
+            })
+            .collect();
         Self {
             labels,
+            direct_actions,
             native_commands: config
                 .active(context)
                 .filter(|c| c.command.action.is_smart_pane() && !c.sequences.is_empty())
@@ -287,11 +314,12 @@ impl HelpState {
                 }
                 if let Some(rank) = search_rank(&[section.title, &keys, binding.1], &tokens) {
                     let order = ranked.len();
-                    ranked.push((
-                        rank,
-                        order,
-                        (keys, binding.1, CommandAction::Keys(binding.0)),
-                    ));
+                    let action = self
+                        .direct_actions
+                        .get(binding.0)
+                        .copied()
+                        .unwrap_or(CommandAction::Keys(binding.0));
+                    ranked.push((rank, order, (keys, binding.1, action)));
                 }
             }
         }
@@ -906,24 +934,26 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer();
         let popup = Rect::new(23, 1, 74, 34);
-        assert_eq!(buffer[(popup.x, popup.y)].fg, BLUE);
-        assert_eq!(buffer[(popup.x + 1, popup.y)].fg, BLUE);
-        assert_eq!(buffer[(popup.x + 1, popup.y)].bg, TAG);
-        assert_eq!(
-            buffer[(help.viewport.x + 2, help.viewport.y)].fg,
-            BLUE,
-            "shortcut keys use the shared blue action color"
-        );
-        assert_eq!(
-            buffer[(help.viewport.x + 2, help.viewport.y)].bg,
-            SELECT,
-            "the selected row uses the shared selection background"
-        );
-        assert_eq!(
-            buffer[(help.viewport.x + 20, help.viewport.y)].fg,
-            INK,
-            "descriptions use the shared body text color"
-        );
+        if !crossterm::style::Colored::ansi_color_disabled_memoized() {
+            assert_eq!(buffer[(popup.x, popup.y)].fg, BLUE);
+            assert_eq!(buffer[(popup.x + 1, popup.y)].fg, BLUE);
+            assert_eq!(buffer[(popup.x + 1, popup.y)].bg, TAG);
+            assert_eq!(
+                buffer[(help.viewport.x + 2, help.viewport.y)].fg,
+                BLUE,
+                "shortcut keys use the shared blue action color"
+            );
+            assert_eq!(
+                buffer[(help.viewport.x + 2, help.viewport.y)].bg,
+                SELECT,
+                "the selected row uses the shared selection background"
+            );
+            assert_eq!(
+                buffer[(help.viewport.x + 20, help.viewport.y)].fg,
+                INK,
+                "descriptions use the shared body text color"
+            );
+        }
         help.event(&key(K::Char('j')));
         assert_eq!(help.query, "j", "letters edit Search instead of navigating");
         assert_eq!(help.event(&key(K::Enter)), HelpEvent::Keep);

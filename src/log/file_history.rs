@@ -235,6 +235,16 @@ impl LogPanel {
     }
 
     pub(crate) fn inline_diff_key(&self, event: &Event) -> bool {
+        if let Some(comparison) = &self.workspace_comparison {
+            return comparison.panel.focus == Pane::Info
+                && matches!(event, Event::Key(key) if
+                    (matches!(key.modifiers, Mods::NONE | Mods::SHIFT)
+                        && matches!(key.code, K::Char('n' | 'N' | 'p' | 'f' | 'z' | 'j' | 'k' | 'h' | 'l' | 'g' | 'G' | 'y' | '[' | ']' | ' ' | '/')
+                            | K::Enter | K::Esc | K::Up | K::Down | K::Left | K::Right | K::PageUp | K::PageDown | K::Home | K::End))
+                    || key.modifiers == Mods::CONTROL
+                        && (matches!(key.code, K::Char('a' | 'f' | 'b' | 'd' | 'u') | K::Insert)
+                            || key.code == K::Char('c') && self.selected_text().is_some()));
+        }
         self.file_history_preview_focused()
             && matches!(event, Event::Key(k) if
                 ((k.modifiers.is_empty() || k.modifiers == Mods::SHIFT)

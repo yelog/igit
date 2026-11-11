@@ -7,6 +7,7 @@ use super::{
 use crate::ui::{help::HelpSection, idea::button_style};
 
 const SELECT_ROW: usize = Kind::ALL.len();
+const COMPARE_ROW: usize = SELECT_ROW + 1;
 use crossterm::event::{KeyEvent, KeyEventKind};
 
 fn shortcut(kind: Kind) -> Option<&'static str> {
@@ -52,6 +53,7 @@ enum Input {
     Close,
     Choose(Kind),
     SelectCommits,
+    Compare,
     Review(Kind, String),
 }
 
@@ -93,9 +95,13 @@ impl Dialog {
     }
 
     fn choose(row: usize) -> Input {
-        Kind::ALL
-            .get(row)
-            .map_or(Input::SelectCommits, |kind| Input::Choose(*kind))
+        match row {
+            SELECT_ROW => Input::SelectCommits,
+            COMPARE_ROW => Input::Compare,
+            _ => Kind::ALL
+                .get(row)
+                .map_or(Input::None, |kind| Input::Choose(*kind)),
+        }
     }
 
     fn event(&mut self, event: &Event) -> Input {
@@ -111,8 +117,8 @@ impl Dialog {
                     Event::Key(k) => match k.code {
                         K::Down | K::Char('j') => 1,
                         K::Up | K::Char('k') => -1,
-                        K::Home => -(Kind::ALL.len() as isize),
-                        K::End => Kind::ALL.len() as isize,
+                        K::Home => -(COMPARE_ROW as isize),
+                        K::End => COMPARE_ROW as isize,
                         K::Enter => return Self::choose(*row),
                         _ => 0,
                     },
@@ -134,7 +140,7 @@ impl Dialog {
                     }
                     _ => 0,
                 };
-                *row = row.saturating_add_signed(delta).min(SELECT_ROW);
+                *row = row.saturating_add_signed(delta).min(COMPARE_ROW);
             }
             Mode::Input(kind, input) => {
                 let submit = match event {
@@ -182,7 +188,7 @@ impl Dialog {
     fn draw(&mut self, f: &mut Frame, area: Rect, c: &Context) {
         self.hits.clear();
         let (title, width, height) = match self.mode {
-            Mode::Menu(_) => ("Commit Actions", 42, Kind::ALL.len() as u16 + 4),
+            Mode::Menu(_) => ("Commit Actions", 42, COMPARE_ROW as u16 + 4),
             Mode::Input(kind, _) => (kind.title(), 68, if kind == Kind::Edit { 15 } else { 7 }),
         };
         let mut r = popup(area, width, height);
@@ -210,12 +216,13 @@ impl Dialog {
         match &mut self.mode {
             Mode::Menu(row) => {
                 let h = usize::from(inner.height - 1);
-                let start = window(*row, h, SELECT_ROW + 1);
-                for i in (start..=SELECT_ROW).take(h) {
-                    let label = Kind::ALL.get(i).map_or_else(
-                        || "Select Commits  v".to_owned(),
-                        |kind| action_label(*kind),
-                    );
+                let start = window(*row, h, COMPARE_ROW + 1);
+                for i in (start..=COMPARE_ROW).take(h) {
+                    let label = match i {
+                        SELECT_ROW => "Select Commits  v".to_owned(),
+                        COMPARE_ROW => "Compare with Working Tree  D".to_owned(),
+                        _ => action_label(Kind::ALL[i]),
+                    };
                     let r = line(inner.y + 1 + (i - start) as u16);
                     f.render_widget(
                         Paragraph::new(format!(" {label}")).style(fg(INK).bg(if i == *row {
@@ -375,15 +382,26 @@ impl LogPanel {
             .map(Some)
     }
 
-    pub(crate) fn pick_hint(&self, c: &Context, revision_key: &str) -> Option<String> {
+    pub(crate) fn pick_hint(
+        &self,
+        c: &Context,
+        revision_key: &str,
+        comparison_key: &str,
+    ) -> Option<String> {
+        if self.workspace_comparison.is_some() {
+            return None;
+        }
         if !self.pick_mode {
             if self.filter.file_history.is_some() && !self.editing() {
                 return Some(format!(
-                    "{revision_key} Show File at Revision  D Compare with Local  F1 Help"
+                    "{revision_key} Show File at Revision  {comparison_key} Compare with Local  F1 Help"
                 ));
             }
-            return (self.focus == Pane::Graph && !self.editing())
-                .then(|| "C Cherry-pick  v Select commits  F1 Help".to_owned());
+            return (self.focus == Pane::Graph && !self.editing()).then(|| {
+                format!(
+                    "{comparison_key} Compare with Local  C Cherry-pick  v Select commits  F1 Help"
+                )
+            });
         }
         let visible = self
             .visible
@@ -475,6 +493,11 @@ impl LogPanel {
             Input::None => return Ok(Action::None),
             Input::Close => {
                 self.commit_dialog = None;
+                return Ok(Action::None);
+            }
+            Input::Compare => {
+                let target = dialog.target.clone();
+                self.open_workspace_compare(c, target)?;
                 return Ok(Action::None);
             }
             Input::SelectCommits => {

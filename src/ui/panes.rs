@@ -50,6 +50,7 @@ pub(crate) enum SplitId {
     LogRefs,
     LogInspector,
     LogHistory,
+    LogWorkspace,
     LogDetails,
     PushColumns,
     PushDetails,

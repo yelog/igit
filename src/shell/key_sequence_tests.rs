@@ -55,6 +55,64 @@ fn show_hints(app: &mut Shell, width: u16, height: u16) -> String {
 }
 
 #[test]
+fn first_space_in_log_shows_filter_prefix_and_preserves_space_n() {
+    let (_repo, mut app) = fixture();
+    screen(&mut app, 120, 36);
+    app.dispatch(&key(KeyCode::Char(' ')));
+    assert!(app.notification_prefix.is_some());
+    assert_eq!(app.key_sequence(), Some(KeySequence::LogFilters));
+    let hints = screen(&mut app, 120, 36);
+    assert!(hints.contains("Filters: b/u/d/p open"), "{hints}");
+    assert!(!hints.contains("n Notifications"), "{hints}");
+    let narrow = screen(&mut app, 44, 12);
+    assert!(narrow.contains("b/u/d/p Filters"), "{narrow}");
+    app.dispatch(&key(KeyCode::Char('n')));
+    assert!(matches!(app.pop, Some(Popup::Notifications(_))));
+    assert!(app.key_sequence().is_none());
+}
+
+#[test]
+fn first_space_highlights_log_filters_from_searchable_panes() {
+    for pane in [
+        crate::ui::panes::PaneId::Refs,
+        crate::ui::panes::PaneId::Files,
+    ] {
+        let (_repo, mut app) = fixture();
+        app.log.focus_pane(pane);
+        screen(&mut app, 120, 36);
+        app.dispatch(&key(KeyCode::Char(' ')));
+        assert_eq!(
+            app.key_sequence(),
+            Some(KeySequence::LogFilters),
+            "{pane:?}"
+        );
+        let hints = screen(&mut app, 120, 36);
+        assert!(hints.contains("Filters: b/u/d/p open"), "{pane:?}: {hints}");
+        app.dispatch(&key(KeyCode::Char('b')));
+        assert_eq!(
+            app.help_content().context(),
+            "Log / Branch Filter",
+            "{pane:?}"
+        );
+    }
+}
+
+#[test]
+fn remapped_log_filter_uses_the_configured_space_sequence() {
+    let (_repo, mut app) = fixture();
+    app.config = AppConfig::from_toml("[keybindings.log]\npaths-filter=['Space x']").unwrap();
+    screen(&mut app, 120, 36);
+    app.dispatch(&key(KeyCode::Char(' ')));
+    assert_eq!(app.key_sequence(), None);
+    assert!(!screen(&mut app, 120, 36).contains("Filters: b/u/d/p"));
+    app.dispatch(&key(KeyCode::Char('p')));
+    assert!(!app.log.editing());
+    app.dispatch(&key(KeyCode::Char(' ')));
+    app.dispatch(&key(KeyCode::Char('x')));
+    assert_eq!(app.help_content().context(), "Log / Paths Filter");
+}
+
+#[test]
 fn push_commit_copy_shares_hints_help_and_cancellation() {
     let (repo, mut app) = fixture();
     git(
@@ -134,13 +192,14 @@ fn log_space_filters_take_priority_over_global_pull_and_keep_editor_keys() {
         app.log.focus_pane(pane);
         assert_eq!(app.log.focused_pane(), pane);
         send(&mut app, ' ');
-        assert_eq!(app.key_sequence(), Some(KeySequence::LogFilters));
+        assert!(app.notification_prefix.is_some());
         send(&mut app, suffix);
         assert!(app.pop.is_none());
         assert_eq!(app.help_content().context(), context);
         app.dispatch(&key(KeyCode::Esc));
     }
     send(&mut app, ' ');
+    app.flush_notification_prefix();
     let hints = screen(&mut app, 150, 40);
     for name in ["Branch", "User", "Date", "Paths"] {
         assert!(!hints.contains(&format!("Open {name} filter")));
@@ -172,6 +231,7 @@ fn log_space_filters_inline_navigation_and_cancellation_preserve_commit() {
     let (repo, mut app) = fixture();
     let head = git(repo.path(), &["rev-parse", "HEAD"]).unwrap();
     let selected_message = |app: &mut Shell| {
+        app.log.focus_pane(crate::ui::panes::PaneId::Graph);
         app.log.event(&key(KeyCode::Char('y')), &app.ctx);
         match app.log.event(&key(KeyCode::Char('m')), &app.ctx) {
             Action::Copy { text, .. } => text,
@@ -186,6 +246,7 @@ fn log_space_filters_inline_navigation_and_cancellation_preserve_commit() {
         (3, "Log / Paths Filter"),
     ] {
         app.dispatch(&key(KeyCode::Char(' ')));
+        app.flush_notification_prefix();
         screen(&mut app, 120, 36);
         for _ in 0..right {
             app.dispatch(&key(KeyCode::Right));
@@ -205,10 +266,11 @@ fn log_space_filters_inline_navigation_and_cancellation_preserve_commit() {
         key(KeyCode::Char('o')),
     ] {
         app.dispatch(&key(KeyCode::Char(' ')));
+        app.flush_notification_prefix();
         screen(&mut app, 120, 36);
         app.dispatch(&cancel);
         assert!(app.key_sequence().is_none());
-        assert!(!screen(&mut app, 120, 36).contains("Filters: letter"));
+        assert!(!screen(&mut app, 120, 36).contains("Filters: b/u/d/p"));
         app.dispatch(&key(KeyCode::Esc));
     }
     assert_eq!(selected_message(&mut app), before);
@@ -227,6 +289,8 @@ fn log_space_filters_inline_focus_and_mouse_use_existing_labels() {
         let targets = app.log.filter_shortcut_targets().unwrap();
         let original = terminal.backend().buffer().clone();
         app.dispatch(&key(KeyCode::Char(' ')));
+        assert!(app.notification_prefix.is_some());
+        assert_eq!(app.key_sequence(), Some(KeySequence::LogFilters));
         terminal.draw(|frame| app.draw(frame)).unwrap();
         assert_eq!(app.log.filter_shortcut_targets().unwrap(), targets);
         for (index, rect) in targets.iter().enumerate() {
@@ -259,6 +323,8 @@ fn log_space_filters_inline_focus_and_mouse_use_existing_labels() {
         assert_eq!(app.help_content().context(), "Log / Branch Filter");
         app.dispatch(&key(KeyCode::Esc));
         app.dispatch(&key(KeyCode::Char(' ')));
+        assert!(app.notification_prefix.is_some());
+        assert_eq!(app.key_sequence(), Some(KeySequence::LogFilters));
         terminal.draw(|frame| app.draw(frame)).unwrap();
         app.dispatch(&Event::Mouse(MouseEvent {
             kind: event::MouseEventKind::Down(event::MouseButton::Left),
@@ -288,6 +354,7 @@ fn log_space_filters_file_history_retains_delayed_overlay() {
     screen(&mut app, 120, 36);
     assert!(app.log.filter_shortcut_targets().is_none());
     app.dispatch(&key(KeyCode::Char(' ')));
+    app.flush_notification_prefix();
     assert!(!screen(&mut app, 120, 36).contains("Open Paths filter"));
     let hints = show_hints(&mut app, 120, 36);
     for name in ["Branch", "User", "Date", "Paths"] {
@@ -321,6 +388,19 @@ fn key_sequence_hints_wait_200ms_and_wake_without_more_input() {
     assert_eq!(app.poll_timeout(), Duration::ZERO);
     assert!(app.poll());
     assert!(screen(&mut app, 80, 24).contains("Go to first commit"));
+}
+
+#[test]
+fn notification_chord_does_not_start_during_another_pending_prefix() {
+    let (_repo, mut app) = fixture();
+    screen(&mut app, 120, 36);
+    app.dispatch(&Event::Key(KeyEvent::new(
+        KeyCode::Char('w'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(app.window_prefix.is_some());
+    app.dispatch(&key(KeyCode::Char(' ')));
+    assert!(app.notification_prefix.is_none());
 }
 
 #[test]
@@ -459,6 +539,7 @@ fn key_sequence_context_changes_dismiss_hints_and_text_input_keeps_its_letters()
     ] {
         app.go(Log);
         app.dispatch(&key(KeyCode::Esc)); // Each case starts in the commit list.
+        app.log.focus_pane(crate::ui::panes::PaneId::Graph);
         app.dispatch(&key(KeyCode::Char('y')));
         assert!(app.key_sequence().is_some(), "{interrupt:?}");
         app.dispatch(&interrupt);

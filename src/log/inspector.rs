@@ -363,6 +363,14 @@ impl LogPanel {
             .min(s.visible.len().saturating_sub(1));
     }
 
+    pub(super) fn select_file(&mut self, index: usize) {
+        if let Some(row) = self.inspector.visible.iter().position(
+            |&node| matches!(self.inspector.nodes[node].kind, Kind::File(file) if file == index),
+        ) {
+            self.inspector.cursor = row;
+        }
+    }
+
     pub(super) fn file_activate(&mut self, n: usize, toggle: bool) {
         let s = &mut self.inspector;
         let Some(&id) = s.visible.get(n) else { return };

@@ -282,7 +282,7 @@ IGit kitten helper and pass through these chords as described in
 
 The single header row shows Log's filter tabs and `+` on the left, with **Commit**, **Log**, **Push**, **Branch**, and **Stash** on the right. In Push, the left side shows its contextual title. The active tab fills the workspace, and Commit is selected at startup. **Conflicts** appears in amber when any repository in Roots has unresolved files or a Git operation ready to continue. It disappears when that work is complete. Commit automatically refreshes files and the current Diff while active. Press `F5` to refresh the entire workspace, including Log and Conflicts. The footer starts with **IGit**, followed by the current shortcut hints.
 
-Press `F8` or choose **Notifications** from Actions (`:`) to open the session notification history. Four newest live cards can appear in the upper-right while work continues; click a card body to inspect that entry, or click its close control. The center keeps up to 500 entries until IGit exits. In History, use `j/k` or arrows to browse, `/` to search, `n/N` for the next/previous match, and `y` to copy the full message. Press `c`, then `y` to clear history or `n` to keep it; `Esc` or `q` closes. On wide terminals, select a row and read its details beside the list; on narrow terminals, press Enter to open the selected detail and `Esc`/`q` to return. See [notification history](docs/design.md#notification-center) and [configuration](docs/configuration.md#settings) to rebind F8.
+Press `Space`, then `n`, from any normal workspace panel to open session notification history. The leading `Space` waits indefinitely, like other key-sequence prefixes. The default 200ms `hint_delay_ms` controls only when a continuation overlay appears, not a timeout. In Log, the first `Space` immediately enters the filter prefix: B/U/D/P are highlighted and the footer shows the filter controls without another keypress. `Space b/u/d/p` opens those filters directly, while `Space n` still opens Notifications. In panels where Space acts alone without starting a filter prefix, press `Space` again to apply that standalone action, or type another key to replay Space and then process that key. `Esc` cancels. Dialogs and text input keep their own Space behavior. Four newest live cards can appear in the upper-right while work continues; click a card body to inspect that entry, or click its close control. The center keeps up to 500 entries until IGit exits. In History, use `j/k` or arrows to browse, `/` to search, `n/N` for the next/previous match, and `y` to copy the full message. Press `c`, then `y` to clear history or `n` to keep it; `Esc` or `q` closes. On wide terminals, select a row and read its details beside the list; on narrow terminals, press Enter to open the selected detail and `Esc`/`q` to return. See [notification history](docs/design.md#notification-center) and [configuration](docs/configuration.md#settings) to rebind `notification-history`.
 
 | Action | Keyboard | Mouse |
 | --- | --- | --- |
@@ -292,7 +292,7 @@ Press `F8` or choose **Notifications** from Actions (`:`) to open the session no
 | Switch panes | `Tab` / `Shift-Tab` cycles forward/backward (also `F6` / `Shift-F6`); press `Ctrl-W`, then `h/j/k/l` for left/down/up/right | Click the target pane. |
 | Resize panes | After `Ctrl-W`, use `>` / `<` to increase/decrease width, `+` / `-` for height, or `=` to restore defaults | Drag the divider between adjacent panes in the active tab. |
 | Maximize or restore a pane | `Ctrl-W f`; optional Kitty synchronization uses `smart-toggle-pane-maximized` | In maximized mode, only the focused pane is shown; Tab still switches panes. |
-| Actions and help | `:` action list; `?` / `F1` help for the current area; `F8` opens Notifications | Once open, click an action or select a help entry. |
+| Actions and help | `:` action list; `?` / `F1` help for the current area; `Space n` opens Notifications from normal workspace panels | Once open, click an action or select a help entry. |
 | Refresh and quit | `F5` refreshes; `q` or normal-mode `Ctrl-C` quits immediately | Open Actions with `:`, then click Refresh workspace or Quit; quitting needs no confirmation. |
 | Review writes | `Tab` switches buttons, `Enter` activates the focused button, and `Esc` cancels; scroll long content with `j/k` or arrow keys | Click Confirm / Cancel; use the wheel to scroll. |
 
@@ -348,7 +348,7 @@ Use `n/p` for changes, `Tab` for panes, `h/l` for horizontal scrolling, `f` to f
 
 **Context help:** `?` or `F1` opens a lazydb-style `KEYMAP // current area` panel with Search focused and IGit's shared window palette. Type a shortcut, description, or area name to filter. Search ignores case and matches characters in order, including nonadjacent characters; space-separated terms must all match. Matched characters in shortcuts and descriptions are highlighted, preferring contiguous matches when available. A row can also match its area name without a highlight in its visible text. With no query, actions for the current area come first, followed by panel-wide and global actions. Search ranks full-field matches first, followed by field prefixes, contiguous substrings, and nonadjacent matches. Earlier match positions break ties, followed by catalogue order. Each row represents one action. `↑/↓` selects, and `Enter` closes help and executes the selected shortcut. `PgUp/PgDn` changes selection by a page; click to select, or use the wheel/scrollbar to browse. Search supports left/right, Home/End, deletion, and `Ctrl-W/U/A/E` editing. `Esc/F1` cancels help and restores the original focus, draft, or dialog. `F1` also works in input fields, Diff, Roots, and review dialogs. Choosing Commit starts the local commit; Push and Apply file still open their reviews.
 
-**Key sequence hints:** In normal mode, press `Ctrl-W`; in Branch, press `g`; in the Log commit list, press `g` / `y`; or in a Merge conflict document, press `[` / `]`. If no other key arrives for 200ms, a bottom overlay lists valid continuation keys and descriptions. Type the next key to execute; quickly completed sequences do not flash a hint. Once visible, use arrow keys and `Enter`, or click a candidate. `Esc/Ctrl-C` cancels only the pending prefix. Switching panels/focus, opening a menu, pasting, or resizing also dismisses it; another prefix restarts the timer. The overlay uses one to three columns according to width. Letters in text fields and single-key actions in Commit/Push keep their existing meanings.
+**Key sequence hints:** In normal mode, press `Ctrl-W`; in Branch, press `g`; in the Log commit list, press `g` / `y`; or in a Merge conflict document, press `[` / `]`. After 200ms without another key, a bottom overlay lists valid continuation keys and descriptions; the prefix itself does not time out. Type the next key to execute; quickly completed sequences do not flash a hint. Once visible, use arrow keys and `Enter`, or click a candidate. `Esc/Ctrl-C` cancels only the pending prefix. Switching panels/focus, opening a menu, pasting, or resizing also dismisses it; another prefix restarts the delay. The overlay uses one to three columns according to width. Letters in text fields and single-key actions in Commit/Push keep their existing meanings.
 
 ## Workspace Panels
 
@@ -494,6 +494,13 @@ before execution. `F5`, terminal focus return, and completed Fetch
 refresh the tree; `f` fetches remote refs through the existing review.
 Use `:` → Roots to change repository scope while in Branch.
 
+In the ordinary Log commit list, `Enter` focuses the right-hand **Diff** file
+tree and reveals it if hidden. Press `Enter` on a file to open its comparison;
+`Esc` closes the comparison back to that tree. In the branch tree, Diff file
+tree, and commit details, `Esc` keeps focus in place while still canceling
+searches or clearing selections. Use `Tab`, `Shift-Tab`, or `Ctrl-W h/j/k/l`
+to move between panes.
+
 **Log display options:** Click the eye at the right end of the graph toolbar, or press `o`, to open Show / Highlight. **Show → Branch or Tag** controls the left branch tree and is enabled by default; `B` also toggles it. Hiding it moves the commit list to the left edge. Select with `j/k` or arrow keys, and toggle with `Space/Enter`. Open Columns by clicking, hovering, or pressing `l/Right`; use `h/Left` or `Esc` to return, then `Esc` in the main menu to close. Short windows scroll the menu; narrow windows place the submenu on the left or replace the main menu.
 
 **Reorder log columns:** The top-to-bottom order in Columns is the left-to-right order in commit rows. Select a column and press `K` or `Shift+↑` to move left, or `J` / `Shift+↓` to move right. The up/down arrows beside each column name do the same. Clicking the name or pressing Space still only toggles visibility. Hidden columns can be positioned before showing them.
@@ -504,7 +511,7 @@ Both sidebars, reference labels, and Author, Date, Graph, and Message are shown 
 
 Commit rows begin with a centered color strip matching that repository's checkbox in **Paths**. Consecutive commits from the same repository form a segment: a heavier vertical stroke, shortened ends with a gap between repositories, and a short vertical stroke with space above and below for an isolated commit. The marker gutter stays dark during selection. Segments use standard terminal glyphs in all icon modes; end caps approximate IDEA's spacing, without pixel-rounded corners. Scrolling preserves segments that continue beyond the viewport. **Root Names** adds the repository name beside the strip.
 
-**Log branch filtering:** Click **Branch** or press `Space b` to choose a favorite directly, or enter groups such as **Local** and **origin/...** to open a submenu. Space immediately highlights and underlines the B/U/D/P initials in the filter toolbar; press the matching letter, or use Left/Right and Enter. Esc cancels. Clicking the star (Space on the keyboard) only toggles the favorite; clicking the name or pressing Enter filters history. **Favorites** shows commits from all favorite branches. **Select...** accepts multiple branches separated by `|`, such as `master | origin/release`.
+**Log branch filtering:** Click **Branch** or press `Space b` to choose a favorite directly, or enter groups such as **Local** and **origin/...** to open a submenu. The first `Space` immediately highlights and underlines the B/U/D/P initials in the filter toolbar; press the matching letter, or use Left/Right and Enter. There is no prefix timeout. Esc cancels. Clicking the star (Space on the keyboard) only toggles the favorite; clicking the name or pressing Enter filters history. **Favorites** shows commits from all favorite branches. **Select...** accepts multiple branches separated by `|`, such as `master | origin/release`.
 
 Commit-row references use IDEA-style outlined tag icons: yellow for HEAD, purple for remote branches, and green for local branches, including the currently checked-out local branch. HEAD and a local branch on the same commit show green + yellow icons; when the upstream also points there, the icons are purple + green + yellow and the label is combined as `origin & main`. Icons have one cell between them; narrow columns shorten names while retaining the full icon group.
 
@@ -525,6 +532,27 @@ The left branch/tag tree follows the applied Paths scope: local branches, remote
 **Log navigation and copying:** `j/k` or up/down moves within the viewport; scrolling begins only when movement passes the top or bottom edge. The list does not recenter automatically. `gg/G` selects the first/last commit; `H/M/L` selects the top/middle/bottom commit on screen. `Ctrl-F/B` pages down/up, `Ctrl-D/U` moves half a page, and `PageDown/PageUp` moves a full page. Page size uses the actual visible rows. `yy` copies the full commit ID, `ym` the full message including its body, and `ya` `Name <email>`. These shortcuts apply to the commit list; input fields and menus keep their own meanings. Copying uses the system clipboard: `pbcopy` on macOS, `clip.exe` on Windows, and `wl-copy`, `xclip`, then `xsel` on Linux. Missing commands or display sessions produce an explicit error.
 
 **Push commit copying:** With the left outgoing list focused and a commit highlighted, `yy`, `ym`, and `ya` copy its full ID, full message, and `Name <email>`, just like Log. The `y` prefix shows the same delayed chooser, and F1 lists these actions. Copying uses the highlighted commit even while its preview loads; it does not change repository checkboxes. Repository rows do not copy commit data. The right file tree keeps its path-copy shortcuts. Customize these commands with `copy-id`, `copy-message`, and `copy-author` under `[keybindings.push]`.
+
+**Compare a commit with Local:** Highlight a commit in Log and press `D`, or
+choose **Compare with Working Tree** from its right-click / `a` menu. The
+read-only comparison shows all cumulative file changes from that commit to
+its repository's current working tree, including later commits, staged and
+unstaged edits, and non-ignored untracked files. The highlighted commit sets
+the target independently of cherry-pick checkboxes and Log filters.
+
+The comparison follows Branch's separate workspace and direction banner, with
+a changed-file tree on the left and **Commit / Working tree** revisions on
+the right. Browse files with `j/k`, expand/collapse with `h/l` or `z/Z`, and
+use `Enter` or `Tab` to focus Diff. `[/]` switches revisions; `n/p` visits
+changes, `f` folds context, `z` zooms, `/` searches, and `y` copies the focused
+revision. `J/K` scrolls the right preview down/up without moving the file
+selection, from either pane. Narrow panes show one revision at a time. `F5`
+rereads the working tree; `Esc` clears search/selection first, then restores
+the original Log position, filters, and checked commits. Binary, oversized,
+converted, and unsupported entries show an explanation. The comparison never
+stages files or changes HEAD, refs, or the real index. Configure the entry with
+`compare-with-local` under `[keybindings.log]`. File History retains its
+existing file-specific `D` action and separately reviewed apply controls.
 
 **Log commit actions:** Right-click a commit, click the list's `...` button, or press `a` with the list focused. The menu also creates a local branch or lightweight tag, checks out a revision in detached HEAD, and cherry-picks commits. These direct shortcuts address the highlighted commit in its repository:
 

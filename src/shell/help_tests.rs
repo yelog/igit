@@ -47,7 +47,7 @@ fn help_search_puts_notification_history_before_scattered_matches() {
     let text = screen(&mut app, 120, 36);
     assert!(
         text.lines()
-            .any(|line| line.contains("> F8") && line.contains("Open notification history")),
+            .any(|line| line.contains("> Space n") && line.contains("Open notification history")),
         "{text}"
     );
     app.dispatch(&key(KeyCode::Enter));
@@ -412,6 +412,9 @@ fn help_f1_from_diff_and_all_supported_window_sizes_remains_read_only() {
     let (_dir, mut app) = fixture();
     app.go(Log);
     let before = snapshot(&app.ctx.repos[0].path);
+    app.dispatch(&key(KeyCode::Enter));
+    assert_eq!(app.log.focused_pane(), crate::ui::panes::PaneId::Files);
+    assert!(!app.log.editing());
     app.dispatch(&key(KeyCode::Enter));
     assert!(app.log.editing());
     for (width, height) in [(120, 36), (80, 24), (44, 12)] {

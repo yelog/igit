@@ -332,8 +332,17 @@ override still uses `p` or `f` for one of those panel commands, change that
 override or rebind the conflicting global command.
 
 `global.focus-branch` defaults to `4`. `global.notification-history` defaults
-to `F8` and opens session Notification History; Actions → Notifications remains
-available if this command is unbound. Reusing F8 for another command requires
+to `Space n` and opens session Notification History from any normal workspace
+panel. The leading `Space` waits indefinitely. In Log it also starts the
+filter prefix immediately, so B/U/D/P and the footer hint appear on the first
+press; `b/u/d/p` opens filters and `n` opens History. In panels where Space is
+a standalone action, a second Space applies it. Esc cancels. The
+`hint_delay_ms` setting (200ms by default) only controls when a continuation
+overlay appears; it is not a chord timeout. This intentional prefix can share
+Space with selection and filter commands; other exact or prefix collisions
+remain invalid. Dialogs and text input keep their own Space behavior. Actions →
+Notifications also remains available if `notification-history` is unbound.
+Reusing another command's key requires
 rebinding `notification-history` or disabling it with
 `notification-history = []`. `[keybindings.branch]` controls `create`
 (`a`), `delete` (`d`), `checkout` (`Enter`), `merge` (`m`), `rename` (`r`),
@@ -360,6 +369,15 @@ the inline Diff. For example, set `show-file-at-revision = ["Ctrl-e"]` under
 `[keybindings.log]`. The action opens the selected commit's full file, using a
 read-only Neovim buffer or a temporary snapshot in the configured external
 editor. It is inactive in the ordinary Log tab.
+
+`compare-with-local` defaults to `D` under `[keybindings.log]`. In the
+ordinary commit list it opens a read-only comparison from the highlighted
+commit to that repository's working tree, including staged/unstaged working
+contents and non-ignored untracked files. Its temporary file tree uses Log's
+movement, folding, find, and path-copy bindings; the inline Diff uses the
+shared revision controls. `F5` refreshes current contents, and `Esc` returns
+to the retained Log. In File History, the same binding retains the existing
+file-specific Compare with Local action.
 
 In the Log commit list, `[keybindings.log]` exposes `commit-actions` (`a`),
 `drop-commit` (`d`), `undo-commit` (`u`), `revert-commit` (`R`), and

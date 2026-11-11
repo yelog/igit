@@ -346,6 +346,16 @@ fn merge(base: &mut toml::Value, overrides: toml::Value) {
     }
 }
 
+fn notification_space_prefix(owner: &BoundCommand, multi: &Sequence, single: &Sequence) -> bool {
+    owner.command.group == "global"
+        && owner.command.name == "notification-history"
+        && multi.len() > 1
+        && multi[0].code == K::Char(' ')
+        && multi[0].modifiers.is_empty()
+        && single.len() == 1
+        && single[0] == multi[0]
+}
+
 fn validate(commands: &[BoundCommand]) -> Result<()> {
     for (i, first) in commands.iter().enumerate() {
         for (j, sequence) in first.sequences.iter().enumerate() {
@@ -389,7 +399,12 @@ fn validate(commands: &[BoundCommand]) -> Result<()> {
                     0
                 };
                 for other in &second.sequences[start..] {
-                    if sequence.starts_with(other) || other.starts_with(sequence) {
+                    let notification_space = !std::ptr::eq(first, second)
+                        && (notification_space_prefix(first, sequence, other)
+                            || notification_space_prefix(second, other, sequence));
+                    if (sequence.starts_with(other) || other.starts_with(sequence))
+                        && !notification_space
+                    {
                         bail!("Conflicting keybindings.{}.{} ({}) and keybindings.{}.{} ({}): duplicate or ambiguous prefix", first.command.group, first.command.name, keys::label(sequence), second.command.group, second.command.name, keys::label(other));
                     }
                 }
@@ -445,6 +460,7 @@ mod tests {
         assert_eq!(config.hint_delay, Duration::from_millis(200));
         assert_eq!(config.label("commit", "review"), "Ctrl-r");
         assert_eq!(config.label("global", "quit"), "q");
+        assert_eq!(config.label("global", "notification-history"), "Space n");
         assert_eq!(config.label("log", "edit-message"), "F2");
         assert_eq!(config.label("log", "drop-commit"), "d");
         assert_eq!(config.label("log", "undo-commit"), "u");
@@ -632,6 +648,24 @@ mod tests {
                 .is_ok()
         );
     }
+
+    #[test]
+    fn notification_chord_shares_only_the_standalone_space_prefix() {
+        assert!(
+            AppConfig::from_toml("[keybindings.global]\nnotification-history = ['Space H']")
+                .is_ok()
+        );
+        for review in ["Space H", "Space H x"] {
+            assert!(
+                AppConfig::from_toml(&format!(
+                    "[keybindings.global]\nnotification-history = ['Space H']\n[keybindings.commit]\nreview = ['{review}']"
+                ))
+                .is_err(),
+                "{review}"
+            );
+        }
+    }
+
     #[test]
     fn smart_focus_is_opt_in_and_requires_unambiguous_modified_chords() {
         assert!(!AppConfig::default().smart_panes_enabled());

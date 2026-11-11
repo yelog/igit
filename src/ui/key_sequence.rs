@@ -123,6 +123,10 @@ impl KeySequencePicker {
         false
     }
 
+    pub fn show_now(&mut self) {
+        self.show_at = None;
+    }
+
     pub fn wakeup(&self, now: Instant) -> Option<Duration> {
         self.show_at
             .map(|deadline| deadline.saturating_duration_since(now))

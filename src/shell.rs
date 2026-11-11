@@ -12,7 +12,10 @@ use self::Tab::{Branch, Commit, Conflicts, Log, Push, Stash};
 use crate::{
     branch::BranchPanel,
     commit::{CommitPanel, Rollback, RollbackEvent},
-    config::{keys::CommandAction, AppConfig},
+    config::{
+        keys::{self, CommandAction, Sequence},
+        AppConfig,
+    },
     core::{Context, Repo},
     log::LogPanel,
     merge::MergePanel,
@@ -126,8 +129,36 @@ Options may appear before or after the panel. Use igit -- log or igit ./log
 to open a directory named log; use igit log -- -file for an option-like filename.
 
 Tabs: 1 Commit / 2 Log / 3 Push / 4 Branch / 5 Stash / 6 Conflicts (when available)   p Pull / f Fetch
-r repositories (Branch: rename; use Actions for Roots)   F8 notifications   F9 updates   ? / F1 help   q quit
+r repositories (Branch: rename; use Actions for Roots)   Space n notifications   F9 updates   ? / F1 help   q quit
 Runs Git on your local working trees; mutations require a reviewed confirmation.";
+struct NotificationPrefix {
+    started: Instant,
+    hint_shown: bool,
+    keys: Sequence,
+    candidates: Vec<Sequence>,
+    dispatched: usize,
+}
+
+impl NotificationPrefix {
+    fn space_replays_standalone_action(&self) -> bool {
+        self.dispatched == 0
+            && self.keys.len() == 1
+            && self.keys[0].code == KeyCode::Char(' ')
+            && self.keys[0].modifiers.is_empty()
+            && !self.candidates.iter().any(|sequence| {
+                sequence
+                    .get(1)
+                    .is_some_and(|key| key.code == KeyCode::Char(' ') && key.modifiers.is_empty())
+            })
+    }
+}
+
+enum NotificationPrefixEvent {
+    Pass,
+    Handled,
+    Continue,
+}
+
 enum Popup {
     Rollback(Box<Rollback>),
     Update(update::Dialog),
@@ -210,6 +241,7 @@ struct Shell {
     key_picker: KeySequencePicker,
     path_copy_pending: bool,
     window_prefix: Option<WindowPrefix>,
+    notification_prefix: Option<NotificationPrefix>,
 }
 impl Shell {
     fn message_cursor(&self) -> bool {
@@ -264,6 +296,7 @@ impl Shell {
             key_picker: KeySequencePicker::default(),
             path_copy_pending: false,
             window_prefix: None,
+            notification_prefix: None,
         };
         s.log.icons = icons;
         s.commit.icons = icons;
@@ -377,6 +410,7 @@ impl Shell {
         self.path_copy_pending = false;
         self.pending_keys = None;
         self.window_prefix = None;
+        self.notification_prefix = None;
         self.log.cancel_key_sequence();
         self.push.cancel_key_sequence();
         self.branch.cancel_key_sequence();
@@ -946,6 +980,8 @@ impl Shell {
                         if self.help_content().context() != state.content.context() {
                             self.open_help();
                             self.notice("Context changed. Reopen help to choose a shortcut".into());
+                        } else if command.action == CommandAction::OpenNotifications {
+                            self.open_notifications(None);
                         } else if let CommandAction::SmartFocus(direction) = command.action {
                             self.smart_focus(direction);
                         } else if let CommandAction::SmartResize(direction) = command.action {
@@ -1262,6 +1298,160 @@ impl Shell {
             }
     }
 
+    fn notification_sequences(&self, first: KeyEvent) -> Vec<Sequence> {
+        let first = keys::normalize(first);
+        self.config
+            .commands
+            .iter()
+            .filter(|command| {
+                command.command.group == "global" && command.command.name == "notification-history"
+            })
+            .flat_map(|command| command.sequences.iter())
+            .filter(|sequence| sequence.first() == Some(&first))
+            .cloned()
+            .collect()
+    }
+
+    fn notification_prefix_event(&mut self, ev: &Event) -> NotificationPrefixEvent {
+        if self.notification_prefix.is_some() {
+            let Event::Key(key) = ev else {
+                if matches!(
+                    ev,
+                    Event::Mouse(m) if m.kind != MouseEventKind::Moved
+                ) || matches!(ev, Event::Resize(..) | Event::FocusLost | Event::Paste(_))
+                {
+                    self.notification_prefix = None;
+                    return NotificationPrefixEvent::Continue;
+                }
+                return NotificationPrefixEvent::Pass;
+            };
+            if key.code == KeyCode::Esc
+                || key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL
+            {
+                self.cancel_key_sequences();
+                return NotificationPrefixEvent::Handled;
+            }
+            let key = keys::normalize(*key);
+            let applies_space = key.code == KeyCode::Char(' ')
+                && key.modifiers.is_empty()
+                && self
+                    .notification_prefix
+                    .as_ref()
+                    .is_some_and(NotificationPrefix::space_replays_standalone_action);
+            if applies_space {
+                self.flush_notification_prefix();
+                return NotificationPrefixEvent::Handled;
+            }
+            let mut pending = self.notification_prefix.take().expect("pending prefix");
+            pending.keys.push(key);
+            pending
+                .candidates
+                .retain(|sequence| sequence.starts_with(&pending.keys));
+            if pending
+                .candidates
+                .iter()
+                .any(|sequence| sequence.len() == pending.keys.len())
+            {
+                self.open_notifications(None);
+                return NotificationPrefixEvent::Handled;
+            }
+            if pending.candidates.is_empty() {
+                let replayed = pending.keys.len() - 1;
+                let start = pending.dispatched.min(replayed);
+                self.replay_notification_keys(&pending.keys[start..replayed], true);
+                return NotificationPrefixEvent::Continue;
+            }
+            pending.started = Instant::now();
+            pending.hint_shown = self.config.hint_delay.is_zero();
+            self.notification_prefix = Some(pending);
+            return NotificationPrefixEvent::Handled;
+        }
+
+        let Event::Key(key) = ev else {
+            return NotificationPrefixEvent::Pass;
+        };
+        let first = keys::normalize(*key);
+        if key.kind != KeyEventKind::Press
+            || first.code != KeyCode::Char(' ')
+            || !first.modifiers.is_empty()
+            || self.pop.is_some()
+            || self.panel().editing()
+            || self.pending_keys.is_some()
+            || self.path_copy_pending
+            || self.window_prefix.is_some()
+            || self.key_sequence().is_some()
+        {
+            return NotificationPrefixEvent::Pass;
+        }
+        let candidates = self.notification_sequences(*key);
+        if candidates.is_empty() {
+            if self.tab == Log
+                && self.log_filter_prefix_is_default()
+                && self.log.begin_filter_prefix_on_space()
+            {
+                return NotificationPrefixEvent::Handled;
+            }
+            return NotificationPrefixEvent::Pass;
+        }
+        if candidates.iter().any(|sequence| sequence.len() == 1) {
+            self.open_notifications(None);
+            return NotificationPrefixEvent::Handled;
+        }
+        let now = Instant::now();
+        let hint_delay = self.config.hint_delay;
+        let filter_prefix = self.tab == Log && self.log_filter_prefix_is_default();
+        let dispatched = usize::from(filter_prefix && self.log.begin_filter_prefix_on_space());
+        if dispatched == 1 {
+            self.key_picker = KeySequencePicker::pending_with_delay(now, hint_delay);
+        }
+        self.notification_prefix = Some(NotificationPrefix {
+            started: now,
+            hint_shown: hint_delay.is_zero(),
+            keys: vec![first],
+            candidates,
+            dispatched,
+        });
+        NotificationPrefixEvent::Handled
+    }
+
+    fn replay_notification_keys(&mut self, keys: &[KeyEvent], reveal: bool) {
+        for key in keys {
+            self.dispatch_notification_replay(&Event::Key(*key));
+            if reveal && self.key_sequence().is_some() {
+                self.key_picker.show_now();
+            }
+        }
+    }
+
+    fn flush_notification_prefix(&mut self) {
+        if let Some(pending) = self.notification_prefix.take() {
+            self.replay_notification_keys(&pending.keys[pending.dispatched..], false);
+        }
+    }
+
+    fn notification_prefix_hint(&self) -> Option<String> {
+        let pending = self.notification_prefix.as_ref()?;
+        if !pending.hint_shown {
+            return None;
+        }
+        let mut labels = pending
+            .candidates
+            .iter()
+            .filter_map(|sequence| sequence.get(pending.keys.len()..))
+            .filter(|suffix| !suffix.is_empty())
+            .map(keys::label)
+            .collect::<Vec<_>>();
+        labels.sort();
+        labels.dedup();
+        (!labels.is_empty()).then(|| {
+            let replay = pending
+                .space_replays_standalone_action()
+                .then_some("  Space again applies")
+                .unwrap_or_default();
+            format!("{} Notifications{replay}  Esc cancel", labels.join(" / "))
+        })
+    }
+
     fn dispatch(&mut self, ev: &Event) {
         // Keep the reviewed focus/input context stable while synchronizing Kitty.
         // Resize and focus notifications still run; the worker has a short deadline.
@@ -1284,6 +1474,7 @@ impl Shell {
         match self.notifications.live_event(ev, can_open) {
             notifications::LiveEvent::Pass => (),
             notifications::LiveEvent::Handled => {
+                self.notification_prefix = None;
                 self.cancel_notification_mouse();
                 return;
             }
@@ -1293,8 +1484,25 @@ impl Shell {
             }
         }
         if self.smart_pane_event(ev) {
+            self.notification_prefix = None;
             return;
         }
+        match self.notification_prefix_event(ev) {
+            NotificationPrefixEvent::Handled => return,
+            NotificationPrefixEvent::Pass | NotificationPrefixEvent::Continue => (),
+        }
+        self.dispatch_normal(ev);
+    }
+
+    fn dispatch_normal(&mut self, ev: &Event) {
+        self.dispatch_normal_inner(ev, false);
+    }
+
+    fn dispatch_notification_replay(&mut self, ev: &Event) {
+        self.dispatch_normal_inner(ev, true);
+    }
+
+    fn dispatch_normal_inner(&mut self, ev: &Event, replaying_notification: bool) {
         if self.pop.is_none()
             && self.pending_keys.is_none()
             && self.window_prefix.is_none()
@@ -1304,7 +1512,7 @@ impl Shell {
             self.panel_event(ev);
             return;
         }
-        if self.path_copy_pending || !self.configured_event(ev) {
+        if self.path_copy_pending || !self.configured_event(ev, replaying_notification) {
             self.dispatch_builtin(ev);
         }
     }
@@ -1450,10 +1658,6 @@ impl Shell {
                         self.open_software_update();
                         return;
                     }
-                    KeyCode::F(8) if k.modifiers.is_empty() => {
-                        self.open_notifications(None);
-                        return;
-                    }
                     _ => (),
                 }
             }
@@ -1472,6 +1676,12 @@ impl Shell {
     }
     fn poll(&mut self) -> bool {
         let mut change = self.notifications.expire(Instant::now());
+        if let Some(pending) = &mut self.notification_prefix {
+            if !pending.hint_shown && pending.started + self.config.hint_delay <= Instant::now() {
+                pending.hint_shown = true;
+                change = true;
+            }
+        }
         change |= self.poll_log_load();
         let action = self.commit.poll_add(&self.ctx);
         if !matches!(action, Action::None) {
@@ -1603,6 +1813,7 @@ impl Shell {
     }
     fn poll_timeout(&self) -> Duration {
         const IDLE: Duration = Duration::from_millis(150);
+        let now = Instant::now();
         let idle = if self.log_load.pending()
             || self.log.history_pending()
             || self.commit.execution_running()
@@ -1627,8 +1838,16 @@ impl Shell {
             .min(self.branch.preview_wakeup().unwrap_or(idle))
             .min(update_timeout.unwrap_or(idle))
             .min(idle);
+        let timeout = self
+            .notification_prefix
+            .as_ref()
+            .filter(|pending| !pending.hint_shown)
+            .map(|pending| {
+                (pending.started + self.config.hint_delay).saturating_duration_since(now)
+            })
+            .map_or(timeout, |remaining| remaining.min(timeout));
         self.key_picker
-            .wakeup(Instant::now())
+            .wakeup(now)
             .map_or(timeout, |remaining| remaining.min(timeout))
     }
 

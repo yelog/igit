@@ -6,7 +6,7 @@ use crate::ui::panes::PaneId;
 
 struct Candidate {
     sequence: Sequence,
-    target: &'static str,
+    action: CommandAction,
     description: &'static str,
 }
 
@@ -76,7 +76,54 @@ impl Shell {
         keys::context(self.help_content().context())
     }
 
-    fn run_configured(&mut self, target: &'static str, count: Option<u16>) {
+    pub(super) fn log_filter_prefix_is_default(&self) -> bool {
+        const FILTERS: [&str; 4] = [
+            "branch-filter",
+            "user-filter",
+            "date-filter",
+            "paths-filter",
+        ];
+        let filters = self
+            .config
+            .commands
+            .iter()
+            .filter(|c| c.command.group == "log" && FILTERS.contains(&c.command.name))
+            .collect::<Vec<_>>();
+        if filters.len() != FILTERS.len()
+            || filters
+                .iter()
+                .any(|command| command.sequences != command.defaults)
+        {
+            return false;
+        }
+        self.config
+            .commands
+            .iter()
+            .filter(|c| c.command.contexts & keys::LOG != 0)
+            .flat_map(|c| c.sequences.iter().map(move |sequence| (c, sequence)))
+            .filter(|(_, sequence)| {
+                sequence
+                    .first()
+                    .is_some_and(|key| key.code == KeyCode::Char(' ') && key.modifiers.is_empty())
+            })
+            .all(|(command, sequence)| {
+                command.command.group == "global" && command.command.name == "notification-history"
+                    || filters.iter().any(|filter| {
+                        filter.command.group == command.command.group
+                            && filter.command.name == command.command.name
+                            && filter.defaults.contains(sequence)
+                    })
+            })
+    }
+
+    fn run_action(&mut self, action: CommandAction, count: Option<u16>) {
+        if action == CommandAction::OpenNotifications {
+            self.open_notifications(None);
+            return;
+        }
+        let Some(target) = action.keys() else {
+            return;
+        };
         self.cancel_key_sequences();
         let mut sequence = keys::catalogue_sequence(target);
         if target.starts_with("Ctrl-w ") {
@@ -95,7 +142,7 @@ impl Shell {
         }
     }
 
-    pub(super) fn configured_event(&mut self, ev: &Event) -> bool {
+    pub(super) fn configured_event(&mut self, ev: &Event, replaying_notification: bool) -> bool {
         if !self.config.changed() {
             return false;
         }
@@ -139,9 +186,9 @@ impl Shell {
                     return true;
                 }
                 PickerEvent::Run(index) => {
-                    let target = pending.candidates[index].target;
+                    let action = pending.candidates[index].action;
                     let count = pending.count;
-                    self.run_configured(target, count);
+                    self.run_action(action, count);
                     return true;
                 }
                 PickerEvent::Pass => (),
@@ -182,8 +229,10 @@ impl Shell {
                 .iter()
                 .find(|c| c.sequence.len() == pending.prefix.len())
             {
-                if candidate.target != "Ctrl-w f" || raw_key.kind == KeyEventKind::Press {
-                    self.run_configured(candidate.target, pending.count);
+                if candidate.action.keys() != Some("Ctrl-w f")
+                    || raw_key.kind == KeyEventKind::Press
+                {
+                    self.run_action(candidate.action, pending.count);
                 }
                 return true;
             }
@@ -214,6 +263,9 @@ impl Shell {
             .config
             .commands
             .iter()
+            .filter(|c| {
+                !(replaying_notification && c.command.action == CommandAction::OpenNotifications)
+            })
             .filter(|c| {
                 if self.ctx.repos.is_empty() {
                     c.command.group == "global"
@@ -249,24 +301,32 @@ impl Shell {
         }
         let candidates = commands
             .iter()
-            .filter_map(|c| c.command.action.keys().map(|target| (c, target)))
-            .filter(|(_, target)| {
-                // Window geometry determines which directions/resizes are available.
-                !target.starts_with("Ctrl-w ")
-                    || content
-                        .sections
-                        .iter()
-                        .flat_map(|s| s.bindings)
-                        .any(|(key, _)| key == target)
+            .filter(|c| {
+                matches!(
+                    c.command.action,
+                    CommandAction::Keys(_) | CommandAction::OpenNotifications
+                )
             })
-            .flat_map(|(c, target)| {
+            .filter(|c| {
+                // Window geometry determines which directions/resizes are available.
+                c.command.action.keys().is_none_or(|target| {
+                    !target.starts_with("Ctrl-w ")
+                        || content
+                            .sections
+                            .iter()
+                            .flat_map(|s| s.bindings)
+                            .any(|(key, _)| *key == target)
+                })
+            })
+            .flat_map(|c| {
                 let description = content
                     .sections
                     .iter()
                     .flat_map(|s| s.bindings)
                     .find(|(key, _)| {
-                        keys::catalogue_sequence(key) == keys::catalogue_sequence(target)
-                            || c.defaults.contains(&keys::catalogue_sequence(key))
+                        c.command.action.keys().is_some_and(|target| {
+                            keys::catalogue_sequence(key) == keys::catalogue_sequence(target)
+                        }) || c.defaults.contains(&keys::catalogue_sequence(key))
                     })
                     .map_or(c.command.name, |(_, description)| *description);
                 c.sequences
@@ -274,14 +334,14 @@ impl Shell {
                     .filter(|s| s.first() == Some(&key))
                     .map(move |s| Candidate {
                         sequence: s.clone(),
-                        target,
+                        action: c.command.action,
                         description,
                     })
             })
             .collect::<Vec<_>>();
         if let Some(candidate) = candidates.iter().find(|c| c.sequence.len() == 1) {
-            if candidate.target != "Ctrl-w f" || raw_key.kind == KeyEventKind::Press {
-                self.run_configured(candidate.target, None);
+            if candidate.action.keys() != Some("Ctrl-w f") || raw_key.kind == KeyEventKind::Press {
+                self.run_action(candidate.action, None);
             }
         } else if !candidates.is_empty() {
             self.cancel_key_sequences();
@@ -300,6 +360,12 @@ impl Shell {
     }
 
     pub(super) fn configured_footer(&self) -> String {
+        if self.tab == Log && self.log.comparing_workspace() {
+            return format!(
+                "{} Panes  [/] Revisions  n/p Changes  J/K Scroll  F5 Refresh  Esc Log  F1 Help",
+                self.config.label("panes", "focus-next"),
+            );
+        }
         if self.tab == Commit && self.commit.file_comparison_focused() {
             return format!(
                 "[/] Revisions  n/p Changes  f Fold  z Zoom  {} Panes  Esc Back  F1 Help",
@@ -366,8 +432,9 @@ impl Shell {
         };
         if self.tab == Log && self.log.focused_pane() == PaneId::Graph {
             return format!(
-                "{} Commit actions  {} Edit message  {} Diff{conflicts}  F1 Help",
+                "{} Commit actions  {} Compare with Local  {} Edit message  {} Diff{conflicts}  F1 Help",
                 self.config.label("log", "commit-actions"),
+                self.config.label("log", "compare-with-local"),
                 self.config.label("log", "edit-message"),
                 self.config.label("log", "open"),
             );

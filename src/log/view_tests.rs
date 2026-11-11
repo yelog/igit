@@ -202,6 +202,8 @@ fn navigation_requires_gg_and_cancels_interrupted_sequences() {
     assert_eq!(p.cursor, 78);
     key(&mut p, K::Tab, Mods::NONE, &c);
     key(&mut p, K::Esc, Mods::NONE, &c);
+    assert_eq!(p.focused_pane(), PaneId::Files);
+    key(&mut p, K::BackTab, Mods::SHIFT, &c);
     key(&mut p, K::Char('g'), Mods::NONE, &c);
     assert_eq!(p.cursor, 78);
     key(&mut p, K::Char('g'), Mods::NONE, &c);
@@ -555,8 +557,7 @@ fn view_options_branch_or_tag_reclaims_the_left_edge_and_skips_hidden_focus() {
         key(&mut p, K::Char(' '), Mods::NONE, &c);
         key(&mut p, K::Enter, Mods::NONE, &c);
         key(&mut p, K::Esc, Mods::NONE, &c);
-        key(&mut p, K::Esc, Mods::NONE, &c);
-        key(&mut p, K::BackTab, Mods::SHIFT, &c);
+        key(&mut p, K::Tab, Mods::NONE, &c);
         draw(&mut p, &mut t);
         assert_eq!(p.focus, Pane::Refs);
         assert_eq!(target(&p, |h| matches!(h, Hit::Filter(Field::Refs))), refs);
@@ -1432,7 +1433,7 @@ fn wide_rows_prioritise_subject_before_refs_and_narrow_layout_keeps_details_reac
 }
 
 #[test]
-fn navigation_updates_the_row_before_git_and_escape_cancels_a_waiting_diff() {
+fn navigation_updates_the_row_before_git_and_enter_focuses_diff_while_loading() {
     use crossterm::event::KeyEventKind;
     let d = init();
     for (file, subject) in [
@@ -1471,8 +1472,13 @@ fn navigation_updates_the_row_before_git_and_escape_cancels_a_waiting_diff() {
     assert!(!text.contains("c.txt") && !text.contains("No changed files"));
 
     key(&mut p, K::Enter, Mods::NONE, &c);
+    assert_eq!(p.focused_pane(), PaneId::Files);
+    assert!(p.diff.is_none());
+    assert!(p.preview.loading());
+    key(&mut p, K::Enter, Mods::NONE, &c);
     assert!(p.diff.as_ref().unwrap().waiting_for_files);
     key(&mut p, K::Esc, Mods::NONE, &c);
+    assert_eq!(p.focused_pane(), PaneId::Files);
     finish_preview(&mut p, &c);
     assert!(p.diff.is_none());
     assert_eq!(p.cursor, 1);

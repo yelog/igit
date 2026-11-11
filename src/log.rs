@@ -17,6 +17,7 @@ mod preview;
 mod refs;
 pub(crate) mod snapshot;
 pub(crate) mod view;
+mod workspace;
 use self::display::Item;
 use crate::{
     core::Context,
@@ -191,6 +192,7 @@ pub struct LogPanel {
     history_diff: Option<DiffView>,
     history_mouse: bool,
     commit_dialog: Option<actions::Dialog>,
+    workspace_comparison: Option<Box<workspace::Comparison>>,
     commit_review: Option<operations::Review>,
     local_review: Option<String>,
     local_review_serial: u64,
@@ -247,6 +249,7 @@ impl Default for LogPanel {
             history_diff: None,
             history_mouse: false,
             commit_dialog: None,
+            workspace_comparison: None,
             commit_review: None,
             local_review: None,
             local_review_serial: 0,
@@ -263,6 +266,9 @@ impl Default for LogPanel {
 }
 impl LogPanel {
     pub(crate) fn focused_search(&self) -> Option<&crate::ui::search::Prompt> {
+        if let Some(comparison) = &self.workspace_comparison {
+            return comparison.focused_search();
+        }
         if self.editor.is_some()
             || self.diff.is_some()
             || self.view_menu.is_some()
@@ -279,6 +285,11 @@ impl LogPanel {
     }
 
     pub(crate) fn path_copy_target(&self, c: &Context) -> Option<crate::ui::path_copy::Target> {
+        if let Some(comparison) = &self.workspace_comparison {
+            return (comparison.panel.focus == Pane::Files && !comparison.editing())
+                .then(|| comparison.panel.inspector_copy_target(c))
+                .flatten();
+        }
         if self.path_dialog.is_some() {
             return match self.path_dialog.as_ref()? {
                 paths::Dialog::Tree(tree) => tree.copy_target(c),
@@ -297,10 +308,17 @@ impl LogPanel {
     }
 
     pub(crate) fn focused_pane(&self) -> PaneId {
+        if let Some(comparison) = &self.workspace_comparison {
+            return comparison.panel.focus.id();
+        }
         self.focus.id()
     }
 
     pub(crate) fn focus_pane(&mut self, id: PaneId) {
+        if let Some(comparison) = &mut self.workspace_comparison {
+            comparison.focus_pane(id);
+            return;
+        }
         if let Some(pane) = Pane::ORDER
             .into_iter()
             .find(|p| p.id() == id && self.pane_visible(*p))
@@ -315,6 +333,7 @@ impl LogPanel {
 
     pub(crate) fn graph_motion(&self, e: &Event) -> bool {
         self.focus == Pane::Graph
+            && self.workspace_comparison.is_none()
             && !self.editing()
             && matches!(e, Event::Key(k)
             if k.kind != crossterm::event::KeyEventKind::Release && k.modifiers.is_empty()
@@ -757,6 +776,9 @@ impl LogPanel {
 }
 impl Panel for LogPanel {
     fn cancel_mouse(&mut self) {
+        if let Some(comparison) = &mut self.workspace_comparison {
+            comparison.panel.cancel_mouse();
+        }
         self.info_click = None;
         self.info_selection.cancel_mouse();
         if let Some(diff) = &mut self.diff {
@@ -768,9 +790,16 @@ impl Panel for LogPanel {
     }
 
     fn refresh(&mut self, c: &Context) -> Result<()> {
+        if let Some(comparison) = &mut self.workspace_comparison {
+            comparison.refresh(c);
+            return Ok(());
+        }
         self.reload(c, true)
     }
     fn editing(&self) -> bool {
+        if let Some(comparison) = &self.workspace_comparison {
+            return comparison.editing();
+        }
         self.editor.is_some()
             || self.diff.is_some()
             || self.view_menu.is_some()
@@ -778,6 +807,9 @@ impl Panel for LogPanel {
             || self.focused_search().is_some_and(|prompt| prompt.editing())
     }
     fn selected_text(&self) -> Option<&str> {
+        if let Some(comparison) = &self.workspace_comparison {
+            return comparison.selected_text();
+        }
         if self.commit_dialog.is_some() {
             return None;
         }
@@ -804,6 +836,10 @@ impl Panel for LogPanel {
         "j/k Navigate · gg/G First/last · H/M/L Screen top/middle/bottom · Ctrl-F/B Page · Ctrl-D/U Half-page · yy/ym/ya Copy · a Actions · F2 Edit message · Tab Panes · Ctrl-W h/j/k/l Focus · / Search · Space b/u/d/p Filters · o View · Enter Diff · Ctrl-T New Log tab · Ctrl-W c Close"
     }
     fn draw(&mut self, f: &mut Frame, a: Rect, c: &Context) {
+        if let Some(comparison) = &mut self.workspace_comparison {
+            comparison.draw(f, a, c, &mut self.panes);
+            return;
+        }
         self.draw_content(f, a, c);
         self.draw_overlays(f, a, c);
     }
@@ -831,6 +867,16 @@ impl Panel for LogPanel {
         self.confirm_commit_action(token, c)
     }
     fn event(&mut self, e: &Event, c: &Context) -> Action {
+        if let Some(comparison) = &mut self.workspace_comparison {
+            let (close, action) = comparison.event(e, c, &mut self.panes);
+            if close {
+                self.workspace_comparison = None;
+                self.panes.begin();
+                self.panes.cancel_drag();
+                self.hits.clear();
+            }
+            return action;
+        }
         self.check_history_context(c);
         if self.focused_search().is_some()
             && match self.focus {
@@ -1077,10 +1123,20 @@ impl Panel for LogPanel {
                 && !k
                     .modifiers
                     .intersects(Mods::ALT | Mods::CONTROL | Mods::SUPER)
-                && self.filter.file_history.is_some()
-                && matches!(self.focus, Pane::Graph | Pane::Info)
+                && self.filter.comparison.is_none()
+                && (self.focus == Pane::Graph
+                    || self.filter.file_history.is_some() && self.focus == Pane::Info)
             {
-                action = self.open_local_compare(c)?;
+                if self.filter.file_history.is_some() {
+                    action = self.open_local_compare(c)?;
+                } else {
+                    let target = operations::Target::new(
+                        c,
+                        self.rev()
+                            .ok_or_else(|| anyhow::anyhow!("No commit selected"))?,
+                    )?;
+                    self.open_workspace_compare(c, target)?;
+                }
                 return Ok(());
             }
             if key == K::Char('e')
@@ -1185,6 +1241,14 @@ impl Panel for LogPanel {
                 K::Enter => {
                     if self.focus == Pane::Refs {
                         self.activate_ref(c)?
+                    } else if self.focus == Pane::Graph
+                        && self.filter.file_history.is_none()
+                        && self.filter.comparison.is_none()
+                    {
+                        self.require_current_history(c)?;
+                        self.show_info = true;
+                        self.focus_pane(PaneId::Files);
+                        self.preview.expedite();
                     } else if self.focus == Pane::Files
                         && !self.preview.loading()
                         && !self.file_is_leaf(self.file_cursor())
@@ -1197,7 +1261,6 @@ impl Panel for LogPanel {
                 K::Char('s') if self.focus == Pane::Refs && k.modifiers.is_empty() => {
                     self.activate_ref(c)?
                 }
-                K::Esc => self.focus = Pane::Graph,
                 _ => {}
             }
             Ok(())
@@ -1381,7 +1444,10 @@ mod tests {
         assert_eq!(panel.cursor, 1);
         let key = |k| Event::Key(KeyEvent::new(k, Mods::NONE));
         panel.event(&key(K::Enter), &c);
+        assert_eq!(panel.focused_pane(), PaneId::Files);
+        assert!(panel.diff.is_none());
         finish_preview(&mut panel, &c);
+        panel.event(&key(K::Enter), &c);
         assert!(!panel
             .diff
             .as_ref()
@@ -1398,6 +1464,7 @@ mod tests {
         panel.refresh(&c).unwrap();
         assert_eq!(panel.visible.len(), 1);
         assert_ne!(panel.rev().unwrap().root, root);
+        panel.event(&key(K::BackTab), &c);
         panel.event(&key(K::Char('/')), &c);
         panel.event(&Event::Paste("absent".into()), &c);
         panel.event(&key(K::Enter), &c);

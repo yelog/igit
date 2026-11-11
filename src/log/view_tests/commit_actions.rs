@@ -305,6 +305,9 @@ fn editors_menu_info_and_diff_own_commit_shortcut_keys() {
     panel.focus = Pane::Graph;
 
     key(&mut panel, K::Enter, Mods::NONE, &c);
+    assert_eq!(panel.focused_pane(), PaneId::Files);
+    assert!(panel.diff.is_none());
+    key(&mut panel, K::Enter, Mods::NONE, &c);
     assert!(panel.diff.is_some());
     for code in [K::Char('d'), K::Char('u'), K::Char('R')] {
         assert!(matches!(
@@ -540,7 +543,7 @@ fn multi_pick_reviews_hidden_commits_in_application_order_and_leaves_native_queu
     }
     panel.visible.retain(|&i| panel.hist.revs[i].oid == third);
     assert!(panel
-        .pick_hint(&c, "e")
+        .pick_hint(&c, "e", "D")
         .unwrap()
         .starts_with("3 selected · 2 hidden"));
     let Action::Confirm { title, body, token } = key(&mut panel, K::Char('C'), Mods::SHIFT, &c)

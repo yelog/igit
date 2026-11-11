@@ -67,7 +67,7 @@ impl Kind {
 #[derive(Clone)]
 pub(super) struct Target {
     pub root: usize,
-    path: PathBuf,
+    pub(super) path: PathBuf,
     pub oid: String,
     pub subject: String,
 }

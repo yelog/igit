@@ -1,5 +1,42 @@
 use super::{test_support::*, *};
-use crate::core::git;
+use crate::{core::git, ui::panes::PaneId};
+
+#[test]
+fn log_enter_focuses_diff_files_and_escape_preserves_each_pane_and_git_state() {
+    let (_temp, mut app) = fixture();
+    let repo = app.ctx.repos[0].path.clone();
+    let before = snapshot(&repo);
+    let index = std::fs::read(repo.join(".git/index")).unwrap();
+    app.go(Log);
+    app.dispatch(&key(KeyCode::F(5)));
+    for (width, height) in [(120, 36), (80, 24), (44, 12)] {
+        app.log.focus_pane(PaneId::Graph);
+        screen(&mut app, width, height);
+        app.dispatch(&key(KeyCode::Enter));
+        screen(&mut app, width, height);
+        assert_eq!(app.log.focused_pane(), PaneId::Files);
+        assert!(!app.log.editing());
+        assert!(app.pop.is_none());
+        for pane in [PaneId::Refs, PaneId::Files, PaneId::Info] {
+            app.log.focus_pane(pane);
+            screen(&mut app, width, height);
+            app.dispatch(&key(KeyCode::Esc));
+            assert_eq!(app.log.focused_pane(), pane);
+            assert_eq!(app.tab, Log);
+            assert!(!app.log.editing());
+            assert!(app.pop.is_none());
+        }
+    }
+    app.log.focus_pane(PaneId::Graph);
+    app.dispatch(&key(KeyCode::F(1)));
+    app.dispatch(&Event::Paste("Focus Diff pane".into()));
+    app.dispatch(&key(KeyCode::Enter));
+    assert_eq!(app.log.focused_pane(), PaneId::Files);
+    assert!(!app.log.editing());
+    assert!(app.pop.is_none());
+    assert_eq!(snapshot(&repo), before);
+    assert_eq!(std::fs::read(repo.join(".git/index")).unwrap(), index);
+}
 
 #[test]
 fn log_actions_review_cancels_by_default_and_revert_conflict_refreshes_workspace() {
@@ -141,5 +178,71 @@ fn log_shortcut_remap_opens_review_and_cancellation_keeps_repository_unchanged()
     ));
     app.dispatch(&key(KeyCode::Enter));
     assert!(app.pop.is_none());
+    assert_eq!(snapshot(&repo), before);
+}
+
+#[test]
+fn workspace_compare_remapped_entry_help_panes_refresh_and_return_keep_log_and_git_state() {
+    use crate::ui::panes::PaneId;
+
+    let (_temp, mut app) = fixture();
+    let repo = app.ctx.repos[0].path.clone();
+    let before = snapshot(&repo);
+    app.config = AppConfig::from_toml(
+        "[keybindings.global]\nnotification-history=[]\n[keybindings.log]\ncompare-with-local=['F8']",
+    )
+    .unwrap();
+    app.go(Log);
+    screen(&mut app, 120, 36);
+    app.dispatch(&key(KeyCode::Char('D')));
+    assert!(!app.log.comparing_workspace());
+    app.dispatch(&key(KeyCode::F(8)));
+    assert!(app.log.comparing_workspace());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.log.preview_wakeup().is_some() {
+        app.poll();
+        assert!(Instant::now() < deadline, "workspace comparison timed out");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    for (width, height) in [(44, 12), (80, 25), (120, 36), (184, 48)] {
+        let text = screen(&mut app, width, height);
+        assert!(text.contains("Working tree"), "{text}");
+        if width == 184 {
+            let footer = text.lines().last().unwrap();
+            assert!(
+                footer.contains("J/K Scroll") && footer.contains("Esc Log"),
+                "workspace comparison footer missing: {text}"
+            );
+        }
+    }
+    assert_eq!(app.help_content().context(), "Log / Workspace Files");
+    assert_eq!(app.log.focused_pane(), PaneId::Files);
+    app.dispatch(&key(KeyCode::Tab));
+    assert_eq!(app.log.focused_pane(), PaneId::Info);
+    app.dispatch(&key(KeyCode::Char('f')));
+    app.dispatch(&key(KeyCode::Char('p')));
+    assert!(app.pop.is_none());
+    app.dispatch(&key(KeyCode::F(1)));
+    let help = screen(&mut app, 120, 36);
+    assert!(help.contains("WORKSPACE DIFF"), "{help}");
+    assert!(
+        !help.contains("Drop commit") && !help.contains("Cherry-pick"),
+        "{help}"
+    );
+    app.dispatch(&key(KeyCode::Esc));
+    app.dispatch(&key(KeyCode::Tab));
+    assert_eq!(app.log.focused_pane(), PaneId::Files);
+    app.dispatch(&key(KeyCode::F(5)));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.log.preview_wakeup().is_some() {
+        app.poll();
+        assert!(Instant::now() < deadline, "workspace refresh timed out");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(app.log.comparing_workspace());
+    app.dispatch(&key(KeyCode::Esc));
+    assert!(!app.log.comparing_workspace());
+    assert_eq!(app.tab, Log);
+    assert_eq!(app.log.focused_pane(), PaneId::Graph);
     assert_eq!(snapshot(&repo), before);
 }

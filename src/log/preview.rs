@@ -78,6 +78,9 @@ impl LogPanel {
     }
 
     pub(crate) fn preview_wakeup(&self) -> Option<Duration> {
+        if let Some(comparison) = &self.workspace_comparison {
+            return comparison.wakeup();
+        }
         if self.preview.running.is_some() {
             Some(Duration::from_millis(16))
         } else {
@@ -88,6 +91,9 @@ impl LogPanel {
     }
 
     pub(crate) fn poll_preview(&mut self, c: &Context) -> Result<bool> {
+        if let Some(comparison) = &mut self.workspace_comparison {
+            return comparison.poll(c);
+        }
         if let Some(result) = self.preview.take_result() {
             let open_diff = self.diff.take_if(|d| d.waiting_for_files).is_some();
             match result {

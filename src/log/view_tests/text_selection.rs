@@ -84,6 +84,8 @@ fn text_selection_details_and_scrolled_diff_copy_without_navigation_or_git_write
         }
         key(&mut p, K::Esc, Mods::NONE, &c);
         assert!(p.selected_text().is_none() && p.focus == Pane::Info);
+        key(&mut p, K::Esc, Mods::NONE, &c);
+        assert_eq!(p.focus, Pane::Info);
 
         p.scroll_info(isize::MAX);
         render(&mut p, &mut t, &c);
