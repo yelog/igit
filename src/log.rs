@@ -1,5 +1,6 @@
 //! Multi-root history: preserve each root's topology and operate on the selected root's objects.
 mod actions;
+mod authors;
 mod branches;
 pub(crate) mod compare;
 mod display;
@@ -85,6 +86,9 @@ enum Field {
 #[derive(Clone, Copy)]
 enum DropdownHit {
     Surface,
+    AuthorInput,
+    AuthorClear,
+    AuthorScroll(usize),
     Branch(branches::Target),
     Choice(usize),
     PathInput,
@@ -132,7 +136,6 @@ struct DateRangeEditor {
 struct ViewState {
     filter: Filter,
     ref_query: String,
-    ref_search: crate::ui::search::Search<String>,
     file_search: crate::ui::search::Search,
     regex: bool,
     case_sensitive: bool,
@@ -165,11 +168,11 @@ pub struct LogPanel {
     node_glyphs: NodeGlyphs,
     refs: refs::RefTree,
     ref_query: String,
-    ref_search: crate::ui::search::Search<String>,
     file_search: crate::ui::search::Search,
     inspector: inspector::Inspector,
     cursor: usize,
     choice: Option<usize>,
+    author_top: usize,
     suggestions: Vec<(String, String)>,
     path_options: Vec<usize>,
     path_dialog: Option<paths::Dialog>,
@@ -222,11 +225,11 @@ impl Default for LogPanel {
             node_glyphs: NodeGlyphs::detect(),
             refs: Default::default(),
             ref_query: String::new(),
-            ref_search: Default::default(),
             file_search: Default::default(),
             inspector: Default::default(),
             cursor: 0,
             choice: None,
+            author_top: 0,
             suggestions: vec![],
             path_options: vec![],
             path_dialog: None,
@@ -278,7 +281,6 @@ impl LogPanel {
             return None;
         }
         match self.focus {
-            Pane::Refs => Some(self.ref_search.prompt()),
             Pane::Files => Some(self.file_search.prompt()),
             _ => None,
         }
@@ -593,6 +595,14 @@ impl LogPanel {
             Hit::Filter(field) => self.begin(field, c)?,
             Hit::Dropdown(item) => match item {
                 DropdownHit::Surface => (),
+                DropdownHit::AuthorInput => self.choice = None,
+                DropdownHit::AuthorClear => {
+                    if let Some((Field::Author, input)) = &mut self.editor {
+                        input.clear();
+                        self.edit_changed(c);
+                    }
+                }
+                DropdownHit::AuthorScroll(index) => self.choice = Some(index),
                 DropdownHit::Branch(t) => self.branch_input(branches::Input::Click(t), c)?,
                 DropdownHit::PathInput => self.choice = None,
                 DropdownHit::PathText => (),
@@ -833,7 +843,7 @@ impl Panel for LogPanel {
         }
     }
     fn help(&self) -> &'static str {
-        "j/k Navigate · gg/G First/last · H/M/L Screen top/middle/bottom · Ctrl-F/B Page · Ctrl-D/U Half-page · yy/ym/ya Copy · a Actions · F2 Edit message · Tab Panes · Ctrl-W h/j/k/l Focus · / Search · Space b/u/d/p Filters · o View · Enter Diff · Ctrl-T New Log tab · Ctrl-W c Close"
+        "j/k Navigate · gg/G First/last · H/M/L Screen top/middle/bottom · Ctrl-F/B Page · Ctrl-D/U Half-page · yy/ym/ya Copy · O Browser · a Actions · F2 Edit message · Tab Panes · Ctrl-W h/j/k/l Focus · / Search · Space b/u/d/p Filters · o View · Enter Diff · Ctrl-T New Log tab · Ctrl-W c Close"
     }
     fn draw(&mut self, f: &mut Frame, a: Rect, c: &Context) {
         if let Some(comparison) = &mut self.workspace_comparison {
@@ -878,13 +888,7 @@ impl Panel for LogPanel {
             return action;
         }
         self.check_history_context(c);
-        if self.focused_search().is_some()
-            && match self.focus {
-                Pane::Refs => self.ref_search_event(e, c),
-                Pane::Files => self.file_search_event(e, c),
-                _ => false,
-            }
-        {
+        if self.focused_search().is_some() && self.file_search_event(e, c) {
             self.panes.cancel_drag();
             self.cancel_key_sequence();
             self.last = None;
@@ -1183,6 +1187,28 @@ impl Panel for LogPanel {
                 return Ok(());
             }
             match key {
+                K::Char('O')
+                    if self.focus == Pane::Graph
+                        && matches!(k.modifiers, Mods::NONE | Mods::SHIFT)
+                        && k.kind == crossterm::event::KeyEventKind::Press =>
+                {
+                    self.require_current_history(c)?;
+                    let rev = self
+                        .rev()
+                        .ok_or_else(|| anyhow::anyhow!("No commit selected"))?;
+                    anyhow::ensure!(
+                        c.scope.contains(&rev.root),
+                        "Commit repository is outside Roots"
+                    );
+                    let repo = c
+                        .repos
+                        .get(rev.root)
+                        .ok_or_else(|| anyhow::anyhow!("Commit repository is unavailable"))?;
+                    action = Action::OpenCommit {
+                        repo: repo.path.clone(),
+                        oid: rev.oid.clone(),
+                    };
+                }
                 K::Char('t') if k.modifiers.contains(Mods::CONTROL) => self.new_tab(c)?,
                 K::Char('[') => self.switch_tab(
                     (self.view_index + self.views.len() - 1) % self.views.len(),
@@ -1197,7 +1223,14 @@ impl Panel for LogPanel {
                 {
                     self.begin(Field::Text, c)?
                 }
-                K::Char('S') if self.focus == Pane::Refs => self.begin(Field::Refs, c)?,
+                K::Char('/' | 'S')
+                    if self.focus == Pane::Refs
+                        && !k
+                            .modifiers
+                            .intersects(Mods::ALT | Mods::CONTROL | Mods::SUPER) =>
+                {
+                    self.begin(Field::Refs, c)?
+                }
                 K::Char('B') => self.toggle_view_item(Item::BranchOrTag, c)?,
                 K::Char('I') => self.toggle_view_item(Item::CommitDetails, c)?,
                 K::Char('H') => self.toggle_view_item(Item::CurrentBranch, c)?,

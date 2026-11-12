@@ -58,16 +58,27 @@ impl PushPanel {
                     .iter()
                     .any(|e| e.idx == *idx && e.source == choice.branch && e.t == choice.target)
         });
-        if let Some(roots) = &reseed {
-            self.checked = roots.iter().copied().collect();
-            self.expanded = self.checked.clone();
-            self.init = true;
-        }
-        if !self.init {
-            if let Some(e) = self.entries.iter().find(|e| e.n > 0) {
-                self.checked.insert(e.idx);
-                self.expanded.insert(e.idx);
+        let initial_root = if !self.init && reseed.is_none() {
+            self.entries
+                .iter()
+                .find(|entry| entry.n > 0)
+                .map(|entry| entry.idx)
+        } else {
+            None
+        };
+        if !self.init || reseed.is_some() {
+            let outgoing = self
+                .entries
+                .iter()
+                .filter(|entry| entry.n > 0)
+                .map(|entry| entry.idx)
+                .collect::<BTreeSet<_>>();
+            if let Some(roots) = &reseed {
+                self.checked = roots.iter().copied().collect();
+            } else {
+                self.checked.extend(outgoing.iter().copied());
             }
+            self.expanded = outgoing;
             self.init = true;
         }
         self.entries.sort_by(|a, b| {
@@ -82,6 +93,9 @@ impl PushPanel {
             .as_ref()
             .filter(|_| reseed.is_none())
             .and_then(|identity| self.position_for_identity(identity))
+            .or_else(|| {
+                initial_root.and_then(|root| rows.iter().position(|row| *row == (root, None)))
+            })
             .or_else(|| {
                 rows.iter()
                     .position(|(i, k)| k.is_none() && self.checked.contains(i))

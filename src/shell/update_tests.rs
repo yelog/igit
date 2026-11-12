@@ -81,6 +81,19 @@ fn press(app: &mut Shell, ch: char) {
     app.dispatch(&key(KeyCode::Char(ch)));
 }
 
+fn ready(app: &mut Shell) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.help_content().context() != "Update / Review" {
+        app.poll();
+        assert!(
+            Instant::now() < deadline,
+            "repository check timed out: {}",
+            app.notifications.latest_body()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 fn click(app: &mut Shell, screen: &str, label: &str) {
     let (row, column) = screen
         .lines()
@@ -130,6 +143,11 @@ fn workspace_fetch_reviews_scope_and_updates_refs_only_after_confirmation() {
     ctx.scope.retain(|index| ctx.repos[*index].name == "active");
     let mut app = Shell::new(ctx, IconMode::Ascii);
     press(&mut app, 'f');
+    assert_eq!(app.help_content().context(), "Update / Checking");
+    assert!(app.poll_timeout() <= Duration::from_millis(16));
+    let loading = screen(&mut app, 44, 12);
+    assert!(loading.contains("Fetch Repositories") && loading.contains("Cancel"));
+    ready(&mut app);
     let text = screen(&mut app, 44, 12);
     assert!(
         text.contains("Fetch Repositories")
@@ -147,6 +165,7 @@ fn workspace_fetch_reviews_scope_and_updates_refs_only_after_confirmation() {
     assert_eq!(tracking(&active), old_tracking);
 
     press(&mut app, 'f');
+    ready(&mut app);
     press(&mut app, 'l');
     press(&mut app, 'h');
     press(&mut app, 'l');
@@ -155,6 +174,7 @@ fn workspace_fetch_reviews_scope_and_updates_refs_only_after_confirmation() {
     assert_eq!(tracking(&active), old_tracking);
 
     press(&mut app, 'f');
+    ready(&mut app);
     let text = screen(&mut app, 44, 12);
     click(&mut app, &text, " Fetch ");
     assert!(finish(&mut app).contains("active: OK"));
@@ -179,6 +199,7 @@ fn workspace_pull_integrates_diverged_branches_with_the_reviewed_strategy() {
             app.go(Push);
         }
         press(&mut app, 'p');
+        ready(&mut app);
         let text = screen(&mut app, 44, 12);
         assert!(text.contains("Update Project") && text.contains("origin:main"));
         assert!(text.contains("(o) m Merge"));
@@ -224,6 +245,7 @@ fn workspace_pull_keeps_conflicts_and_refuses_a_branch_switched_after_review() {
     let stale_tracking = tracking(&stale);
     let mut app = Shell::new(workspace(dir.path()), IconMode::Ascii);
     press(&mut app, 'p');
+    ready(&mut app);
     let text = screen(&mut app, 120, 30);
     assert!(text.lines().any(|line| line.contains("d-detached")
         && line.contains("Skipped")
@@ -259,7 +281,7 @@ fn workspace_pull_keeps_conflicts_and_refuses_a_branch_switched_after_review() {
         .next()
         .unwrap()
         .contains("Conflicts"));
-    press(&mut app, '6');
+    press(&mut app, '7');
     assert_eq!(app.tab, Conflicts);
     assert!(screen(&mut app, 120, 30).contains("base.txt"));
 
@@ -335,6 +357,7 @@ fn workspace_update_previews_the_configured_upstream_without_git_writes() {
         let mut app = Shell::new(workspace(dir.path()), IconMode::Ascii);
         for ch in ['p', 'f'] {
             press(&mut app, ch);
+            ready(&mut app);
             let text = screen(&mut app, 120, 36);
             for count in ["^2", "v3"] {
                 assert_eq!(text.contains(count), expected.contains(&count), "{text}");
@@ -378,6 +401,7 @@ fn workspace_update_enter_runs_the_default_action_and_refreshes_upstream_counts_
     let before = snapshot(&local);
     let mut app = Shell::new(workspace(dir.path()), IconMode::Ascii);
     press(&mut app, 'f');
+    ready(&mut app);
     let text = screen(&mut app, 120, 36);
     assert!(!text.contains("v1"), "{text}"); // Opening review does not fetch.
     app.dispatch(&key(KeyCode::Enter));
@@ -389,6 +413,7 @@ fn workspace_update_enter_runs_the_default_action_and_refreshes_upstream_counts_
     assert_eq!(snapshot(&local), before);
     app.dispatch(&key(KeyCode::Enter));
     press(&mut app, 'p');
+    ready(&mut app);
     assert!(screen(&mut app, 120, 36).contains("v1"));
     app.dispatch(&key(KeyCode::Enter));
     let text = finish(&mut app);
@@ -437,6 +462,7 @@ fn workspace_pull_fetches_only_the_reviewed_upstream_from_the_fetch_endpoint() {
 
     let mut app = Shell::new(workspace(dir.path()), IconMode::Ascii);
     press(&mut app, 'p');
+    ready(&mut app);
     app.dispatch(&key(KeyCode::Enter));
     let text = finish(&mut app);
     assert!(text.contains("project: OK"), "{text}");
@@ -464,6 +490,7 @@ fn workspace_pull_supports_a_reviewed_local_upstream_without_writing_fetch_head(
     let fetch_head = fs::read(local.join(".git/FETCH_HEAD")).unwrap();
     let mut app = Shell::new(workspace(dir.path()), IconMode::Ascii);
     press(&mut app, 'p');
+    ready(&mut app);
     assert!(screen(&mut app, 120, 30).contains(".:release"));
     app.dispatch(&key(KeyCode::Enter));
     let text = finish(&mut app);
@@ -488,6 +515,7 @@ fn workspace_pull_refuses_dirty_tracked_content_and_preserves_mixed_staging() {
         let before = snapshot(&local);
         let mut app = Shell::new(workspace(dir.path()), IconMode::Ascii);
         press(&mut app, 'p');
+        ready(&mut app);
         press(&mut app, strategy);
         app.dispatch(&key(KeyCode::Enter));
         let text = finish(&mut app);
@@ -517,6 +545,7 @@ fn workspace_pull_redacts_the_fetch_url_when_the_remote_is_unavailable() {
     let before = snapshot(&local);
     let mut app = Shell::new(workspace(dir.path()), IconMode::Ascii);
     press(&mut app, 'p');
+    ready(&mut app);
     app.dispatch(&key(KeyCode::Enter));
     let text = finish(&mut app);
     assert!(
@@ -557,6 +586,7 @@ fn workspace_pull_revalidates_the_branch_after_fetch_before_integrating() {
     let before = snapshot(&local);
     let mut app = Shell::new(workspace(dir.path()), IconMode::Ascii);
     press(&mut app, 'p');
+    ready(&mut app);
     app.dispatch(&key(KeyCode::Enter));
     let text = finish(&mut app);
     assert!(

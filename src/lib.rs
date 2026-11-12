@@ -6,6 +6,7 @@ mod installation;
 pub mod log;
 pub mod merge;
 pub mod push;
+pub mod remote;
 mod shell;
 pub mod stash;
 pub mod ui;

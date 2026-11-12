@@ -348,7 +348,6 @@ impl LogPanel {
                         self.history_load.error = None;
                         let selected = self.history_load.selected.take();
                         self.restore_history_cursor(selected);
-                        self.ref_search.invalidate();
                         self.rebuild_refs(c);
                         self.refresh_history_preview();
                         self.hits.clear();

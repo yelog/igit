@@ -1,3 +1,4 @@
+pub(crate) mod browser;
 pub(crate) mod clipboard;
 pub(crate) mod commit_copy;
 pub(crate) mod help;
@@ -7,6 +8,7 @@ pub(crate) mod key_sequence;
 pub(crate) mod notifications;
 pub(crate) mod panes;
 pub(crate) mod path_copy;
+pub(crate) mod review;
 pub(crate) mod search;
 pub(crate) mod selection;
 pub(crate) mod strategy;
@@ -30,6 +32,10 @@ pub enum Action {
         text: String,
         label: &'static str,
     },
+    OpenCommit {
+        repo: PathBuf,
+        oid: String,
+    },
     Refresh(NoticeLevel, String),
     EditFile {
         repo: PathBuf,
@@ -43,7 +49,7 @@ pub enum Action {
     OpenConflicts,
     CloseDialog,
     ReviewRollback,
-    ChooseUpdateStrategy,
+    ToggleUpdateStrategy,
     Confirm {
         title: String,
         body: String,

@@ -10,8 +10,15 @@ struct Candidate {
     description: &'static str,
 }
 
+impl Candidate {
+    fn press_only(&self, context: u32) -> bool {
+        matches!(self.action.keys(), Some("Ctrl-w f" | "O"))
+            || context == keys::MESSAGE && matches!(self.action.keys(), Some("c" | "a" | "g"))
+    }
+}
+
 pub(super) struct PendingKeys {
-    context: u16,
+    context: u32,
     prefix: Sequence,
     candidates: Vec<Candidate>,
     count: Option<u16>,
@@ -66,7 +73,7 @@ impl Shell {
         true
     }
 
-    fn binding_context(&self) -> u16 {
+    fn binding_context(&self) -> u32 {
         if self.pop.is_some() || self.panel().editing() {
             return 0;
         }
@@ -229,9 +236,7 @@ impl Shell {
                 .iter()
                 .find(|c| c.sequence.len() == pending.prefix.len())
             {
-                if candidate.action.keys() != Some("Ctrl-w f")
-                    || raw_key.kind == KeyEventKind::Press
-                {
+                if !candidate.press_only(context) || raw_key.kind == KeyEventKind::Press {
                     self.run_action(candidate.action, pending.count);
                 }
                 return true;
@@ -340,7 +345,7 @@ impl Shell {
             })
             .collect::<Vec<_>>();
         if let Some(candidate) = candidates.iter().find(|c| c.sequence.len() == 1) {
-            if candidate.action.keys() != Some("Ctrl-w f") || raw_key.kind == KeyEventKind::Press {
+            if !candidate.press_only(context) || raw_key.kind == KeyEventKind::Press {
                 self.run_action(candidate.action, None);
             }
         } else if !candidates.is_empty() {
@@ -360,6 +365,18 @@ impl Shell {
     }
 
     pub(super) fn configured_footer(&self) -> String {
+        if self.tab == Remote {
+            if self.remote.editing() {
+                return self.remote.help().into();
+            }
+            return format!(
+                "{} Add  {} Edit  {} Remove  {} Roots  F1 Help",
+                self.config.label("remote", "add"),
+                self.config.label("remote", "edit"),
+                self.config.label("remote", "remove"),
+                self.config.label("global", "roots"),
+            );
+        }
         if self.tab == Log && self.log.comparing_workspace() {
             return format!(
                 "{} Panes  [/] Revisions  n/p Changes  J/K Scroll  F5 Refresh  Esc Log  F1 Help",
@@ -384,6 +401,17 @@ impl Shell {
                 self.config.label("stash", "drop"),
                 self.config.label("panes", "focus-next"),
                 self.config.label("stash", "open"),
+            );
+        }
+        if self.tab == Push {
+            return format!(
+                "{} Push  {} Fetch  {} Strategy  {} Tags  {} Hooks  {} Panes  F1 Help",
+                self.config.label("push", "review"),
+                self.config.label("push", "fetch"),
+                self.config.label("push", "update-strategy"),
+                self.config.label("push", "follow-tags"),
+                self.config.label("push", "skip-hooks"),
+                self.config.label("panes", "focus-next"),
             );
         }
         if self.tab == Branch {

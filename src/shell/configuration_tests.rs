@@ -54,7 +54,7 @@ fn running_commit_blocks_push_fetch_roots_workspace_replacement_and_quit() {
         std::thread::yield_now();
     }
     screen(&mut app, 120, 36);
-    send(&mut app, "F");
+    send(&mut app, "f");
     assert!(!app.push.busy());
     assert!(
         app.notifications.latest_body().contains("Git write"),
@@ -83,8 +83,50 @@ fn running_commit_blocks_push_fetch_roots_workspace_replacement_and_quit() {
 
 fn configure(app: &mut Shell, text: &str) {
     app.config = AppConfig::from_toml(&format!("[ui]\nicons='ascii'\n{text}")).unwrap();
+    app.commit.configure_message_shortcuts(&app.config);
     app.merge.shortcut_labels = app.config.shortcut_labels("merge");
     app.push.shortcut_labels = app.config.shortcut_labels("push");
+}
+
+#[test]
+fn message_action_shortcuts_respect_remapping_and_disabling_in_shell() {
+    for binding in ["['F7']", "[]"] {
+        let (_dir, mut app) = fixture();
+        let repo = app.ctx.repos[0].path.clone();
+        let before = snapshot(&repo);
+        configure(
+            &mut app,
+            &format!(
+                "[keybindings.commit]\ncommit={binding}\ncommit-and-push=[]\ngenerate-message=[]"
+            ),
+        );
+        screen(&mut app, 120, 36);
+        send(&mut app, "c");
+        assert!(app.commit.message_editing());
+        app.dispatch(&Event::Paste("feat: configured shortcut".into()));
+        send(&mut app, "Esc");
+        assert_eq!(app.commit.focused_pane(), crate::ui::panes::PaneId::Message);
+        send(&mut app, "c a g");
+        assert!(!app.commit.editing());
+        assert!(!app.commit.execution_running());
+        assert!(!app.commit.ai_running());
+        assert!(app.pop.is_none());
+        assert_eq!(snapshot(&repo), before);
+        let mut repeated = KeyEvent::new(KeyCode::F(7), KeyModifiers::NONE);
+        repeated.kind = KeyEventKind::Repeat;
+        app.dispatch(&Event::Key(repeated));
+        assert_eq!(snapshot(&repo), before);
+        send(&mut app, "F7");
+        if binding == "[]" {
+            assert_eq!(snapshot(&repo), before);
+        } else {
+            assert_eq!(git(&repo, &["rev-parse", "HEAD^"]).unwrap(), before[0]);
+            assert_eq!(
+                git(&repo, &["log", "-1", "--format=%B"]).unwrap(),
+                "feat: configured shortcut"
+            );
+        }
+    }
 }
 fn send(app: &mut Shell, text: &str) {
     for key in parse_sequence(text).unwrap() {
@@ -641,7 +683,7 @@ fn configuration_swaps_unbinds_and_preserves_text_input() {
     let _capture = CopyCapture::start();
     configure(
         &mut app,
-        "[keybindings.commit]\nedit-message=['c']\nreview=['i']\nai-draft=[]",
+        "[keybindings.commit]\nedit-message=['c']\nreview=['i']\ncommit=[]\nai-draft=[]",
     );
     send(&mut app, "A");
     assert!(app.pop.is_none());

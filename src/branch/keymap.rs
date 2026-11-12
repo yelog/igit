@@ -72,7 +72,7 @@ impl BranchPanel {
                     ("m", "Merge focused branch into current branch"),
                     ("r", "Rename focused local branch"),
                     ("c", "Compare focused branch with current branch"),
-                    ("U", "Review fast-forward pull for focused local branch"),
+                    ("p", "Review fast-forward pull for focused local branch"),
                     ("P", "Review push for focused local branch"),
                 ],
             )

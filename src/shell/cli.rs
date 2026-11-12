@@ -176,6 +176,7 @@ fn parse_tab(argument: &std::ffi::OsStr) -> Option<Tab> {
         "push" => Some(Tab::Push),
         "branch" => Some(Tab::Branch),
         "stash" => Some(Tab::Stash),
+        "remote" => Some(Tab::Remote),
         _ => None,
     }
 }
@@ -222,6 +223,7 @@ mod tests {
             ("push", Tab::Push),
             ("branch", Tab::Branch),
             ("stash", Tab::Stash),
+            ("remote", Tab::Remote),
         ] {
             let launch = options(&[name]).launch(cwd.path()).unwrap();
             assert_eq!(launch.tab, tab);

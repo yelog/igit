@@ -1,5 +1,7 @@
 //! Exercise the rendered cells and actual input dispatch together.
+mod author_menu;
 mod branch_menu;
+mod browser;
 mod column_order;
 mod commit_actions;
 mod filter_shortcuts;

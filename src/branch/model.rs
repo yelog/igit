@@ -160,7 +160,8 @@ impl Snapshot {
                 })
             });
         if for_display {
-            metadata.last_used = super::recent::read(repo, &branches);
+            metadata.last_used =
+                super::recent::read(&repo.path, branches.keys().map(String::as_str));
         }
         Ok((
             Self {

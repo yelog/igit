@@ -76,9 +76,10 @@ Update Center's `r` bypasses the cache. See [updating](installation.md#updating)
 ## Update strategy
 
 Pull and Push share one application-wide **Merge** / **Rebase** preference,
-initially **Merge**. In Push, press `s` or click **Update: Merge/Rebase** in
-the footer. In Pull review, press `s` or click **Default: Merge/Rebase** to
-open the same **Default Update Strategy** selector. Arrows, `j/k`, and `m/r`
+initially **Merge**. In Push, press `s` or click **Update strategy: Merge/Rebase**
+at the right of the outgoing toolbar to toggle and save it immediately.
+In Pull review, press `s` or click **Default: Merge/Rebase** to
+open the **Default Update Strategy** selector. Arrows, `j/k`, and `m/r`
 move the choice; Enter saves, clicking an option saves directly, and Esc
 cancels without changing the saved preference.
 
@@ -104,7 +105,7 @@ files. Pull inherits the saved default whenever its review opens; its existing
 `m/r` toolbar choices override only that Pull. Saving through `s` changes both
 the current Pull strategy and the default used by future Pull and Push reviews.
 The Push review captures the strategy, and changing it requires a fresh review;
-strategy changes are unavailable while Git work is running. Branch's `U`
+strategy changes are unavailable while Git work is running. Branch's `p` / `U`
 continues to require a fast-forward and does not inherit this preference.
 
 The Push entry points can be remapped independently:
@@ -113,7 +114,15 @@ The Push entry points can be remapped independently:
 [keybindings.push]
 update-strategy = ["s"]
 resolve-conflicts = ["C"]
+fetch = ["f"]
+follow-tags = ["F"]
+skip-hooks = ["H"]
 ```
+
+Push's `f` fetches its selected targets in Roots; other panels' `f` opens the
+workspace Fetch review. The F/H option shortcuts and P Push shortcut are
+accented inside their button labels. Remapping or disabling these defaults
+removes their mnemonic highlights.
 
 Pull review and the selector keep their context-owned controls. `C` or the
 clickable **Conflicts** control in Push opens the existing resolver after an
@@ -187,7 +196,7 @@ binding; the action's mouse button remains available.
 | `keybindings.panes` | See defaults | Focus/cycle panes, resize/reset sizes, maximize/restore, optional Kitty synchronization, close a Log tab |
 | `keybindings.log` | See defaults | Movement, paging, copying, filtering, tabs, display options |
 | `keybindings.commit` | See defaults | Movement, checkboxes, groups, preview, messages, AI and commits |
-| `keybindings.push` | See defaults | Movement, repository selection, targets, fetch, update-strategy selector, conflict navigation, push review and retry |
+| `keybindings.push` | See defaults | Movement, repository selection, targets, fetch, update-strategy toggle, Follow tags/Hooks, conflict navigation, push review and retry |
 | `keybindings.merge` | See defaults | Conflicts tab: navigation, resolutions, undo, drafts, Apply and Continue review |
 
 These settings do not store repository selections, message drafts, pane sizes,
@@ -199,8 +208,15 @@ API keys come only from the configured environment variable.
 in Changes and Preview. It focuses Message and starts editing.
 `keybindings.commit.edit-message` defaults to `i`, and `Esc` saves and leaves the
 editor with Message focused. In Message, Left/Right selects an action and Enter
-(`keybindings.commit.open`) runs it. `keybindings.commit.review-and-push` (`P`)
-still commits and opens Push for separate confirmation.
+(`keybindings.commit.open`) runs it. With Message focused outside editing,
+`keybindings.commit.commit` (`c`) commits, `keybindings.commit.commit-and-push`
+(`a`) commits and opens Push review, and `keybindings.commit.generate-message`
+(`g`) generates a message. Their C/a/G button letters are accented and underlined
+only while those default keys remain available in the focused Message pane.
+Remapping or disabling a key removes its mnemonic accent. The existing
+`keybindings.commit.review-and-push` (`P`) still commits and opens Push for
+separate confirmation; `keybindings.commit.ai-draft` (`A`) still generates a
+message.
 
 `keybindings.commit.stage-hunks` defaults to `["Ctrl-g"]` in Changes/Preview.
 It opens the highlighted tracked file's Staged/Unstaged hunk view. That view's
@@ -211,6 +227,58 @@ repositories after the current repository completes.
 `keybindings.merge.abort` defaults to `["B"]` and `keybindings.merge.skip` to
 `["N"]` in the conflict list. Availability follows the selected repository's
 native operation; each action opens its own review.
+
+## Commit pages in the browser
+
+In a Log commit list, `O` opens the highlighted commit in the default browser.
+The command also works in File History and branch comparisons. Remap or disable
+it in the application settings:
+
+```toml
+[keybindings.log]
+open-in-browser = ["O", "Alt-o"]
+```
+
+IGit uses the highlighted repository's fetch URL, including Git's `insteadOf`
+rewrites. It accepts HTTP(S), SSH, SCP-style, and Git transport URLs, removes
+credentials and `.git`, preserves HTTP(S) ports, and maps SSH transport to
+HTTPS without carrying over the SSH port. Built-in rules recognize GitHub,
+GitLab (including subgroups), Bitbucket Cloud/Data Center, Gitee,
+Gitea/Forgejo/Codeberg, and Azure DevOps. Self-hosted names with a `github`,
+`gitlab`, `bitbucket`, `stash`, `gitee`, `gitea`, or `forgejo` hostname label
+use the corresponding rule.
+
+Remote choice uses only local configuration and refs. Among remotes with a
+remote-tracking branch containing the commit, IGit prefers the checked-out
+branch's upstream remote, then `origin`, then a sole remaining remote. If none
+is known to contain the commit, the same preferences apply to all remotes.
+Ambiguous choices report an error. Override the choice in that repository:
+
+```sh
+git config --local igit.webRemote upstream
+```
+
+For an unrecognized host, an SSH alias, a separate web port, a custom URL
+prefix, or another hosting service, configure the complete commit URL template:
+
+```sh
+git config --local igit.webCommitUrl 'https://forge.example/team/repo/-/commit/{commit}'
+```
+
+`{commit}` is replaced with the highlighted full commit ID. A template takes
+precedence over remote discovery and must be an HTTP(S) URL without embedded
+credentials; encode spaces as `%20`. Query-based templates are supported.
+These Git settings are separate from IGit's TOML schema and can be removed
+with `git config --local --unset igit.webRemote` or
+`git config --local --unset igit.webCommitUrl`.
+
+Browser startup runs in the background through `open` on macOS, `xdg-open`
+or `gio open` on Linux, and the Windows URL handler. The browser handles
+authentication. Immediate launcher failures are reported; a handler still
+running after 500ms is reaped separately so another commit can be opened.
+Launch success confirms startup without an immediate error; IGit does not
+probe the server, fetch, push, or verify that the commit has been published.
+Local-only remotes need a URL template.
 
 ## AI commit messages
 
@@ -326,17 +394,32 @@ up to four chords separated by spaces:
   also match. The terminal must deliver the selected chord; OS/terminal-reserved
   shortcuts are not forwarded by IGit.
 
-Global `pull` and `fetch` default to `p` and `f`. Push's own `review` and `fetch`
+Global `pull` and `fetch` default to `p` and `f`. Global `pull` is inactive in
+the Branch browser, where `branch.pull` defaults to `p` with `U` as an alias
+and reviews only the focused local branch. Actions → Pull repositories opens
+the workspace review there. Rebinding or disabling `branch.pull` replaces both
+aliases. Push's own `review` and `fetch`
 default to `P` and `F`, and Merge's `back-to-files` defaults to `F`. If an
 override still uses `p` or `f` for one of those panel commands, change that
 override or rebind the conflicting global command.
 
-`global.focus-branch` defaults to `4`. `global.notification-history` defaults
+`global.focus-branch` defaults to `4`; `global.focus-remote` defaults to `6`
+and `global.open-merge` defaults to `7` when Conflicts is available. `[keybindings.remote]` controls `add`
+(`a`, `+`, Insert), `edit` (`e`, F2), `remove` (`d`, `-`, Delete), navigation,
+group expansion, and opening the editor. Remote's editor owns Tab / Shift-Tab,
+Enter for new URL lines, Ctrl-U to clear a field, Ctrl-S for review, and Esc
+to cancel. Those editor/review controls are fixed, like other text input.
+
+`global.notification-history` defaults
 to `Space n` and opens session Notification History from any normal workspace
 panel. The leading `Space` waits indefinitely. In Log it also starts the
 filter prefix immediately, so B/U/D/P and the footer hint appear on the first
 press; `b/u/d/p` opens filters and `n` opens History. In panels where Space is
-a standalone action, a second Space applies it. Esc cancels. The
+a standalone action, a second Space applies it, except in Push's outgoing list:
+when `push.toggle` includes standalone Space, the first Space toggles the current
+repository immediately. Completing the notification chord restores that
+checkbox's previous state, while another key never replays the toggle. Esc
+cancels the prefix and keeps the already applied checkbox change. The
 `hint_delay_ms` setting (200ms by default) only controls when a continuation
 overlay appears; it is not a chord timeout. This intentional prefix can share
 Space with selection and filter commands; other exact or prefix collisions
@@ -347,7 +430,7 @@ rebinding `notification-history` or disabling it with
 `notification-history = []`. `[keybindings.branch]` controls `create`
 (`a`), `delete` (`d`), `checkout` (`Enter`), `merge` (`m`), `rename` (`r`),
 `compare` (`c`, compares a non-current branch with the current branch),
-`view-options` (`o`, opens Group By), and tree navigation. The comparison's
+`pull` (`p`, `U`), `push` (`P`), `view-options` (`o`, opens Group By), and tree navigation. The comparison's
 embedded timelines use Log bindings: `search` for commit text, `find` for the
 file tree, and the usual navigation, filters, copy, columns, and Diff controls.
 The global `roots`
@@ -455,6 +538,11 @@ disabling `commit.edit-message`. Different panels may reuse a chord. Two
 sequences may share a prefix (`g g` and `g a`), but `g` and `g a` cannot both
 be complete commands in the same context.
 
+The Message action keys have their own context: Changes can still use `a` to
+add files and `g` to select the first row. Rebinding `commit.edit-message` to `c`
+also requires remapping or disabling `commit.commit`, because both apply in
+Message normal mode.
+
 Sequence prefixes remain pending until completion, cancellation, or context
 change; the hint delay is not a timeout. Visible hints support arrows, Enter,
 and mouse selection. An explicitly configured continuation takes precedence
@@ -476,7 +564,11 @@ searchable panes listed in the [README](../README.md#find-in-a-pane). For exampl
 set `find = ["F10"]` under `[keybindings.commit]` to change the shortcut for
 Changes and the file preview. Enter and Esc retain their input behavior.
 
-Log's `search` and `search-refs` still open its commit and branch filters.
+Log's `search` defaults to `/` in the commit list and details. In its branch
+tree, `search-refs` defaults to `/` with `S` as an alias and focuses the
+**Branch or tag** input above the tree. Remap `search-refs` to change that
+input's shortcut; Log's `find`, `next-match`, and `previous-match` apply only
+to the Diff file tree.
 `commit.new-group` now defaults to `Ctrl-n`. Move any custom `n` binding in
 an overlapping context, or remap `next-match` there to keep the custom key.
 The file preview also provides `scroll-preview-left` and
@@ -627,9 +719,9 @@ and that `igit_resize.py` is installed. Requests retain the one-second timeout.
 
 `toggle-pane-maximized` defaults to `Ctrl-w f` in Commit, Branch, Stash, Push, and Conflicts.
 It fills the workspace with the focused pane. Tab continues through enabled
-panes. Use `1` through `5` for Commit, Log, Push, Branch, and Stash, respectively,
-or `6` for Conflicts when available. Log stays tiled. The next press in a
-supported tab restores the saved split sizes.
+panes. Use `1` through `6` for Commit, Log, Push, Branch, Stash, and Remote,
+respectively, or `7` for Conflicts when available. Log stays tiled. The next
+press in a supported tab restores the saved split sizes.
 Maximizing is session-only. Local divider resize/reset and mouse resizing are
 disabled while maximized; smart resize can still hand off to Kitty.
 

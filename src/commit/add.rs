@@ -80,12 +80,9 @@ impl CommitPanel {
         let Some(pending) = &self.add.pending else {
             return String::new();
         };
-        let frames: &[char] = if self.icons == IconMode::Ascii {
-            &['|', '/', '-', '\\']
-        } else {
-            &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧']
-        };
-        let spinner = frames[(pending.started.elapsed().as_millis() / 100) as usize % frames.len()];
+        let spinner = self
+            .icons
+            .spinner((pending.started.elapsed().as_millis() / 100) as usize);
         let label = format!(
             "{spinner} Adding {} file{}",
             pending.total,

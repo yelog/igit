@@ -14,7 +14,7 @@ pub(super) mod ai;
 pub(super) mod discard;
 pub(super) mod preview;
 pub(super) mod staging;
-pub(super) mod stash;
+pub(crate) mod stash;
 mod working;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

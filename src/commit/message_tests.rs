@@ -163,6 +163,61 @@ fn shared_message_scope_excludes_hidden_repository_and_preserves_its_selection()
 }
 
 #[test]
+fn message_action_shortcuts_commit_scoped_staged_versions_and_request_push_review() {
+    for (shortcut, expected_push) in [('c', false), ('a', true)] {
+        let (_dir, mut c, mut panel) = fixture();
+        let hidden_head = git(&c.repos[1].path, &["rev-parse", "HEAD"]).unwrap();
+        let message = panel.saved.message.clone().unwrap();
+        c.scope = [0].into();
+        panel.focus_pane(PaneId::Message);
+        let action = panel.event(
+            &Event::Key(crossterm::event::KeyEvent::new(
+                K::Char(shortcut),
+                Mod::NONE,
+            )),
+            &c,
+        );
+        assert!(
+            matches!(action, Action::Committed { repos, push, level: NoticeLevel::Success, .. }
+                if repos == [0] && push == expected_push)
+        );
+        assert!(!panel.message_editing());
+        assert_eq!(
+            git(&c.repos[0].path, &["log", "-1", "--format=%B"]).unwrap(),
+            message
+        );
+        assert_eq!(
+            git(&c.repos[0].path, &["show", "HEAD:mixed.txt"]).unwrap(),
+            "app staged"
+        );
+        assert_eq!(
+            git(&c.repos[0].path, &["show", "HEAD:unselected.txt"]).unwrap(),
+            "base"
+        );
+        assert_eq!(
+            git(&c.repos[0].path, &["diff", "--cached", "--name-only"]).unwrap(),
+            "unselected.txt"
+        );
+        for repo in &c.repos {
+            assert_eq!(
+                git(&repo.path, &["show", ":unselected.txt"]).unwrap(),
+                "unselected staged marker"
+            );
+            assert_eq!(
+                fs::read_to_string(repo.path.join("mixed.txt")).unwrap(),
+                "unstaged private marker\n"
+            );
+        }
+        assert_eq!(
+            git(&c.repos[1].path, &["rev-parse", "HEAD"]).unwrap(),
+            hidden_head
+        );
+        c.scope.insert(1);
+        assert_eq!(panel.checked_repos(&c), [1]);
+    }
+}
+
+#[test]
 fn legacy_drafts_are_migrated_once_and_retained_for_recovery() {
     let (_dir, c, mut panel) = fixture();
     panel.saved.message = None;

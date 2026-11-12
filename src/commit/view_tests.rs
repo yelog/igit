@@ -247,9 +247,11 @@ fn view_options_menu_keeps_checks_and_blocks_underlying_actions_in_all_icon_mode
                 assert!(text.contains(label), "{width}x{height}: {text}");
             }
             let directory = item_area(&p, Item::Directory);
+            let repository = item_area(&p, Item::Repository);
             let module = item_area(&p, Item::Module);
             for (row, label, checked, color) in [
                 (directory, "Directory", true, CHECK),
+                (repository, "Repository", true, CHECK),
                 (module, "Module", false, DIM),
             ] {
                 assert!(read(buffer, row).contains(&format!("{} {label}", mode.check(checked))));
@@ -267,15 +269,70 @@ fn view_options_menu_keeps_checks_and_blocks_underlying_actions_in_all_icon_mode
             key(&mut p, &c, K::Char(' '));
             assert!(!p.view.iter().any(|r| matches!(r.kind, Kind::Directory(_))));
             draw(&mut p, &mut t, &c);
+            let repository = item_area(&p, Item::Repository);
+            click(&mut p, &c, repository.x + 1, repository.y);
+            assert!(!p.options.repositories);
+            assert!(!p.view.iter().any(|r| matches!(r.kind, Kind::Repo(_))));
+            draw(&mut p, &mut t, &c);
+            key(&mut p, &c, K::Enter);
+            assert!(p.options.repositories);
+            assert!(p.view.iter().any(|r| matches!(r.kind, Kind::Repo(_))));
+            draw(&mut p, &mut t, &c);
             let module = item_area(&p, Item::Module);
             assert!(p.hover_at(module.x + 2, module.y));
             key(&mut p, &c, K::Enter);
-            assert!(p.view.iter().any(|r| matches!(r.kind, Kind::Repo(_))));
+            assert!(p.options.modules);
+            assert_eq!(
+                p.view
+                    .iter()
+                    .filter(|r| matches!(r.kind, Kind::Repo(_)))
+                    .count(),
+                1
+            );
             draw(&mut p, &mut t, &c);
             key(&mut p, &c, K::Esc);
             assert!(!p.editing());
             assert_eq!(p.checks, checks);
         }
+    }
+}
+
+#[test]
+fn view_options_menu_scrolls_to_every_option_in_small_terminals() {
+    use super::display::Item;
+    let (_dir, c) = fixture();
+    for (width, height) in [(24, 5), (30, 8), (44, 10)] {
+        let mut p = CommitPanel::default();
+        p.refresh(&c).unwrap();
+        p.toggle_view_menu();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        for (item, label) in [
+            (Item::Directory, "Directory"),
+            (Item::Repository, "Repository"),
+            (Item::Module, "Module"),
+            (Item::Ignored, "Ignored Files"),
+            (Item::Status, "Git Status"),
+        ] {
+            draw(&mut p, &mut terminal, &c);
+            let menu = p.view_menu.unwrap().area;
+            let row = p
+                .hits
+                .iter()
+                .find_map(|(area, hit)| {
+                    matches!(hit, Hit::ViewItem(found) if *found == item).then_some(*area)
+                })
+                .unwrap();
+            assert!(menu.right() <= width && menu.bottom() <= height);
+            assert!(read(terminal.backend().buffer(), row).contains(label));
+            key(&mut p, &c, K::Down);
+        }
+        assert_eq!(p.view_menu.unwrap().row, Item::Directory as usize);
+        key(&mut p, &c, K::End);
+        draw(&mut p, &mut terminal, &c);
+        assert_eq!(p.view_menu.unwrap().row, Item::Status as usize);
+        key(&mut p, &c, K::Home);
+        draw(&mut p, &mut terminal, &c);
+        assert_eq!(p.view_menu.unwrap().row, Item::Directory as usize);
     }
 }
 
@@ -360,7 +417,13 @@ fn regrouped_commit_keeps_the_selected_index_version_and_unselected_staged_file(
         })
         .unwrap();
     p.toggle(unselected_row);
-    for item in [Item::Directory, Item::Module, Item::Ignored, Item::Status] {
+    for item in [
+        Item::Directory,
+        Item::Repository,
+        Item::Module,
+        Item::Ignored,
+        Item::Status,
+    ] {
         p.toggle_view_item(item, &c).unwrap();
     }
     p.saved.message = Some("selected".into());
@@ -406,23 +469,28 @@ fn directory_preview_uses_the_repo_root_when_launched_in_a_subdirectory() {
     let (_d, mut c) = fixture();
     let directory = Path::new("src").join("ｕｉ");
     c.workspace = c.repos[0].path.join(&directory);
-    let mut p = CommitPanel::default();
-    p.refresh(&c).unwrap();
-    p.cursor = p
-        .view
-        .iter()
-        .position(|r| matches!(&r.kind, Kind::Directory(path) if path == &directory))
-        .unwrap();
     let mut t = Terminal::new(TestBackend::new(120, 36)).unwrap();
-    draw(&mut p, &mut t, &c);
-    let preview: String = read(t.backend().buffer(), p.diff)
-        .split_whitespace()
-        .collect();
-    assert!(preview.contains(&format!(
-        "Workspace{}",
-        c.repos[0].path.join(&directory).display()
-    )));
-    assert_eq!(p.selection(&c).len(), 2);
+    for repositories in [true, false] {
+        let mut p = CommitPanel::default();
+        p.refresh(&c).unwrap();
+        p.set_repository_grouping(repositories, &c);
+        p.cursor = p
+            .view
+            .iter()
+            .position(|r| matches!(&r.kind, Kind::Directory(path) if path == &directory))
+            .unwrap();
+        draw(&mut p, &mut t, &c);
+        let preview: String = read(t.backend().buffer(), p.diff)
+            .split_whitespace()
+            .collect();
+        let path = if repositories {
+            format!("app/{}", directory.display())
+        } else {
+            format!("Workspace{}", c.repos[0].path.join(&directory).display())
+        };
+        assert!(preview.contains(&path), "{preview}");
+        assert_eq!(p.selection(&c).len(), 2);
+    }
 }
 
 #[test]
@@ -432,11 +500,7 @@ fn compacted_directories_keep_their_children_selection_and_hit_targets() {
     let mut t = Terminal::new(TestBackend::new(120, 36)).unwrap();
     p.refresh(&c).unwrap();
     draw(&mut p, &mut t, &c);
-    let directory = Path::new("app")
-        .join("src")
-        .join("ｕｉ")
-        .display()
-        .to_string();
+    let directory = Path::new("src").join("ｕｉ").display().to_string();
     let a = row_area(&p, &directory);
     // Clicking indentation or the name only browses; the disclosure and checkbox are separate.
     click(&mut p, &c, a.x, a.y);

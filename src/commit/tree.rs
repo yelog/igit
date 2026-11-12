@@ -42,7 +42,7 @@ impl Row {
         &self,
         c: &Context,
         files: &[File],
-        modules: bool,
+        repositories: bool,
     ) -> Option<crate::ui::path_copy::Target> {
         use crate::ui::path_copy::Target;
         Some(match &self.kind {
@@ -54,7 +54,7 @@ impl Row {
             Kind::Directory(path) => {
                 let file = files.get(*self.files.first()?)?;
                 let repo = &c.repos[file.root].path;
-                if modules {
+                if repositories {
                     Target::new(repo, path, true)
                 } else {
                     let base = directory_root(c);
@@ -169,15 +169,27 @@ impl CommitPanel {
     }
 
     pub(super) fn set_directory_grouping(&mut self, enabled: bool, c: &Context) {
-        self.set_grouping(enabled, self.options.modules, c);
+        self.set_grouping(enabled, self.options.repositories, self.options.modules, c);
+    }
+
+    pub(super) fn set_repository_grouping(&mut self, enabled: bool, c: &Context) {
+        self.set_grouping(self.options.directories, enabled, self.options.modules, c);
     }
 
     pub(super) fn set_module_grouping(&mut self, enabled: bool, c: &Context) {
-        self.set_grouping(self.options.directories, enabled, c);
+        self.set_grouping(
+            self.options.directories,
+            self.options.repositories,
+            enabled,
+            c,
+        );
     }
 
-    fn set_grouping(&mut self, directories: bool, modules: bool, c: &Context) {
-        if self.options.directories == directories && self.options.modules == modules {
+    fn set_grouping(&mut self, directories: bool, repositories: bool, modules: bool, c: &Context) {
+        if self.options.directories == directories
+            && self.options.repositories == repositories
+            && self.options.modules == modules
+        {
             return;
         }
         // Find the closest surviving row, then reveal only its ancestors in the
@@ -194,6 +206,7 @@ impl CommitPanel {
             }
         }
         self.options.directories = directories;
+        self.options.repositories = repositories;
         self.options.modules = modules;
         self.changes_search.invalidate();
         let all = self.rows_with_folds(c, &BTreeSet::new());
@@ -321,7 +334,7 @@ impl Tree<'_> {
                     self.append_flat_files(c, unmerged.to_vec(), 2, &mut rows);
                 }
             }
-            if !self.options.modules {
+            if !self.options.repository_grouping() {
                 self.append_files(
                     c,
                     repos.into_values().flatten().collect(),
@@ -369,7 +382,7 @@ impl Tree<'_> {
             .map(|i| {
                 let file = &self.files[i];
                 let repo = &c.repos[file.root].path;
-                let prefix = if self.options.modules {
+                let prefix = if self.options.repository_grouping() {
                     Path::new("")
                 } else {
                     repo.strip_prefix(directory_root(c)).unwrap_or(repo)
@@ -500,6 +513,45 @@ mod tests {
     }
 
     #[test]
+    fn repository_grouping_is_enabled_by_default() {
+        let (_dir, c, mut panel) = fixture();
+        assert!(panel.options.directories);
+        assert!(panel.options.repositories);
+        assert!(!panel.options.modules);
+        let repos: Vec<_> = panel
+            .view
+            .iter()
+            .filter_map(|row| match row.kind {
+                Kind::Repo(root) => Some((root, row.label.as_str(), row.depth)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            repos,
+            [(0, "app", 1), (1, "lib", 1), (0, "app", 1), (1, "lib", 1)]
+        );
+        for root in [0, 1] {
+            let directory = &panel.view[dir_row(&panel, root, "a")];
+            assert_eq!(directory.depth, 2);
+            assert!(directory.files.iter().all(|&i| panel.files[i].root == root));
+            let file = &panel.view[file_row(&panel, root, "a/shared.rs")];
+            assert_eq!(file.depth, 3);
+        }
+        let app = panel
+            .view
+            .iter()
+            .position(|row| row.kind == Kind::Repo(0))
+            .unwrap();
+        panel.toggle(app);
+        assert_eq!(panel.check_counts(&panel.view[app]), (0, 5));
+        assert_eq!(
+            panel.check_counts(&panel.view[file_row(&panel, 1, "a/shared.rs")]),
+            (1, 1)
+        );
+        assert!(panel.selection(&c).iter().all(|file| file.root == 1));
+    }
+
+    #[test]
     fn merge_conflicts_are_scoped_once_and_keep_changelist_membership() {
         let (_d, mut c, mut panel) = fixture();
         let app = panel.view[file_row(&panel, 0, "a/shared.rs")]
@@ -515,8 +567,17 @@ mod tests {
             panel.files[i].change.xy = *b"UU";
         }
         panel.sync(&c);
-        for (directories, modules) in [(true, false), (false, true), (false, false), (true, true)] {
-            panel.set_grouping(directories, modules, &c);
+        for (directories, repositories, modules) in [
+            (true, true, false),
+            (true, true, true),
+            (true, false, false),
+            (true, false, true),
+            (false, true, false),
+            (false, true, true),
+            (false, false, false),
+            (false, false, true),
+        ] {
+            panel.set_grouping(directories, repositories, modules, &c);
             let rows = &panel.view;
             assert_eq!(rows[0].label, DEF);
             assert!(rows[0].files.contains(&app) && rows[0].files.contains(&lib));
@@ -554,7 +615,7 @@ mod tests {
     #[test]
     fn flat_rows_sort_by_filename_and_select_the_exact_git_path() {
         let (_d, c, mut panel) = fixture();
-        panel.set_grouping(false, true, &c);
+        panel.set_grouping(false, true, false, &c);
         let paths: Vec<_> = panel
             .view
             .iter()
@@ -627,40 +688,48 @@ mod tests {
     }
 
     #[test]
-    fn module_and_directory_options_preserve_selection_identity_and_scope() {
+    fn grouping_options_preserve_selection_identity_and_scope() {
         let (_d, mut c, mut panel) = fixture();
         panel.cursor = file_row(&panel, 1, "pkg/src/view/shared.rs");
         panel.toggle(panel.cursor);
         let active = panel.active().unwrap().id.clone();
         let checks = panel.checks.clone();
-        for modules in [false, true] {
-            panel.set_module_grouping(modules, &c);
-            for directories in [true, false] {
-                panel.set_directory_grouping(directories, &c);
-                assert_eq!(panel.active().unwrap().id, active);
-                assert_eq!(panel.checks, checks);
-                assert_eq!(
-                    panel.view.iter().any(|r| matches!(r.kind, Kind::Repo(_))),
-                    modules
-                );
-                assert_eq!(
-                    panel
-                        .view
-                        .iter()
-                        .any(|r| matches!(r.kind, Kind::Directory(_))),
-                    directories
-                );
-                let leaves: BTreeSet<_> = panel.view.iter().filter_map(Row::file).collect();
-                assert_eq!(leaves.len(), panel.files.len());
-                if directories && !modules {
-                    assert!(panel.view.iter().any(|r| matches!(
-                        &r.kind, Kind::Directory(p) if p == Path::new("lib/pkg/src/model")
-                    )));
+        for repositories in [true, false] {
+            panel.set_repository_grouping(repositories, &c);
+            for modules in [false, true] {
+                panel.set_module_grouping(modules, &c);
+                for directories in [true, false] {
+                    panel.set_directory_grouping(directories, &c);
+                    assert_eq!(panel.active().unwrap().id, active);
+                    assert_eq!(panel.checks, checks);
+                    assert_eq!(
+                        panel
+                            .view
+                            .iter()
+                            .filter(|r| matches!(r.kind, Kind::Repo(_)))
+                            .count(),
+                        if repositories || modules { 4 } else { 0 }
+                    );
+                    assert_eq!(
+                        panel
+                            .view
+                            .iter()
+                            .any(|r| matches!(r.kind, Kind::Directory(_))),
+                        directories
+                    );
+                    let leaves: BTreeSet<_> = panel.view.iter().filter_map(Row::file).collect();
+                    assert_eq!(leaves.len(), panel.files.len());
+                    if directories && !repositories && !modules {
+                        assert!(panel.view.iter().any(|r| matches!(
+                            &r.kind, Kind::Directory(p) if p == Path::new("lib/pkg/src/model")
+                        )));
+                    }
                 }
             }
         }
         c.scope.remove(&1);
         panel.set_module_grouping(false, &c);
+        panel.set_repository_grouping(true, &c);
         panel.set_directory_grouping(true, &c);
         assert!(panel
             .view
@@ -675,6 +744,67 @@ mod tests {
             panel.check_counts(&panel.view[file_row(&panel, 1, "pkg/src/view/shared.rs")]),
             (0, 1)
         );
+    }
+
+    #[test]
+    fn repository_regrouping_preserves_unrelated_folds_and_falls_back_to_changelist() {
+        let (_dir, c, mut panel) = fixture();
+        let app = panel
+            .view
+            .iter()
+            .position(|row| row.kind == Kind::Repo(0))
+            .unwrap();
+        let folded = panel.view[app].id.clone();
+        panel.fold(app, Some(true), &c);
+        panel.cursor = file_row(&panel, 1, "pkg/src/view/shared.rs");
+        let active = panel.active().unwrap().id.clone();
+        let checks = panel.checks.clone();
+        for repositories in [false, true] {
+            panel.set_repository_grouping(repositories, &c);
+            assert_eq!(panel.active().unwrap().id, active);
+            assert!(panel.fold.contains(&folded));
+            assert_eq!(panel.checks, checks);
+        }
+        assert!(panel.view.iter().any(|row| row.id == folded));
+        assert!(!panel.view.iter().any(|row| {
+            row.file()
+                .is_some_and(|i| panel.files[i].root == 0 && panel.files[i].group == DEF)
+        }));
+        panel.cursor = panel
+            .view
+            .iter()
+            .position(|row| row.kind == Kind::Repo(1))
+            .unwrap();
+        panel.set_repository_grouping(false, &c);
+        assert_eq!(panel.active().unwrap().label, DEF);
+        assert!(panel.active().unwrap().kind == Kind::Group);
+    }
+
+    #[test]
+    fn directory_copy_targets_use_the_same_native_path_in_each_grouping() {
+        let (_dir, c, mut panel) = fixture();
+        let expected = c.repos[1].path.join("pkg/src/view");
+        for repositories in [true, false] {
+            for modules in [false, true] {
+                panel.set_grouping(true, repositories, modules, &c);
+                let path = if repositories || modules {
+                    "pkg/src/view"
+                } else {
+                    "lib/pkg/src/view"
+                };
+                panel.cursor = dir_row(&panel, 1, path);
+                let target = panel.path_copy_target(&c).unwrap();
+                assert!(matches!(
+                    target.copy('y'),
+                    crate::ui::Action::Copy { text, .. } if Path::new(&text) == expected
+                ));
+                assert!(matches!(
+                    target.copy('r'),
+                    crate::ui::Action::Copy { text, .. }
+                        if Path::new(&text) == Path::new("pkg/src/view")
+                ));
+            }
+        }
     }
 
     #[test]

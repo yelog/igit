@@ -42,7 +42,7 @@ fn saved(app: &Shell, message: &str) {
 }
 
 #[test]
-fn inline_message_keyboard_edits_saves_and_commits_only_on_enter() {
+fn inline_message_keyboard_edits_saves_and_commits_with_c() {
     let (_dir, mut app) = fixture();
     let repo = app.ctx.repos[0].path.clone();
     let before = snapshot(&repo);
@@ -70,15 +70,13 @@ fn inline_message_keyboard_edits_saves_and_commits_only_on_enter() {
     assert_eq!(app.commit.focused_pane(), PaneId::Message);
     saved(&app, "Keyboard subject\nBody 中文");
 
-    app.dispatch(&key(KeyCode::Char('c')));
-    assert!(!app.commit.message_editing());
     app.dispatch(&key(KeyCode::Char('i')));
     assert!(app.commit.message_editing());
     app.dispatch(&Event::Paste(" updated".into()));
     app.dispatch(&key(KeyCode::Esc));
     assert_eq!(snapshot(&repo), before);
 
-    app.dispatch(&key(KeyCode::Enter));
+    app.dispatch(&key(KeyCode::Char('c')));
     assert!(app.pop.is_none());
     assert_eq!(git(&repo, &["rev-parse", "HEAD^"]).unwrap(), before[0]);
     assert_eq!(

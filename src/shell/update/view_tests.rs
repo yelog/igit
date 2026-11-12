@@ -48,6 +48,8 @@ fn fixture(kind: Kind, count: usize) -> Dialog {
         detail_scroll: 0,
         detail_max_scroll: 0,
         confirm_focused: count > 0,
+        jobs: vec![],
+        load: Load::default(),
     }
 }
 
@@ -244,6 +246,27 @@ fn update_empty_and_unavailable_repositories_disable_confirmation() {
 }
 
 #[test]
+fn update_loading_keeps_the_review_open_without_confirmation() {
+    let mut dialog = fixture(Kind::Pull, 2);
+    dialog.stage = Stage::Loading;
+    dialog.ready = 0;
+    dialog.confirm_focused = false;
+    for row in &mut dialog.rows {
+        row.comparison = Comparison::checking();
+        row.destination.clear();
+        row.outcome = Outcome::Checking;
+    }
+    let (_, hits, text) = draw(&mut dialog, 120, 36, IconMode::Ascii);
+    assert!(text.contains("Update Project · Checking"), "{text}");
+    assert!(text.contains("Checking 2 repositories"), "{text}");
+    assert!(text.contains("Cancel") && !text.contains("Enter Activate"));
+    assert!(!hits.iter().any(|(_, id)| *id == CONFIRM));
+    assert!(!dialog.event(&key(K::Enter), None));
+    assert!(matches!(dialog.stage, Stage::Loading));
+    assert!(dialog.event(&key(K::Esc), None));
+}
+
+#[test]
 fn update_running_and_results_keep_repository_rows_and_color_outcomes() {
     let mut dialog = fixture(Kind::Pull, 3);
     let (tx, rx) = mpsc::channel();
@@ -252,16 +275,29 @@ fn update_running_and_results_keep_repository_rows_and_color_outcomes() {
     assert!(text.contains("Running") && text.contains("Pending"));
     assert!(!hits.iter().any(|(_, id)| *id < ROW));
     assert!(!dialog.event(&key(K::Esc), None));
-    tx.send(Report {
-        summary: "Pull: 1 succeeded · 1 failed · 1 skipped".into(),
-        comparisons: vec![],
-        outcomes: vec![
-            Outcome::Succeeded,
-            Outcome::Failed("Remote changed; review again".into()),
-            Outcome::Skipped("Detached HEAD".into()),
-        ],
-    })
+    tx.send(Report::Started(1)).unwrap();
+    assert!(dialog.poll().is_none());
+    assert!(matches!(dialog.rows[1].outcome, Outcome::Running));
+    let comparisons = dialog
+        .rows
+        .iter()
+        .map(|row| row.comparison.clone())
+        .collect::<Vec<_>>();
+    tx.send(Report::Row(0, Outcome::Succeeded, comparisons[0].clone()))
+        .unwrap();
+    tx.send(Report::Row(
+        1,
+        Outcome::Failed("Remote changed; review again".into()),
+        comparisons[1].clone(),
+    ))
     .unwrap();
+    tx.send(Report::Row(
+        2,
+        Outcome::Skipped("Detached HEAD".into()),
+        comparisons[2].clone(),
+    ))
+    .unwrap();
+    tx.send(Report::Done).unwrap();
     let (_, level, summary) = dialog.poll().unwrap();
     assert_eq!(level, NoticeLevel::Warning);
     assert_eq!(summary, "Pull: 1 succeeded · 1 failed · 1 skipped");

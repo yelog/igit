@@ -182,6 +182,139 @@ fn message_action_highlight_follows_arrows_at_wide_and_compact_widths() {
 }
 
 #[test]
+fn message_action_shortcuts_highlight_only_in_focused_normal_mode() {
+    use ratatui::style::Modifier;
+
+    let (_dir, c) = fixture();
+    for (w, h) in [(34, 6), (44, 12), (80, 24), (120, 36), (180, 36)] {
+        for icons in [IconMode::Ascii, IconMode::Unicode, IconMode::NerdFont] {
+            let mut p = CommitPanel {
+                icons,
+                ..Default::default()
+            };
+            p.refresh(&c).unwrap();
+            let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+            let mut original_areas = Vec::new();
+            for (focus, editing, active) in [
+                (Focus::Tree, false, true),
+                (Focus::Message, false, true),
+                (Focus::Message, true, true),
+                (Focus::Message, false, true),
+                (Focus::Message, false, false),
+                (Focus::Tree, false, true),
+            ] {
+                p.edit = None;
+                p.set_focus(focus);
+                p.panes.active = active;
+                if editing {
+                    p.edit_message(&c);
+                }
+                draw(&mut p, &mut t, &c);
+                let actions: Vec<_> = p
+                    .hits
+                    .iter()
+                    .filter_map(|(area, hit)| match hit {
+                        Hit::MessageAction(action) => Some((*area, *action)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(actions.len(), 3, "{w}x{h}");
+                let areas: Vec<_> = actions.iter().map(|(area, _)| *area).collect();
+                if original_areas.is_empty() {
+                    original_areas = areas;
+                } else {
+                    assert_eq!(areas, original_areas);
+                }
+                for (area, action) in actions {
+                    let shortcut = match action {
+                        MessageAction::Commit => "c",
+                        MessageAction::CommitAndPush => "a",
+                        MessageAction::Generate => "g",
+                    };
+                    let highlighted: Vec<_> = (area.x..area.right())
+                        .map(|x| &t.backend().buffer()[(x, area.y)])
+                        .filter(|cell| cell.modifier.contains(Modifier::UNDERLINED))
+                        .collect();
+                    let expected = focus == Focus::Message && !editing && active;
+                    assert_eq!(highlighted.len(), usize::from(expected), "{w}x{h}");
+                    if let Some(cell) = highlighted.first() {
+                        assert!(cell.symbol().eq_ignore_ascii_case(shortcut));
+                        assert_eq!(cell.fg, crate::ui::idea::GOLD);
+                        assert!(cell.modifier.contains(Modifier::BOLD));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn message_action_shortcuts_type_in_editor_and_ignore_repeated_presses() {
+    let (_dir, c) = fixture();
+    let mut p = CommitPanel::default();
+    p.refresh(&c).unwrap();
+    let checks = p.checks.clone();
+    let index = git(&c.repos[0].path, &["ls-files", "--stage"]).unwrap();
+    p.focus_pane(PaneId::Message);
+    for shortcut in ['c', 'a', 'g'] {
+        let mut repeated = KeyEvent::new(K::Char(shortcut), Mod::NONE);
+        repeated.kind = KeyEventKind::Repeat;
+        assert!(matches!(p.event(&Event::Key(repeated), &c), Action::None));
+        assert!(p.message_action == MessageAction::Commit);
+        assert!(!p.ai_running());
+        assert!(!p.execution_running());
+    }
+    key(&mut p, &c, K::Char('i'));
+    for shortcut in ['c', 'a', 'g'] {
+        assert!(matches!(
+            p.event(&Event::Key(KeyEvent::new(K::Char(shortcut), Mod::NONE)), &c),
+            Action::None
+        ));
+    }
+    assert_eq!(p.buf, "cag");
+    assert!(p.message_editing());
+    assert_eq!(p.checks, checks);
+    assert_eq!(
+        git(&c.repos[0].path, &["ls-files", "--stage"]).unwrap(),
+        index
+    );
+    assert!(git(&c.repos[0].path, &["rev-parse", "--verify", "HEAD"]).is_err());
+}
+
+#[test]
+fn message_action_shortcuts_hide_remapped_and_disabled_mnemonics() {
+    use ratatui::style::Modifier;
+
+    let (_dir, c) = fixture();
+    let mut p = CommitPanel::default();
+    p.refresh(&c).unwrap();
+    p.focus_pane(PaneId::Message);
+    let mut t = Terminal::new(TestBackend::new(120, 36)).unwrap();
+    for (config, expected) in [
+        ("", 3),
+        ("[keybindings.commit]\ncommit=['F7']", 2),
+        (
+            "[keybindings.commit]\ncommit=[]\ncommit-and-push=[]\ngenerate-message=[]",
+            0,
+        ),
+        ("[keybindings.commit]\ncommit=['F7', 'c']", 3),
+    ] {
+        p.configure_message_shortcuts(&crate::config::AppConfig::from_toml(config).unwrap());
+        draw(&mut p, &mut t, &c);
+        let highlighted = p
+            .hits
+            .iter()
+            .filter(|(_, hit)| matches!(hit, Hit::MessageAction(_)))
+            .flat_map(|(area, _)| {
+                (area.x..area.right()).map(|x| &t.backend().buffer()[(x, area.y)])
+            })
+            .filter(|cell| cell.modifier.contains(Modifier::UNDERLINED))
+            .count();
+        assert_eq!(highlighted, expected);
+    }
+}
+
+#[test]
 fn inline_message_backward_deletion_preserves_suffix_unicode_and_selection() {
     let (_dir, c) = fixture();
     let index = git(&c.repos[0].path, &["ls-files", "--stage"]).unwrap();

@@ -33,8 +33,8 @@ pub(super) struct Tree {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Sort {
-    #[default]
     Name,
+    #[default]
     RecentlyUsed,
 }
 

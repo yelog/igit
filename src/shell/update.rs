@@ -5,7 +5,10 @@ mod view_tests;
 
 use crate::{
     core::{
-        command, git, redact_remote_error, revpath,
+        command, git,
+        loading::{self, Load},
+        redact_remote_error, revpath,
+        schedule::{self, RepoLock},
         strategy::{self, Strategy},
         Context,
     },
@@ -231,13 +234,35 @@ struct Target {
     plan: Result<Plan, String>,
 }
 
+#[derive(Clone)]
+struct Job {
+    root: usize,
+    path: PathBuf,
+    name: String,
+    submodule: bool,
+}
+
+struct Checked {
+    target: Target,
+    row: RepositoryRow,
+}
+
+struct Prepared {
+    targets: Vec<Target>,
+    rows: Vec<RepositoryRow>,
+    ready: usize,
+}
+
 enum Outcome {
+    Checking,
     Ready,
+    Running,
     Succeeded,
     Failed(String),
     Skipped(String),
 }
 
+#[derive(Clone)]
 struct Comparison {
     branch: String,
     upstream: String,
@@ -245,6 +270,14 @@ struct Comparison {
 }
 
 impl Comparison {
+    fn checking() -> Self {
+        Self {
+            branch: String::new(),
+            upstream: String::new(),
+            tracking: None,
+        }
+    }
+
     fn read(repo: &Path) -> Self {
         let branch = crate::core::branch(repo);
         let upstream =
@@ -290,45 +323,141 @@ struct RepositoryRow {
     outcome: Outcome,
 }
 
-struct Report {
-    summary: String,
-    outcomes: Vec<Outcome>,
-    comparisons: Vec<Comparison>,
+impl RepositoryRow {
+    fn checking(job: &Job) -> Self {
+        Self {
+            root: job.root,
+            name: job.name.clone(),
+            submodule: job.submodule,
+            comparison: Comparison::checking(),
+            destination: String::new(),
+            outcome: Outcome::Checking,
+        }
+    }
 }
 
-fn execute(kind: Kind, strategy: Strategy, targets: Vec<Target>) -> Report {
-    let (mut succeeded, mut failed, mut skipped) = (0, 0, 0);
-    let mut outcomes = Vec::with_capacity(targets.len());
-    let mut comparisons = Vec::with_capacity(targets.len());
-    for Target { path, plan } in targets {
-        let result = match plan {
-            Ok(plan) => match plan.execute(&path, kind, strategy) {
-                Ok(()) => {
-                    succeeded += 1;
-                    Outcome::Succeeded
-                }
-                Err(error) => {
-                    failed += 1;
-                    Outcome::Failed(error.to_string())
-                }
-            },
-            Err(reason) => {
-                skipped += 1;
-                Outcome::Skipped(reason)
-            }
-        };
-        outcomes.push(result);
-        comparisons.push(Comparison::read(&path));
+enum Report {
+    Started(usize),
+    Row(usize, Outcome, Comparison),
+    Done,
+}
+
+struct RunResult {
+    outcome: Result<(), String>,
+    comparison: Comparison,
+}
+
+fn execute(kind: Kind, strategy: Strategy, targets: Vec<Target>, sender: mpsc::Sender<Report>) {
+    let mut jobs = Vec::with_capacity(targets.len());
+    let mut skipped = Vec::new();
+    for (row, target) in targets.into_iter().enumerate() {
+        match &target.plan {
+            Ok(_) => jobs.push((row, target)),
+            Err(reason) => skipped.push((row, reason.clone(), target.path.clone())),
+        }
     }
-    let counts = format!("{succeeded} succeeded · {failed} failed · {skipped} skipped");
-    Report {
-        outcomes,
-        comparisons,
-        summary: format!("{}: {counts}", kind.label()),
+    let locks = jobs
+        .iter()
+        .map(|(_, target)| RepoLock::read(&target.path))
+        .collect::<Vec<_>>();
+    let worker = sender.clone();
+    let completed = sender.clone();
+    schedule::run(
+        &jobs,
+        &vec![Vec::new(); jobs.len()],
+        |left, right| match kind {
+            Kind::Pull => locks[left].conflicts(&locks[right]),
+            Kind::Fetch => locks[left].shares_git_state(&locks[right]),
+        },
+        |_, (row, target)| {
+            let _ = worker.send(Report::Started(*row));
+            let outcome = match &target.plan {
+                Ok(plan) => plan
+                    .execute(&target.path, kind, strategy)
+                    .map_err(|error| error.to_string()),
+                Err(reason) => Err(reason.clone()),
+            };
+            RunResult {
+                outcome,
+                comparison: Comparison::read(&target.path),
+            }
+        },
+        |_| true,
+        |index, result| {
+            let (row, target) = &jobs[index];
+            let (outcome, comparison) = match result {
+                schedule::TaskResult::Completed(run) => (
+                    match &run.outcome {
+                        Ok(()) => Outcome::Succeeded,
+                        Err(error) => Outcome::Failed(error.clone()),
+                    },
+                    run.comparison.clone(),
+                ),
+                schedule::TaskResult::Panicked(message) => (
+                    Outcome::Failed(format!("repository worker stopped unexpectedly: {message}")),
+                    Comparison::read(&target.path),
+                ),
+                schedule::TaskResult::Blocked(blocked) => (
+                    Outcome::Failed(if blocked.is_empty() {
+                        "not executed: unresolved dependency".into()
+                    } else {
+                        "not executed: repository dependency failed".into()
+                    }),
+                    Comparison::read(&target.path),
+                ),
+            };
+            let _ = completed.send(Report::Row(*row, outcome, comparison));
+        },
+    );
+    for (row, reason, path) in skipped {
+        let _ = sender.send(Report::Row(
+            row,
+            Outcome::Skipped(reason),
+            Comparison::read(&path),
+        ));
+    }
+    let _ = sender.send(Report::Done);
+}
+
+fn prepare(kind: Kind, jobs: Vec<Job>, version: &loading::Version) -> Prepared {
+    let checked = loading::read_repositories(&jobs, version, |job| {
+        let plan = Plan::read(&job.path, kind).map_err(|error| error.to_string());
+        let (destination, outcome) = match &plan {
+            Ok(plan) => (plan.destination(), Outcome::Ready),
+            Err(reason) => (String::new(), Outcome::Skipped(reason.clone())),
+        };
+        Checked {
+            target: Target {
+                path: job.path.clone(),
+                plan,
+            },
+            row: RepositoryRow {
+                root: job.root,
+                name: job.name.clone(),
+                submodule: job.submodule,
+                comparison: Comparison::read(&job.path),
+                destination,
+                outcome,
+            },
+        }
+    });
+    let ready = checked
+        .iter()
+        .filter(|checked| matches!(checked.row.outcome, Outcome::Ready))
+        .count();
+    let (targets, rows) = checked
+        .into_iter()
+        .map(|checked| (checked.target, checked.row))
+        .unzip();
+    Prepared {
+        targets,
+        rows,
+        ready,
     }
 }
 
 enum Stage {
+    Loading,
     Review(Vec<Target>),
     Running(Receiver<Report>),
     Results,
@@ -359,35 +488,26 @@ pub(super) struct Dialog {
     detail_scroll: usize,
     detail_max_scroll: usize,
     confirm_focused: bool,
+    jobs: Vec<Job>,
+    load: Load<Prepared>,
 }
 
 impl Dialog {
     pub(super) fn new(kind: Kind, ctx: &Context) -> Self {
-        let mut rows = Vec::with_capacity(ctx.scope.len());
-        let targets: Vec<_> = ctx
+        let jobs: Vec<_> = ctx
             .scope
             .iter()
             .map(|&index| {
                 let repo = &ctx.repos[index];
-                let plan = Plan::read(&repo.path, kind).map_err(|error| error.to_string());
-                rows.push(RepositoryRow {
+                Job {
                     root: index,
+                    path: repo.path.clone(),
                     name: repo.name.clone(),
                     submodule: repo.submodule,
-                    comparison: Comparison::read(&repo.path),
-                    destination: plan.as_ref().map(Plan::destination).unwrap_or_default(),
-                    outcome: match &plan {
-                        Ok(_) => Outcome::Ready,
-                        Err(reason) => Outcome::Skipped(reason.clone()),
-                    },
-                });
-                Target {
-                    path: repo.path.clone(),
-                    plan,
                 }
             })
             .collect();
-        let ready = targets.iter().filter(|target| target.plan.is_ok()).count();
+        let rows = jobs.iter().map(RepositoryRow::checking).collect();
         let (default_strategy, notice) = if kind == Kind::Pull {
             match strategy::load(&ctx.state_dir) {
                 Ok(strategy) => (strategy, None),
@@ -401,7 +521,7 @@ impl Dialog {
         } else {
             (Strategy::default(), None)
         };
-        Self {
+        let mut dialog = Self {
             kind,
             strategy: default_strategy,
             default_strategy,
@@ -409,8 +529,8 @@ impl Dialog {
             state_dir: ctx.state_dir.clone(),
             changed_strategy: None,
             notice,
-            stage: Stage::Review(targets),
-            ready,
+            stage: Stage::Loading,
+            ready: 0,
             rows,
             pos: 0,
             offset: 0,
@@ -418,8 +538,57 @@ impl Dialog {
             detail_area: Rect::default(),
             detail_scroll: 0,
             detail_max_scroll: 0,
-            confirm_focused: ready > 0,
+            confirm_focused: false,
+            jobs,
+            load: Load::default(),
+        };
+        dialog.load.request();
+        dialog
+    }
+
+    pub(super) fn reads_pending(&self) -> bool {
+        self.load.pending()
+    }
+
+    pub(super) fn label(&self) -> &'static str {
+        self.kind.label()
+    }
+
+    pub(super) fn poll_loading(&mut self) -> Result<bool> {
+        if self.load.needs_start() {
+            let jobs = self.jobs.clone();
+            let kind = self.kind;
+            if let Err(error) = self.load.start("igit-update-review", move |version| {
+                prepare(kind, jobs, &version)
+            }) {
+                return self.fail_loading(error);
+            }
         }
+        let Some(result) = self.load.take_result() else {
+            return Ok(false);
+        };
+        let prepared = match result {
+            Ok(prepared) => prepared,
+            Err(error) => return self.fail_loading(error),
+        };
+        self.rows = prepared.rows;
+        self.ready = prepared.ready;
+        self.stage = Stage::Review(prepared.targets);
+        self.confirm_focused = self.ready > 0;
+        self.jobs.clear();
+        self.select(0);
+        Ok(true)
+    }
+
+    fn fail_loading(&mut self, error: anyhow::Error) -> Result<bool> {
+        let reason = error.to_string();
+        for row in &mut self.rows {
+            row.outcome = Outcome::Failed(reason.clone());
+        }
+        self.ready = 0;
+        self.confirm_focused = false;
+        self.stage = Stage::Results;
+        Err(error)
     }
 
     pub(super) fn strategy_changed(&mut self) -> Option<Strategy> {
@@ -431,28 +600,54 @@ impl Dialog {
     }
 
     pub(super) fn poll(&mut self) -> Option<(Kind, NoticeLevel, String)> {
-        let Stage::Running(job) = &self.stage else {
+        if !matches!(self.stage, Stage::Running(_)) {
             return None;
-        };
-        let report = match job.try_recv() {
-            Ok(report) => report,
-            Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) => Report {
-                summary: format!("{} worker stopped before reporting results", self.kind.label()),
-                comparisons: vec![],
-                outcomes: self.rows.iter().map(|row| match &row.outcome {
-                    Outcome::Skipped(reason) => Outcome::Skipped(reason.clone()),
-                    _ => Outcome::Failed("Update worker stopped before reporting results. Inspect the repository before retrying.".into()),
-                }).collect(),
-            },
-        };
+        }
+        let mut finished = false;
+        let mut disconnected = false;
+        if let Stage::Running(receiver) = &self.stage {
+            loop {
+                match receiver.try_recv() {
+                    Ok(Report::Started(index)) => {
+                        if let Some(row) = self.rows.get_mut(index) {
+                            if matches!(row.outcome, Outcome::Ready) {
+                                row.outcome = Outcome::Running;
+                            }
+                        }
+                    }
+                    Ok(Report::Row(index, outcome, comparison)) => {
+                        if let Some(row) = self.rows.get_mut(index) {
+                            row.outcome = outcome;
+                            row.comparison = comparison;
+                        }
+                    }
+                    Ok(Report::Done) => {
+                        finished = true;
+                        break;
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        finished = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !finished {
+            return None;
+        }
+        if disconnected {
+            for row in &mut self.rows {
+                if matches!(row.outcome, Outcome::Ready | Outcome::Running) {
+                    row.outcome = Outcome::Failed(
+                        "Update worker stopped before reporting results. Inspect the repository before retrying."
+                            .into(),
+                    );
+                }
+            }
+        }
         self.stage = Stage::Results;
-        for (row, outcome) in self.rows.iter_mut().zip(report.outcomes) {
-            row.outcome = outcome;
-        }
-        for (row, comparison) in self.rows.iter_mut().zip(report.comparisons) {
-            row.comparison = comparison;
-        }
         self.select(
             self.rows
                 .iter()
@@ -470,6 +665,11 @@ impl Dialog {
             .iter()
             .filter(|row| matches!(row.outcome, Outcome::Succeeded))
             .count();
+        let skipped = self
+            .rows
+            .iter()
+            .filter(|row| matches!(row.outcome, Outcome::Skipped(_)))
+            .count();
         let level = if failed > 0 && succeeded == 0 {
             NoticeLevel::Error
         } else if failed > 0
@@ -482,11 +682,15 @@ impl Dialog {
         } else {
             NoticeLevel::Success
         };
-        Some((self.kind, level, report.summary))
+        let summary = format!(
+            "{}: {succeeded} succeeded · {failed} failed · {skipped} skipped",
+            self.kind.label()
+        );
+        Some((self.kind, level, summary))
     }
 
     fn pull_review(&self) -> bool {
-        self.kind == Kind::Pull && matches!(self.stage, Stage::Review(_))
+        self.kind == Kind::Pull && matches!(self.stage, Stage::Loading | Stage::Review(_))
     }
 
     fn select(&mut self, pos: usize) {
@@ -573,6 +777,7 @@ impl Dialog {
             },
         }
         match &mut self.stage {
+            Stage::Loading => (),
             Stage::Running(_) => return false,
             Stage::Results => return hit == Some(CANCEL) || matches!(key, Some(K::Esc | K::Enter)),
             Stage::Review(_) => (),
@@ -600,7 +805,8 @@ impl Dialog {
         {
             self.confirm_focused = !self.confirm_focused;
         }
-        if key == Some(K::Enter) && !self.confirm_focused {
+        if matches!(self.stage, Stage::Review(_)) && key == Some(K::Enter) && !self.confirm_focused
+        {
             return true;
         }
         if self.ready > 0 && (hit == Some(CONFIRM) || key == Some(K::Enter)) {
@@ -612,7 +818,7 @@ impl Dialog {
             let (tx, rx) = mpsc::channel();
             self.stage = Stage::Running(rx);
             std::thread::spawn(move || {
-                let _ = tx.send(execute(kind, strategy, targets));
+                execute(kind, strategy, targets, tx);
             });
         }
         false
@@ -623,6 +829,16 @@ impl Dialog {
             return selector.keymap();
         }
         let (title, bindings): (_, &[_]) = match self.stage {
+            Stage::Loading => (
+                "Update / Checking",
+                &[
+                    ("j", "Next repository"),
+                    ("k", "Previous repository"),
+                    ("J", "Scroll details down"),
+                    ("K", "Scroll details up"),
+                    ("Esc", "Cancel repository check"),
+                ],
+            ),
             Stage::Review(_) => (
                 "Update / Review",
                 &[

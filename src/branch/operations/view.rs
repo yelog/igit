@@ -2,26 +2,21 @@ use super::{Operation, Review};
 use crate::{
     branch::BranchPanel,
     ui::{
-        icons::{Icon, IconMode},
-        idea::{button_style, repo_tint, LOCAL_REF, REMOTE_REF},
+        idea::{repo_tint, GOLD, LOCAL_REF, REMOTE_REF},
+        review::Dialog,
         selection::{TextLayout, Wrap},
-        ACCENT, BG, FG, LINE, MUTED,
+        ACCENT, FG, MUTED,
     },
 };
 use ratatui::{
-    layout::{Margin, Rect},
-    style::{Modifier, Style, Stylize},
+    layout::Rect,
+    style::{Style, Stylize},
     text::{Line, Span},
-    widgets::{
-        Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState,
-    },
     Frame,
 };
-use unicode_width::UnicodeWidthStr;
 
 impl BranchPanel {
-    pub(crate) fn draw_merge_review(
+    pub(crate) fn draw_review(
         &self,
         frame: &mut Frame,
         area: Rect,
@@ -29,14 +24,27 @@ impl BranchPanel {
         confirm_focused: bool,
         hits: &mut Vec<(Rect, usize)>,
     ) -> bool {
-        let Some(review) = self
-            .review
-            .as_ref()
-            .filter(|review| review.operation == Operation::Merge)
-        else {
+        let Some(review) = self.review.as_ref().filter(|review| {
+            matches!(
+                review.operation,
+                Operation::Merge | Operation::Pull | Operation::Push
+            )
+        }) else {
             return false;
         };
-        review.draw(frame, area, self.icons, scroll, confirm_focused, hits);
+        Dialog {
+            title: review.operation.title(),
+            icons: self.icons,
+            letter_keys: matches!(review.operation, Operation::Pull | Operation::Push),
+        }
+        .draw(
+            frame,
+            area,
+            |width| review.content(width),
+            scroll,
+            confirm_focused,
+            hits,
+        );
         true
     }
 }
@@ -48,12 +56,17 @@ impl Review {
         let mut put = |line| {
             content.push(line, width, Wrap::Word);
         };
+        let pulling = self.operation == Operation::Pull;
         put(Line::from(vec![
             Span::styled("From  ", muted),
             Span::styled(
-                &self.source.name,
+                if pulling {
+                    self.sync.as_ref().unwrap().target_label()
+                } else {
+                    self.source.name.clone()
+                },
                 Style::new()
-                    .fg(if self.source.remote {
+                    .fg(if pulling || self.source.remote {
                         REMOTE_REF
                     } else {
                         LOCAL_REF
@@ -61,13 +74,74 @@ impl Review {
                     .bold(),
             ),
         ]));
-        put(Line::styled(
-            format!(
-                "      {}",
-                &self.source.oid[..self.source.oid.len().min(12)]
-            ),
-            muted,
-        ));
+        if !pulling {
+            put(Line::styled(
+                format!(
+                    "      {}",
+                    &self.source.oid[..self.source.oid.len().min(12)]
+                ),
+                muted,
+            ));
+        }
+        if matches!(self.operation, Operation::Pull | Operation::Push) {
+            put(Line::from(vec![
+                Span::styled("To    ", muted),
+                Span::styled(
+                    if pulling {
+                        self.source.name.clone()
+                    } else {
+                        self.sync.as_ref().unwrap().target_label()
+                    },
+                    Style::new()
+                        .fg(if pulling { LOCAL_REF } else { REMOTE_REF })
+                        .bold(),
+                ),
+            ]));
+            if pulling {
+                put(Line::styled(
+                    format!(
+                        "      {}",
+                        &self.source.oid[..self.source.oid.len().min(12)]
+                    ),
+                    muted,
+                ));
+            }
+            put(Line::default());
+            put(Line::from(vec![
+                Span::styled("Fast-forward only", Style::new().fg(GOLD).bold()),
+                Span::styled(if pulling { "" } else { "  No force push" }, muted),
+            ]));
+            put(Line::styled(
+                if pulling && self.source.current {
+                    "Updates the current worktree; Git protects local changes."
+                } else {
+                    "Keeps your current checkout and local changes."
+                },
+                muted,
+            ));
+            put(Line::default());
+            put(Line::from(vec![
+                Span::styled("Repository  ", muted),
+                Span::styled(
+                    &self.repository,
+                    Style::new().fg(repo_tint(self.root)).bold(),
+                ),
+            ]));
+            put(Line::styled(self.path.display().to_string(), muted));
+            if !self.source.current {
+                put(Line::default());
+                put(Line::from(vec![
+                    Span::styled("Checkout  ", muted),
+                    Span::styled(self.snapshot.head_label(), Style::new().fg(ACCENT)),
+                ]));
+                let current = self.snapshot.oid.as_deref().unwrap_or("(no commits)");
+                put(Line::styled(
+                    format!("          {}", &current[..current.len().min(12)]),
+                    muted,
+                ));
+            }
+            return content;
+        }
         put(Line::from(vec![
             Span::styled("Into  ", muted),
             Span::styled(self.snapshot.head_label(), Style::new().fg(ACCENT).bold()),
@@ -95,128 +169,5 @@ impl Review {
             muted,
         ));
         content
-    }
-
-    fn draw(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        icons: IconMode,
-        scroll: &mut u16,
-        confirm_focused: bool,
-        hits: &mut Vec<(Rect, usize)>,
-    ) {
-        let available = area.inner(Margin::new(1, u16::from(area.height >= 18)));
-        let width = available.width.min(78);
-        let text_width = width.saturating_sub(4);
-        if text_width < 20 || available.height < 6 {
-            return;
-        }
-        let content = self.content(text_width);
-        let padding = u16::from(available.height >= 18);
-        let height = (content.rows.len() + usize::from(4 + padding * 2))
-            .min(usize::from(available.height)) as u16;
-        let popup = Rect::new(
-            available.x + (available.width - width) / 2,
-            available.y + (available.height - height) / 2,
-            width,
-            height,
-        );
-        frame
-            .buffer_mut()
-            .set_style(area, Style::new().add_modifier(Modifier::DIM));
-        frame.render_widget(Clear, popup);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(if icons == IconMode::Ascii {
-                BorderType::Plain
-            } else {
-                BorderType::Rounded
-            })
-            .border_style(Style::new().fg(LINE))
-            .style(Style::new().fg(FG).bg(BG))
-            .title(Span::styled(
-                " Merge branch ",
-                Style::new().fg(ACCENT).bold(),
-            ));
-        let inner = block.inner(popup);
-        frame.render_widget(block, popup);
-        let close = format!(" {} ", icons.glyph(Icon::Close));
-        let close_width = close.width() as u16;
-        let close_area = Rect::new(inner.right() - close_width, popup.y, close_width, 1);
-        frame.render_widget(
-            Paragraph::new(close).style(Style::new().fg(MUTED)),
-            close_area,
-        );
-        hits.push((close_area, usize::MAX));
-
-        let footer = Rect::new(inner.x, inner.bottom() - 2, inner.width, 2);
-        let body = Rect::new(
-            inner.x + 1,
-            inner.y + padding,
-            text_width,
-            footer.y.saturating_sub(inner.y + padding * 2),
-        );
-        let max_scroll = content.rows.len().saturating_sub(usize::from(body.height));
-        *scroll = usize::from(*scroll).min(max_scroll) as u16;
-        frame.render_widget(
-            Paragraph::new(
-                content
-                    .rows
-                    .into_iter()
-                    .skip(usize::from(*scroll))
-                    .take(usize::from(body.height))
-                    .map(|row| row.line)
-                    .collect::<Vec<_>>(),
-            ),
-            body,
-        );
-        if max_scroll > 0 {
-            frame.render_stateful_widget(
-                Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                    .begin_symbol(None)
-                    .end_symbol(None)
-                    .track_style(Style::new().fg(LINE))
-                    .thumb_style(Style::new().fg(MUTED)),
-                Rect::new(body.right(), body.y, 1, body.height),
-                &mut ScrollbarState::new(max_scroll + 1).position(usize::from(*scroll)),
-            );
-        }
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::TOP)
-                .border_style(Style::new().fg(LINE)),
-            footer,
-        );
-        let row = footer.inner(Margin::new(1, 0));
-        let mut right = row.right();
-        for (label, id, focused) in [
-            (" Confirm ", 1, confirm_focused),
-            (" Cancel ", 0, !confirm_focused),
-        ] {
-            let button = Rect::new(
-                right - label.width() as u16,
-                row.y + 1,
-                label.width() as u16,
-                1,
-            );
-            frame.render_widget(Paragraph::new(label).style(button_style(focused)), button);
-            hits.push((button, id));
-            right = button.x - 1;
-        }
-        let hints = if max_scroll > 0 {
-            ["j/k Scroll  Tab Switch  Enter Select", "j/k Scroll", ""]
-        } else {
-            ["Tab Switch  Enter Select  Esc Cancel", "Enter Select", ""]
-        };
-        if let Some(hint) = hints
-            .into_iter()
-            .find(|hint| hint.width() <= usize::from(right - row.x))
-        {
-            frame.render_widget(
-                Paragraph::new(hint).style(Style::new().fg(MUTED)),
-                Rect::new(row.x, row.y + 1, right - row.x, 1),
-            );
-        }
     }
 }

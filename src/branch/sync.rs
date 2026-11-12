@@ -89,6 +89,14 @@ impl Sync {
             .map_err(|error| anyhow::anyhow!(redact_remote_error(&error.to_string(), "")))
     }
 
+    pub fn target_label(&self) -> String {
+        format!(
+            "{}/{}",
+            self.upstream.remote,
+            self.upstream.reference.strip_prefix("refs/heads/").unwrap()
+        )
+    }
+
     pub fn detail(&self, branch: &Branch) -> String {
         let upstream = format!("{}:{}", self.upstream.remote, self.upstream.reference);
         if matches!(self.transfer, Transfer::Push(_)) {

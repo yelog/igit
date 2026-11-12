@@ -36,6 +36,7 @@ use crate::{
     },
 };
 use anyhow::{bail, Result};
+pub(crate) use backend::stash as stash_backend;
 use backend::Change;
 use crossterm::event::{
     Event, KeyCode as K, KeyEventKind, KeyModifiers as Mod, MouseButton, MouseEventKind as M,
@@ -99,6 +100,14 @@ enum MessageAction {
 }
 
 impl MessageAction {
+    fn shortcut(self) -> char {
+        match self {
+            Self::Commit => 'c',
+            Self::CommitAndPush => 'a',
+            Self::Generate => 'g',
+        }
+    }
+
     fn step(self, right: bool) -> Self {
         match (self, right) {
             (Self::Commit, true) | (Self::Generate, false) => Self::CommitAndPush,
@@ -183,6 +192,7 @@ pub struct CommitPanel {
     offset: usize,
     focus: Focus,
     message_action: MessageAction,
+    message_mnemonics: BTreeSet<char>,
     edit: Option<Edit>,
     buf: String,
     caret: usize,
@@ -243,6 +253,7 @@ impl Default for CommitPanel {
             offset: Default::default(),
             focus: Default::default(),
             message_action: Default::default(),
+            message_mnemonics: ['c', 'a', 'g'].into(),
             edit: Default::default(),
             buf: Default::default(),
             caret: Default::default(),
@@ -339,6 +350,31 @@ fn result_level(succeeded: usize, issues: bool) -> NoticeLevel {
     }
 }
 impl CommitPanel {
+    pub(crate) fn configure_message_shortcuts(&mut self, config: &crate::config::AppConfig) {
+        self.message_mnemonics = [
+            (MessageAction::Commit, "commit"),
+            (MessageAction::CommitAndPush, "commit-and-push"),
+            (MessageAction::Generate, "generate-message"),
+        ]
+        .into_iter()
+        .filter_map(|(action, name)| {
+            let shortcut = action.shortcut();
+            config
+                .commands
+                .iter()
+                .any(|command| {
+                    command.command.group == "commit"
+                        && command.command.name == name
+                        && command.sequences.iter().any(|sequence| {
+                            matches!(sequence.as_slice(), [key]
+                                if key.code == K::Char(shortcut) && key.modifiers.is_empty())
+                        })
+                })
+                .then_some(shortcut)
+        })
+        .collect();
+    }
+
     pub(crate) fn focused_pane(&self) -> PaneId {
         match self.focus {
             Focus::Tree => PaneId::Changes,
@@ -425,7 +461,7 @@ impl CommitPanel {
             return None;
         }
         self.active()?
-            .copy_target(c, &self.files, self.options.modules)
+            .copy_target(c, &self.files, self.options.repository_grouping())
     }
 
     fn active(&self) -> Option<&Row> {
@@ -649,7 +685,19 @@ impl CommitPanel {
             .hits
             .iter()
             .find(|(area, _)| inside(*area, x, y))
-            .and_then(|(_, hit)| hit.hint());
+            .and_then(|(_, hit)| match hit {
+                Hit::MessageAction(action)
+                    if self.pane_focused(PaneId::Message)
+                        && self.message_mnemonics.contains(&action.shortcut()) =>
+                {
+                    Some(match action {
+                        MessageAction::Commit => "Commit checked files  c",
+                        MessageAction::CommitAndPush => "Commit, then open Push preview  a",
+                        MessageAction::Generate => "Generate an AI commit message  g",
+                    })
+                }
+                _ => hit.hint(),
+            });
         let changed = self.hover != new;
         self.hover = new;
         changed
@@ -1130,6 +1178,18 @@ impl Panel for CommitPanel {
                 }
             }
             Event::Key(k) => match k.code {
+                K::Char(shortcut @ ('c' | 'a' | 'g'))
+                    if self.focus == Focus::Message && k.modifiers.is_empty() =>
+                {
+                    if k.kind == KeyEventKind::Press {
+                        let action = match shortcut {
+                            'c' => MessageAction::Commit,
+                            'a' => MessageAction::CommitAndPush,
+                            _ => MessageAction::Generate,
+                        };
+                        return self.launch(Hit::MessageAction(action), c);
+                    }
+                }
                 K::Char('g') if k.modifiers == Mod::CONTROL && self.focus != Focus::Message => {
                     return self.open_staging(c).unwrap_or_else(err)
                 }

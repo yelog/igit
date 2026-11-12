@@ -13,6 +13,78 @@ fn assert_frames(p: &LogPanel, t: &Terminal<TestBackend>, focused: Option<PaneId
 }
 
 #[test]
+fn branch_search_keyboard_and_mouse_share_the_input_and_restore_cancelled_queries() {
+    let directory = init();
+    commit(directory.path(), "file", "first commit");
+    git(directory.path(), &["branch", "feature/中文"]);
+    git(
+        directory.path(),
+        &["-c", "tag.gpgSign=false", "tag", "release/中文"],
+    );
+    let context = Context::discover(directory.path()).unwrap();
+    for (width, height) in [(120, 36), (80, 24), (44, 12)] {
+        for icons in [IconMode::Ascii, IconMode::Unicode, IconMode::NerdFont] {
+            let mut panel = LogPanel {
+                icons,
+                ..Default::default()
+            };
+            panel.refresh(&context).unwrap();
+            panel.focus_pane(PaneId::Refs);
+            let selected = panel.rev().unwrap().oid.clone();
+            let visible = panel.visible.clone();
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            render(&mut panel, &mut terminal, &context);
+            let input = target(&panel, |hit| matches!(hit, Hit::Filter(Field::Refs)));
+
+            key(&mut panel, K::Char('/'), Mods::NONE, &context);
+            panel.event(&Event::Paste("中文".into()), &context);
+            render(&mut panel, &mut terminal, &context);
+            assert_eq!(terminal.backend().buffer()[(input.x, input.y)].fg, BLUE);
+            let input_text = row_text(&terminal, input);
+            assert!(
+                input_text.contains("文"),
+                "{width}×{height} {icons:?}: {input_text}"
+            );
+            assert!(matches!(&panel.editor, Some((Field::Refs, query)) if query == "中文"));
+            assert!(panel.focused_search().is_none());
+            key(&mut panel, K::Enter, Mods::NONE, &context);
+            assert_eq!(panel.ref_query, "中文");
+
+            for shortcut in ['/', 'S'] {
+                key(&mut panel, K::Char(shortcut), Mods::NONE, &context);
+                assert!(matches!(&panel.editor, Some((Field::Refs, query)) if query == "中文"));
+                key(&mut panel, K::Char('u'), Mods::CONTROL, &context);
+                panel.event(&Event::Paste("no matches".into()), &context);
+                render(&mut panel, &mut terminal, &context);
+                assert!(
+                    row_text(&terminal, Rect::new(input.x, input.y + 1, input.width, 1))
+                        .starts_with(" No ")
+                );
+                key(&mut panel, K::Esc, Mods::NONE, &context);
+                assert_eq!(panel.ref_query, "中文");
+                assert!(!panel.editing());
+                assert_eq!(panel.focused_pane(), PaneId::Refs);
+            }
+
+            render(&mut panel, &mut terminal, &context);
+            let input = target(&panel, |hit| matches!(hit, Hit::Filter(Field::Refs)));
+            click_at(&mut panel, input, &context);
+            assert!(matches!(&panel.editor, Some((Field::Refs, query)) if query == "中文"));
+            key(&mut panel, K::Char('u'), Mods::CONTROL, &context);
+            panel.event(&Event::Paste("feature".into()), &context);
+            key(&mut panel, K::Char('/'), Mods::NONE, &context);
+            panel.event(&Event::Paste("中文".into()), &context);
+            assert!(matches!(&panel.editor, Some((Field::Refs, query)) if query == "feature/中文"));
+            key(&mut panel, K::Enter, Mods::NONE, &context);
+            assert_eq!(panel.ref_query, "feature/中文");
+            assert_eq!(panel.visible, visible);
+            assert_eq!(panel.rev().unwrap().oid, selected);
+            assert!(panel.filter.branch.is_none() && panel.filter.query.is_empty());
+        }
+    }
+}
+
+#[test]
 fn enter_from_commit_list_focuses_diff_files_before_opening_a_comparison() {
     let d = init();
     commit(d.path(), "file", "first commit");

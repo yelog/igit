@@ -4,9 +4,8 @@ use super::{
     cells, fg, fold_slot, model::History, toolbar_field, window, Field, Filter, Hit, Icon,
     IconMode, LogPanel, Pane, BLUE, DIM, EDGE, GOLD, INK, PANEL, SELECT,
 };
-use crate::{core::Context, ui::search::Input};
+use crate::core::Context;
 use anyhow::Result;
-use crossterm::event::Event;
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier},
@@ -45,14 +44,12 @@ pub(super) struct RefTree {
     query: String,
     // Searches open matching paths without disturbing the user's regular tree.
     search_closed: BTreeSet<String>,
-    unfolded: bool,
 }
 
 struct Row {
     id: String,
     action: RowAction,
     line: Line<'static>,
-    name_span: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -150,7 +147,6 @@ impl RefTree {
                     Span::styled(format!("{} ", icons.glyph(Icon::Head)), fg(GOLD)),
                     Span::styled(HEAD, fg(INK)),
                 ]),
-                name_span: 1,
             });
         }
         // Scope refs by the applied paths, even when no commits match those paths.
@@ -234,7 +230,6 @@ impl RefTree {
                 fg(INK),
             ));
         }
-        let name_span = spans.len();
         spans.push(Span::styled(
             label.to_owned(),
             fg(if empty { DIM } else { INK }),
@@ -247,9 +242,8 @@ impl RefTree {
                 RowAction::Fold { open }
             },
             line: Line::from(spans),
-            name_span,
         });
-        if (!open && !self.unfolded) || empty {
+        if !open || empty {
             return;
         }
         // Git names are sorted within each section. Pinned branch paths stay
@@ -313,7 +307,6 @@ impl RefTree {
             id: leaf.name.into(),
             action: RowAction::Select,
             line: Line::from(spans),
-            name_span: 2,
         });
     }
 
@@ -335,49 +328,6 @@ impl RefTree {
 }
 
 impl LogPanel {
-    pub(super) fn ref_search_event(&mut self, event: &Event, c: &Context) -> bool {
-        let direction = match self.ref_search.event(event) {
-            Input::Pass => return false,
-            Input::Handled => return true,
-            Input::Jump(direction) => direction,
-        };
-        let mut all = RefTree {
-            unfolded: true,
-            ..RefTree::default()
-        };
-        all.rebuild(&self.hist, &self.filter, c, &self.ref_query, self.icons);
-        let hit = self.ref_search.jump(
-            direction,
-            self.refs.rows.get(self.refs.cursor).map(|row| &row.id),
-            all.rows
-                .iter()
-                .map(|row| (&row.id, [row.line.spans[row.name_span].content.as_ref()])),
-        );
-        if let Some(hit) = hit {
-            if !self.refs.rows.iter().any(|row| row.id == hit.row) {
-                // A folder ID includes its final slash, so a similarly named
-                // ref cannot be mistaken for an ancestor.
-                for parent in &all.rows {
-                    if matches!(parent.action, RowAction::Fold { .. })
-                        && parent.id != hit.row
-                        && hit.row.starts_with(&parent.id)
-                    {
-                        if self.refs.query.is_empty() {
-                            self.refs.expanded.insert(parent.id.clone(), true);
-                        } else {
-                            self.refs.search_closed.remove(&parent.id);
-                        }
-                    }
-                }
-                self.rebuild_refs(c);
-            }
-            if let Some(i) = self.refs.rows.iter().position(|row| row.id == hit.row) {
-                self.refs.set_cursor(i);
-            }
-        }
-        true
-    }
-
     pub(super) fn rebuild_refs(&mut self, c: &Context) {
         let query = match &self.editor {
             Some((Field::Refs, text)) => text,
@@ -473,7 +423,6 @@ impl LogPanel {
             let marker = self.icons.glyph(Icon::Filter);
             let mut content = area;
             let gutter = super::view::take(&mut content, cells(marker));
-            let highlight = self.ref_search.field(&row.id, 0);
             if row.id == "HEAD" && row.line.width() > usize::from(content.width) {
                 let head = self.icons.glyph(Icon::Head);
                 let mut label = Line::default();
@@ -481,20 +430,16 @@ impl LogPanel {
                     label.push_span(Span::styled(format!("{head} "), fg(GOLD)));
                 }
                 let width = usize::from(content.width).saturating_sub(label.width());
-                label
-                    .spans
-                    .extend(highlight.clipped_with(HEAD, width, fg(INK), |_, width| {
-                        if width >= "HEAD (current)".len() {
-                            "HEAD (current)"
-                        } else {
-                            "HEAD"
-                        }
-                        .into()
-                    }));
+                label.push_span(Span::styled(
+                    if width >= "HEAD (current)".len() {
+                        "HEAD (current)"
+                    } else {
+                        "HEAD"
+                    },
+                    fg(INK),
+                ));
                 f.render_widget(label, content);
-            } else if self.ref_search.prompt().visible()
-                || row.line.width() > usize::from(content.width)
-            {
+            } else if row.line.width() > usize::from(content.width) {
                 // Deep reference folders can exhaust a narrow pane before its
                 // branch name. Reduce leading whitespace before clipping the text.
                 let mut line = row.line.clone();
@@ -506,18 +451,6 @@ impl LogPanel {
                         .min(usize::from(content.width).saturating_sub(13));
                     indent.content.to_mut().truncate(keep);
                 }
-                let prefix = line.spans[..row.name_span]
-                    .iter()
-                    .map(Span::width)
-                    .sum::<usize>();
-                let span = &row.line.spans[row.name_span];
-                let spans = highlight.clipped_with(
-                    &span.content,
-                    usize::from(content.width).saturating_sub(prefix),
-                    span.style,
-                    |text, _| text.into(),
-                );
-                line.spans.splice(row.name_span..=row.name_span, spans);
                 f.render_widget(line, content);
             } else {
                 f.render_widget(&row.line, content);
@@ -581,57 +514,62 @@ mod tests {
     }
 
     #[test]
-    fn pane_search_log_refs_reveals_folded_matches_without_filtering_history() {
-        let mut c = context();
-        c.scope.remove(&2);
-        let mut p = LogPanel::default();
+    fn slash_filters_log_refs_through_the_branch_input_without_filtering_history() {
+        let mut context = context();
+        context.scope.remove(&2);
+        let mut panel = LogPanel::default();
         for (root, name) in [
             (0, "refs/heads/feature/needle-one"),
             (1, "refs/heads/release/needle-two"),
+            (0, "refs/remotes/origin/needle-three"),
+            (1, "refs/tags/needle-four"),
             (1, "refs/heads/elsewhere/hidden"),
-            (2, "refs/heads/hidden-root/needle-three"),
+            (2, "refs/heads/hidden-root/needle-five"),
         ] {
-            p.hist.branches.push(Branch {
+            panel.hist.branches.push(Branch {
                 root,
                 name: name.into(),
             });
         }
-        p.rebuild_refs(&c);
-        p.focus = Pane::Refs;
-        assert!(row(&p.refs, "refs/heads/feature/needle-one").is_none());
-        let press = |p: &mut LogPanel, code| {
-            p.event(&Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), &c);
+        panel.rebuild_refs(&context);
+        panel.focus = Pane::Refs;
+        assert!(row(&panel.refs, "refs/heads/feature/needle-one").is_none());
+        let press = |panel: &mut LogPanel, code| {
+            panel.event(
+                &Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                &context,
+            );
         };
-        press(&mut p, KeyCode::Char('/'));
-        p.event(&Event::Paste("NEEDLE".into()), &c);
-        press(&mut p, KeyCode::Enter);
+        press(&mut panel, KeyCode::Char('/'));
+        assert!(matches!(&panel.editor, Some((Field::Refs, query)) if query.is_empty()));
+        assert!(panel.editing());
+        assert!(panel.focused_search().is_none());
+        panel.event(&Event::Paste("NEEDLE".into()), &context);
+        for name in [
+            "refs/heads/feature/needle-one",
+            "refs/heads/release/needle-two",
+            "refs/remotes/origin/needle-three",
+            "refs/tags/needle-four",
+        ] {
+            assert!(row(&panel.refs, name).is_some(), "{name}");
+        }
+        assert!(row(&panel.refs, "refs/heads/elsewhere/").is_none());
+        assert!(row(&panel.refs, "refs/heads/hidden-root/needle-five").is_none());
+        assert!(panel.ref_query.is_empty());
+        press(&mut panel, KeyCode::Enter);
+        assert_eq!(panel.ref_query, "NEEDLE");
         assert_eq!(
-            p.refs.rows[p.refs.cursor].id,
+            panel.refs.rows[panel.refs.cursor].id,
             "refs/heads/feature/needle-one"
         );
-        assert!(row(&p.refs, "refs/heads/release/needle-two").is_none());
-        press(&mut p, KeyCode::Char('n'));
+        assert!(!panel.editing());
+        press(&mut panel, KeyCode::Char('n'));
+        press(&mut panel, KeyCode::Char('N'));
         assert_eq!(
-            p.refs.rows[p.refs.cursor].id,
-            "refs/heads/release/needle-two"
-        );
-        press(&mut p, KeyCode::Char('n'));
-        assert_eq!(
-            p.refs.rows[p.refs.cursor].id,
+            panel.refs.rows[panel.refs.cursor].id,
             "refs/heads/feature/needle-one"
         );
-        assert!(row(&p.refs, "refs/heads/elsewhere/hidden").is_none());
-        assert!(row(&p.refs, "refs/heads/hidden-root/needle-three").is_none());
-        assert!(p.filter.branch.is_none() && p.filter.query.is_empty() && p.ref_query.is_empty());
-        let mut t = Terminal::new(TestBackend::new(44, 12)).unwrap();
-        t.draw(|f| p.draw_refs(f, f.area(), &c)).unwrap();
-        let buffer = t.backend().buffer();
-        assert!(buffer.content().iter().any(|cell| cell.symbol() == "n"
-            && (Some(cell.bg) == crate::ui::search::CURRENT.bg
-                || cell.modifier.contains(Modifier::REVERSED))));
-        assert!(buffer.content().iter().any(|cell| cell.symbol() == "n"
-            && (Some(cell.bg) == crate::ui::search::MATCH.bg
-                || cell.modifier.contains(Modifier::UNDERLINED))));
+        assert!(panel.filter.branch.is_none() && panel.filter.query.is_empty());
     }
 
     #[test]

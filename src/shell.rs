@@ -8,7 +8,7 @@ mod startup;
 mod update;
 mod workspace;
 
-use self::Tab::{Branch, Commit, Conflicts, Log, Push, Stash};
+use self::Tab::{Branch, Commit, Conflicts, Log, Push, Remote, Stash};
 use crate::{
     branch::BranchPanel,
     commit::{CommitPanel, Rollback, RollbackEvent},
@@ -16,10 +16,11 @@ use crate::{
         keys::{self, CommandAction, Sequence},
         AppConfig,
     },
-    core::{Context, Repo},
+    core::{strategy::Strategy, Context, Repo},
     log::LogPanel,
     merge::MergePanel,
-    push::PushPanel,
+    push::{PushPanel, RepositoryCheck},
+    remote::RemotePanel,
     stash::{StashPanel, REVIEW_TOKEN},
     ui::{
         help::{global_section, HelpContent, HelpEvent, HelpSection, HelpState},
@@ -65,9 +66,10 @@ enum Tab {
     Branch,
     Stash,
     Conflicts,
+    Remote,
 }
 impl Tab {
-    const DISPLAY_ORDER: [Self; 6] = [Commit, Log, Push, Branch, Stash, Conflicts];
+    const DISPLAY_ORDER: [Self; 7] = [Commit, Log, Push, Branch, Stash, Remote, Conflicts];
 
     fn name(self) -> &'static str {
         match self {
@@ -77,6 +79,7 @@ impl Tab {
             Branch => "Branch",
             Stash => "Stash",
             Conflicts => "Conflicts",
+            Remote => "Remote",
         }
     }
 
@@ -88,6 +91,7 @@ impl Tab {
             Branch => "focus-branch",
             Stash => "focus-stash",
             Conflicts => "open-merge",
+            Remote => "focus-remote",
         }
     }
 }
@@ -108,10 +112,10 @@ const HEADER: &str = concat!(
     " — terminal Git workbench"
 );
 const HELP: &str = "Usage: igit [OPTIONS] [DIRECTORY]  (alias: ig)
-       igit [OPTIONS] <commit|log|push|branch|stash> [DIRECTORY]
+       igit [OPTIONS] <commit|log|push|branch|stash|remote> [DIRECTORY]
        igit [OPTIONS] log [FILE]
 
-  commit / log / push / branch / stash
+  commit / log / push / branch / stash / remote
                              open the selected panel (default: Commit)
   log FILE                   open a file-history tab in its owning worktree
   update [OPTIONS]           check or update a native installation
@@ -128,7 +132,7 @@ const HELP: &str = "Usage: igit [OPTIONS] [DIRECTORY]  (alias: ig)
 Options may appear before or after the panel. Use igit -- log or igit ./log
 to open a directory named log; use igit log -- -file for an option-like filename.
 
-Tabs: 1 Commit / 2 Log / 3 Push / 4 Branch / 5 Stash / 6 Conflicts (when available)   p Pull / f Fetch
+Tabs: 1 Commit / 2 Log / 3 Push / 4 Branch / 5 Stash / 6 Remote / 7 Conflicts (when available)   p Pull / f Fetch
 r repositories (Branch: rename; use Actions for Roots)   Space n notifications   F9 updates   ? / F1 help   q quit
 Runs Git on your local working trees; mutations require a reviewed confirmation.";
 struct NotificationPrefix {
@@ -137,6 +141,7 @@ struct NotificationPrefix {
     keys: Sequence,
     candidates: Vec<Sequence>,
     dispatched: usize,
+    push_check: Option<RepositoryCheck>,
 }
 
 impl NotificationPrefix {
@@ -162,7 +167,6 @@ enum NotificationPrefixEvent {
 enum Popup {
     Rollback(Box<Rollback>),
     Update(update::Dialog),
-    UpdateStrategy(crate::ui::strategy::Selector),
     SoftwareUpdate,
     Scope {
         picked: BTreeSet<usize>,
@@ -209,6 +213,7 @@ fn confirm_uses_letter_keys(owner: Tab, token: &str) -> bool {
             | (Stash, REVIEW_TOKEN)
             | (Log, crate::log::REVIEW_TOKEN)
             | (Branch, crate::branch::MERGE_REVIEW_TOKEN)
+            | (Branch, crate::branch::CHECKOUT_REVIEW_TOKEN)
     )
 }
 
@@ -227,6 +232,7 @@ struct Shell {
     merge: MergePanel,
     branch: BranchPanel,
     stash: StashPanel,
+    remote: RemotePanel,
     tab: Tab,
     main_tab: Tab,
     remote_refs_changed: bool,
@@ -235,6 +241,7 @@ struct Shell {
     quit: bool,
     restart: Option<PathBuf>,
     pending_edit: Option<editor::Request>,
+    browser: browser::Browser,
     software_update: software_update::SoftwareUpdate,
     regions: workspace::Regions,
     pop_hits: Vec<(Rect, usize)>,
@@ -282,6 +289,7 @@ impl Shell {
             merge: Default::default(),
             branch: Default::default(),
             stash: Default::default(),
+            remote: Default::default(),
             tab: Commit,
             main_tab: Commit,
             remote_refs_changed: false,
@@ -290,6 +298,7 @@ impl Shell {
             quit: false,
             restart: None,
             pending_edit: None,
+            browser: Default::default(),
             software_update: Default::default(),
             regions: Default::default(),
             pop_hits: vec![],
@@ -301,10 +310,12 @@ impl Shell {
         s.log.icons = icons;
         s.commit.icons = icons;
         s.commit.ai_config = s.config.ai.clone();
+        s.commit.configure_message_shortcuts(&s.config);
         s.push.icons = icons;
         s.merge.icons = icons;
         s.branch.icons = icons;
         s.stash.icons = icons;
+        s.remote.icons = icons;
         s.merge.shortcut_labels = s.config.shortcut_labels("merge");
         s.push.shortcut_labels = s.config.shortcut_labels("push");
         match crate::core::strategy::load(&s.ctx.state_dir) {
@@ -328,6 +339,7 @@ impl Shell {
             Conflicts => &self.merge,
             Branch => &self.branch,
             Stash => &self.stash,
+            Remote => &self.remote,
         }
     }
     fn key_sequence(&self) -> Option<KeySequence> {
@@ -361,7 +373,7 @@ impl Shell {
             Stash => self.stash.path_copy_target(&self.ctx),
             Branch => self.branch.path_copy_target(&self.ctx),
             Conflicts => self.merge.path_copy_target(&self.ctx),
-            Log => None,
+            Log | Remote => None,
         }
     }
 
@@ -421,13 +433,14 @@ impl Shell {
         if self.commit.add_running()
             && self.tab == Push
             && !self.push.editing()
-            && matches!(ev, Event::Key(key) if key.code == KeyCode::Char('F'))
+            && matches!(ev, Event::Key(key) if key.code == KeyCode::Char('f'))
         {
             self.notice("Adding files to Git; wait before fetching".into());
             return;
         }
         if (self.push.busy() || self.branch.syncing())
             && self.tab == Commit
+            && self.commit.focused_pane() == crate::ui::panes::PaneId::Changes
             && !self.commit.editing()
             && matches!(ev, Event::Key(key) if matches!(key.code, KeyCode::Char('a') | KeyCode::Insert) && key.modifiers.is_empty())
         {
@@ -437,6 +450,10 @@ impl Shell {
         self.push.block_writes(
             self.branch.syncing() || self.commit.execution_running() || self.commit.add_running(),
         );
+        self.branch.block_writes(
+            self.push.busy() || self.commit.execution_running() || self.commit.add_running(),
+        );
+        self.remote.block_writes(self.git_busy());
         if self.tab == Log && !self.log_load.ready() {
             return;
         }
@@ -452,6 +469,7 @@ impl Shell {
             Conflicts => self.merge.event(ev, &self.ctx),
             Branch => self.branch.event(ev, &self.ctx),
             Stash => self.stash.event(ev, &self.ctx),
+            Remote => self.remote.event(ev, &self.ctx),
         };
         self.action(action);
         let after = self.key_sequence();
@@ -479,6 +497,14 @@ impl Shell {
         }
         if self.tab == Stash {
             self.refresh_stash();
+        }
+        if self.tab == Remote {
+            self.refresh_remote();
+        }
+    }
+    fn refresh_remote(&mut self) {
+        if let Err(error) = self.remote.refresh(&self.ctx) {
+            self.notify(NoticeLevel::Error, "Remote", format!("{error:#}"));
         }
     }
     fn refresh_stash(&mut self) {
@@ -526,6 +552,48 @@ impl Shell {
             self.notify(NoticeLevel::Error, "Conflicts", format!("{e:#}"));
         }
     }
+    fn refresh_after_checkout(&mut self, done: &crate::branch::CheckoutDone) -> bool {
+        let Some(repo) = self
+            .ctx
+            .repos
+            .get_mut(done.root)
+            .filter(|repo| repo.path == done.path)
+        else {
+            return false;
+        };
+        repo.branch = done.branch.clone();
+        if !self.branch.checkout_completed(done) {
+            return false;
+        }
+        self.commit.request_refresh();
+        self.invalidate_log();
+        if self.tab == Push {
+            self.refresh_push();
+        }
+        true
+    }
+    fn invalidate_log(&mut self) {
+        self.remote_refs_changed = true;
+    }
+    fn show_checkout_prompt(&mut self) -> bool {
+        if self.tab != Branch
+            || self.pop.is_some()
+            || self.branch.editing()
+            || !self.branch.pending_checkout()
+        {
+            return false;
+        }
+        self.cancel_key_sequences();
+        self.pop = Some(Popup::Confirm {
+            title: "Git Checkout Problem".into(),
+            body: String::new(),
+            yes: true,
+            token: crate::branch::CHECKOUT_REVIEW_TOKEN.into(),
+            owner: Branch,
+            scroll: 0,
+        });
+        true
+    }
     fn notice(&mut self, s: String) {
         self.notify(NoticeLevel::Warning, "Workspace", s);
     }
@@ -545,6 +613,7 @@ impl Shell {
             Push => self.push.cancel_mouse(),
             Branch => self.branch.cancel_mouse(),
             Stash => self.stash.cancel_mouse(),
+            Remote => self.remote.cancel_mouse(),
             Conflicts => self.merge.cancel_mouse(),
         }
     }
@@ -593,6 +662,10 @@ impl Shell {
             Stash => {
                 self.main_tab = tab;
                 self.refresh_stash();
+            }
+            Remote => {
+                self.main_tab = tab;
+                self.refresh_remote();
             }
         }
     }
@@ -645,6 +718,15 @@ impl Shell {
                     format!("Copy failed: {e:#}"),
                 ),
             },
+            Action::OpenCommit { repo, oid } => {
+                if let Err(error) = self.browser.open_commit(repo, oid) {
+                    self.notify(
+                        NoticeLevel::Error,
+                        "Browser",
+                        format!("Cannot open commit in browser: {error:#}"),
+                    );
+                }
+            }
             Action::Refresh(level, message) => {
                 self.refresh();
                 self.notify(level, source, message)
@@ -660,7 +742,7 @@ impl Shell {
                 self.cancel_drags();
                 self.pop = self.commit.take_rollback().map(Popup::Rollback);
             }
-            Action::ChooseUpdateStrategy => {
+            Action::ToggleUpdateStrategy => {
                 if self.git_busy() {
                     self.notice(
                         "Wait for the Git operation before changing update strategy".into(),
@@ -668,9 +750,25 @@ impl Shell {
                 } else {
                     self.cancel_key_sequences();
                     self.cancel_drags();
-                    self.pop = Some(Popup::UpdateStrategy(crate::ui::strategy::Selector::new(
-                        self.push.strategy,
-                    )));
+                    let strategy = match self.push.strategy {
+                        Strategy::Merge => Strategy::Rebase,
+                        Strategy::Rebase => Strategy::Merge,
+                    };
+                    match crate::core::strategy::save(&self.ctx.state_dir, strategy) {
+                        Ok(()) => {
+                            self.push.set_strategy(strategy);
+                            self.notify(
+                                NoticeLevel::Success,
+                                "Update strategy",
+                                format!("Default update strategy: {}", strategy.label()),
+                            );
+                        }
+                        Err(error) => self.notify(
+                            NoticeLevel::Error,
+                            "Update strategy",
+                            format!("Could not save the default strategy: {error}"),
+                        ),
+                    }
                 }
             }
             Action::Confirm { title, body, token } => {
@@ -678,7 +776,13 @@ impl Shell {
                 self.pop = Some(Popup::Confirm {
                     title,
                     body,
-                    yes: !confirm_uses_letter_keys(self.tab, &token)
+                    yes: matches!(
+                        (self.tab, token.as_str()),
+                        (
+                            Branch,
+                            crate::branch::PULL_REVIEW_TOKEN | crate::branch::PUSH_REVIEW_TOKEN
+                        )
+                    ) || !confirm_uses_letter_keys(self.tab, &token)
                         && (self.tab, token.as_str()) != (Log, crate::log::REVIEW_TOKEN),
                     token,
                     owner: self.tab,
@@ -710,6 +814,7 @@ impl Shell {
             self.notice("Wait for the Git operation to finish".into());
             return;
         }
+        self.remote.block_writes(false);
         let a = match owner {
             Log => self.log.confirm(token, &self.ctx),
             Commit => self.commit.confirm(token, &self.ctx),
@@ -717,6 +822,7 @@ impl Shell {
             Conflicts => self.merge.confirm(token, &self.ctx),
             Branch => self.branch.confirm(token, &self.ctx),
             Stash => self.stash.confirm(token, &self.ctx),
+            Remote => self.remote.confirm(token, &self.ctx),
         };
         self.action_from(owner.name(), a)
     }
@@ -751,7 +857,7 @@ impl Shell {
             );
             return;
         }
-        if n == 0 && (self.commit.execution_running() || self.commit.add_running()) {
+        if n == 0 && self.git_busy() {
             self.notice("Wait for the Git operation before changing Roots".into());
             return;
         }
@@ -785,7 +891,7 @@ impl Shell {
             Push => self.push.focused_search(),
             Branch => self.branch.focused_search(),
             Stash => self.stash.focused_search(),
-            Conflicts => None,
+            Conflicts | Remote => None,
         }
     }
 
@@ -793,7 +899,6 @@ impl Shell {
         match self.pop.as_ref() {
             Some(Popup::Rollback(dialog)) => dialog.keymap(),
             Some(Popup::Update(dialog)) => dialog.keymap(),
-            Some(Popup::UpdateStrategy(selector)) => selector.keymap(),
             Some(Popup::SoftwareUpdate) => self.software_update.keymap(),
             Some(Popup::Scope { .. }) => HelpContent::new(
                 HelpSection::new(
@@ -874,6 +979,7 @@ impl Shell {
                     Conflicts => self.merge.keymap(),
                     Branch => self.branch.keymap(),
                     Stash => self.stash.keymap(),
+                    Remote => self.remote.keymap(),
                 };
                 if let Some(search) = search {
                     content.sections.insert(
@@ -893,7 +999,7 @@ impl Shell {
                 if self.can_return_to_main_tab() {
                     content.sections.push(HelpSection::new(
                         "Workspace tabs",
-                        &[("Esc", "Return to the last Commit, Log, Branch or Stash tab")],
+                        &[("Esc", "Return to the previous main workspace tab")],
                     ));
                 }
                 if !self.panel().editing() {
@@ -1004,6 +1110,26 @@ impl Shell {
             self.software_update_event(ev);
             return;
         }
+        if matches!(&self.pop, Some(Popup::Confirm { owner: Branch, token, .. })
+            if token == crate::branch::CHECKOUT_REVIEW_TOKEN)
+        {
+            match self.branch.checkout_event(ev) {
+                crate::branch::CheckoutDecision::Keep => (),
+                crate::branch::CheckoutDecision::Cancel => {
+                    self.branch.cancel_checkout();
+                    self.pop = None;
+                }
+                crate::branch::CheckoutDecision::Run { .. } if self.git_busy() => {
+                    self.notice("Wait for the Git operation to finish".into());
+                }
+                crate::branch::CheckoutDecision::Run { force } => {
+                    self.pop = None;
+                    let action = self.branch.execute_checkout(&self.ctx, force);
+                    self.action_from("Branch", action);
+                }
+            }
+            return;
+        }
         if let Some(Popup::Rollback(dialog)) = self.pop.as_mut() {
             match dialog.event(ev, &self.ctx) {
                 RollbackEvent::Keep => (),
@@ -1018,31 +1144,6 @@ impl Shell {
                     };
                     let action = dialog.apply(&self.ctx);
                     self.action_from("Commit", action);
-                }
-            }
-            return;
-        }
-        if let Some(Popup::UpdateStrategy(selector)) = self.pop.as_mut() {
-            match selector.event(ev) {
-                crate::ui::strategy::Choice::Pending => (),
-                crate::ui::strategy::Choice::Cancel => self.pop = None,
-                crate::ui::strategy::Choice::Selected(strategy) => {
-                    match crate::core::strategy::save(&self.ctx.state_dir, strategy) {
-                        Ok(()) => {
-                            self.push.set_strategy(strategy);
-                            self.pop = None;
-                            self.notify(
-                                NoticeLevel::Success,
-                                "Update strategy",
-                                format!("Default update strategy: {}", strategy.label()),
-                            );
-                        }
-                        Err(error) => self.notify(
-                            NoticeLevel::Error,
-                            "Update strategy",
-                            format!("Could not save the default strategy: {error}"),
-                        ),
-                    }
                 }
             }
             return;
@@ -1094,7 +1195,6 @@ impl Shell {
         self.pop = match popup {
             Popup::Rollback(_) => unreachable!("rollback events are handled above"),
             Popup::Update(_) => unreachable!("update events are handled above"),
-            Popup::UpdateStrategy(_) => unreachable!("strategy events are handled above"),
             Popup::SoftwareUpdate => unreachable!("software update events are handled above"),
             Popup::Notifications(_) => unreachable!("notification events are handled above"),
             Popup::Confirm {
@@ -1266,7 +1366,7 @@ impl Shell {
             }
             Push => self.push.dismiss_group_menu(),
             Branch => self.branch.dismiss_view_menu(),
-            Conflicts | Stash => (),
+            Conflicts | Stash | Remote => (),
         }
         !self.panel().editing()
     }
@@ -1276,7 +1376,7 @@ impl Shell {
         }
         match self.tab {
             Conflicts => self.merge.at_root(),
-            Commit | Log | Push | Branch | Stash => false,
+            Commit | Log | Push | Branch | Stash | Remote => false,
         }
     }
     fn inline_diff_key(&self, event: &Event) -> bool {
@@ -1352,6 +1452,9 @@ impl Shell {
                 .iter()
                 .any(|sequence| sequence.len() == pending.keys.len())
             {
+                if let Some(check) = pending.push_check {
+                    self.push.restore_repository_check(check);
+                }
                 self.open_notifications(None);
                 return NotificationPrefixEvent::Handled;
             }
@@ -1400,8 +1503,24 @@ impl Shell {
         let now = Instant::now();
         let hint_delay = self.config.hint_delay;
         let filter_prefix = self.tab == Log && self.log_filter_prefix_is_default();
-        let dispatched = usize::from(filter_prefix && self.log.begin_filter_prefix_on_space());
-        if dispatched == 1 {
+        let push_space = self.tab == Push
+            && self.push.focused_pane() == crate::ui::panes::PaneId::Outgoing
+            && self.config.active(keys::PUSH_REPOS).any(|command| {
+                command.command.group == "push"
+                    && command.command.name == "toggle"
+                    && command
+                        .sequences
+                        .iter()
+                        .any(|sequence| sequence.as_slice() == [first])
+            });
+        let push_check = if push_space {
+            self.push.toggle_selected_repository()
+        } else {
+            None
+        };
+        let dispatched =
+            usize::from(push_space || filter_prefix && self.log.begin_filter_prefix_on_space());
+        if dispatched == 1 && filter_prefix {
             self.key_picker = KeySequencePicker::pending_with_delay(now, hint_delay);
         }
         self.notification_prefix = Some(NotificationPrefix {
@@ -1410,6 +1529,7 @@ impl Shell {
             keys: vec![first],
             candidates,
             dispatched,
+            push_check,
         });
         NotificationPrefixEvent::Handled
     }
@@ -1444,10 +1564,11 @@ impl Shell {
         labels.sort();
         labels.dedup();
         (!labels.is_empty()).then(|| {
-            let replay = pending
-                .space_replays_standalone_action()
-                .then_some("  Space again applies")
-                .unwrap_or_default();
+            let replay = if pending.space_replays_standalone_action() {
+                "  Space again applies"
+            } else {
+                ""
+            };
             format!("{} Notifications{replay}  Esc cancel", labels.join(" / "))
         })
     }
@@ -1532,6 +1653,9 @@ impl Shell {
             }
             if self.tab == Stash && self.pop.is_none() && !self.stash.editing() {
                 self.refresh_stash();
+            }
+            if self.tab == Remote && self.pop.is_none() && !self.remote.editing() {
+                self.refresh_remote();
             }
         }
         if matches!(ev, Event::Resize(_, _) | Event::FocusLost | Event::Paste(_)) {
@@ -1622,8 +1746,20 @@ impl Shell {
                         self.go(self.main_tab);
                         return;
                     }
-                    KeyCode::Char(ch @ '1'..='6') => {
+                    KeyCode::Char(ch @ '1'..='7') => {
                         self.go(Tab::DISPLAY_ORDER[(ch as u8 - b'1') as usize]);
+                        return;
+                    }
+                    KeyCode::Char('p')
+                        if k.modifiers.is_empty()
+                            && self.tab == Branch
+                            && !self.branch.comparing() =>
+                    {
+                        self.panel_event(ev);
+                        return;
+                    }
+                    KeyCode::Char('f') if k.modifiers.is_empty() && self.tab == Push => {
+                        self.panel_event(ev);
                         return;
                     }
                     KeyCode::Char(ch @ ('p' | 'f')) if k.modifiers.is_empty() => {
@@ -1676,6 +1812,17 @@ impl Shell {
     }
     fn poll(&mut self) -> bool {
         let mut change = self.notifications.expire(Instant::now());
+        if let Some(result) = self.browser.poll() {
+            let (level, message) = match result {
+                Ok(()) => (NoticeLevel::Success, "Opened commit in browser".into()),
+                Err(error) => (
+                    NoticeLevel::Error,
+                    format!("Cannot open commit in browser: {error:#}"),
+                ),
+            };
+            self.notify(level, "Browser", message);
+            change = true;
+        }
         if let Some(pending) = &mut self.notification_prefix {
             if !pending.hint_shown && pending.started + self.config.hint_delay <= Instant::now() {
                 pending.hint_shown = true;
@@ -1718,7 +1865,17 @@ impl Shell {
             Some(Popup::Help { origin, .. }) => origin.as_deref_mut(),
             popup => popup,
         };
+        let mut load_error = None;
         if let Some(Popup::Update(dialog)) = popup {
+            match dialog.poll_loading() {
+                Ok(redraw) => change |= redraw,
+                Err(error) => {
+                    load_error = Some(format!(
+                        "{} repository check failed: {error:#}",
+                        dialog.label()
+                    ));
+                }
+            }
             if let Some((kind, level, summary)) = dialog.poll() {
                 if kind == update::Kind::Pull {
                     self.refresh();
@@ -1732,6 +1889,10 @@ impl Shell {
                 self.notify(level, kind.label(), summary);
                 change = true;
             }
+        }
+        if let Some(message) = load_error {
+            self.notify(NoticeLevel::Error, "Workspace update", message);
+            change = true;
         }
         if let Some(result) = self.kitty.poll() {
             self.maximize_pending = false;
@@ -1764,9 +1925,32 @@ impl Shell {
                 change = true;
             }
         }
-        if let Some((level, message)) = self.branch.poll_sync() {
-            self.refresh();
-            self.notify(level, "Branch", message);
+        if let Some(outcome) = self.branch.poll_sync() {
+            if outcome.prompt {
+                if !self.show_checkout_prompt() {
+                    self.notify(
+                        NoticeLevel::Warning,
+                        "Branch",
+                        "Checkout needs review; return to Branch to handle local changes".into(),
+                    );
+                }
+            } else {
+                let applied = outcome
+                    .checkout
+                    .as_ref()
+                    .is_some_and(|checkout| self.refresh_after_checkout(checkout));
+                if !applied && (outcome.checkout.is_some() || outcome.refresh) {
+                    self.refresh();
+                }
+                self.notify(outcome.level, "Branch", outcome.message);
+                if self.branch.take_checkout_conflicts(&self.ctx) {
+                    self.refresh_conflicts();
+                    self.go(Conflicts);
+                }
+            }
+            change = true;
+        }
+        if self.show_checkout_prompt() {
             change = true;
         }
         let seq = self.push.progress_seq;
@@ -1794,6 +1978,8 @@ impl Shell {
             change = true;
         }
         change |= seq != self.push.progress_seq;
+        let animation = self.push.tick_animation(Instant::now());
+        change |= animation && self.tab == Push;
         let a = self.commit.tick(&self.ctx);
         if !matches!(a, Action::None) {
             self.action_from("Commit", a);
@@ -1818,11 +2004,13 @@ impl Shell {
             || self.log.history_pending()
             || self.commit.execution_running()
             || self.push.reads_pending()
+            || matches!(&self.pop, Some(Popup::Update(dialog)) if dialog.reads_pending())
             || self.tab == Branch && self.branch.reads_pending()
             || self.branch.comparison_pending()
+            || self.branch.syncing()
         {
             Duration::from_millis(16)
-        } else if self.commit.add_running() {
+        } else if self.commit.add_running() || self.push.busy() {
             Duration::from_millis(100)
         } else {
             IDLE
@@ -1875,12 +2063,14 @@ impl Shell {
             dialog.draw(f, a, self.icons, &mut self.pop_hits);
             return;
         }
-        if let Some(Popup::UpdateStrategy(selector)) = self.pop.as_mut() {
-            selector.draw(f, a, self.icons);
-            return;
-        }
         if let Some(Popup::Help { state, .. }) = self.pop.as_mut() {
             state.draw(f, a, self.icons);
+            return;
+        }
+        if matches!(&self.pop, Some(Popup::Confirm { owner: Branch, token, .. })
+            if token == crate::branch::CHECKOUT_REVIEW_TOKEN)
+        {
+            self.branch.draw_checkout(f, a);
             return;
         }
         if let Some(Popup::Confirm {
@@ -1891,10 +2081,30 @@ impl Shell {
             ..
         }) = self.pop.as_mut()
         {
-            if token == crate::branch::MERGE_REVIEW_TOKEN
+            if matches!(
+                token.as_str(),
+                crate::branch::MERGE_REVIEW_TOKEN
+                    | crate::branch::PULL_REVIEW_TOKEN
+                    | crate::branch::PUSH_REVIEW_TOKEN
+            ) && self
+                .branch
+                .draw_review(f, a, scroll, *yes, &mut self.pop_hits)
+            {
+                return;
+            }
+        }
+        if let Some(Popup::Confirm {
+            owner: Push,
+            token,
+            scroll,
+            yes,
+            ..
+        }) = self.pop.as_mut()
+        {
+            if token == "push"
                 && self
-                    .branch
-                    .draw_merge_review(f, a, scroll, *yes, &mut self.pop_hits)
+                    .push
+                    .draw_review(f, a, &self.ctx, scroll, *yes, &mut self.pop_hits)
             {
                 return;
             }
@@ -1937,7 +2147,6 @@ impl Shell {
         let title = match pop {
             Popup::Rollback(_) => unreachable!("rollback is rendered above"),
             Popup::Update(_) => unreachable!("update is rendered above"),
-            Popup::UpdateStrategy(_) => unreachable!("strategy is rendered above"),
             Popup::SoftwareUpdate => unreachable!("software update is rendered above"),
             Popup::Scope { .. } => "Workspace roots",
             Popup::Help { .. } => "IGit · Keyboard shortcuts",
@@ -1965,7 +2174,6 @@ impl Shell {
         match pop {
             Popup::Rollback(_) => unreachable!("rollback is rendered above"),
             Popup::Update(_) => unreachable!("update is rendered above"),
-            Popup::UpdateStrategy(_) => unreachable!("strategy is rendered above"),
             Popup::SoftwareUpdate => unreachable!("software update is rendered above"),
             Popup::Confirm {
                 body: text,
@@ -2054,7 +2262,11 @@ impl Shell {
                         }
                         MenuAction::Roots => "Roots / Select repositories".into(),
                         MenuAction::Update(update::Kind::Pull) => {
-                            format!("{}  Pull repositories…", label("pull"))
+                            if self.tab == Branch && !self.branch.comparing() {
+                                "Pull repositories…".into()
+                            } else {
+                                format!("{}  Pull repositories…", label("pull"))
+                            }
                         }
                         MenuAction::Update(update::Kind::Fetch) => {
                             format!("{}  Fetch repositories…", label("fetch"))
@@ -2403,6 +2615,8 @@ mod maximize_tests;
 #[cfg(test)]
 mod notification_tests;
 #[cfg(test)]
+mod push_tests;
+#[cfg(test)]
 mod startup_tests;
 #[cfg(test)]
 mod test_support;
@@ -2414,8 +2628,16 @@ mod update_tests;
 mod workspace_tests;
 
 #[cfg(test)]
+mod branch_checkout_tests;
+#[cfg(test)]
+mod branch_pull_tests;
+#[cfg(test)]
+mod branch_push_tests;
+#[cfg(test)]
 mod branch_tests;
 
+#[cfg(test)]
+mod remote_tests;
 #[cfg(test)]
 mod stash_tests;
 

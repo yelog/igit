@@ -266,6 +266,9 @@ impl CommitPanel {
             Focus::Message => Section::new(
                 "Commit / Message",
                 &[
+                    ("c", "Commit checked files in current Roots"),
+                    ("a", "Commit, then open Push preview"),
+                    ("g", "Generate and fill shared commit message"),
                     ("Left", "Select previous message action"),
                     ("Right", "Select next message action"),
                     ("Enter", "Run selected message action"),

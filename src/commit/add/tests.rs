@@ -159,8 +159,9 @@ fn add_to_git_shortcut_immediately_adds_only_the_highlighted_untracked_file() {
 
 #[test]
 fn add_to_git_folded_directory_keeps_exact_members_in_each_layout() {
-    for modules in [false, true] {
+    for (repositories, modules) in [(true, false), (false, false), (false, true), (true, true)] {
         let (_dir, ctx, mut panel) = fixture();
+        panel.options.repositories = repositories;
         panel.options.modules = modules;
         panel.sync(&ctx);
         panel.cursor = panel

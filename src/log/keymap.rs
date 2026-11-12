@@ -238,7 +238,26 @@ impl LogPanel {
                 Field::Path => "Log / Paths Filter",
                 Field::Branch => "Log / Branch Filter",
             };
-            let section = if field == Field::Date && self.date_range.is_none() {
+            let section = if field == Field::Author {
+                Section::new(
+                    title,
+                    &[
+                        ("Down", "Select next author"),
+                        ("Up", "Select previous author"),
+                        ("Tab", "Select next author"),
+                        ("Shift-Tab", "Select previous author"),
+                        ("PgDn", "Page through authors"),
+                        ("PgUp", "Page back through authors"),
+                        ("Home", "Select All users or first match"),
+                        ("End", "Select last author"),
+                        ("Enter", "Apply selected author or typed text"),
+                        ("Backspace", "Delete last character"),
+                        ("Ctrl-w", "Delete word before cursor"),
+                        ("Ctrl-u", "Clear author search"),
+                        ("Esc", "Cancel; keep original user filter"),
+                    ],
+                )
+            } else if field == Field::Date && self.date_range.is_none() {
                 Section::new(
                     title,
                     &[
@@ -309,6 +328,7 @@ impl LogPanel {
                     ("yy", "Copy full commit ID"),
                     ("ym", "Copy full commit message"),
                     ("ya", "Copy author name and email"),
+                    ("O", "Open commit in browser"),
                     ("Enter", "Open commit file diff"),
                     ("/", "Search commit text or hash"),
                 ],
@@ -330,6 +350,7 @@ impl LogPanel {
                     ("yy", "Copy full commit ID"),
                     ("ym", "Copy full commit message"),
                     ("ya", "Copy author name and email"),
+                    ("O", "Open commit in browser"),
                     ("a", "Open commit actions"),
                     ("D", "Compare with Local"),
                     ("v", "Toggle commit selection mode"),
@@ -353,7 +374,7 @@ impl LogPanel {
                     ("l", "Expand, move to child or next pane"),
                     ("Enter", "Filter history by branch or tag"),
                     ("s", "Filter history by branch or tag"),
-                    ("S", "Search branches or tags"),
+                    ("/", "Search branches or tags"),
                     ("g", "Select first item"),
                     ("G", "Select last item"),
                     ("PgDn", "Page down"),

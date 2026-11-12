@@ -22,7 +22,7 @@ impl CommitPanel {
                 let first = *roots
                     .first()
                     .ok_or(Constraint("No changes in this directory"))?;
-                let base = if self.options.modules {
+                let base = if self.options.repository_grouping() {
                     &c.repos[first].path
                 } else {
                     tree::directory_root(c)

@@ -618,13 +618,13 @@ impl Review {
                                 NoticeLevel::Error
                             },
                             format!(
-                                "{applied} applied · {stopped} · {remaining} remaining · 6 Conflicts · {destination}"
+                                "{applied} applied · {stopped} · {remaining} remaining · 7 Conflicts · {destination}"
                             ),
                         ));
                     }
                     return Ok((
                         NoticeLevel::Warning,
-                        format!("Cherry-pick stopped · 6 Conflicts · {destination}"),
+                        format!("Cherry-pick stopped · 7 Conflicts · {destination}"),
                     ));
                 }
                 if let Some(applied) = applied.filter(|n| *n > 0 && *n <= count) {

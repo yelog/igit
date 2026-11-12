@@ -1,8 +1,9 @@
 //! Push presentation uses shared column geometry for text and mouse controls.
 use super::*;
-use crate::ui::idea::{button_style, clipped, clipped_path, repo_tint, tracking_spans, CONFLICT};
+use crate::ui::idea::{
+    button_style, clipped, clipped_path, repo_tint, tracking_spans, CONFLICT, GOLD,
+};
 use crate::ui::search::Highlight;
-use ratatui::widgets::{Block, Borders};
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy, Default)]
@@ -225,6 +226,44 @@ impl PushPanel {
         options + actions + 3 > usize::from(width)
     }
 
+    fn control_line(&self, text: &str, hit: Hit, enabled: bool) -> Line<'static> {
+        let shortcut = match hit {
+            Hit::Fetch => Some("f"),
+            Hit::Strategy => Some("s"),
+            Hit::Send => Some("P"),
+            Hit::Tags => Some("F"),
+            Hit::Hooks => Some("H"),
+            _ => None,
+        }
+        .filter(|key| {
+            enabled
+                && self.panes.active
+                && !self.editing()
+                && self
+                    .shortcut_labels
+                    .get(key)
+                    .is_none_or(|label| label == key)
+        });
+        if let Some(index) = shortcut.and_then(|key| {
+            text.find(|character: char| {
+                character.eq_ignore_ascii_case(&key.chars().next().unwrap())
+            })
+        }) {
+            Line::from(vec![
+                Span::raw(text[..index].to_string()),
+                Span::styled(
+                    text[index..index + 1].to_string(),
+                    Style::new()
+                        .fg(GOLD)
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                ),
+                Span::raw(text[index + 1..].to_string()),
+            ])
+        } else {
+            Line::raw(text.to_string())
+        }
+    }
+
     pub(super) fn draw_panel(&mut self, f: &mut Frame, area: Rect, c: &Context) {
         self.hits.clear();
         self.panes.begin();
@@ -240,7 +279,7 @@ impl PushPanel {
             return;
         }
         let hidden = self.checked.iter().any(|i| !c.scope.contains(i));
-        let footer_height = 3 + u16::from(self.footer_wraps(area.width)) + u16::from(hidden);
+        let footer_height = 1 + u16::from(self.footer_wraps(area.width)) + u16::from(hidden);
         let [body, controls] = Layout::vertical([C::Min(2), C::Length(footer_height)]).areas(area);
         let [outgoing, files, details] = if self.panes.maximized {
             Self::PANES.map(|id| {
@@ -312,43 +351,11 @@ impl PushPanel {
         } else {
             "Commits"
         };
-        let block = pane(title, self.active_pane(PaneId::Outgoing))
-            .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT);
+        let block = pane(title, self.active_pane(PaneId::Outgoing));
         let content = block.inner(area);
         f.render_widget(block, area);
         let [toolbar, inner] = Layout::vertical([C::Length(1), C::Min(0)]).areas(content);
-        if self.busy() || self.read_status().is_some() {
-            f.render_widget(
-                Paragraph::new(format!(
-                    " {}",
-                    if self.busy() {
-                        &self.busy
-                    } else {
-                        self.read_status().unwrap()
-                    }
-                ))
-                .style(Style::new().fg(ACCENT)),
-                toolbar,
-            );
-        } else {
-            let mut controls = vec![
-                (Icon::Remote, "Target", Hit::EditTarget),
-                (Icon::Refresh, "Fetch", Hit::Fetch),
-            ];
-            if !self.last_fetch
-                && self.entries.iter().any(|e| {
-                    c.scope.contains(&e.idx)
-                        && e.n > 0
-                        && matches!(self.results.get(&e.idx), Some(Err(_)))
-                })
-            {
-                controls.push((Icon::Undo, "Retry", Hit::Retry));
-            }
-            if self.conflicted.iter().any(|root| c.scope.contains(root)) {
-                controls.push((Icon::Error, "Conflicts", Hit::Conflicts));
-            }
-            self.draw_toolbar(f, toolbar, &controls);
-        }
+        self.draw_outgoing_toolbar(f, toolbar, c);
         let rows = self.rows();
         let height = usize::from(inner.height);
         self.offset = self.offset.min(rows.len().saturating_sub(height));
@@ -360,6 +367,11 @@ impl PushPanel {
         }
         let icons = self.icons;
         let columns = Columns::new(self, c, usize::from(inner.width));
+        let spinners = self
+            .activities
+            .iter()
+            .map(|(root, activity)| (*root, icons.spinner(activity.frame)))
+            .collect::<BTreeMap<_, _>>();
         for (dy, &(id, commit)) in rows.iter().skip(self.offset).take(height).enumerate() {
             let e = self.entries.iter().find(|e| e.idx == id).unwrap();
             let row = Rect::new(inner.x, inner.y + dy as u16, inner.width, 1);
@@ -418,13 +430,19 @@ impl PushPanel {
                         },
                     )
                 });
-                let result_width = result
-                    .map(|(icon, _)| icons.glyph(icon).width() + 1)
+                let marker = if let Some(glyph) = spinners.get(&id) {
+                    Some((glyph.to_string(), ACCENT))
+                } else {
+                    result.map(|(icon, color)| (icons.glyph(icon).to_string(), color))
+                };
+                let marker_width = marker
+                    .as_ref()
+                    .map(|(glyph, _)| glyph.width() + 1)
                     .unwrap_or(0);
                 put_search(
                     &mut line,
                     Column {
-                        width: columns.name.width.saturating_sub(result_width),
+                        width: columns.name.width.saturating_sub(marker_width),
                         ..columns.name
                     },
                     &label(Path::new(&repo.name)),
@@ -433,11 +451,8 @@ impl PushPanel {
                         .add_modifier(Modifier::BOLD),
                     self.outgoing_search.field(&key, 0),
                 );
-                if let Some((icon, color)) = result {
-                    line.push_span(Span::styled(
-                        format!(" {}", icons.glyph(icon)),
-                        Style::new().fg(color),
-                    ));
+                if let Some((glyph, color)) = marker {
+                    line.push_span(Span::styled(format!(" {glyph}"), Style::new().fg(color)));
                 }
                 if e.error.is_empty() {
                     put_search(
@@ -625,8 +640,7 @@ impl PushPanel {
         } else {
             format!("Files · {count}")
         };
-        let block = pane(title, self.active_pane(PaneId::PushFiles))
-            .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT);
+        let block = pane(title, self.active_pane(PaneId::PushFiles));
         let inner = block.inner(area);
         f.render_widget(block, area);
         if inner.is_empty() {
@@ -726,6 +740,77 @@ impl PushPanel {
         }
     }
 
+    fn draw_outgoing_toolbar(&mut self, f: &mut Frame, area: Rect, c: &Context) {
+        if area.is_empty() {
+            return;
+        }
+        let mut controls = vec![(Icon::Refresh, "fetch", Hit::Fetch)];
+        if !self.last_fetch
+            && self.entries.iter().any(|entry| {
+                c.scope.contains(&entry.idx)
+                    && entry.n > 0
+                    && matches!(self.results.get(&entry.idx), Some(Err(_)))
+            })
+        {
+            controls.push((Icon::Undo, "Retry", Hit::Retry));
+        }
+        if self.conflicted.iter().any(|root| c.scope.contains(root)) {
+            controls.push((Icon::Error, "Conflicts", Hit::Conflicts));
+        }
+        let reserved = controls
+            .iter()
+            .map(|(icon, label, hit)| {
+                if matches!(hit, Hit::Fetch) {
+                    label.width() + 2
+                } else {
+                    self.icons.glyph(*icon).width() + 2
+                }
+            })
+            .sum::<usize>();
+        let shortcut = self.shortcut_labels.get("s").map_or("s", String::as_str);
+        let labels = [
+            format!("Update strategy: {}", self.strategy.label()),
+            format!("Strategy: {}", self.strategy.label()),
+            if shortcut.len() == 1 {
+                format!("{shortcut} {}", self.strategy.label())
+            } else {
+                self.strategy.label().to_string()
+            },
+        ];
+        let text = labels
+            .iter()
+            .find(|label| label.width() + reserved <= usize::from(area.width))
+            .unwrap_or(&labels[2]);
+        let width = text.width().min(usize::from(area.width)) as u16;
+        let strategy = Rect::new(area.right() - width, area.y, width, 1);
+        let enabled = !self.busy() && !self.writes_blocked;
+        f.render_widget(
+            Paragraph::new(self.control_line(text, Hit::Strategy, enabled))
+                .style(Style::new().fg(if enabled { ACCENT } else { MUTED })),
+            strategy,
+        );
+        if enabled {
+            self.hits.push((strategy, Hit::Strategy));
+        }
+        let tools = Rect::new(area.x, area.y, strategy.x - area.x, 1);
+        if self.busy() || self.read_status().is_some() {
+            f.render_widget(
+                Paragraph::new(format!(
+                    " {}",
+                    if self.busy() {
+                        &self.busy
+                    } else {
+                        self.read_status().unwrap()
+                    }
+                ))
+                .style(Style::new().fg(ACCENT)),
+                tools,
+            );
+        } else {
+            self.draw_toolbar(f, tools, &controls);
+        }
+    }
+
     fn draw_toolbar(&mut self, f: &mut Frame, area: Rect, controls: &[(Icon, &str, Hit)]) {
         if area.is_empty() {
             return;
@@ -748,7 +833,18 @@ impl PushPanel {
             <= usize::from(area.width);
         let mut x = area.x;
         for &(icon, label, hit) in controls {
-            let glyph = self.icons.glyph(icon);
+            let glyph = if matches!(hit, Hit::Fetch)
+                && compact
+                && !labels_fit
+                && self
+                    .shortcut_labels
+                    .get("f")
+                    .is_none_or(|label| label == "f")
+            {
+                "f"
+            } else {
+                self.icons.glyph(icon)
+            };
             let text = if compact && labels_fit && !label.is_empty() {
                 format!(" {label} ")
             } else if compact || label.is_empty() {
@@ -768,47 +864,23 @@ impl PushPanel {
             } else {
                 Style::new().fg(MUTED)
             };
-            f.render_widget(Paragraph::new(text).style(style), row);
+            f.render_widget(
+                Paragraph::new(self.control_line(&text, hit, true)).style(style),
+                row,
+            );
             self.hits.push((row, hit));
             x += width;
         }
     }
 
     fn draw_controls(&mut self, f: &mut Frame, area: Rect, c: &Context) {
-        if area.height < 3 {
+        if area.is_empty() {
             return;
         }
-        f.render_widget(
-            Block::default()
-                .borders(Borders::TOP)
-                .border_style(Style::new().fg(LINE)),
-            Rect::new(area.x, area.y, area.width, 1),
-        );
         let ready = self.has_push_candidate(c) && !self.busy() && self.read_status().is_none();
         let hidden = self.checked.iter().filter(|i| !c.scope.contains(i)).count();
         let wrap = self.footer_wraps(area.width);
-        let strategy = format!(
-            " {} Update: {}",
-            self.shortcut_labels.get("s").map_or("s", String::as_str),
-            self.strategy.label()
-        );
-        let strategy_row = cell(
-            Rect::new(area.x, area.y + 1, area.width, 1),
-            0,
-            strategy.width(),
-        );
-        f.render_widget(
-            Paragraph::new(strategy).style(Style::new().fg(if self.busy() {
-                MUTED
-            } else {
-                ACCENT
-            })),
-            strategy_row,
-        );
-        if !self.busy() {
-            self.hits.push((strategy_row, Hit::Strategy));
-        }
-        let y = area.y + 2;
+        let y = area.y;
         let mut x = area.x;
         for (label, hit) in self.footer_options() {
             let row = cell(
@@ -817,10 +889,13 @@ impl PushPanel {
                 label.width(),
             );
             f.render_widget(
-                Paragraph::new(label).style(Style::new().fg(MUTED).bg(BG)),
+                Paragraph::new(self.control_line(&label, hit, true))
+                    .style(Style::new().fg(MUTED).bg(BG)),
                 row,
             );
-            self.hits.push((row, hit));
+            if !row.is_empty() {
+                self.hits.push((row, hit));
+            }
             x = row.right().saturating_add(2);
         }
         let action_y = (y + u16::from(wrap)).min(area.bottom() - 1);
@@ -835,7 +910,10 @@ impl PushPanel {
             } else {
                 button_style(false).fg(MUTED)
             };
-            f.render_widget(Paragraph::new(label).style(style), row);
+            f.render_widget(
+                Paragraph::new(self.control_line(label, hit, enabled)).style(style),
+                row,
+            );
             if enabled && !row.is_empty() {
                 self.hits.push((row, hit));
             }

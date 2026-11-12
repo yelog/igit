@@ -20,8 +20,113 @@ fn hold_entries(panel: &mut PushPanel) -> mpsc::Sender<Vec<Entry>> {
 }
 
 #[test]
+fn first_load_checks_all_scoped_outgoing_repositories() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["app", "tools", "synced", "unavailable", "hidden"] {
+        crate::push::tests::make(dir.path(), name);
+    }
+    git(
+        &dir.path().join("synced"),
+        &["push", "-q", "origin", "main"],
+    )
+    .unwrap();
+    git(
+        &dir.path().join("unavailable"),
+        &["remote", "remove", "origin"],
+    )
+    .unwrap();
+    let mut context = Context::discover(dir.path()).unwrap();
+    let hidden = context
+        .repos
+        .iter()
+        .position(|repo| repo.name == "hidden")
+        .unwrap();
+    context.scope.remove(&hidden);
+    let expected = context
+        .repos
+        .iter()
+        .enumerate()
+        .filter(|(_, repo)| matches!(repo.name.as_str(), "app" | "tools"))
+        .map(|(index, _)| index)
+        .collect::<BTreeSet<_>>();
+    let mut panel = PushPanel::default();
+    panel.refresh(&context).unwrap();
+    panel.finish_loading(&context);
+
+    assert_eq!(panel.checked, expected);
+    assert_eq!(panel.expanded, expected);
+    let rows = panel.rows();
+    for entry in &panel.entries {
+        assert_eq!(
+            rows.iter()
+                .any(|(root, commit)| *root == entry.idx && commit.is_some()),
+            entry.n > 0
+        );
+    }
+    assert!(panel.entries.iter().all(|entry| entry.idx != hidden));
+    assert!(matches!(
+        panel.review(&context, false),
+        Action::Confirm { .. }
+    ));
+    assert_eq!(
+        panel
+            .review
+            .iter()
+            .map(|job| job.idx)
+            .collect::<BTreeSet<_>>(),
+        expected
+    );
+}
+
+#[test]
+fn explicit_reseed_limits_checks_on_the_first_load() {
+    let (_directory, context, _) = fixture();
+    let mut panel = PushPanel {
+        reseed: Some(vec![1]),
+        ..Default::default()
+    };
+    panel.refresh(&context).unwrap();
+    panel.finish_loading(&context);
+    assert_eq!(panel.checked, BTreeSet::from([1]));
+    assert_eq!(panel.expanded, BTreeSet::from([0, 1]));
+    assert_eq!(panel.selected(), Some((1, None)));
+    assert!(matches!(
+        panel.review(&context, false),
+        Action::Confirm { .. }
+    ));
+    assert_eq!(
+        panel.review.iter().map(|job| job.idx).collect::<Vec<_>>(),
+        [1]
+    );
+}
+
+#[test]
+fn refresh_preserves_repository_folds_changed_during_loading() {
+    let (_directory, context, mut panel) = fixture();
+    assert_eq!(panel.expanded, BTreeSet::from([0, 1]));
+    let checked = panel.checked.clone();
+    let entries = panel.entries.clone();
+    panel.refresh(&context).unwrap();
+    let release = hold_entries(&mut panel);
+    panel.event(
+        &Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)),
+        &context,
+    );
+    assert_eq!(panel.expanded, BTreeSet::from([1]));
+    let selected = panel.selected_identity();
+    release.send(entries).unwrap();
+    panel.finish_loading(&context);
+    assert_eq!(panel.expanded, BTreeSet::from([1]));
+    assert_eq!(panel.checked, checked);
+    assert_eq!(panel.selected_identity(), selected);
+    assert!(!panel.rows().contains(&(0, Some(0))));
+    assert!(panel.rows().contains(&(1, Some(0))));
+}
+
+#[test]
 fn refresh_keeps_cached_rows_but_blocks_remote_actions_and_rejects_old_roots() {
     let (_dir, mut c, mut panel) = fixture();
+    panel.toggle(1);
     let old = panel.entries.clone();
     panel.refresh(&c).unwrap();
     let release = hold_entries(&mut panel);
@@ -277,10 +382,10 @@ fn loading_controls_fit_and_disable_mouse_writes_in_all_icon_modes() {
         for (w, h) in [(44, 12), (80, 24), (120, 36)] {
             let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
             term.draw(|f| panel.draw(f, f.area(), &c)).unwrap();
-            assert!(!panel.hits.iter().any(|(_, hit)| matches!(
-                hit,
-                Hit::Send | Hit::Fetch | Hit::Retry | Hit::EditTarget
-            )));
+            assert!(!panel
+                .hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::Send | Hit::Fetch | Hit::Retry)));
             assert!(panel
                 .hits
                 .iter()

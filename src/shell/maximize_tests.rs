@@ -123,6 +123,7 @@ fn maximize_works_on_narrow_screens_while_log_stays_tiled() {
                 Conflicts => &app.merge.panes,
                 Branch => &app.branch.panes,
                 Stash => &app.stash.panes,
+                Remote => &app.remote.panes,
             };
             assert_eq!(
                 layout.nodes().iter().filter(|(_, r)| !r.is_empty()).count(),

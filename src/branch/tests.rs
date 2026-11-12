@@ -8,6 +8,7 @@ use unicode_width::UnicodeWidthStr;
 mod compare;
 mod navigation;
 mod presentation;
+mod smart_checkout;
 mod sorting;
 mod tracking;
 
@@ -78,6 +79,40 @@ fn select(panel: &mut BranchPanel, root: usize, reference: &str) {
 
 fn key(panel: &mut BranchPanel, c: &Context, code: K) -> Action {
     panel.event(&Event::Key(KeyEvent::new(code, Mods::NONE)), c)
+}
+
+fn finish_checkout(panel: &mut BranchPanel) -> CheckoutDone {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        if let Some(outcome) = panel.poll_sync() {
+            assert!(!outcome.prompt, "{}", outcome.message);
+            assert_eq!(outcome.level, NoticeLevel::Success, "{}", outcome.message);
+            let done = outcome.checkout.expect("checkout outcome");
+            assert!(panel.checkout_completed(&done));
+            return done;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "branch checkout timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+fn wait_for_checkout_prompt(panel: &mut BranchPanel) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        if let Some(outcome) = panel.poll_sync() {
+            assert!(outcome.prompt, "{}", outcome.message);
+            assert!(panel.pending_checkout());
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "checkout prompt timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 }
 
 fn render(panel: &mut BranchPanel, c: &Context, width: u16, height: u16) -> Terminal<TestBackend> {
@@ -177,6 +212,7 @@ fn branch_prioritizes_current_and_default_paths_with_all_groups_open() {
     };
 
     reload(&mut p, &c);
+    p.tree.set_sort(Sort::Name, p.repos.first());
     assert_eq!(
         leaves(&p),
         [
@@ -368,8 +404,10 @@ fn create_from_focused_commit_then_rename_delete_and_switch_preserve_other_state
     select(&mut p, 0, "refs/heads/feature/renamed");
     assert!(matches!(
         key(&mut p, &c, K::Enter),
-        Action::Refresh(NoticeLevel::Success, _)
+        Action::Notice(NoticeLevel::Info, _)
     ));
+    let done = finish_checkout(&mut p);
+    assert_eq!(done.reference, "refs/heads/feature/renamed");
     assert_eq!(run(repo, &["branch", "--show-current"]), "feature/renamed");
     assert_eq!(fs::read_to_string(repo.join("file")).unwrap(), "topic\n");
     review(
@@ -498,6 +536,73 @@ fn checkout_preserves_local_edits_and_refuses_overwrite_even_after_review() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn checkout_runs_in_background_and_updates_only_the_target_repository_cache() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (temp, c, mut p) = fixture();
+    let repo = &c.repos[0].path;
+    run(repo, &["switch", "-c", "topic"]);
+    fs::write(repo.join("file"), "topic\n").unwrap();
+    run(repo, &["commit", "-am", "topic"]);
+    run(repo, &["switch", "main"]);
+    reload(&mut p, &c);
+    select(&mut p, 0, "refs/heads/topic");
+
+    let hooks = temp.path().join("hooks");
+    let started = temp.path().join("checkout-started");
+    let gate = temp.path().join("checkout-gate");
+    fs::create_dir(&hooks).unwrap();
+    let hook = hooks.join("post-checkout");
+    fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\nprintf started > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\n",
+            started.display(),
+            gate.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    run(repo, &["config", "core.hooksPath", hooks.to_str().unwrap()]);
+
+    let other = state(&c.repos[1].path);
+    assert!(matches!(
+        key(&mut p, &c, K::Enter),
+        Action::Notice(NoticeLevel::Info, _)
+    ));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !started.exists() {
+        assert!(p.syncing(), "checkout finished before the hook blocked");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "checkout hook did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let cached = p.repos[0].state.as_ref().unwrap();
+    assert_eq!(cached.head.as_deref(), Some("refs/heads/main"));
+    assert!(cached.branches["refs/heads/main"].current);
+
+    let folder = "0:refs/remotes/";
+    p.tree.cursor = p.tree.rows.iter().position(|row| row.id == folder).unwrap();
+    fs::write(&gate, "continue").unwrap();
+
+    let done = finish_checkout(&mut p);
+    assert_eq!(done.reference, "refs/heads/topic");
+    assert_eq!(done.path, *repo);
+    assert_eq!(p.repo_root, Some(0));
+    assert_eq!(p.tree.rows[p.tree.cursor].id, folder);
+    let cached = p.repos[0].state.as_ref().unwrap();
+    assert_eq!(cached.head.as_deref(), Some("refs/heads/topic"));
+    assert_eq!(cached.oid.as_deref(), Some(done.head.as_str()));
+    assert!(cached.branches["refs/heads/topic"].current);
+    assert!(!cached.branches["refs/heads/main"].current);
+    assert!(!p.reads_pending(), "checkout started a full branch reload");
+    assert_eq!(state(&c.repos[1].path), other);
+}
+
 #[test]
 fn remote_checkout_creates_tracking_branch_and_reuses_it_without_remote_writes() {
     let (_temp, c, mut p) = fixture();
@@ -510,8 +615,11 @@ fn remote_checkout_creates_tracking_branch_and_reuses_it_without_remote_writes()
     assert_eq!(p.input.as_ref().unwrap().name, "feature/remote");
     assert!(matches!(
         key(&mut p, &c, K::Enter),
-        Action::Refresh(NoticeLevel::Success, _)
+        Action::Notice(NoticeLevel::Info, _)
     ));
+    let done = finish_checkout(&mut p);
+    assert_eq!(done.reference, "refs/heads/feature/remote");
+    assert_eq!(done.upstream, "refs/remotes/origin/feature/remote");
     assert_eq!(run(repo, &["branch", "--show-current"]), "feature/remote");
     assert_eq!(
         source(&c, "refs/heads/feature/remote").upstream,
@@ -522,8 +630,9 @@ fn remote_checkout_creates_tracking_branch_and_reuses_it_without_remote_writes()
     select(&mut p, 0, "refs/remotes/origin/feature/remote");
     assert!(matches!(
         key(&mut p, &c, K::Enter),
-        Action::Refresh(NoticeLevel::Success, _)
+        Action::Notice(NoticeLevel::Info, _)
     ));
+    finish_checkout(&mut p);
     assert!(p.input.is_none());
     assert_eq!(run(repo, &["branch", "--show-current"]), "feature/remote");
     assert_eq!(
@@ -538,6 +647,39 @@ fn remote_checkout_creates_tracking_branch_and_reuses_it_without_remote_writes()
         ""
     )
     .is_err());
+}
+
+#[test]
+fn tracking_input_is_restored_when_background_validation_fails() {
+    let (_temp, c, mut p) = fixture();
+    let repo = &c.repos[0].path;
+    tracking(&c, "main", "feature/remote");
+    reload(&mut p, &c);
+    select(&mut p, 0, "refs/remotes/origin/feature/remote");
+    key(&mut p, &c, K::Enter);
+    p.input.as_mut().unwrap().name = "bad..name".into();
+    assert!(matches!(
+        key(&mut p, &c, K::Enter),
+        Action::Notice(NoticeLevel::Info, _)
+    ));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let outcome = loop {
+        if let Some(outcome) = p.poll_sync() {
+            break outcome;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "tracking validation timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    assert_eq!(outcome.level, NoticeLevel::Error);
+    assert!(outcome.checkout.is_none());
+    let input = p.input.as_ref().expect("tracking input was restored");
+    assert_eq!(input.name, "bad..name");
+    assert_eq!(input.error, outcome.message);
+    assert_eq!(run(repo, &["branch", "--show-current"]), "main");
+    assert!(git(repo, &["show-ref", "--verify", "refs/heads/bad..name"]).is_err());
 }
 
 #[test]
@@ -744,9 +886,9 @@ fn focused_sync_uses_configured_upstream_without_switching_or_touching_dirty_fil
 fn wait_for_branch_sync(panel: &mut BranchPanel) -> String {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        if let Some((level, message)) = panel.poll_sync() {
-            assert_eq!(level, NoticeLevel::Success);
-            return message;
+        if let Some(outcome) = panel.poll_sync() {
+            assert_eq!(outcome.level, NoticeLevel::Success);
+            return outcome.message;
         }
         assert!(
             std::time::Instant::now() < deadline,
@@ -764,9 +906,9 @@ fn disconnected_branch_sync_reports_an_error_once() {
         ..Default::default()
     };
     drop(sender);
-    let (level, message) = panel.poll_sync().unwrap();
-    assert_eq!(level, NoticeLevel::Error);
-    assert!(message.contains("worker stopped unexpectedly"));
+    let outcome = panel.poll_sync().unwrap();
+    assert_eq!(outcome.level, NoticeLevel::Error);
+    assert!(outcome.message.contains("worker stopped unexpectedly"));
     assert!(!panel.syncing());
     assert!(panel.poll_sync().is_none());
 }

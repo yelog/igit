@@ -7,6 +7,7 @@ mod files;
 mod keymap;
 mod loading;
 mod preview;
+mod review;
 mod search;
 mod submodules;
 mod target;
@@ -20,6 +21,7 @@ use crate::{
         command, git, git_bytes,
         loading::{Load, Scope},
         redact_remote_error,
+        schedule::{self, RepoLock},
         strategy::Strategy,
         update::published_graph,
         Context, Repo,
@@ -46,6 +48,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver},
+    time::Instant,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -98,6 +101,10 @@ struct TrackingChoice {
     branch: String,
     target: Target,
 }
+pub(crate) struct RepositoryCheck {
+    idx: usize,
+    checked: bool,
+}
 #[derive(Clone, Default)]
 struct Preview {
     files: Vec<Change>,
@@ -106,11 +113,23 @@ struct Preview {
     body: String,
 }
 enum Report {
+    Started(usize),
     Row(usize, Result<PushOutcome, String>),
     Phase(usize, &'static str),
     Conflicts(usize),
     Done,
 }
+#[derive(Clone, Copy, Debug)]
+struct PushActivity {
+    started: Instant,
+    frame: usize,
+    phase: &'static str,
+}
+
+fn spinner_frame(started: Instant, now: Instant) -> usize {
+    (now.saturating_duration_since(started).as_millis() / 100) as usize
+}
+
 #[derive(Clone, Copy)]
 enum Hit {
     Row(usize),
@@ -124,7 +143,6 @@ enum Hit {
     MenuSurface,
     Group(Group),
     Details,
-    EditTarget,
     Cancel,
     Send,
     Retry,
@@ -173,6 +191,7 @@ pub struct PushPanel {
     hits: Vec<(Rect, Hit)>,
     results: BTreeMap<usize, Result<PushOutcome, String>>,
     inflight: Option<Receiver<Report>>,
+    activities: BTreeMap<usize, PushActivity>,
     busy: String,
     review: Vec<Job>,
     pub(crate) strategy: Strategy,
@@ -506,6 +525,39 @@ fn label(p: &Path) -> String {
         .collect()
 }
 
+fn push_prerequisites(jobs: &[Job], parents: &[Option<usize>]) -> Vec<Vec<usize>> {
+    let mut prerequisites = vec![Vec::new(); jobs.len()];
+    for (child, job) in jobs.iter().enumerate() {
+        let mut parent = parents.get(job.idx).copied().flatten();
+        while let Some(index) = parent {
+            if let Some(owner) = jobs.iter().position(|candidate| candidate.idx == index) {
+                if !prerequisites[owner].contains(&child) {
+                    prerequisites[owner].push(child);
+                }
+            }
+            parent = parents.get(index).copied().flatten();
+        }
+    }
+    prerequisites
+}
+
+fn scheduled_result(
+    result: &schedule::TaskResult<Result<PushOutcome, String>>,
+) -> Result<PushOutcome, String> {
+    match result {
+        schedule::TaskResult::Completed(Ok(outcome)) => Ok(outcome.clone()),
+        schedule::TaskResult::Completed(Err(error)) => Err(error.clone()),
+        schedule::TaskResult::Panicked(message) => {
+            Err(format!("repository worker stopped unexpectedly: {message}"))
+        }
+        schedule::TaskResult::Blocked(blocked) => Err(if blocked.is_empty() {
+            "not executed: unresolved dependency".into()
+        } else {
+            "not executed: dependent submodule failed".into()
+        }),
+    }
+}
+
 fn failure_summary(error: &str) -> String {
     const LIMIT: usize = 220;
 
@@ -561,14 +613,14 @@ impl PushPanel {
         }
     }
 
-    fn choose_strategy(&self) -> Action {
+    fn toggle_strategy(&self) -> Action {
         if self.busy() {
             Action::Notice(
                 NoticeLevel::Info,
                 "Wait for update and push to finish".into(),
             )
         } else {
-            Action::ChooseUpdateStrategy
+            Action::ToggleUpdateStrategy
         }
     }
 
@@ -606,6 +658,42 @@ impl PushPanel {
 
     pub(crate) fn busy(&self) -> bool {
         self.inflight.is_some()
+    }
+    #[cfg(test)]
+    pub(crate) fn animation_running(&self) -> bool {
+        !self.activities.is_empty()
+    }
+    pub(crate) fn tick_animation(&mut self, now: Instant) -> bool {
+        let mut changed = false;
+        for activity in self.activities.values_mut() {
+            let frame = spinner_frame(activity.started, now);
+            if frame != activity.frame {
+                activity.frame = frame;
+                changed = true;
+            }
+        }
+        changed
+    }
+    fn refresh_busy(&mut self, c: &Context) {
+        if self.inflight.is_none() {
+            return;
+        }
+        self.busy = if self.last_fetch {
+            "Fetching…".into()
+        } else {
+            match self.activities.len() {
+                0 => "Updating and pushing…".into(),
+                1 => {
+                    let (root, activity) = self.activities.iter().next().unwrap();
+                    format!(
+                        "{} · {}",
+                        activity.phase,
+                        label(Path::new(&c.repos[*root].name))
+                    )
+                }
+                active => format!("Working on {active} repositories…"),
+            }
+        };
     }
     pub(crate) fn block_writes(&mut self, blocked: bool) {
         self.writes_blocked = blocked;
@@ -679,6 +767,22 @@ impl PushPanel {
     fn toggle(&mut self, i: usize) {
         if self.entries.iter().any(|e| e.idx == i && e.n > 0) && !self.checked.remove(&i) {
             self.checked.insert(i);
+        }
+    }
+    pub(crate) fn toggle_selected_repository(&mut self) -> Option<RepositoryCheck> {
+        let (idx, _) = self.selected()?;
+        let check = RepositoryCheck {
+            idx,
+            checked: self.checked.contains(&idx),
+        };
+        self.toggle(idx);
+        Some(check)
+    }
+    pub(crate) fn restore_repository_check(&mut self, check: RepositoryCheck) {
+        if check.checked {
+            self.checked.insert(check.idx);
+        } else {
+            self.checked.remove(&check.idx);
         }
     }
     fn target(&mut self, i: usize) {
@@ -875,6 +979,7 @@ impl PushPanel {
             .collect();
         let parents: Vec<_> = c.repos.iter().map(|r| r.parent).collect();
         self.last_fetch = fetch;
+        self.activities.clear();
         self.busy = if fetch {
             "Fetching…"
         } else {
@@ -892,42 +997,64 @@ impl PushPanel {
         }
         std::thread::spawn(move || {
             if fetch {
-                for (i, p, r) in items {
-                    if r.is_empty() {
-                        continue;
-                    }
-                    let res = git(&p, &["fetch", "--no-recurse-submodules", "--", &r])
-                        .map(|_| PushOutcome::Complete)
-                        .map_err(|e| {
-                            let u = url(&p, &r).unwrap_or_else(|_| "<remote>".into());
-                            redact_remote_error(&e.to_string(), &u)
-                        });
-                    let _ = tx.send(Report::Row(i, res));
-                }
+                let items: Vec<_> = items
+                    .into_iter()
+                    .filter(|(_, _, remote)| !remote.is_empty())
+                    .collect();
+                let locks = items
+                    .iter()
+                    .map(|(_, path, _)| RepoLock::read(path))
+                    .collect::<Vec<_>>();
+                let worker = tx.clone();
+                let completed = tx.clone();
+                schedule::run(
+                    &items,
+                    &vec![Vec::new(); items.len()],
+                    |left, right| locks[left].shares_git_state(&locks[right]),
+                    |_, (i, path, remote)| {
+                        let _ = worker.send(Report::Started(*i));
+                        git(path, &["fetch", "--no-recurse-submodules", "--", remote])
+                            .map(|_| PushOutcome::Complete)
+                            .map_err(|error| {
+                                let url = url(path, remote).unwrap_or_else(|_| "<remote>".into());
+                                redact_remote_error(&error.to_string(), &url)
+                            })
+                    },
+                    |result| result.is_ok(),
+                    |index, result| {
+                        let _ =
+                            completed.send(Report::Row(items[index].0, scheduled_result(result)));
+                    },
+                );
             } else {
-                let mut blocked = BTreeSet::new();
-                for j in js {
-                    let res = if blocked.contains(&j.idx) {
-                        Err("not executed: dependent submodule failed".into())
-                    } else {
-                        let result = update::execute(&j, strategy, tags, hooks, |phase| {
-                            let _ = tx.send(Report::Phase(j.idx, phase));
+                let locks = js
+                    .iter()
+                    .map(|job| RepoLock::read(&job.path))
+                    .collect::<Vec<_>>();
+                let prerequisites = push_prerequisites(&js, &parents);
+                let worker = tx.clone();
+                let completed = tx.clone();
+                schedule::run(
+                    &js,
+                    &prerequisites,
+                    |left, right| locks[left].conflicts(&locks[right]),
+                    |_, job| {
+                        let _ = worker.send(Report::Started(job.idx));
+                        let result = update::execute(job, strategy, tags, hooks, |phase| {
+                            let _ = worker.send(Report::Phase(job.idx, phase));
                         })
-                        .map_err(|e| e.to_string());
-                        if result.is_err() && crate::core::update::conflicts(&j.path) {
-                            let _ = tx.send(Report::Conflicts(j.idx));
+                        .map_err(|error| error.to_string());
+                        if result.is_err() && crate::core::update::conflicts(&job.path) {
+                            let _ = worker.send(Report::Conflicts(job.idx));
                         }
                         result
-                    };
-                    if res.is_err() {
-                        let mut anc = parents[j.idx];
-                        while let Some(i) = anc {
-                            blocked.insert(i);
-                            anc = parents[i]
-                        }
-                    }
-                    let _ = tx.send(Report::Row(j.idx, res));
-                }
+                    },
+                    |result| result.is_ok(),
+                    |index, result| {
+                        let _ =
+                            completed.send(Report::Row(js[index].idx, scheduled_result(result)));
+                    },
+                );
             }
             let _ = tx.send(Report::Done);
         });
@@ -935,19 +1062,47 @@ impl PushPanel {
     }
     pub(crate) fn poll(&mut self, c: &Context) -> Option<(NoticeLevel, String)> {
         let mut finished = false;
-        let rx = self.inflight.as_ref()?;
-        while let Ok(m) = rx.try_recv() {
+        let messages = {
+            let rx = self.inflight.as_ref()?;
+            let mut messages = Vec::new();
+            while let Ok(message) = rx.try_recv() {
+                messages.push(message);
+            }
+            messages
+        };
+        for m in messages {
             match m {
+                Report::Started(i) => {
+                    self.activities.insert(
+                        i,
+                        PushActivity {
+                            started: Instant::now(),
+                            frame: 0,
+                            phase: if self.last_fetch {
+                                "Fetching…"
+                            } else {
+                                "Starting…"
+                            },
+                        },
+                    );
+                    self.refresh_busy(c);
+                    self.progress_seq = self.progress_seq.wrapping_add(1);
+                }
                 Report::Row(i, r) => {
+                    self.activities.remove(&i);
                     if r.is_ok() && !self.last_fetch {
                         self.tracking_choices.remove(&i);
                     }
                     self.results.insert(i, r);
+                    self.refresh_busy(c);
                     self.progress_seq = self.progress_seq.wrapping_add(1);
                 }
                 Report::Done => finished = true,
                 Report::Phase(i, phase) => {
-                    self.busy = format!("{phase} · {}", label(Path::new(&c.repos[i].name)));
+                    if let Some(activity) = self.activities.get_mut(&i) {
+                        activity.phase = phase;
+                    }
+                    self.refresh_busy(c);
                     self.progress_seq = self.progress_seq.wrapping_add(1);
                 }
                 Report::Conflicts(i) => {
@@ -959,6 +1114,7 @@ impl PushPanel {
             return None;
         }
         self.inflight = None;
+        self.activities.clear();
         let n = self.results.values().filter(|r| r.is_err()).count();
         let upstream_failures = self
             .results
@@ -1045,7 +1201,7 @@ impl Panel for PushPanel {
         } else if self.group_menu.is_some() {
             "Group By · j/k select · Space/Enter toggle · Esc close"
         } else {
-            "j/k move · h/l fold · o group by · Enter diff · d details · [/] fold all · Space check root · t target · P push · F fetch · Tab/F6 pane"
+            "j/k move · h/l fold · o group by · Enter diff · d details · [/] fold all · Space check root · t target · P push · f fetch · s strategy · F tags · H hooks · Tab/F6 pane"
         }
     }
     fn editing(&self) -> bool {
@@ -1188,11 +1344,6 @@ impl Panel for PushPanel {
                     }
                 }
                 Hit::Details => self.toggle_details(c),
-                Hit::EditTarget => {
-                    if let Some((i, _)) = self.selected() {
-                        self.target(i);
-                    }
-                }
                 Hit::Cancel => return Action::CloseDialog,
                 Hit::GroupBy => self.group_menu = Some(Group::Directory),
                 Hit::MenuSurface | Hit::Group(_) => (),
@@ -1216,7 +1367,7 @@ impl Panel for PushPanel {
                 Hit::Send => return self.review(c, false),
                 Hit::Retry => return self.review(c, true),
                 Hit::Fetch => return self.start(c, true),
-                Hit::Strategy => return self.choose_strategy(),
+                Hit::Strategy => return self.toggle_strategy(),
                 Hit::Conflicts => return Action::OpenConflicts,
                 Hit::Tags => self.follow_tags = !self.follow_tags,
                 Hit::Hooks => self.skip_hooks = !self.skip_hooks,
@@ -1224,6 +1375,11 @@ impl Panel for PushPanel {
             }
         }
         if let Some(k) = key {
+            let shortcut = matches!(e, Event::Key(key)
+            if key.kind == crossterm::event::KeyEventKind::Press
+                && !key.modifiers.intersects(
+                    KeyModifiers::ALT | KeyModifiers::CONTROL | KeyModifiers::SUPER
+                ));
             match k {
                 KeyCode::Tab | KeyCode::F(6) | KeyCode::BackTab => {
                     let back = matches!(e,Event::Key(k) if k.modifiers.contains(KeyModifiers::SHIFT))
@@ -1263,13 +1419,13 @@ impl Panel for PushPanel {
                 }
                 KeyCode::Char('P') => return self.review(c, false),
                 KeyCode::Char('R') => return self.review(c, true),
-                KeyCode::Char('F') => return self.start(c, true),
-                KeyCode::Char('s') => return self.choose_strategy(),
+                KeyCode::Char('f') if shortcut => return self.start(c, true),
+                KeyCode::Char('s') if shortcut => return self.toggle_strategy(),
                 KeyCode::Char('C') if self.conflicted.iter().any(|i| c.scope.contains(i)) => {
                     return Action::OpenConflicts
                 }
-                KeyCode::Char('v') => self.follow_tags = !self.follow_tags,
-                KeyCode::Char('x') => self.skip_hooks = !self.skip_hooks,
+                KeyCode::Char('F') if shortcut => self.follow_tags = !self.follow_tags,
+                KeyCode::Char('H') if shortcut => self.skip_hooks = !self.skip_hooks,
                 KeyCode::Char('d') => self.toggle_details(c),
                 KeyCode::Char('o') => self.group_menu = Some(Group::Directory),
                 KeyCode::Esc if self.show_details => {
@@ -1351,10 +1507,280 @@ impl Panel for PushPanel {
 mod tests {
     use super::*;
     use std::fs;
+    use std::time::Duration;
     use unicode_width::UnicodeWidthStr;
     fn g(p: &Path, a: &[&str]) -> String {
         git(p, a).unwrap()
     }
+
+    #[test]
+    fn started_reports_track_each_repository_until_its_row_finishes() {
+        let directory = tempfile::tempdir().unwrap();
+        make(directory.path(), "app");
+        make(directory.path(), "tools");
+        let context = Context::discover(directory.path()).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let mut panel = PushPanel {
+            inflight: Some(receiver),
+            busy: "Updating and pushing…".into(),
+            ..Default::default()
+        };
+
+        sender.send(Report::Started(0)).unwrap();
+        sender.send(Report::Started(1)).unwrap();
+        assert!(panel.poll(&context).is_none());
+        assert_eq!(panel.activities.keys().copied().collect::<Vec<_>>(), [0, 1]);
+        assert!(panel.animation_running());
+
+        sender
+            .send(Report::Row(1, Err("not executed".into())))
+            .unwrap();
+        assert!(panel.poll(&context).is_none());
+        assert_eq!(panel.activities.keys().copied().collect::<Vec<_>>(), [0]);
+
+        sender
+            .send(Report::Row(0, Ok(PushOutcome::Complete)))
+            .unwrap();
+        assert!(panel.poll(&context).is_none());
+        assert!(!panel.animation_running());
+
+        sender.send(Report::Started(1)).unwrap();
+        sender.send(Report::Done).unwrap();
+        assert!(panel.poll(&context).is_some());
+        assert!(!panel.animation_running());
+        assert!(!panel.busy());
+    }
+
+    #[test]
+    fn push_animation_frames_change_only_at_100ms_boundaries() {
+        let started = Instant::now();
+        let mut panel = PushPanel::default();
+        panel.activities.insert(
+            0,
+            PushActivity {
+                started,
+                frame: 0,
+                phase: "Pushing…",
+            },
+        );
+        assert!(!panel.tick_animation(started + Duration::from_millis(99)));
+        assert!(panel.tick_animation(started + Duration::from_millis(100)));
+        assert_eq!(panel.activities[&0].frame, 1);
+        assert!(!panel.tick_animation(started + Duration::from_millis(199)));
+        assert!(panel.tick_animation(started + Duration::from_millis(250)));
+        assert_eq!(panel.activities[&0].frame, 2);
+    }
+
+    #[test]
+    fn reviewed_ancestors_wait_for_all_selected_descendants() {
+        fn planned(idx: usize) -> Job {
+            Job {
+                idx,
+                path: PathBuf::from(format!("/workspace/repository-{idx}")),
+                branch: "main".into(),
+                head: String::new(),
+                t: Target::default(),
+                tracking: None,
+                url: String::new(),
+                config: upstream::Snapshot::default(),
+                set_upstream: false,
+                focused_ref: None,
+            }
+        }
+        let jobs = [planned(2), planned(1), planned(0), planned(3)];
+        let prerequisites = push_prerequisites(&jobs, &[None, Some(0), Some(1), None]);
+        assert_eq!(prerequisites, [vec![], vec![0], vec![0, 1], vec![]]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn selected_submodule_pushes_before_its_parent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        let sdk = workspace.join("sdk");
+        let parent = workspace.join("parent");
+        fs::create_dir_all(&sdk).unwrap();
+        fs::create_dir(&parent).unwrap();
+        let sdk_remote = directory.path().join("sdk.git");
+        let parent_remote = directory.path().join("parent.git");
+        for remote in [&sdk_remote, &parent_remote] {
+            fs::create_dir(remote).unwrap();
+            g(remote, &["init", "--bare", "-q", "-b", "main"]);
+        }
+
+        g(&sdk, &["init", "-q", "-b", "main"]);
+        for (key, value) in [
+            ("user.name", "IGit test"),
+            ("user.email", "test@invalid"),
+            ("commit.gpgSign", "false"),
+            ("core.hooksPath", "/dev/null"),
+        ] {
+            g(&sdk, &["config", key, value]);
+        }
+        fs::write(sdk.join("base.txt"), "base\n").unwrap();
+        g(&sdk, &["add", "."]);
+        g(&sdk, &["commit", "-qm", "base"]);
+        g(
+            &sdk,
+            &["remote", "add", "origin", sdk_remote.to_str().unwrap()],
+        );
+        g(&sdk, &["push", "-q", "-u", "origin", "main"]);
+
+        g(&parent, &["init", "-q", "-b", "main"]);
+        for (key, value) in [
+            ("user.name", "IGit test"),
+            ("user.email", "test@invalid"),
+            ("commit.gpgSign", "false"),
+            ("core.hooksPath", "/dev/null"),
+        ] {
+            g(&parent, &["config", key, value]);
+        }
+        fs::write(parent.join("base.txt"), "base\n").unwrap();
+        g(&parent, &["add", "."]);
+        g(&parent, &["commit", "-qm", "base"]);
+        g(
+            &parent,
+            &["remote", "add", "origin", parent_remote.to_str().unwrap()],
+        );
+        g(
+            &parent,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                sdk_remote.to_str().unwrap(),
+                "sdk",
+            ],
+        );
+        g(&parent, &["commit", "-qm", "add sdk"]);
+        g(&parent, &["push", "-q", "-u", "origin", "main"]);
+
+        let child = parent.join("sdk");
+        for (key, value) in [
+            ("user.name", "IGit test"),
+            ("user.email", "test@invalid"),
+            ("commit.gpgSign", "false"),
+        ] {
+            g(&child, &["config", key, value]);
+        }
+        fs::write(child.join("next.txt"), "next\n").unwrap();
+        g(&child, &["add", "."]);
+        g(&child, &["commit", "-qm", "child next"]);
+        g(&parent, &["add", "sdk"]);
+        g(&parent, &["commit", "-qm", "parent next"]);
+
+        let order = directory.path().join("push-order");
+        for (bare, label) in [(&sdk_remote, "child"), (&parent_remote, "parent")] {
+            let hooks = bare.join("order-hooks");
+            fs::create_dir(&hooks).unwrap();
+            let hook = hooks.join("pre-receive");
+            fs::write(
+                &hook,
+                format!("#!/bin/sh\necho {label} >> '{}'\n", order.display()),
+            )
+            .unwrap();
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+            g(bare, &["config", "core.hooksPath", hooks.to_str().unwrap()]);
+        }
+
+        let parent = fs::canonicalize(parent).unwrap();
+        let child = fs::canonicalize(child).unwrap();
+        let context = Context::discover(&workspace).unwrap();
+        let parent_index = context
+            .repos
+            .iter()
+            .position(|repo| repo.path == parent)
+            .unwrap();
+        let child_index = context
+            .repos
+            .iter()
+            .position(|repo| repo.path == child)
+            .unwrap();
+        let mut panel = PushPanel {
+            checked: [parent_index, child_index].into(),
+            ..Default::default()
+        };
+        panel.refresh(&context).unwrap();
+        panel.finish_loading(&context);
+        assert!(matches!(
+            panel.review(&context, false),
+            Action::Confirm { .. }
+        ));
+        panel.start(&context, false);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if panel.poll(&context).is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!panel.busy(), "push worker did not finish");
+        assert_eq!(panel.results[&child_index], Ok(PushOutcome::Complete));
+        assert_eq!(panel.results[&parent_index], Ok(PushOutcome::Complete));
+        assert_eq!(
+            fs::read_to_string(order)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            ["child", "parent"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn push_worker_marks_a_repository_active_for_the_whole_operation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        make(directory.path(), "app");
+        let bare = directory.path().join("app.git");
+        let hooks = bare.join("slow-hooks");
+        fs::create_dir(&hooks).unwrap();
+        let hook = hooks.join("pre-receive");
+        fs::write(&hook, "#!/bin/sh\nsleep 1\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        g(
+            &bare,
+            &["config", "core.hooksPath", hooks.to_str().unwrap()],
+        );
+
+        let context = Context::discover(directory.path()).unwrap();
+        let mut panel = PushPanel {
+            reseed: Some(vec![0]),
+            ..Default::default()
+        };
+        panel.refresh(&context).unwrap();
+        panel.finish_loading(&context);
+        assert!(matches!(
+            panel.review(&context, false),
+            Action::Confirm { .. }
+        ));
+        panel.start(&context, false);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !panel.activities.contains_key(&0) {
+            assert!(panel.busy());
+            assert!(panel.poll(&context).is_none());
+            assert!(Instant::now() < deadline, "push worker did not start");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        while Instant::now() < deadline {
+            if panel.poll(&context).is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!panel.busy(), "push worker did not finish");
+        assert!(!panel.animation_running());
+        assert_eq!(panel.results[&0], Ok(PushOutcome::Complete));
+    }
+
     pub(super) fn make(parent: &Path, n: &str) -> PathBuf {
         let repo = parent.join(n);
         let bare = parent.join(format!("{n}.git"));
@@ -1409,6 +1835,7 @@ mod tests {
             };
             p.refresh(&c).unwrap();
             p.finish_loading(&c);
+            p.toggle(1);
             let mut term = Terminal::new(TestBackend::new(44, 16)).unwrap();
             let draw = |p: &mut PushPanel, term: &mut Terminal<TestBackend>| {
                 term.draw(|f| p.draw(f, f.area(), &c)).unwrap();
@@ -1420,7 +1847,7 @@ mod tests {
             };
             draw(&mut p, &mut term);
             let other = hit(&p, |h| matches!(h, Hit::Row(2)));
-            let prefix = format!("{} ", icons.disclosure(false));
+            let prefix = format!("{} ", icons.disclosure(true));
             let start = other.x + prefix.width() as u16;
             for offset in 0..icons.check(false).width() as u16 {
                 for checked in [false, true] {
@@ -1440,7 +1867,7 @@ mod tests {
             assert_eq!(p.selected(), Some((1, None)));
             assert_eq!(p.checked, BTreeSet::from([0]));
             click(&mut p, other.x, other.y);
-            assert!(p.expanded.contains(&1));
+            assert!(!p.expanded.contains(&1));
             assert_eq!(p.checked, BTreeSet::from([0]));
 
             p.results.insert(0, Ok(PushOutcome::Complete));
@@ -1468,7 +1895,7 @@ mod tests {
     }
 
     #[test]
-    fn push_repository_sorting_keeps_the_checked_root_selected_and_honours_reseed() {
+    fn push_repository_sorting_keeps_initial_focus_and_honours_reseed() {
         let td = tempfile::tempdir().unwrap();
         make(td.path(), "app");
         make(td.path(), "tools");
@@ -1479,7 +1906,7 @@ mod tests {
         p.refresh(&c).unwrap();
         p.finish_loading(&c);
         assert_eq!(p.entries.iter().map(|e| e.idx).collect::<Vec<_>>(), [1, 0]);
-        assert_eq!(p.checked, BTreeSet::from([0]));
+        assert_eq!(p.checked, BTreeSet::from([0, 1]));
         assert_eq!(p.selected(), Some((0, None)));
         p.reseed = Some(vec![1]);
         p.refresh(&c).unwrap();

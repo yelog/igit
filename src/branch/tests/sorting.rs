@@ -31,6 +31,150 @@ fn set_sort(panel: &mut BranchPanel, sort: Sort) {
 }
 
 #[test]
+fn default_sort_places_the_previous_branch_below_the_current_branch() {
+    let (_temp, context, mut panel) = fixture();
+    let repo = &context.repos[0].path;
+    for name in ["client-plugin-batch-update", "develop", "unused"] {
+        run(repo, &["branch", name]);
+    }
+    for (name, date) in [
+        ("client-plugin-batch-update", "2020-01-01T00:00:00Z"),
+        ("develop", "2020-01-02T00:00:00Z"),
+        ("main", "2020-01-03T00:00:00Z"),
+    ] {
+        switch_at(repo, name, date);
+    }
+    reload(&mut panel, &context);
+    assert_eq!(panel.tree.sort(), Sort::RecentlyUsed);
+    assert_eq!(
+        leaves(&panel, false),
+        ["main", "develop", "client-plugin-batch-update", "unused"]
+    );
+}
+
+#[test]
+fn consecutive_checkouts_update_usage_without_reloading_or_changing_name_sort() {
+    for grouped in [true, false] {
+        let (_temp, context, mut panel) = fixture();
+        let repo = &context.repos[0].path;
+        for name in ["client-plugin-batch-update", "develop", "unused"] {
+            run(repo, &["branch", name]);
+        }
+        switch_at(repo, "client-plugin-batch-update", "2020-01-01T00:00:00Z");
+        switch_at(repo, "main", "2020-01-02T00:00:00Z");
+        reload(&mut panel, &context);
+        set_sort(&mut panel, Sort::RecentlyUsed);
+        if !grouped {
+            panel.tree.toggle_grouping(panel.repos.first());
+        }
+        let other_usage = panel.repos[1].metadata.last_used.clone();
+        let remote = leaves(&panel, true);
+        for name in ["develop", "main"] {
+            select(&mut panel, 0, &format!("refs/heads/{name}"));
+            assert!(matches!(
+                key(&mut panel, &context, K::Enter),
+                Action::Notice(NoticeLevel::Info, _)
+            ));
+            finish_checkout(&mut panel);
+            assert!(!panel.reads_pending());
+            assert_eq!(panel.selection().unwrap().1.name, name);
+        }
+        assert_eq!(
+            leaves(&panel, false),
+            ["main", "develop", "client-plugin-batch-update", "unused"]
+        );
+        assert_eq!(panel.repos[1].metadata.last_used, other_usage);
+        assert_eq!(leaves(&panel, true), remote);
+        let (_, metadata) = Snapshot::read_for_display(&context.repos[0]).unwrap();
+        assert_eq!(panel.repos[0].metadata.last_used, metadata.last_used);
+
+        set_sort(&mut panel, Sort::Name);
+        select(&mut panel, 0, "refs/heads/unused");
+        key(&mut panel, &context, K::Enter);
+        finish_checkout(&mut panel);
+        select(&mut panel, 0, "refs/heads/main");
+        key(&mut panel, &context, K::Enter);
+        finish_checkout(&mut panel);
+        assert_eq!(panel.tree.sort(), Sort::Name);
+        assert_eq!(
+            leaves(&panel, false),
+            ["main", "client-plugin-batch-update", "develop", "unused"]
+        );
+        set_sort(&mut panel, Sort::RecentlyUsed);
+        let expected = ["main", "unused", "develop", "client-plugin-batch-update"];
+        assert_eq!(leaves(&panel, false), expected);
+        assert!(!panel.reads_pending());
+        reload(&mut panel, &context);
+        assert_eq!(leaves(&panel, false), expected);
+    }
+}
+
+#[test]
+fn checkout_completion_keeps_same_second_usage_and_group_folds_current() {
+    let (_temp, context, mut panel) = fixture();
+    let repo = &context.repos[0].path;
+    for name in ["aa/older", "zz/recent", "folded/unused"] {
+        run(repo, &["branch", name]);
+    }
+    let date = "2020-01-01T00:00:00Z";
+    switch_at(repo, "aa/older", date);
+    switch_at(repo, "main", date);
+    reload(&mut panel, &context);
+    set_sort(&mut panel, Sort::RecentlyUsed);
+    let folded = "0:refs/heads/folded/";
+    panel.tree.cursor = folder_index(&panel, folded);
+    key(&mut panel, &context, K::Char('h'));
+
+    for name in ["zz/recent", "main"] {
+        let prepared = review(
+            &context,
+            &format!("refs/heads/{name}"),
+            Operation::Checkout,
+            "",
+        );
+        switch_at(repo, name, date);
+        let done = prepared.checkout_outcome().unwrap();
+        assert!(panel.checkout_completed(&done));
+        assert_eq!(panel.tree.rows[panel.tree.cursor].id, folded);
+        assert!(!panel.reads_pending());
+    }
+    assert_eq!(leaves(&panel, false), ["main", "zz/recent", "aa/older"]);
+    let usage = &panel.repos[0].metadata.last_used;
+    assert_eq!(
+        usage["refs/heads/zz/recent"].timestamp,
+        usage["refs/heads/aa/older"].timestamp
+    );
+    assert!(usage["refs/heads/zz/recent"] > usage["refs/heads/aa/older"]);
+    assert!(matches!(
+        panel.tree.rows[folder_index(&panel, folded)].kind,
+        Kind::Folder { open: false, .. }
+    ));
+}
+
+#[test]
+fn tracking_checkout_records_the_new_local_branch_without_a_ref_scan() {
+    let (_temp, context, mut panel) = fixture();
+    tracking(&context, "main", "zz/tracked");
+    run(&context.repos[0].path, &["branch", "alpha"]);
+    reload(&mut panel, &context);
+    set_sort(&mut panel, Sort::RecentlyUsed);
+    panel.tree.toggle_grouping(panel.repos.first());
+    select(&mut panel, 0, "refs/remotes/origin/zz/tracked");
+    key(&mut panel, &context, K::Enter);
+    key(&mut panel, &context, K::Enter);
+    finish_checkout(&mut panel);
+    assert!(panel.repos[0]
+        .metadata
+        .last_used
+        .contains_key("refs/heads/zz/tracked"));
+    select(&mut panel, 0, "refs/heads/main");
+    key(&mut panel, &context, K::Enter);
+    finish_checkout(&mut panel);
+    assert_eq!(leaves(&panel, false), ["main", "zz/tracked", "alpha"]);
+    assert!(!panel.reads_pending());
+}
+
+#[test]
 fn recent_usage_reads_switch_times_and_same_second_order_across_rename() {
     let (_temp, context, mut panel) = fixture();
     let repo = &context.repos[0].path;
@@ -231,7 +375,17 @@ fn missing_history_falls_back_to_names_with_current_branch_first() {
         path: repo.join("missing"),
         ..context.repos[0].clone()
     };
-    assert!(recent::read(&missing, &panel.repos[0].state.as_ref().unwrap().branches).is_empty());
+    assert!(recent::read(
+        &missing.path,
+        panel.repos[0]
+            .state
+            .as_ref()
+            .unwrap()
+            .branches
+            .keys()
+            .map(String::as_str)
+    )
+    .is_empty());
 }
 
 #[test]
@@ -310,8 +464,9 @@ fn recent_sort_refreshes_after_external_and_panel_switches() {
     select(&mut panel, 0, "refs/heads/alpha");
     assert!(matches!(
         key(&mut panel, &context, K::Enter),
-        Action::Refresh(NoticeLevel::Success, _)
+        Action::Notice(NoticeLevel::Info, _)
     ));
+    finish_checkout(&mut panel);
     reload(&mut panel, &context);
     assert_eq!(leaves(&panel, false), ["alpha", "zulu", "main"]);
     assert_eq!(panel.selection().unwrap().1.name, "alpha");

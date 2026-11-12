@@ -13,14 +13,14 @@ fn push_and_pull_share_the_saved_default_but_keep_temporary_pull_choices_local()
     let (_directory, mut app) = fixture();
     let before = snapshot(&app.ctx.repos[0].path);
     app.go(Push);
-    send(&mut app, "s r Enter");
+    send(&mut app, "s");
     assert!(app.pop.is_none());
     assert_eq!(app.push.strategy, Strategy::Rebase);
     assert_eq!(
         strategy::load(&app.ctx.state_dir).unwrap(),
         Strategy::Rebase
     );
-    assert!(screen(&mut app, 44, 12).contains("Update: Rebase"));
+    assert!(screen(&mut app, 80, 24).contains("Update strategy: Rebase"));
 
     let mut reopened = Shell::new(app.ctx.clone(), IconMode::Ascii);
     assert_eq!(reopened.push.strategy, Strategy::Rebase);
@@ -45,7 +45,7 @@ fn push_and_pull_share_the_saved_default_but_keep_temporary_pull_choices_local()
 }
 
 #[test]
-fn push_strategy_can_be_remapped_and_cancelled_without_changing_preferences() {
+fn push_strategy_can_be_remapped_and_toggles_without_a_selector() {
     let (_directory, original) = fixture();
     let config = AppConfig::from_toml("[keybindings.push]\nupdate-strategy=['u']").unwrap();
     let mut app = Shell::with_config(original.ctx.clone(), config);
@@ -53,30 +53,94 @@ fn push_strategy_can_be_remapped_and_cancelled_without_changing_preferences() {
     app.go(Push);
     send(&mut app, "s");
     assert!(app.pop.is_none());
+    assert_eq!(app.push.strategy, Strategy::Merge);
     send(&mut app, "u");
-    assert!(matches!(app.pop, Some(Popup::UpdateStrategy(_))));
-    assert!(screen(&mut app, 44, 12).contains("Default Update Strategy"));
-    send(&mut app, "r Esc");
     assert!(app.pop.is_none());
+    assert_eq!(app.push.strategy, Strategy::Rebase);
+    assert_eq!(
+        strategy::load(&app.ctx.state_dir).unwrap(),
+        Strategy::Rebase
+    );
+    assert!(screen(&mut app, 80, 24).contains("Update strategy: Rebase"));
+    send(&mut app, "u");
     assert_eq!(app.push.strategy, Strategy::Merge);
     assert_eq!(strategy::load(&app.ctx.state_dir).unwrap(), Strategy::Merge);
-    assert!(screen(&mut app, 44, 12).contains("u Update: Merge"));
+    assert!(app.pop.is_none());
+    assert!(screen(&mut app, 80, 24).contains("Update strategy: Merge"));
     assert_eq!(snapshot(&app.ctx.repos[0].path), before);
 }
 
 #[test]
-fn failed_strategy_save_preserves_the_previous_default_and_keeps_the_selector_open() {
+fn failed_strategy_save_preserves_the_previous_default_without_opening_a_selector() {
     let (directory, mut app) = fixture();
     let file = directory.path().join("update-strategy.json");
     fs::create_dir(&file).unwrap();
     app.go(Push);
-    send(&mut app, "s r Enter");
-    assert!(matches!(app.pop, Some(Popup::UpdateStrategy(_))));
+    send(&mut app, "s");
+    assert!(app.pop.is_none());
     assert_eq!(app.push.strategy, Strategy::Merge);
     assert!(app.notifications.latest_body().contains("Could not save"));
     assert!(file.is_dir());
-    send(&mut app, "Esc");
+    app.notifications
+        .expire(Instant::now() + Duration::from_secs(60));
+    assert!(screen(&mut app, 80, 24).contains("Update strategy: Merge"));
+}
+
+#[test]
+fn push_strategy_mouse_and_keyboard_toggle_the_same_saved_preference() {
+    let (_directory, mut app) = fixture();
+    let before = snapshot(&app.ctx.repos[0].path);
+    app.go(Push);
+    for expected in [Strategy::Rebase, Strategy::Merge] {
+        let rendered = screen(&mut app, 120, 36);
+        let (row, line) = rendered
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("Update strategy:"))
+            .unwrap();
+        let column = line[..line.find("Update strategy:").unwrap()].width() as u16;
+        app.dispatch(&Event::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row: row as u16,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert!(app.pop.is_none());
+        assert_eq!(app.push.strategy, expected);
+        assert_eq!(strategy::load(&app.ctx.state_dir).unwrap(), expected);
+    }
+    send(&mut app, "s");
+    assert_eq!(app.push.strategy, Strategy::Rebase);
     assert!(app.pop.is_none());
+    assert_eq!(snapshot(&app.ctx.repos[0].path), before);
+}
+
+#[test]
+fn push_strategy_ignores_repeated_modified_and_busy_shortcuts() {
+    let (_directory, mut app) = fixture();
+    app.go(Push);
+    send(&mut app, "s");
+    assert_eq!(app.push.strategy, Strategy::Rebase);
+    for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
+        let mut event = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
+        event.kind = kind;
+        app.dispatch(&Event::Key(event));
+        assert_eq!(app.push.strategy, Strategy::Rebase);
+        assert!(app.pop.is_none());
+    }
+    send(&mut app, "Ctrl-s");
+    assert_eq!(app.push.strategy, Strategy::Rebase);
+    let complete = app.commit.hold_execution();
+    send(&mut app, "s");
+    assert_eq!(app.push.strategy, Strategy::Rebase);
+    assert_eq!(
+        strategy::load(&app.ctx.state_dir).unwrap(),
+        Strategy::Rebase
+    );
+    assert!(app.pop.is_none());
+    assert!(app.notifications.latest_body().contains("Wait for"));
+    complete();
+    app.poll();
 }
 
 #[test]

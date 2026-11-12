@@ -28,12 +28,51 @@ use crossterm::event::{
 };
 use model::{Branch, Repository, Snapshot};
 use navigation::{Motion, Viewport};
-use operations::{Operation, Review};
+pub(crate) use operations::checkout::{
+    Decision as CheckoutDecision, TOKEN as CHECKOUT_REVIEW_TOKEN,
+};
+use operations::{checkout, Operation, Review};
 use ratatui::{layout::Rect, Frame};
+use std::path::PathBuf;
 use tree::{Kind, Sort, Tree};
 
 pub(crate) const MERGE_REVIEW_TOKEN: &str = "branch:merge";
+pub(crate) const PULL_REVIEW_TOKEN: &str = "branch:pull";
+pub(crate) const PUSH_REVIEW_TOKEN: &str = "branch:push";
 
+#[derive(Clone)]
+pub(crate) struct CheckoutDone {
+    pub(crate) root: usize,
+    pub(crate) path: PathBuf,
+    pub(crate) reference: String,
+    pub(crate) branch: String,
+    pub(crate) head: String,
+    pub(crate) upstream: String,
+    last_used: std::collections::BTreeMap<String, recent::LastUsed>,
+}
+
+pub(crate) struct SyncOutcome {
+    pub(crate) level: NoticeLevel,
+    pub(crate) message: String,
+    pub(crate) checkout: Option<CheckoutDone>,
+    pub(crate) prompt: bool,
+    pub(crate) refresh: bool,
+}
+
+struct SyncDone {
+    level: NoticeLevel,
+    message: String,
+    checkout: Option<CheckoutDone>,
+    retry: Option<NameInput>,
+    refresh: bool,
+}
+
+enum SyncReport {
+    Done(Box<SyncDone>),
+    Prompt(Box<checkout::Checkout>),
+}
+
+#[derive(Clone)]
 struct NameInput {
     root: usize,
     source: Branch,
@@ -79,30 +118,73 @@ pub struct BranchPanel {
     hits: Vec<(Rect, Hit)>,
     input: Option<NameInput>,
     review: Option<Review>,
+    checkout: Option<checkout::Checkout>,
+    checkout_root: Option<usize>,
+    writes_blocked: bool,
     comparison: Option<Box<crate::log::compare::Comparison>>,
     compare_menu: Option<(u16, u16)>,
-    syncing: Option<std::sync::mpsc::Receiver<(NoticeLevel, String)>>,
+    syncing: Option<std::sync::mpsc::Receiver<SyncReport>>,
     pub(crate) panes: PaneLayout,
     pub(crate) icons: IconMode,
 }
 
 impl BranchPanel {
+    pub(crate) fn block_writes(&mut self, blocked: bool) {
+        self.writes_blocked = blocked;
+    }
+
     pub(crate) fn syncing(&self) -> bool {
         self.syncing.is_some()
     }
 
-    pub(crate) fn poll_sync(&mut self) -> Option<(NoticeLevel, String)> {
+    pub(crate) fn poll_sync(&mut self) -> Option<SyncOutcome> {
         use std::sync::mpsc::TryRecvError;
-        let message = match self.syncing.as_ref()?.try_recv() {
-            Ok(message) => message,
+        let report = match self.syncing.as_ref()?.try_recv() {
+            Ok(report) => report,
             Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) => (
-                NoticeLevel::Error,
-                "Branch sync worker stopped unexpectedly".into(),
-            ),
+            Err(TryRecvError::Disconnected) => SyncReport::Done(Box::new(SyncDone {
+                level: NoticeLevel::Error,
+                message: "Branch sync worker stopped unexpectedly".into(),
+                checkout: None,
+                retry: None,
+                refresh: true,
+            })),
         };
         self.syncing = None;
-        Some(message)
+        Some(match report {
+            SyncReport::Done(done) => {
+                let SyncDone {
+                    level,
+                    message,
+                    checkout,
+                    retry,
+                    refresh,
+                } = *done;
+                if self.input.is_none() {
+                    self.input = retry.map(|mut input| {
+                        input.error = message.clone();
+                        input
+                    });
+                }
+                SyncOutcome {
+                    level,
+                    message,
+                    checkout,
+                    prompt: false,
+                    refresh,
+                }
+            }
+            SyncReport::Prompt(checkout) => {
+                self.checkout = Some(*checkout);
+                SyncOutcome {
+                    level: NoticeLevel::Warning,
+                    message: String::new(),
+                    checkout: None,
+                    prompt: true,
+                    refresh: false,
+                }
+            }
+        })
     }
 
     pub(crate) fn has_repository_pane(&self) -> bool {
@@ -178,20 +260,18 @@ impl BranchPanel {
         operation: Operation,
         name: &str,
     ) -> Result<Action> {
-        let review = Review::prepare(c, root, branch, operation, name)?;
-        if matches!(operation, Operation::Checkout | Operation::Track) {
-            return Ok(match review.execute(c) {
-                Ok(message) => Action::Refresh(NoticeLevel::Success, message),
-                Err(error) => Action::Refresh(NoticeLevel::Error, format!("{error:#}")),
-            });
+        if operation == Operation::Checkout {
+            return Ok(self.start_checkout(c, root, branch, operation, name, None));
         }
+        let review = Review::prepare(c, root, branch, operation, name)?;
         let action = Action::Confirm {
             title: operation.title().into(),
             body: review.body.clone(),
-            token: if operation == Operation::Merge {
-                MERGE_REVIEW_TOKEN
-            } else {
-                "branch:apply"
+            token: match operation {
+                Operation::Merge => MERGE_REVIEW_TOKEN,
+                Operation::Pull => PULL_REVIEW_TOKEN,
+                Operation::Push => PUSH_REVIEW_TOKEN,
+                _ => "branch:apply",
             }
             .into(),
         };
@@ -199,11 +279,148 @@ impl BranchPanel {
         Ok(action)
     }
 
+    fn start_checkout(
+        &mut self,
+        c: &Context,
+        root: usize,
+        branch: &Branch,
+        operation: Operation,
+        name: &str,
+        retry: Option<NameInput>,
+    ) -> Action {
+        let context = c.clone();
+        let branch = branch.clone();
+        let name = name.to_owned();
+        let refresh_on_error = retry.is_none();
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let report = match Review::prepare(&context, root, &branch, operation, &name) {
+                Ok(review) => match review.execute_switch() {
+                    Ok(message) => match review.checkout_outcome() {
+                        Ok(checkout) => SyncReport::Done(Box::new(SyncDone {
+                            level: NoticeLevel::Success,
+                            message,
+                            checkout: Some(checkout),
+                            retry: None,
+                            refresh: false,
+                        })),
+                        Err(error) => SyncReport::Done(Box::new(SyncDone {
+                            level: NoticeLevel::Error,
+                            message: format!(
+                                "Checkout finished, but its final HEAD could not be verified: {error:#}"
+                            ),
+                            checkout: None,
+                            retry: None,
+                            refresh: true,
+                        })),
+                    },
+                    Err(error) => match checkout::Checkout::prepare(review, &context, error) {
+                        Ok(prompt) => SyncReport::Prompt(Box::new(prompt)),
+                        Err(error) => SyncReport::Done(Box::new(SyncDone {
+                            level: NoticeLevel::Error,
+                            message: format!("{error:#}"),
+                            checkout: None,
+                            retry: None,
+                            refresh: true,
+                        })),
+                    },
+                },
+                Err(error) => SyncReport::Done(Box::new(SyncDone {
+                    level: NoticeLevel::Error,
+                    message: format!("{error:#}"),
+                    checkout: None,
+                    retry,
+                    refresh: refresh_on_error,
+                })),
+            };
+            let _ = send.send(report);
+        });
+        self.syncing = Some(receive);
+        Action::Notice(
+            NoticeLevel::Info,
+            if operation == Operation::Track {
+                "Tracking remote branch…"
+            } else {
+                "Switching branch…"
+            }
+            .into(),
+        )
+    }
+
+    pub(crate) fn draw_checkout(&mut self, frame: &mut Frame, area: Rect) {
+        if let Some(checkout) = &mut self.checkout {
+            checkout.draw(frame, area, self.icons);
+        }
+    }
+
+    pub(crate) fn checkout_event(&mut self, event: &Event) -> CheckoutDecision {
+        self.checkout
+            .as_mut()
+            .map_or(CheckoutDecision::Cancel, |checkout| checkout.event(event))
+    }
+
+    pub(crate) fn cancel_checkout(&mut self) {
+        self.checkout = None;
+        self.checkout_root = None;
+    }
+
+    pub(crate) fn pending_checkout(&self) -> bool {
+        self.checkout.is_some()
+    }
+
+    pub(crate) fn execute_checkout(&mut self, c: &Context, force: bool) -> Action {
+        let Some(checkout) = self.checkout.take() else {
+            return Action::Notice(
+                NoticeLevel::Warning,
+                "Checkout review expired; select the branch again".into(),
+            );
+        };
+        self.checkout_root = Some(checkout.root());
+        let context = c.clone();
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (level, message, checkout) = checkout.execute_outcome(&context, force);
+            let refresh = checkout.is_none();
+            let _ = send.send(SyncReport::Done(Box::new(SyncDone {
+                level,
+                message,
+                checkout,
+                retry: None,
+                refresh,
+            })));
+        });
+        self.syncing = Some(receive);
+        Action::Notice(
+            NoticeLevel::Info,
+            if force {
+                "Force Checkout running…"
+            } else {
+                "Smart Checkout running…"
+            }
+            .into(),
+        )
+    }
+
+    pub(crate) fn take_checkout_conflicts(&mut self, c: &Context) -> bool {
+        self.checkout_root.take().is_some_and(|root| {
+            c.scope.contains(&root)
+                && c.repos
+                    .get(root)
+                    .is_some_and(|repo| crate::core::update::conflicts(&repo.path))
+        })
+    }
+
     fn operate(&mut self, operation: Operation, c: &Context) -> Result<Action> {
-        if self.syncing() {
+        if self.syncing() || self.writes_blocked {
             return Ok(Action::Notice(
                 NoticeLevel::Warning,
-                "Wait for the branch sync to finish".into(),
+                "Wait for the Git operation to finish".into(),
+            ));
+        }
+        if self.pending_checkout() {
+            return Ok(Action::Notice(
+                NoticeLevel::Warning,
+                "Resolve the checkout review first".into(),
             ));
         }
         if let Some(status) = self.read_status() {
@@ -278,6 +495,17 @@ impl BranchPanel {
         let Some(mut input) = self.input.take() else {
             return Action::None;
         };
+        if input.operation == Operation::Track {
+            let retry = Some(input.clone());
+            return self.start_checkout(
+                c,
+                input.root,
+                &input.source,
+                input.operation,
+                &input.name,
+                retry,
+            );
+        }
         match self.prepare(c, input.root, &input.source, input.operation, &input.name) {
             Ok(action) => action,
             Err(error) => {
@@ -389,7 +617,7 @@ impl BranchPanel {
                     K::Char('m') => return self.operate(Operation::Merge, c),
                     K::Char('r') => return self.operate(Operation::Rename, c),
                     K::Char('c') => return self.open_comparison(c),
-                    K::Char('U') => return self.operate(Operation::Pull, c),
+                    K::Char('p' | 'U') => return self.operate(Operation::Pull, c),
                     K::Char('P') => return self.operate(Operation::Push, c),
                     _ => (),
                 }
@@ -501,9 +729,9 @@ impl Panel for BranchPanel {
         } else if self.focused_pane() == PaneId::BranchRepos {
             "j/k Repos   Enter Branches   Tab Panes   F1 Help"
         } else if self.has_repository_pane() {
-            "Tab Repos   c Compare   o View Options   a New   d Delete   Enter Switch   m Merge   r Rename   U Pull   P Push   F1 Help"
+            "Tab Repos   c Compare   o View Options   a New   d Delete   Enter Switch   m Merge   r Rename   p Pull   P Push   F1 Help"
         } else {
-            "c Compare   o View Options   a New   d Delete   Enter Switch   m Merge   r Rename   U Pull   P Push   F1 Help"
+            "c Compare   o View Options   a New   d Delete   Enter Switch   m Merge   r Rename   p Pull   P Push   F1 Help"
         }
     }
 
@@ -512,7 +740,10 @@ impl Panel for BranchPanel {
     }
 
     fn confirm(&mut self, token: &str, c: &Context) -> Action {
-        if !matches!(token, "branch:apply" | MERGE_REVIEW_TOKEN) {
+        if !matches!(
+            token,
+            "branch:apply" | MERGE_REVIEW_TOKEN | PULL_REVIEW_TOKEN | PUSH_REVIEW_TOKEN
+        ) {
             return Action::None;
         }
         let Some(review) = self.review.take() else {
@@ -525,11 +756,23 @@ impl Panel for BranchPanel {
             let context = c.clone();
             let (send, receive) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
-                let message = match review.execute(&context) {
-                    Ok(message) => (NoticeLevel::Success, message),
-                    Err(error) => (NoticeLevel::Error, format!("{error:#}")),
+                let report = match review.execute(&context) {
+                    Ok(message) => SyncReport::Done(Box::new(SyncDone {
+                        level: NoticeLevel::Success,
+                        message,
+                        checkout: None,
+                        retry: None,
+                        refresh: true,
+                    })),
+                    Err(error) => SyncReport::Done(Box::new(SyncDone {
+                        level: NoticeLevel::Error,
+                        message: format!("{error:#}"),
+                        checkout: None,
+                        retry: None,
+                        refresh: true,
+                    })),
                 };
-                let _ = send.send(message);
+                let _ = send.send(report);
             });
             self.syncing = Some(receive);
             return Action::Notice(NoticeLevel::Info, "Branch sync running…".into());

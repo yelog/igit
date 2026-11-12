@@ -148,9 +148,10 @@ fn discard_targets_unchecked_cursor_and_keeps_other_checks_and_staged_content() 
 
 #[test]
 fn discard_directory_crosses_changelists_and_unversioned_group_in_both_layouts() {
-    for modules in [true, false] {
+    for (repositories, modules) in [(true, false), (false, false), (false, true), (true, true)] {
         let (_dir, mut c, mut panel) = fixture();
         c.scope = [0].into();
+        panel.options.repositories = repositories;
         panel.options.modules = modules;
         panel.options.directories = true;
         panel.saved.groups.push("Later".into());

@@ -1,9 +1,12 @@
 use super::*;
+mod controls;
 mod diff;
+mod review;
 mod strategy;
 mod text_selection;
 use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
+use std::time::Duration;
 use unicode_width::UnicodeWidthStr;
 
 fn fixture(icons: IconMode) -> (PushPanel, Context) {
@@ -112,6 +115,112 @@ fn find_text(buf: &Buffer, row: Rect, needle: &str) -> u16 {
         .find(needle)
         .unwrap_or_else(|| panic!("{needle:?} missing in {text:?}"));
     row.x + text[..i].width() as u16
+}
+
+#[test]
+fn active_push_repository_shows_the_animated_marker_until_its_result_arrives() {
+    for icons in [IconMode::Ascii, IconMode::Unicode, IconMode::NerdFont] {
+        let (mut p, c) = fixture(icons);
+        p.results.insert(0, Ok(PushOutcome::Complete));
+        p.results.insert(1, Err("offline".into()));
+        p.activities.insert(
+            0,
+            PushActivity {
+                started: Instant::now(),
+                frame: 0,
+                phase: "Pushing…",
+            },
+        );
+        let buf = draw(&mut p, &c, 120, 24);
+        let row = |panel: &PushPanel, id| {
+            panel
+                .hits
+                .iter()
+                .find_map(|(rect, hit)| matches!(hit, Hit::Row(i) if *i == id).then_some(*rect))
+                .unwrap()
+        };
+        let active = text_at(&buf, row(&p, 0));
+        assert!(
+            active.contains(&format!("moss-web {}", icons.spinner(0))),
+            "{active:?}"
+        );
+        assert!(
+            !active.contains(&format!("moss-web {}", icons.glyph(Icon::Success))),
+            "{active:?}"
+        );
+        let inactive = text_at(&buf, row(&p, 1));
+        assert!(
+            inactive.contains(&format!(" {}", icons.glyph(Icon::Error))),
+            "{inactive:?}"
+        );
+
+        p.activities.get_mut(&0).unwrap().frame = 1;
+        let buf = draw(&mut p, &c, 120, 24);
+        assert!(
+            text_at(&buf, row(&p, 0)).contains(&format!("moss-web {}", icons.spinner(1))),
+            "the row must repaint from the panel's current frame"
+        );
+
+        p.activities.clear();
+        let buf = draw(&mut p, &c, 120, 24);
+        assert!(
+            text_at(&buf, row(&p, 0)).contains(&format!("moss-web {}", icons.glyph(Icon::Success)))
+        );
+    }
+}
+
+#[test]
+fn parallel_push_repositories_each_show_their_own_spinner() {
+    for icons in [IconMode::Ascii, IconMode::Unicode, IconMode::NerdFont] {
+        let (mut p, c) = fixture(icons);
+        p.results.insert(0, Ok(PushOutcome::Complete));
+        p.results.insert(1, Err("offline".into()));
+        p.results.insert(2, Ok(PushOutcome::UpToDate));
+        let started = Instant::now();
+        for (root, frame) in [(0, 0), (1, 1), (2, 2)] {
+            p.activities.insert(
+                root,
+                PushActivity {
+                    started,
+                    frame,
+                    phase: "Pushing…",
+                },
+            );
+        }
+        let buf = draw(&mut p, &c, 120, 24);
+        let row = |panel: &PushPanel, id| {
+            panel
+                .hits
+                .iter()
+                .find_map(|(rect, hit)| matches!(hit, Hit::Row(i) if *i == id).then_some(*rect))
+                .unwrap()
+        };
+        for root in 0..3 {
+            let text = text_at(&buf, row(&p, root));
+            assert!(
+                text.contains(&format!(" {}", icons.spinner(root))),
+                "{text:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn push_spinner_frames_advance_on_a_100ms_clock() {
+    let started = Instant::now();
+    assert_eq!(spinner_frame(started, started), 0);
+    assert_eq!(
+        spinner_frame(started, started + Duration::from_millis(99)),
+        0
+    );
+    assert_eq!(
+        spinner_frame(started, started + Duration::from_millis(100)),
+        1
+    );
+    assert_eq!(
+        spinner_frame(started, started + Duration::from_millis(899)),
+        8
+    );
 }
 
 fn key(p: &mut PushPanel, c: &Context, code: KeyCode) {
@@ -399,15 +508,8 @@ fn push_toolbars_and_footer_fit_without_overlapping_in_every_icon_mode() {
                 .visible
                 .iter()
                 .any(|&id| { matches!(p.preview.tree.nodes[id].kind, Kind::Module) }));
-            for action in [Hit::EditTarget, Hit::Fetch] {
-                let r = p
-                    .hits
-                    .iter()
-                    .find(|(_, h)| std::mem::discriminant(h) == std::mem::discriminant(&action))
-                    .unwrap()
-                    .0;
-                assert_eq!(p.panes.at(r.x, r.y), Some(PaneId::Outgoing));
-            }
+            let fetch = hit(&p, |hit| matches!(hit, Hit::Fetch));
+            assert_eq!(p.panes.at(fetch.x, fetch.y), Some(PaneId::Outgoing));
             assert!(!p.hits.iter().any(|(_, h)| matches!(h, Hit::Retry)));
             p.results.insert(7, Err("offline".into()));
             draw(&mut p, &c, width, height);
@@ -634,14 +736,14 @@ fn maximized_push_preserves_footer_scope_and_saved_dividers() {
         for &(other, area) in p.panes.nodes() {
             assert_eq!(!area.is_empty(), id == other);
             if other == id {
-                assert_eq!(area, Rect::new(0, 0, 120, 33));
+                assert_eq!(area, Rect::new(0, 0, 120, 35));
                 assert!(!p.panes.can_resize(area, Axis::Width));
                 assert!(!p.panes.can_resize(area, Axis::Height));
             }
         }
         for (_, hit) in &p.hits {
             match hit {
-                Hit::Row(_) | Hit::Check(_) | Hit::Fold(_) | Hit::EditTarget | Hit::Fetch => {
+                Hit::Row(_) | Hit::Check(_) | Hit::Fold(_) | Hit::Fetch | Hit::Strategy => {
                     assert_eq!(id, PaneId::Outgoing)
                 }
                 Hit::File(_) | Hit::FileFold(_) | Hit::FoldAll(_) | Hit::GroupBy | Hit::Details => {
@@ -705,13 +807,16 @@ fn target_tracking_choice_and_save_cancel_are_reachable_at_supported_sizes() {
             let (mut panel, c) = fixture(icons);
             let checked = panel.checked.clone();
             let initial = draw(&mut panel, &c, width, height);
-            let target = panel
+            if let Some(target) = panel
                 .hits
                 .iter()
-                .find_map(|(r, h)| matches!(h, Hit::EditTarget).then_some(*r))
-                .unwrap();
-            assert!(!text_at(&initial, target).is_empty());
-            click(&mut panel, &c, target);
+                .find_map(|(r, h)| matches!(h, Hit::Target(0)).then_some(*r))
+            {
+                assert!(!text_at(&initial, target).is_empty());
+                click(&mut panel, &c, target);
+            } else {
+                key(&mut panel, &c, KeyCode::Char('t'));
+            }
             let buf = draw(&mut panel, &c, width, height);
             assert!(panel.editing());
             assert!(!panel.target_edit.as_ref().unwrap().set_upstream);

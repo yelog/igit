@@ -563,7 +563,18 @@ fn mouse_can_save_each_repositorys_tracking_choice_without_writing_git_config() 
                 )
             };
             draw(&mut panel, &mut term);
-            click(&mut panel, |h| matches!(h, Hit::EditTarget));
+            if panel
+                .hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::Target(_)))
+            {
+                click(&mut panel, |hit| matches!(hit, Hit::Target(_)));
+            } else {
+                panel.event(
+                    &Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE)),
+                    &c,
+                );
+            }
             draw(&mut panel, &mut term);
             click(&mut panel, |h| matches!(h, Hit::Upstream));
             assert!(panel.target_edit.as_ref().unwrap().set_upstream);

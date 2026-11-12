@@ -103,7 +103,7 @@ impl Plan {
             .unwrap_or(&self.snapshot.branch)
     }
 
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if Snapshot::read(&self.repo)?.as_ref() != Some(&self.snapshot) {
             bail!("Files, index, branch, or HEAD changed. Review stash again");
         }

@@ -1,6 +1,8 @@
+pub(crate) mod hosting;
 pub(crate) mod loading;
 pub(crate) mod paths;
 pub(crate) mod revision;
+pub(crate) mod schedule;
 mod state;
 pub(crate) mod strategy;
 pub(crate) mod update;

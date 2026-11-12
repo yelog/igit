@@ -526,7 +526,7 @@ fn branch_commands_can_be_remapped_without_leaking_into_name_input_or_roots() {
     let wide = screen(&mut app, 180, 36);
     let footer = wide.lines().last().unwrap();
     assert!(
-        footer.contains("U Pull") && footer.contains("P Push"),
+        footer.contains("p Pull") && footer.contains("P Push"),
         "{wide}"
     );
     app.dispatch(&key(KeyCode::Char('o')));
@@ -590,7 +590,7 @@ fn branch_merge_conflicts_refresh_the_conflicts_tab_and_return_to_branch() {
         app.notifications.latest_body()
     );
     assert!(!git(&repo, &["ls-files", "--unmerged"]).unwrap().is_empty());
-    app.dispatch(&key(KeyCode::Char('6')));
+    app.dispatch(&key(KeyCode::Char('7')));
     assert_eq!(app.tab, Conflicts);
     app.dispatch(&key(KeyCode::Esc));
     assert_eq!(app.tab, Branch);

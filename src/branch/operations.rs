@@ -1,3 +1,4 @@
+pub(super) mod checkout;
 mod view;
 
 use super::model::{Branch, Snapshot};
@@ -185,7 +186,61 @@ impl Review {
         self.sync.is_some()
     }
 
-    pub fn execute(self, c: &Context) -> Result<String> {
+    pub(crate) fn checkout_outcome(&self) -> Result<super::CheckoutDone> {
+        let (reference, name, upstream) = if self.operation == Operation::Track {
+            (
+                format!("refs/heads/{}", self.name),
+                self.name.clone(),
+                self.source.reference.clone(),
+            )
+        } else {
+            (
+                self.source.reference.clone(),
+                self.source.name.clone(),
+                self.source.upstream.clone(),
+            )
+        };
+        let actual = git(&self.path, &["symbolic-ref", "-q", "HEAD"])?;
+        ensure!(
+            actual == reference,
+            "Git left HEAD on {actual}, expected {reference}"
+        );
+        let head = git(&self.path, &["rev-parse", "--verify", "HEAD"])?;
+        let last_used = super::recent::read(
+            &self.path,
+            self.snapshot
+                .branches
+                .keys()
+                .map(String::as_str)
+                .chain(std::iter::once(reference.as_str())),
+        );
+        Ok(super::CheckoutDone {
+            root: self.root,
+            path: self.path.clone(),
+            reference,
+            branch: name,
+            head,
+            upstream,
+            last_used,
+        })
+    }
+
+    pub(crate) fn execute_switch(&self) -> Result<String> {
+        let head = git(&self.path, &["symbolic-ref", "-q", "HEAD"]).ok();
+        let oid = git(&self.path, &["rev-parse", "--verify", "HEAD"]).ok();
+        ensure!(
+            head == self.snapshot.head
+                && oid == self.snapshot.oid
+                && git(
+                    &self.path,
+                    &["rev-parse", "--verify", &self.source.reference]
+                )? == self.source.oid,
+            "Branch or HEAD changed; review again"
+        );
+        self.run(false)
+    }
+
+    fn validate<'a>(&self, c: &'a Context) -> Result<&'a Repo> {
         ensure!(
             c.scope.contains(&self.root),
             "Repository is outside Roots; review again"
@@ -200,6 +255,11 @@ impl Review {
             Snapshot::read(repo)? == self.snapshot,
             "Branches or HEAD changed; refresh and review again"
         );
+        Ok(repo)
+    }
+
+    pub fn execute(&self, c: &Context) -> Result<String> {
+        let repo = self.validate(c)?;
         if let Some(sync) = &self.sync {
             sync.execute(repo, &self.source, || {
                 ready(repo, self.operation)?;
@@ -226,7 +286,11 @@ impl Review {
                 self.source.name
             ));
         }
-        let mut cmd = command(&repo.path);
+        self.run(false)
+    }
+
+    fn run(&self, force: bool) -> Result<String> {
+        let mut cmd = command(&self.path);
         // A single-repository review never authorizes recursive submodule writes.
         cmd.args(["-c", "submodule.recurse=false"]);
         match self.operation {
@@ -243,9 +307,11 @@ impl Review {
                     "--no-guess",
                     "--no-recurse-submodules",
                     "--no-overwrite-ignore",
-                    "--",
-                    &self.source.name,
                 ]);
+                if force {
+                    cmd.arg("--discard-changes");
+                }
+                cmd.args(["--", &self.source.name]);
             }
             Operation::Track => {
                 cmd.args([
@@ -253,12 +319,11 @@ impl Review {
                     "--no-guess",
                     "--no-recurse-submodules",
                     "--no-overwrite-ignore",
-                    "--track",
-                    "-c",
-                    &self.name,
-                    "--",
-                    &self.source.reference,
                 ]);
+                if force {
+                    cmd.arg("--discard-changes");
+                }
+                cmd.args(["--track", "-c", &self.name, "--", &self.source.reference]);
             }
             Operation::Merge => {
                 cmd.args([
@@ -286,14 +351,14 @@ impl Review {
             bail!(
                 "{} failed in {}: {}",
                 self.operation.title(),
-                repo.name,
+                self.repository,
                 detail.trim()
             );
         }
         Ok(format!(
             "{} completed in {}: {}{}",
             self.operation.title(),
-            repo.name,
+            self.repository,
             self.source.name,
             if self.name.is_empty() {
                 String::new()

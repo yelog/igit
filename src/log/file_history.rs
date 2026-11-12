@@ -220,7 +220,6 @@ impl LogPanel {
         self.hist = History::default();
         self.visible.clear();
         self.ref_query.clear();
-        self.ref_search = Default::default();
         self.file_search = Default::default();
         self.regex = false;
         self.case_sensitive = false;

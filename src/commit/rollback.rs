@@ -155,7 +155,8 @@ impl Rollback {
             fold: BTreeSet::new(),
             options: display::Options {
                 directories: true,
-                modules: true,
+                repositories: true,
+                modules: false,
                 ignored: panel.options.ignored,
                 status: panel.options.status,
             },
@@ -211,7 +212,7 @@ impl Rollback {
         }
         self.rows
             .get(self.cursor)?
-            .copy_target(c, &self.files, self.options.modules)
+            .copy_target(c, &self.files, self.options.repository_grouping())
     }
 
     fn current_file(&self) -> Option<&File> {
@@ -273,7 +274,7 @@ impl Rollback {
         if option == 0 {
             self.options.directories = !self.options.directories;
         } else {
-            self.options.modules = !self.options.modules;
+            self.options.repositories = !self.options.repositories;
         }
         self.fold.clear();
         self.rebuild(c);
@@ -880,7 +881,7 @@ impl Rollback {
         f.render_widget(border, area);
         for (i, (label, on)) in [
             ("Directory", self.options.directories),
-            ("Repository", self.options.modules),
+            ("Repository", self.options.repositories),
         ]
         .into_iter()
         .enumerate()

@@ -1103,59 +1103,7 @@ impl LogPanel {
             self.draw_paths(f, a, anchor, c, &v);
             return;
         }
-        let w = a.width.min(40);
-        let x = anchor.x.min(a.right() - w);
-        let y = (anchor.bottom()).min(a.bottom().saturating_sub(6)).max(a.y);
-        let h = (self.suggestions.len() + 4).clamp(5, 13) as u16;
-        let h = h.min(a.bottom() - y);
-        let p = Rect::new(x, y, w, h);
-        // Cover underlying rows even where the menu has no button (input, border, padding).
-        self.hit(p, Hit::Dropdown(DropdownHit::Surface));
-        f.render_widget(Clear, p);
-        let b = boxof(k.label().to_string(), true);
-        let inner = b.inner(p);
-        f.render_widget(b, p);
-        if inner.is_empty() {
-            return;
-        }
-        toolbar_field(
-            f,
-            one(inner.x, inner.y, inner.width),
-            &v,
-            true,
-            self.icons,
-            false,
-        );
-        let h = inner.height.saturating_sub(2) as usize;
-        let start = window(self.choice.unwrap_or(0), h, self.suggestions.len());
-        for (dy, i) in (start..(start + h).min(self.suggestions.len())).enumerate() {
-            let r = one(inner.x, inner.y + 1 + dy as u16, inner.width);
-            let label = &self.suggestions[i].1;
-            f.render_widget(
-                Paragraph::new(clipped(label, usize::from(r.width))).style(
-                    if self.choice == Some(i) {
-                        fg(INK).bg(SELECT)
-                    } else {
-                        fg(INK)
-                    },
-                ),
-                r,
-            );
-            self.hit(r, Hit::Dropdown(DropdownHit::Choice(i)));
-        }
-        if inner.height > 1 {
-            self.bar(
-                f,
-                one(inner.x, inner.bottom() - 1, inner.width),
-                &[
-                    (
-                        format!("Apply {}", self.icons.glyph(Icon::Enter)),
-                        Hit::Dropdown(DropdownHit::Apply),
-                    ),
-                    ("Cancel Esc".into(), Hit::Dropdown(DropdownHit::Cancel)),
-                ],
-            );
-        }
+        self.draw_author_editor(f, a, anchor, &v);
     }
     fn draw_date_editor(&mut self, f: &mut Frame, a: Rect, anchor: Rect) {
         let range = self.date_range.clone();

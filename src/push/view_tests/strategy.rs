@@ -41,10 +41,13 @@ fn push_divergence_uses_branch_colours_and_keeps_both_counts_when_names_clip() {
             assert_eq!(buffer[(ahead_column, row.y)].fg, LOCAL_REF);
             assert_eq!(buffer[(behind_column, row.y)].fg, BLUE);
             let strategy = hit(&panel, |hit| matches!(hit, Hit::Strategy));
-            assert!(text_at(&buffer, strategy).contains("Update: Rebase"));
+            assert!(text_at(&buffer, strategy).contains("Rebase"));
+            if width >= 80 {
+                assert_eq!(text_at(&buffer, strategy), "Update strategy: Rebase");
+            }
             assert!(matches!(
                 activate(&mut panel, &context, strategy),
-                Action::ChooseUpdateStrategy
+                Action::ToggleUpdateStrategy
             ));
             assert_eq!(panel.checked, checked);
         }

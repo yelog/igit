@@ -57,6 +57,59 @@ pub(super) struct Loading {
 }
 
 impl BranchPanel {
+    pub(crate) fn checkout_completed(&mut self, done: &super::CheckoutDone) -> bool {
+        let Some(repo) = self
+            .repos
+            .iter_mut()
+            .find(|repository| repository.root == done.root && repository.path == done.path)
+        else {
+            return false;
+        };
+        let worktree = repo.path.to_string_lossy().into_owned();
+        let Ok(snapshot) = &mut repo.state else {
+            return false;
+        };
+        self.loading.task.cancel();
+        snapshot.head = Some(done.reference.clone());
+        snapshot.oid = Some(done.head.clone());
+        let target = snapshot
+            .branches
+            .entry(done.reference.clone())
+            .or_insert_with(|| Branch {
+                reference: done.reference.clone(),
+                name: done.branch.clone(),
+                oid: done.head.clone(),
+                upstream: done.upstream.clone(),
+                worktree: worktree.clone(),
+                current: true,
+                remote: false,
+                gone: false,
+            });
+        target.oid = done.head.clone();
+        if !done.upstream.is_empty() {
+            target.upstream = done.upstream.clone();
+        }
+        for branch in snapshot.branches.values_mut() {
+            branch.current = branch.reference == done.reference;
+            if branch.current {
+                branch.worktree = worktree.clone();
+            } else if branch.worktree == worktree {
+                branch.worktree.clear();
+            }
+        }
+        repo.metadata.last_used = done.last_used.clone();
+        repo.upstream_widths = rows::measure_upstream(snapshot, &repo.metadata);
+        self.repo_search.invalidate();
+        self.branch_search.invalidate();
+        if self.repo_root == Some(done.root) {
+            let repo = self.repository_index().map(|index| &self.repos[index]);
+            self.tree.rebuild(repo);
+            self.keep_branch_visible();
+            self.hits.clear();
+        }
+        true
+    }
+
     pub(crate) fn enter(&mut self, c: &Context) {
         if !self.loading.task.loading()
             || self

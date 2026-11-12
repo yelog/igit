@@ -4,27 +4,28 @@ use anyhow::{bail, Result};
 use crossterm::event::{KeyCode as K, KeyEvent, KeyModifiers as M};
 
 pub type Sequence = Vec<KeyEvent>;
-pub const LOG_GRAPH: u16 = 1;
-pub const LOG_REFS: u16 = 2;
-pub const LOG_FILES: u16 = 4;
-pub const LOG_INFO: u16 = 8;
-pub const LOG: u16 = 15;
-pub const CHANGES: u16 = 16;
-pub const MESSAGE: u16 = 32;
-pub const PREVIEW: u16 = 64;
-pub const COMMIT: u16 = 112;
-pub const PUSH_REPOS: u16 = 128;
-pub const PUSH_FILES: u16 = 256;
-pub const PUSH_DETAILS: u16 = 512;
-pub const PUSH: u16 = 896;
-pub const MERGE_FILES: u16 = 1024;
-pub const MERGE_DOC: u16 = 2048;
-pub const MERGE: u16 = 3072;
-pub const BRANCH: u16 = 4096;
-pub const STASH_LIST: u16 = 8192;
-pub const STASH_FILES: u16 = 16384;
-pub const STASH: u16 = STASH_LIST | STASH_FILES;
-pub const ALL: u16 = 32767;
+pub const LOG_GRAPH: u32 = 1;
+pub const LOG_REFS: u32 = 2;
+pub const LOG_FILES: u32 = 4;
+pub const LOG_INFO: u32 = 8;
+pub const LOG: u32 = 15;
+pub const CHANGES: u32 = 16;
+pub const MESSAGE: u32 = 32;
+pub const PREVIEW: u32 = 64;
+pub const COMMIT: u32 = 112;
+pub const PUSH_REPOS: u32 = 128;
+pub const PUSH_FILES: u32 = 256;
+pub const PUSH_DETAILS: u32 = 512;
+pub const PUSH: u32 = 896;
+pub const MERGE_FILES: u32 = 1024;
+pub const MERGE_DOC: u32 = 2048;
+pub const MERGE: u32 = 3072;
+pub const BRANCH: u32 = 4096;
+pub const STASH_LIST: u32 = 8192;
+pub const STASH_FILES: u32 = 16384;
+pub const STASH: u32 = STASH_LIST | STASH_FILES;
+pub const REMOTE: u32 = 32768;
+pub const ALL: u32 = 65535;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommandAction {
@@ -79,7 +80,7 @@ pub struct Command {
     pub group: &'static str,
     pub name: &'static str,
     pub action: CommandAction,
-    pub contexts: u16,
+    pub contexts: u32,
 }
 
 macro_rules! commands {
@@ -102,9 +103,10 @@ commands! {
         "open-push" => "3", ALL;
         "focus-branch" => "4", ALL;
         "focus-stash" => "5", ALL;
-        "open-merge" => "6", ALL;
-        "pull" => "p", ALL;
-        "fetch" => "f", ALL;
+        "focus-remote" => "6", ALL;
+        "open-merge" => "7", ALL;
+        "pull" => "p", ALL & !BRANCH;
+        "fetch" => "f", ALL & !PUSH;
         "update" => "F9", ALL;
         "notification-history" => (notifications), ALL;
         "roots" => "r", ALL & !BRANCH;
@@ -132,6 +134,21 @@ commands! {
         "page-up" => "PgUp", STASH;
         "collapse-all" => "z", STASH_FILES;
         "expand-all" => "Z", STASH_FILES;
+    }
+    "remote" {
+        "add" => "a", REMOTE;
+        "edit" => "e", REMOTE;
+        "remove" => "d", REMOTE;
+        "move-down" => "j", REMOTE;
+        "move-up" => "k", REMOTE;
+        "collapse" => "h", REMOTE;
+        "expand" => "l", REMOTE;
+        "toggle" => "Space", REMOTE;
+        "open" => "Enter", REMOTE;
+        "first-item" => "g", REMOTE;
+        "last-item" => "G", REMOTE;
+        "page-down" => "PgDn", REMOTE;
+        "page-up" => "PgUp", REMOTE;
     }
     "panes" {
         "focus-next" => "Tab", ALL;
@@ -204,6 +221,7 @@ commands! {
         "copy-id" => "yy", LOG_GRAPH;
         "copy-message" => "ym", LOG_GRAPH;
         "copy-author" => "ya", LOG_GRAPH;
+        "open-in-browser" => "O", LOG_GRAPH;
         "commit-actions" => "a", LOG_GRAPH;
         "compare-with-local" => "D", LOG_GRAPH | LOG_INFO;
         "edit-message" => "F2", LOG_GRAPH;
@@ -213,9 +231,9 @@ commands! {
         "show-file-at-revision" => "e", LOG_GRAPH | LOG_INFO;
         "open" => "Enter", LOG;
         "search" => "/", LOG_GRAPH | LOG_INFO;
-        "find" => "/", LOG_REFS | LOG_FILES;
-        "next-match" => "n", LOG_REFS | LOG_FILES;
-        "previous-match" => "N", LOG_REFS | LOG_FILES;
+        "find" => "/", LOG_FILES;
+        "next-match" => "n", LOG_FILES;
+        "previous-match" => "N", LOG_FILES;
         "search-refs" => "S", LOG_REFS;
         "branch-filter" => "Space b", LOG;
         "user-filter" => "Space u", LOG;
@@ -245,7 +263,7 @@ commands! {
         "move-up" => "k", COMMIT;
         "collapse" => "h", CHANGES;
         "expand" => "l", CHANGES;
-        "first-item" => "g", COMMIT;
+        "first-item" => "g", CHANGES | PREVIEW;
         "last-item" => "G", COMMIT;
         "page-down" => "PgDn", COMMIT;
         "page-up" => "PgUp", COMMIT;
@@ -269,6 +287,9 @@ commands! {
         "previous-repo" => "[", COMMIT;
         "next-repo" => "]", COMMIT;
         "amend" => "M", COMMIT;
+        "commit" => "c", MESSAGE;
+        "commit-and-push" => "a", MESSAGE;
+        "generate-message" => "g", MESSAGE;
         "ai-draft" => "A", COMMIT;
         "ai-settings" => "S", COMMIT;
         "review" => "c", CHANGES | PREVIEW;
@@ -293,9 +314,9 @@ commands! {
         "view-options" => "o", PUSH;
         "review" => "P", PUSH;
         "retry" => "R", PUSH;
-        "fetch" => "F", PUSH;
-        "follow-tags" => "v", PUSH;
-        "skip-hooks" => "x", PUSH;
+        "fetch" => "f", PUSH;
+        "follow-tags" => "F", PUSH;
+        "skip-hooks" => "H", PUSH;
         "details" => "d", PUSH;
         "collapse-all" => "[", PUSH_FILES;
         "expand-all" => "]", PUSH_FILES;
@@ -344,7 +365,7 @@ commands! {
     }
 }
 
-pub fn context(title: &str) -> u16 {
+pub fn context(title: &str) -> u32 {
     match title {
         "Log / Commits" | "Log / Branch Comparison" => LOG_GRAPH,
         "Log / Branch Tree" => LOG_REFS,
@@ -361,6 +382,7 @@ pub fn context(title: &str) -> u16 {
         "Branch / Branch Tree" | "Branch / Repositories" => BRANCH,
         "Stash / Repositories" => STASH_LIST,
         "Stash / File Tree" => STASH_FILES,
+        "Remote / Remotes" => REMOTE,
         _ => 0,
     }
 }

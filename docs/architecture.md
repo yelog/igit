@@ -11,15 +11,36 @@ IGit is a Rust terminal application. Both entry points, [igit](../src/bin/igit.r
 | Where are session notifications stored and rendered? | [ui/notifications.rs](../src/ui/notifications.rs) defines notification severity and identity. [shell.rs](../src/shell.rs) owns bounded history, live-card lifetime, dismissal, and History routing; [ui/notifications](../src/ui/notifications/) renders cards and the history view. |
 | Why does help prioritize this area? | Internal panel `keymap` methods in [log/keymap.rs](../src/log/keymap.rs), [commit/keymap.rs](../src/commit/keymap.rs), [push/keymap.rs](../src/push/keymap.rs), and [merge/keymap.rs](../src/merge/keymap.rs) provide shortcuts for the current focus/editing state. [ui/help.rs](../src/ui/help.rs) owns Search, candidate selection, compact rendering, and hit areas. |
 | Why does a file or button use this icon? | [ui/icons.rs](../src/ui/icons.rs) maps semantics, filenames, and extensions to glyphs. Shell passes startup `IconMode` to all panels; layout and hit testing use actual terminal cell widths. Icon preferences are not written to repositories, drafts, or Git configuration. [graph/render.rs](../src/log/model/graph/render.rs) draws graph rails/nodes from topology. |
-| Why does a commit appear here? | [log/model.rs](../src/log/model.rs) reads real refs, commits, reachability, and patches; [graph.rs](../src/log/model/graph.rs) allocates rails. [log.rs](../src/log.rs) coordinates selection/events. [view.rs](../src/log/view.rs), [refs.rs](../src/log/refs.rs), and [inspector.rs](../src/log/inspector.rs) render the timeline, branch tree, and right pane. [filters.rs](../src/log/filters.rs) manages filters and session tabs. |
+| Why does a commit appear here? | [log/model.rs](../src/log/model.rs) reads real refs, commits, reachability, and patches; [graph.rs](../src/log/model/graph.rs) allocates rails. [log.rs](../src/log.rs) coordinates selection/events. [view.rs](../src/log/view.rs), [refs.rs](../src/log/refs.rs), and [inspector.rs](../src/log/inspector.rs) render the timeline, branch tree, and right pane. [filters.rs](../src/log/filters.rs) manages filters and session tabs; [authors.rs](../src/log/authors.rs) renders the User picker and maintains its viewport and navigation without additional Git reads. |
 | What does this commit include? | [commit.rs](../src/commit.rs): groups, checkboxes, the shared message, and batch commits. [commit/ai.rs](../src/commit/ai.rs): background AI jobs and shared message generation. [commit/tree.rs](../src/commit/tree.rs): flat/compact-directory projections and native file identity. [commit/rows.rs](../src/commit/rows.rs): row rendering and shared arrow/checkbox coordinates. [commit/view.rs](../src/commit/view.rs): changes list, messages, and default-open preview. [commit/refresh.rs](../src/commit/refresh.rs) owns background status and current-patch refresh. [commit/backend.rs](../src/commit/backend.rs): status, snapshots, plans, and execution. |
 | Where will this push go, and will the target have the submodule commit? | [push.rs](../src/push.rs): outgoing commits, targets, plans, background jobs, and per-repository results. [push/update.rs](../src/push/update.rs) fetches the actual push target and coordinates integration/publication. [push/loading.rs](../src/push/loading.rs) schedules outgoing commit and preview reads; [push/preview.rs](../src/push/preview.rs) reads immutable file lists and comparisons. [push/diff.rs](../src/push/diff.rs) connects the current file tree to Log's revision viewer. [push/files.rs](../src/push/files.rs) parses changes and derives grouped rows from one tree; [push/display.rs](../src/push/display.rs) handles the session Group By menu; [push/view.rs](../src/push/view.rs) renders columns/hit areas. [push/submodules.rs](../src/push/submodules.rs) verifies remote availability of gitlinks in outgoing history. |
-| How do branch lists load and branch writes get reviewed? | [branch/loading.rs](../src/branch/loading.rs) reads refs and prepares tree rows in the background. [branch/operations.rs](../src/branch/operations.rs) revalidates one repository before a reviewed write. [core/loading.rs](../src/core/loading.rs) provides the bounded reader shared with Push. |
+| How do branch lists load and branch writes get reviewed? | [branch/loading.rs](../src/branch/loading.rs) reads refs and prepares tree rows in the background. [branch/operations.rs](../src/branch/operations.rs) revalidates one repository before a reviewed write; checkout runs on a worker and merges its verified HEAD into the cached target repository. [core/loading.rs](../src/core/loading.rs) provides the bounded reader shared with Push. |
+| How are remotes listed and edited? | [remote.rs](../src/remote.rs) owns scoped repository groups, selection, and reviews. [remote/model.rs](../src/remote/model.rs) reads configuration and redacts display text. [remote/editor.rs](../src/remote/editor.rs) edits names and URL lists; [remote/view.rs](../src/remote/view.rs) renders table and hit areas. [remote/operations.rs](../src/remote/operations.rs) validates and rechecks one repository before native Git remote/config commands. |
 | What will a workspace Pull or Fetch update? | [shell/update.rs](../src/shell/update.rs) owns the Roots review, selected strategy, Git worker, and structured per-repository results. [shell/update/view.rs](../src/shell/update/view.rs) renders the shared review/running/results list, responsive columns, Details, and action hit areas. |
-| Where is the shared Merge/Rebase default stored and applied? | [core/strategy.rs](../src/core/strategy.rs) loads and atomically saves the global preference. [ui/strategy.rs](../src/ui/strategy.rs) owns the keyboard/mouse selector reused by Push and Pull. [core/update.rs](../src/core/update.rs) integrates an explicit target OID with the selected strategy. |
+| Where is the shared Merge/Rebase default stored and applied? | [core/strategy.rs](../src/core/strategy.rs) loads and atomically saves the global preference. Push sends a direct toggle action to Shell; [ui/strategy.rs](../src/ui/strategy.rs) owns Pull's keyboard/mouse selector. [core/update.rs](../src/core/update.rs) integrates an explicit target OID with the selected strategy. |
 | How are local paths protected before integration or a Log rewrite? | [core/paths.rs](../src/core/paths.rs) provides the collision preflight shared by [Log operations](../src/log/operations.rs) and [update integration](../src/core/update.rs), protecting ignored/untracked content and skip-worktree/assume-unchanged paths. |
 | How is the application itself installed and updated? | [installation.rs](../src/installation.rs) dispatches `update` before Shell starts. [install.py](../scripts/install/install.py) and [install.ps1](../pages/install.ps1) own native installation validation, download, staging, and activation. [pages.py](../scripts/release/pages.py) builds public channel manifests from verified published releases. |
 | When can smart merge choose automatically? | [merge.rs](../src/merge.rs): conflict actions, editing, and drafts. [merge/view.rs](../src/merge/view.rs): full-screen editor, controls, and aligned viewport. [merge/engine.rs](../src/merge/engine.rs): index stages, three-way comparison, file writing/staging, and Git continuation. |
+
+## Remote Configuration
+
+Remote reads every configured fetch and explicit push URL for repositories in
+Roots, including empty repositories. Reads and writes contact no endpoint.
+Linked worktrees share the same common Git directory and remote configuration;
+the review states that shared ownership.
+The panel editor retains exact strings and URL order; display/review/diagnostic
+text redacts URL userinfo. Shell supplies configurable normal-mode commands,
+the `6` shortcut, `igit remote`, shared confirmation, Git-write exclusion,
+notifications, and workspace refresh after an attempted operation.
+
+A review captures the repository identity and effective configuration before
+showing the exact add/edit/remove scope. Confirmation checks Roots, worktree
+and Git directory identity, configuration, and tracking refs before writing.
+Git's native remote rename/removal maintains tracking and upstream semantics;
+URL changes preserve other remote settings and custom fetch refspecs. External
+or unsupported configuration ownership is rejected rather than overwritten.
+Failures after a partial native operation report the partial result and trigger
+a refresh. HEAD, the real index, and working files are outside these operations.
 
 ## Native Installation and Software Updates
 
@@ -104,6 +125,13 @@ source revision using the revision renderer's line mapping; jumps expand hidden
 context and pan horizontally. Its patch fallback retains the existing selectable
 text layout. Neither presentation changes clipboard bytes.
 
+Log's branch tree uses its existing `Field::Refs` editor for `/`, `S`, and
+input clicks. Its query filters the in-memory scoped ref tree and reveals
+matching paths while retaining ordinary folds. Enter saves that tab's
+`ref_query`; Esc discards the draft. The tree has no pane-search controller,
+footer prompt, or match navigation. Log's `find` and `next/previous-match`
+commands apply only to its Diff file tree; `search-refs` owns the branch input.
+
 Smart focus is a typed command rather than a synthetic key sequence. Shell
 consumes its configured chords before editor/review handlers, moving only in
 normal mode. [Pane routing](../src/shell/panes.rs) uses current geometry before
@@ -143,6 +171,14 @@ has no dependency on the user's Neovim or LazyDB helper.
 4. The notification view adapts at 72 columns: wider layouts show a list and detail pane in a maximum 100×18 frame; narrow layouts show a selected notification detail on Enter. Search, copy, and clear act on history entries, while closing a live card leaves its history record intact. Severity determines icon, palette color, TTL, and a creation timestamp on each card. Panel operations report explicit severity, but detailed review, loading, progress, input validation, and per-repository outcomes remain in their owning views. Update availability (including automatic checks) and installation completion become notifications; manual checks also report up-to-date results and errors, while automatic no-update and check errors stay quiet. AI request errors become notifications and leave the editable draft/focus in place.
 5. For **Commit & Push**: the button or shortcut starts the local batch → Commit builds per-repository plans from the panel's selection and commits each repository individually → `Action::Committed` returns the successful repository set → Shell refreshes the workspace, switches to Push, and initially checks those repositories → user separately reviews and starts pushing. A local commit created and a remote updated are independent results.
 
+[ui/review.rs](../src/ui/review.rs) supplies the compact review frame shared by
+Branch Merge/Pull/Push and Push's batch confirmation. It owns content-based
+sizing, the dimmed backdrop, border, wrapped-row scrolling, and fixed action hit
+areas. Panels supply styled content from their reviewed plans;
+[push/review.rs](../src/push/review.rs) renders Push's sources, destinations,
+upstream choices, and update options. Shell retains confirmation focus, event
+routing, and execution authorization; the renderer performs no Git operations.
+
 All panels remain resident in the same Shell. Startup defers Log history until
 the first Log entry; that initial load runs on a worker while workspace navigation
 and quit remain available. Log panel actions wait until its data is ready. A
@@ -151,7 +187,7 @@ refs cannot replace current data; a replacement starts only if Log is active.
 F5, applying Roots, and Git writes refresh Commit, already loaded Log, and the
 scoped conflict list. Shell derives Conflicts visibility from that list, which
 includes unmerged index entries and operations ready for Continue. If Conflicts
-disappears while active, Shell returns to the last Commit, Log, Branch or Stash tab. Push refreshes
+disappears while active, Shell returns to the last Commit, Log, Branch, Stash, or Remote tab. Push refreshes
 on entry and during a workspace refresh while active, without waiting for Git on
 the terminal thread. Branch also queues reads on entry and refresh. Branch and
 Push use a shared loader with one active batch per reader and at most four
@@ -293,9 +329,14 @@ server, nested editor, staging or application-owned file writer in this path.
 
 ## Repositories, Scope, and Persistence
 
-Workspace Pull and Fetch build a read-only plan from global Roots. Each worktree
-is checked again before running Git. Pull also revalidates the branch, HEAD,
-upstream, and resolved remote URL; Fetch revalidates the configured remotes.
+Workspace Pull and Fetch build a read-only plan from global Roots. The dialog
+opens immediately with repository names from the existing Context; the plan and
+display comparison are prepared on a background worker with at most four bounded
+readers from [core/loading.rs](../src/core/loading.rs). Rows remain `Checking`
+and confirmation stays disabled until the complete snapshot arrives in input
+order. Canceling invalidates late results. Each worktree is checked again before
+running Git. Pull also revalidates the branch, HEAD, upstream, and resolved
+remote URL; Fetch revalidates the configured remotes.
 After confirmation, Pull explicitly fetches its reviewed upstream and calls
 [core/update.rs](../src/core/update.rs) to integrate the fetched commit with
 Merge or Rebase. Workspace Fetch runs `git fetch --all`; both disable submodule
@@ -371,6 +412,10 @@ checkout destinations and event times, uses reflog sequence to break
 same-second ties, follows rename records backwards, and keeps only existing
 local refs. Missing or unreadable reflogs yield an empty usage map without
 failing the ref scan. No usage data is persisted or shared across worktrees.
+Verified checkout results also carry fresh usage read on the checkout worker,
+using the reviewed ref names plus the destination ref for new tracking branches.
+The UI installs that map only in the matching repository cache, before projecting
+its tree. No additional refs scan or terminal-thread Git call is needed.
 [loading.rs](../src/branch/loading.rs) reads scoped snapshots
 and builds the selected tree in the background. Changing repositories projects
 rows from the cache; a completed refresh uses the latest selection and folds.
@@ -380,7 +425,8 @@ this display metadata stays separate from reviewed branch state.
 repository with stable fold and cursor identities. Groups start expanded;
 the tree records manually collapsed folder IDs per repository. The
 [View Options menu](../src/branch/display.rs) toggles prefix grouping and
-Name/Recently Used sorting from cached refs. Name preserves current/default
+Name/Recently Used sorting from cached refs; Recently Used is the default.
+Name preserves current/default
 priority; Recently Used keeps only current priority for local refs, then
 orders by switch time and sequence, with unknown refs falling back to names.
 Remote order is unchanged. Folder keys inherit the best descendant key.
@@ -398,8 +444,13 @@ shared pane layout for the repository list and selected branch tree, hiding
 the repository list for single-repository Roots. State is session-only.
 Branch Pull and Push run reviewed operations in a background worker. Pull
 fetches explicit upstream refs and uses Git's fast-forward and worktree checks.
-Branch's `U` remains fast-forward-only and does not use the shared Merge/Rebase
-preference.
+Shell routes Branch's `p` to the focused branch's reviewed operation before
+the global Update Project handler. The global Pull binding excludes the Branch
+browser's context; `branch.pull` defaults to `p` with `U` retained as an alias.
+Actions can still open the global review. Branch Pull remains fast-forward-only
+and does not use the shared Merge/Rebase preference. Its review shares the
+Merge/Push renderer, reversing Push's direction to show the configured upstream
+as From and the focused local branch as To.
 Branch Push reuses the Push executor with a pinned local branch ref and OID.
 Shell blocks overlapping writes and refreshes workspace state after completion.
 
@@ -427,18 +478,48 @@ overlays receive input, and its Diff uses the full comparison work area.
 Comparison mode prevents commit-write menus and shortcuts from entering Log's
 review flow. Closing drops the readers and restores the resident Branch tree.
 
-[operations.rs](../src/branch/operations.rs) prepares a single-repository operation. Checkout and tracking run without a
-confirmation dialog. Execution rechecks Roots, worktree path, refs, HEAD, upstreams, worktree ownership and
-pending Git operations before executing. Create and merge use the reviewed
+[operations.rs](../src/branch/operations.rs) prepares a single-repository operation. Compatible checkout and tracking run without a
+confirmation dialog on a background worker; Enter returns immediately. Preparation checks Roots, worktree path, refs, HEAD, upstreams,
+worktree ownership and pending Git operations. The switch worker repeats a
+lightweight HEAD/source-ref check, runs Git off the terminal thread, and reads the
+actual symbolic HEAD back before reporting success. Create and merge use the reviewed
 immutable source OID. Local checkout uses `switch --no-guess`; remote checkout
 uses explicit `--track -c`. Safe deletion is `branch -d`, rename is `branch -m`,
 and merges disable autostash. Checkout/merge protect ignored files and suppress
 recursive submodule updates. Git provides its normal locking and overwrite
 checks; IGit does not lock out other Git processes between reads and execution.
-Success and failure both refresh workspace state, including partial conflict
-results. Ref scans first run on entry; F5, reentry, focus return, and completed
+Roots changes and overlapping writes wait while the worker runs. A verified
+checkout updates only the target repository's cached snapshot, current marker,
+and last-used metadata,
+without rescanning the Branch list or moving the user's repository selection;
+folds, grouping, sorting, and cursor identity are retained. Pull/Push completion,
+uncertain checkout state, and partial conflict results use the safe workspace
+refresh path. Ref scans first run on entry; F5, reentry, focus return, and completed
 remote operations refresh them while Branch is active. Name drafts and pending
 reviews retain their original source identity across refreshes.
+
+[checkout.rs](../src/branch/operations/checkout.rs) turns Git's refused-overwrite
+result into an IDEA-style three-action review, rendered by its
+[view](../src/branch/operations/checkout/view.rs) through Shell's Branch-owned
+confirmation route. It reuses the existing Commit stash backend's whole-repository
+snapshot, path checks, preview, and save executor through a crate-private export.
+The review lists every file that saving or forcing could affect. Special index
+flags, ignored-file collisions, nested repositories, and target submodule or
+directory-symlink boundaries refuse unsafe automation.
+Smart Checkout runs in Branch's existing write worker: validate → named stash
+including untracked files → protected switch → apply immutable stash OID.
+Restoration first uses `--index`. If that fails before any writes, a normal
+three-way apply exposes conflicts; a temporary index merges the original staged
+patch onto the target and restores nonconflicting index entries without changing
+working files or conflict stages. Incomplete staging retains the backup.
+Only a fully restored result can drop the exact entry after rechecking the
+entire stash reflog. Failures keep recovery instructions and the saved OID;
+switch failures on the unchanged original branch attempt restoration there.
+Force Checkout has its own Cancel-first destructive review and revalidates the
+same local snapshot before `switch --discard-changes`. Completion refreshes all
+panels; restore conflicts open Conflicts without creating a merge operation or
+automatically committing. Resolving those files and dropping their backup remain
+separate user reviews.
 
 Log's [display menu](../src/log/display.rs) stores session preferences and temporary menu focus without writing project/state files. Filters and selected SHA remain per Log tab. `Rev` retains author email, author date, and commit date; sorting still uses commit time. After refresh/tab changes, [presentation metadata](../src/log/model/presentation.rs) reads per-repository identity. Loaded OIDs are queried in batches for `%G?` only when signatures are visible; `git cherry HEAD <resolved-tip>` runs only when cherry highlighting is enabled and another branch is selected. Queries use the shared Git environment, report failures per repository, and preserve history. Rendering, hover, and row navigation do not run these commands. Runtime reloads include signature verification and patch comparison in the history worker; direct synchronous Panel callers still wait for them. Shortening long edges recomputes the visible row projection and releases hidden columns; arrow hit areas retain the real visible endpoints without modifying the underlying DAG.
 
@@ -494,15 +575,34 @@ The live editor caches line pairings by section, comparison and exact text. Pane
 
 [Commit copying](../src/ui/commit_copy.rs) shares ID, message, and author formatting between Log and Push. [Push's handler](../src/push/commit_copy.rs) resolves only the focused outgoing commit and owns its pending prefix; Shell exposes the same `CommitCopy` chooser and cancellation route. Push reuses the row's full ID and reads message/author on demand with immutable repository/OID arguments, without adding metadata to outgoing snapshots or relying on asynchronous preview results. Help and `[keybindings.push]` expose all three commands. File-tree path copying remains a separate focus context.
 
+[Commit web URLs](../src/core/hosting.rs) resolve the captured repository and
+full OID using read-only local Git calls. The optional `igit.webCommitUrl`
+template takes precedence over discovery; `igit.webRemote` selects an explicit
+fetch remote. Otherwise, containing remote-tracking branches narrow the
+candidates before current-upstream/origin/sole-remote preferences apply.
+`git remote get-url` honors Git URL rewrites. Transport parsing strips
+credentials and maps recognized service URLs to commit routes; unknown
+services require a template. Errors omit the original remote URL.
+
+Log emits `Action::OpenCommit` only from its current, scoped commit-list
+selection. Shell delegates to the [browser adapter](../src/ui/browser.rs),
+which reuses `core::loading::Load` for one background request and polls its
+result into the notification center. Native URL handlers receive a validated
+HTTP(S) URL as a separate argument with detached standard streams. A handler
+that remains alive after 500ms is reaped separately, releasing the request
+without waiting for the browser to close. No shell
+interpolation, Git writes, network discovery, or new dependency is involved.
+Tests capture launches and use fake native commands without opening browsers.
+
 [Key sequence hints](../src/ui/key_sequence.rs) derive candidates from pending Branch `g`, Log `g/y`, and Merge `[/]` states. Panels still recognize sequences. Shell candidate state stores cursor, last-rendered hit areas, and a display deadline. The deadline participates in the event poll's minimum wait; reaching it only shows the hint, without expiring the prefix or blocking later keys. Completion/cancel clears timing, and a new prefix restarts it. The bottom overlay uses shared colors and cell-width-based columns. Once visible, arrows, Enter, and mouse events inside it run before ordinary panel/global events. Esc/Ctrl-C can cancel during the delay too. Choosing a candidate returns the continuation key to the original panel route rather than creating another Git entry point. Global panel changes, refresh, and dialogs clear both kinds of prefixes. Single-key actions without prefixes and text editing bypass the candidate overlay.
 
-**Commit: checked content, not the entire real index.** Changes come from `git status --porcelain=v1 -z`. The tree starts with Directory grouping enabled and Module disabled. Native paths drive browsing identity, checkboxes, and regrouping; parent-directory hints are display-only. The tree projects scoped unmerged paths into Merge Conflicts while keeping their saved changelist membership. Resolve uses the existing Shell tab action; it does not apply a resolution. Directory/expansion changes never touch the index. Preview starts enabled; closed previews do not read patches. Open previews use the current row to choose a file Diff or in-memory container summary. Submission builds a temporary index from HEAD, or the empty tree for an initial commit. Selected files with staged content use that version; otherwise, selected working-tree content is read. A file staged and then edited again therefore commits only its staged version. `write-tree` obtains the planned tree, while HEAD, branch, and selected index records are retained. Preparing the snapshot may create Git objects but does not move HEAD or overwrite the real index.
+**Commit: checked content, not the entire real index.** Changes come from `git status --porcelain=v1 -z`. The tree starts with Directory and Repository grouping enabled and legacy Module disabled. Native paths drive browsing identity, checkboxes, and regrouping; parent-directory hints are display-only. The tree projects scoped unmerged paths into Merge Conflicts as a flat special child while keeping their saved changelist membership. Resolve uses the existing Shell tab action; it does not apply a resolution. Grouping and expansion changes never touch the index. Preview starts enabled; closed previews do not read patches. Open previews use the current row to choose a file Diff or in-memory container summary. Submission builds a temporary index from HEAD, or the empty tree for an initial commit. Selected files with staged content use that version; otherwise, selected working-tree content is read. A file staged and then edited again therefore commits only its staged version. `write-tree` obtains the planned tree, while HEAD, branch, and selected index records are retained. Preparing the snapshot may create Git objects but does not move HEAD or overwrite the real index.
 
 [Commit refresh](../src/commit/refresh.rs) uses at most one status/patch worker, polled by Shell while Commit is active and no shell dialog is open. [Native watching](../src/commit/refresh/watch.rs) uses [notify](https://docs.rs/notify/latest/notify/) to share platform-specific notification handling. Watching starts before the initial status read on the startup worker; dropping the panel releases its native handles. Canonical worktrees and resolved Git/common directories cover ordinary repositories, submodules, and linked worktrees without following directory symlinks. Events map to the deepest owning worktree or Git directory; shared refs invalidate their worktrees, and submodule HEAD changes also invalidate parent gitlinks. Read events and irrelevant object/log/lock writes are filtered. A bounded per-repository dirty map merges bursts for 300ms, with a two-second maximum debounce delay. Only dirty roots in the current scope are scanned; hidden-root events remain queued. Snapshots carry root IDs so unscanned files, branches, and errors remain intact. Events arriving during a scan are retained for another scan. Tab/focus entry drains queued changes without an unconditional scan; a 30-second consistency scan of Roots covers missed events and unavailable watchers. Status and Diff use `--no-optional-locks` to avoid refresh-generated index writes. Generation checks discard results superseded by manual refresh or ignored-file toggles. Apply preserves checkboxes, folds, cursor identity, the shared draft, caret, and unchanged preview selection/scroll. Menus and mouse gestures defer application. Failed roots retain their previous files and repeated errors are reported once. Commit execution, AI requests, rollback reviews, and Log history remain independent; F5 still refreshes all panels.
 
 Message editing renders the existing buffer and text selection inside the composer's draft rectangle in [commit/view.rs](../src/commit/view.rs). It reports text-input mode but does not claim overlay mouse events. Clicking another control saves the shared draft before processing that click; Shell does the same before leaving Commit or moving focus with Tab / Shift-Tab / F6. `c` from Changes or Preview focuses Message and opens the editor. `Esc` saves the draft and leaves Message focused. Outside text entry, Message tracks one selected button for Left/Right navigation. Enter and mouse clicks use the same action handler. F1 help preserves the editor state. Persistence failures preserve the buffer and original draft, and stop navigation or submission. Caret and scroll state remain in memory; the shared draft uses `commit.json`. Each repository plan receives a copy of that message. Partial failures and hidden checked paths retain it; a completed batch clears it. On first load, a missing shared message is seeded from the first nonempty legacy draft in repository order; legacy entries remain available for recovery and do not replace an explicitly empty shared message. Changelist and AI editors retain overlay rendering.
 
-The [Commit display menu](../src/commit/display.rs) stores session toggles for directory/repository grouping, ignored items, and XY status. The [tree model](../src/commit/tree.rs) combines both grouping options; directory mode without Module uses workspace-relative paths. Display state is separate from native file identity, checkboxes, and Git write plans. `git ls-files --others --ignored --exclude-standard --directory -z` runs only when ignored items are shown, without reading their contents; directories stay single items. These `!!` entries are unavailable, and commit/AI source validation rejects them again. Menu handling precedes changes-list events. Border blocking, outside clicks, and Shell-header dismissal follow Log conventions.
+The [Commit display menu](../src/commit/display.rs) stores session toggles for Directory, Repository, compatibility Module, ignored items, and XY status. The [tree model](../src/commit/tree.rs) treats Repository or Module as one shared repository level beneath each changelist group, including Unversioned Files and Ignored Files; enabling both does not duplicate rows. With both off, Directory uses workspace-relative roots. With repository grouping on, Directory nests repository-relative paths beneath the shared repository level. Display state is separate from native file identity, checks, folds, current file, Roots scope, and Git write plans, and is never persisted. When repository grouping is active, directory `yr` copy paths and rollback directory targets use repository-relative roots; otherwise they retain the displayed workspace-relative directory root. `git ls-files --others --ignored --exclude-standard --directory -z` runs only when ignored items are shown, without reading their contents; directories stay single items. These `!!` entries are unavailable, and commit/AI source validation rejects them again. Menu handling precedes changes-list events. Border blocking, outside clicks, and Shell-header dismissal follow Log conventions.
 
 For each prepared repository, `backend::execute` exclusively creates the real `index.lock`, then rechecks branch, HEAD, index records, and the recomputed tree. Actual `git commit` uses a private index and native hooks. The new real index is built from the locked index copy, preserving unrelated staged content. Hook-rewritten commits are reported for review. If HEAD updates but index publication fails, the error preserves the recovery lock. Inspect HEAD, the index, and the error before acting; do not automatically remove the lock or commit again.
 
@@ -615,7 +715,15 @@ Closing the viewer invalidates any pending file result. No Git commands run in P
 tab-entry or read-completion path.
 
 Checkboxes, target overrides, and grouping belong to the UI, not the returned
-snapshot. Selection follows repository and commit OID; unchanged snapshots retain
+snapshot. The first current snapshot checks and expands every scoped repository
+with outgoing commits; later refreshes retain manual checkbox and fold choices.
+Commit and Push reseeds checks only from successful repositories, independently
+of expanding all outgoing repositories. Shell eagerly applies standalone
+Space in Push's repository pane when configured as its toggle, records the owning
+repository's previous checkbox state in the notification prefix, and marks Space
+dispatched. A completed notification chord restores only that checkbox; unrelated
+keys cannot replay the toggle, and canceling the prefix retains the immediate
+change. Selection follows repository and commit OID; unchanged snapshots retain
 the selected file, folds, Diff scroll, and text selection. Commit and Push applies
 its reseed when the current batch arrives. Loading and reader failures disable
 Push/Retry/Fetch until a current snapshot is available, while navigation, Cancel,
@@ -684,9 +792,18 @@ source still requires proof that the child commit is available from the source
 declared in that commit. The same guards apply to the integrated result;
 failure blocks the parent without implicitly pushing another repository.
 
-Phase reports identify **Fetching**, **Merging** or **Rebasing**, and **Pushing**.
-Results distinguish updated and published, up-to-date, update conflict, and
-updated-but-push-failed. Publication failure retains the updated local branch.
+The background worker reports `Started` before each executable repository, then
+phase changes and the final result. [core/schedule.rs](../src/core/schedule.rs)
+runs at most four repositories concurrently, while reviewed ancestors wait for
+all selected descendants and worktrees sharing a Git common directory never run
+together. Push tracks every active repository with its own start time and 100 ms
+frame index; Shell advances the shared icon-mode spinner only when at least one
+frame changes. Each active row replaces its result marker with its spinner until
+that repository's `Row` arrives, while skipped dependents never become active.
+Phase reports identify **Fetching**, **Merging** or **Rebasing**, and
+**Pushing**. Results distinguish updated and published, up-to-date, update
+conflict, and updated-but-push-failed. Publication failure retains the updated
+local branch.
 For a single failure, the notification summary prioritizes explicit server
 errors over hook progress banners and retains the update/publication phase.
 Captured Git error output remains in per-repository Details and is also included
@@ -716,7 +833,7 @@ the stash ref is never removed by the merge editor.
 
 After Apply confirmation, revalidate operation, HEAD, conflict stages, original file content, permissions, and conversion configuration. Write a temporary file in the original directory, replace the original, then separately run `git add -- <path>`. If staging fails and the working file still matches the just-written result, attempt to restore original content. Do not directly overwrite conflicts outside ordinary three-stage text, binary content, files requiring checkout conversion, files beyond size/line limits, or externally edited files. **Continue is per repository:** separately review/validate the entire index tree and run the corresponding `git … --continue`. Other staged files in that repository are included in its scope.
 
-Commit's [discard controller](../src/commit/discard.rs) uses the cursor scope for initial checks independently of Commit checkboxes. Changelist rows use exact native paths from their visible members; physical directories and repositories can span changelists. The [Rollback modal](../src/commit/rollback.rs) is owned by Shell and renders all visible Changes rows with the shared tree and row renderer. Its checks, folds, grouping, Diff, and added-copy option are local to the modal. Close drops the pending plans, while F1 retains the modal and its state under Help.
+Commit's [discard controller](../src/commit/discard.rs) uses the cursor scope for initial checks independently of Commit checkboxes. Changelist rows use exact native paths from their visible members; physical directories and repositories can span changelists. The [Rollback modal](../src/commit/rollback.rs) is owned by Shell and renders all visible Changes rows with the shared tree and row renderer. Its checks, folds, grouping, Diff, and added-copy option are local to the modal. Directory targets use the displayed grouping root, matching path copying: repository-relative with repository grouping on, workspace-relative with it off. Close drops the pending plans, while F1 retains the modal and its state under Help.
 
 The [discard backend](../src/commit/backend/discard.rs) captures eligible visible paths at open, recording HEAD/branch, exact index records, and raw working-tree hashes/modes or symlink targets. Unavailable paths stay in the tree without a checkbox target. A file Diff is loaded on demand against the snapshot. Confirm narrows the retained plans to checked paths without recapturing Git state. Discard locks the real index, revalidates the selected snapshot, and prepares a private index with only the reviewed paths reset to HEAD (or the empty tree before the initial commit). `checkout-index` restores tracked leaves; `remove_file` removes untracked leaves and added local copies only when requested. Each leaf is checked again before writing. Unrelated staging is preserved, and partial failure publishes index changes only for completed leaves. Conflicts, active Git operations, submodule pointers, nested repositories, directory symlink traversal, and file/directory replacements remain read-only. Results refresh the workspace; no undo backup or cross-repository atomicity is provided.
 
@@ -774,10 +891,10 @@ reviews. Native recovery may discard local state as described in its review.
 | Operation | When a repository fails |
 | --- | --- |
 | Commit | Execute sequentially on a background worker, deeper child paths first. Retain successful SHAs. If a parent selected a failed child's gitlink, skip that dependent parent commit. If a successful child moves the parent pointer beyond the original preview, require review again. Independent repositories may continue. Stopping keeps the current command running and skips unstarted repositories; the UI blocks overlapping writes, Roots changes, workspace replacement, and quit until completion. |
-| Push | One background task fetches, updates as needed, and publishes reviewed checked repositories in Roots sequentially, children first. Failure blocks the dependent parent chain; independent repositories continue. Report update and publication outcomes separately, retaining successful results and any updated local branch. Retry builds a fresh review of only visible failures using current source/target/configuration/strategy; completed pushes never run again and scope is never expanded implicitly. |
+| Push | One background task schedules up to four reviewed checked repositories in Roots concurrently. Selected descendants finish first, and a failed child blocks its dependent ancestors; worktrees sharing Git storage are serialized. Failure in one chain does not stop independent repositories. Report update and publication outcomes separately, retaining successful results and any updated local branch. Retry builds a fresh review of only visible failures using current source/target/configuration/strategy; completed pushes never run again and scope is never expanded implicitly. |
 | Merge | Roots may gather conflicts from several repositories. Apply targets one file; Continue targets one repository. There is no cross-repository apply-all-and-continue transaction. |
 
-Batch commit/push means selecting multiple repositories in one operation; it guarantees neither parallelism nor all-or-nothing results. Confirmation dialogs and busy state coordinate only this application instance. They cannot lock external terminals, other IGit instances, or remotes. Git locks, snapshot rechecks, and remote leases address different race windows.
+Batch commit/push means selecting multiple repositories in one operation; it does not guarantee all-or-nothing results. Push, Pull, and Fetch use at most four concurrent repository workers, but dependency and shared-Git-storage constraints can serialize them. Confirmation dialogs and busy state coordinate only this application instance. They cannot lock external terminals, other IGit instances, or remotes. Git locks, snapshot rechecks, and remote leases address different race windows.
 
 ## Changes and Acceptance
 

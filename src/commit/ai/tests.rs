@@ -139,6 +139,59 @@ fn wait(panel: &mut CommitPanel, c: &Context) -> Action {
 }
 
 #[test]
+fn message_action_shortcuts_generate_with_g_without_changing_git() {
+    let (_dir, c, mut panel) = fixture();
+    let before: Vec<_> = c
+        .repos
+        .iter()
+        .map(|repo| {
+            (
+                crate::core::git(&repo.path, &["rev-parse", "HEAD"]).unwrap(),
+                crate::core::git(&repo.path, &["diff", "--cached", "--binary"]).unwrap(),
+                crate::core::git(&repo.path, &["diff", "--binary"]).unwrap(),
+            )
+        })
+        .collect();
+    let checks = panel.checks.clone();
+    let (endpoint, received, worker) = server(200, completion());
+    panel.ai_settings = ai_settings(endpoint, 160_000);
+    panel.focus_pane(PaneId::Message);
+    let action = panel.event(
+        &Event::Key(crossterm::event::KeyEvent::new(K::Char('g'), Mod::NONE)),
+        &c,
+    );
+    assert!(matches!(action, Action::Notice(NoticeLevel::Info, _)));
+    assert!(panel.ai_running());
+    received.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(matches!(
+        wait(&mut panel, &c),
+        Action::Notice(NoticeLevel::Success, _)
+    ));
+    worker.join().unwrap();
+    assert_eq!(
+        panel.saved.message.as_deref(),
+        Some("feat: shared candidate\n\nDetails 中文")
+    );
+    assert_eq!(panel.checks, checks);
+    assert_eq!(panel.focused_pane(), PaneId::Message);
+    assert!(!panel.message_editing());
+    for (repo, (head, index, worktree)) in c.repos.iter().zip(before) {
+        assert_eq!(
+            crate::core::git(&repo.path, &["rev-parse", "HEAD"]).unwrap(),
+            head
+        );
+        assert_eq!(
+            crate::core::git(&repo.path, &["diff", "--cached", "--binary"]).unwrap(),
+            index
+        );
+        assert_eq!(
+            crate::core::git(&repo.path, &["diff", "--binary"]).unwrap(),
+            worktree
+        );
+    }
+}
+
+#[test]
 fn generating_multi_repo_patches_fills_and_saves_the_shared_message() {
     let (_dir, c, mut panel) = fixture();
     let before: Vec<_> = c

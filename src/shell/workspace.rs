@@ -96,18 +96,34 @@ impl Regions {
         conflicts: bool,
         enabled: bool,
     ) -> Rect {
-        let show_icons = row.width >= 72 && icons != IconMode::Ascii;
         let tab_width = Tab::DISPLAY_ORDER
             .into_iter()
             .filter(|&tab| tab != Conflicts || conflicts)
             .map(|t| t.name().width() + 2)
             .sum::<usize>();
         let context_width = match selected {
-            Log => 11,
+            Log => 15,
             Push => 14,
             _ => 0,
         };
+        let show_icons = row.width >= 72
+            && icons != IconMode::Ascii
+            && tab_width
+                + Tab::DISPLAY_ORDER
+                    .into_iter()
+                    .filter(|&tab| tab != Conflicts || conflicts)
+                    .map(|_| 3)
+                    .sum::<usize>()
+                + context_width
+                <= usize::from(row.width);
         let compact = tab_width + context_width > usize::from(row.width);
+        let abbreviate = Tab::DISPLAY_ORDER
+            .into_iter()
+            .filter(|&tab| tab != Conflicts || conflicts)
+            .map(|tab| tab.name().width() + 1)
+            .sum::<usize>()
+            + context_width
+            > usize::from(row.width);
         f.render_widget(Block::default().style(Style::new().bg(TAG)), row);
         for tab in Tab::DISPLAY_ORDER.into_iter().rev() {
             if tab == Conflicts && !conflicts {
@@ -133,10 +149,21 @@ impl Regions {
                     Conflicts => Icon::Conflict,
                     Branch => Icon::Branch,
                     Stash => Icon::Folder,
+                    Remote => Icon::Remote,
                 };
                 format!(" {} {} ", icons.glyph(icon), tab.name())
             } else if compact {
-                format!(" {}", tab.name())
+                let name = if abbreviate {
+                    match tab {
+                        Commit => "Cmt",
+                        Branch => "Br",
+                        Remote => "Rem",
+                        _ => tab.name(),
+                    }
+                } else {
+                    tab.name()
+                };
+                format!(" {name}")
             } else {
                 format!(" {} ", tab.name())
             };
@@ -245,6 +272,7 @@ impl Shell {
                 Conflicts => self.merge.draw(f, work, &self.ctx),
                 Branch => self.branch.draw(f, work, &self.ctx),
                 Stash => self.stash.draw(f, work, &self.ctx),
+                Remote => self.remote.draw(f, work, &self.ctx),
             }
         }
 
@@ -306,7 +334,7 @@ impl Shell {
             || self.tab == Commit && self.commit.file_comparison_focused()
         {
             (self.configured_footer(), MUTED)
-        } else if matches!(self.tab, Push | Conflicts | Branch | Stash) {
+        } else if matches!(self.tab, Push | Conflicts | Branch | Stash | Remote) {
             (self.panel().help().into(), MUTED)
         } else {
             (

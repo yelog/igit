@@ -138,9 +138,10 @@ struct Keybindings {
     merge: Group,
     branch: Group,
     stash: Group,
+    remote: Group,
 }
 impl Keybindings {
-    fn groups(&self) -> [(&str, &Group); 8] {
+    fn groups(&self) -> [(&str, &Group); 9] {
         [
             ("global", &self.global),
             ("panes", &self.panes),
@@ -150,6 +151,7 @@ impl Keybindings {
             ("merge", &self.merge),
             ("branch", &self.branch),
             ("stash", &self.stash),
+            ("remote", &self.remote),
         ]
     }
     fn group(&self, name: &str) -> &Group {
@@ -267,7 +269,7 @@ impl AppConfig {
         })
     }
 
-    pub fn active(&self, context: u16) -> impl Iterator<Item = &BoundCommand> {
+    pub fn active(&self, context: u32) -> impl Iterator<Item = &BoundCommand> {
         self.commands
             .iter()
             .filter(move |c| c.command.contexts & context != 0)
@@ -292,7 +294,7 @@ impl AppConfig {
             .unwrap_or_else(|| "—".into())
     }
 
-    pub fn help_labels(&self, context: u16, key: &str) -> Option<Vec<String>> {
+    pub fn help_labels(&self, context: u32, key: &str) -> Option<Vec<String>> {
         // F1 is the fixed recovery/help key. Text selection also keeps its keys.
         if matches!(key, "F1" | "Esc" | "Ctrl-a" | "Ctrl-Insert") {
             return None;
@@ -643,10 +645,10 @@ mod tests {
             "[keybindings.commit]\nreview = ['Ctrl-r']\n[keybindings.push]\nreview = ['Ctrl-r']"
         )
         .is_ok());
-        assert!(
-            AppConfig::from_toml("[keybindings.commit]\nreview = ['i']\nedit-message = ['c']")
-                .is_ok()
-        );
+        assert!(AppConfig::from_toml(
+            "[keybindings.commit]\nreview = ['i']\nedit-message = ['c']\ncommit = []"
+        )
+        .is_ok());
     }
 
     #[test]

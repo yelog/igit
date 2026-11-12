@@ -81,16 +81,17 @@ impl HelpContent {
     }
 }
 
-pub(crate) fn global_section(show_conflicts: bool, show_roots: bool) -> HelpSection {
+pub(crate) fn global_section(show_conflicts: bool, show_scope_actions: bool) -> HelpSection {
     const BINDINGS: &[Binding] = &[
         ("r", "Open Roots repo scope"),
+        ("p", "Review Pull for all repositories in Roots"),
         ("1", "Switch to Commit tab"),
         ("2", "Switch to Log tab"),
         ("3", "Switch to Push tab"),
         ("4", "Switch to Branch tab"),
         ("5", "Switch to Stash tab"),
-        ("p", "Review Pull for all repositories in Roots"),
-        ("f", "Review Fetch for all repositories in Roots"),
+        ("6", "Switch to Remote tab"),
+        ("f", "Fetch repositories in Roots"),
         (":", "Open Actions"),
         ("F5", "Refresh workspace"),
         ("F9", "Open Update Center"),
@@ -98,10 +99,13 @@ pub(crate) fn global_section(show_conflicts: bool, show_roots: bool) -> HelpSect
         ("F1", "Open help for current pane"),
         ("?", "Open help for current pane"),
         ("q", "Quit IGit"),
-        ("6", "Switch to Conflicts tab"),
+        ("7", "Switch to Conflicts tab"),
     ];
     let count = BINDINGS.len() - usize::from(!show_conflicts);
-    HelpSection::new("Global Actions", &BINDINGS[usize::from(!show_roots)..count])
+    HelpSection::new(
+        "Global Actions",
+        &BINDINGS[2 * usize::from(!show_scope_actions)..count],
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -957,6 +961,17 @@ mod tests {
         help.event(&key(K::Char('j')));
         assert_eq!(help.query, "j", "letters edit Search instead of navigating");
         assert_eq!(help.event(&key(K::Enter)), HelpEvent::Keep);
+    }
+
+    #[test]
+    fn global_help_keeps_remote_before_the_conditional_conflicts_tab() {
+        let available = global_section(true, true).bindings;
+        assert!(available.contains(&("6", "Switch to Remote tab")));
+        assert!(available.contains(&("7", "Switch to Conflicts tab")));
+
+        let clean = global_section(false, true).bindings;
+        assert!(clean.contains(&("6", "Switch to Remote tab")));
+        assert!(!clean.iter().any(|(key, _)| *key == "7"));
     }
 
     #[test]

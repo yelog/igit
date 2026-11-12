@@ -6,6 +6,7 @@ use unicode_width::UnicodeWidthStr;
 
 pub(super) struct Options {
     pub directories: bool,
+    pub repositories: bool,
     pub modules: bool,
     pub ignored: bool,
     pub status: bool,
@@ -15,6 +16,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             directories: true,
+            repositories: true,
             modules: false,
             ignored: false,
             status: false,
@@ -22,20 +24,34 @@ impl Default for Options {
     }
 }
 
+impl Options {
+    pub fn repository_grouping(&self) -> bool {
+        self.repositories || self.modules
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Item {
     Directory,
+    Repository,
     Module,
     Ignored,
     Status,
 }
 
 impl Item {
-    const ALL: [Self; 4] = [Self::Directory, Self::Module, Self::Ignored, Self::Status];
+    const ALL: [Self; 5] = [
+        Self::Directory,
+        Self::Repository,
+        Self::Module,
+        Self::Ignored,
+        Self::Status,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             Self::Directory => "Directory",
+            Self::Repository => "Repository",
             Self::Module => "Module",
             Self::Ignored => "Ignored Files",
             Self::Status => "Git Status",
@@ -43,12 +59,13 @@ impl Item {
     }
 
     fn position(self) -> usize {
-        [1, 2, 5, 6][self as usize]
+        [1, 2, 3, 6, 7][self as usize]
     }
 
     fn checked(self, options: &Options) -> bool {
         match self {
             Self::Directory => options.directories,
+            Self::Repository => options.repositories,
             Self::Module => options.modules,
             Self::Ignored => options.ignored,
             Self::Status => options.status,
@@ -85,6 +102,7 @@ impl CommitPanel {
         }
         match item {
             Item::Directory => self.set_directory_grouping(!self.options.directories, c),
+            Item::Repository => self.set_repository_grouping(!self.options.repositories, c),
             Item::Module => self.set_module_grouping(!self.options.modules, c),
             Item::Status => self.options.status = !self.options.status,
             Item::Ignored => {
@@ -202,7 +220,7 @@ impl CommitPanel {
         let width = (self.icons.check(false).width() + "Ignored Files".width() + 6)
             .max("Space toggle · Esc close".width() + 2)
             .min(usize::from(area.width)) as u16;
-        let height = area.height.min(10);
+        let height = area.height.min(11);
         let popup = Rect::new(
             anchor.x.clamp(area.x, area.right() - width),
             anchor.bottom().min(area.bottom() - height).max(area.y),
@@ -222,19 +240,19 @@ impl CommitPanel {
         let start = Item::ALL[menu.row]
             .position()
             .saturating_sub(slots.saturating_sub(1))
-            .min(7usize.saturating_sub(slots));
-        for (dy, position) in (start..(start + slots).min(7)).enumerate() {
+            .min(8usize.saturating_sub(slots));
+        for (dy, position) in (start..(start + slots).min(8)).enumerate() {
             let row = Rect::new(inner.x, inner.y + dy as u16, inner.width, 1);
             match position {
-                0 | 4 => word(
+                0 | 5 => word(
                     f,
                     row,
                     if position == 0 { " Group By" } else { " Show" },
                     Style::new().fg(DIM).bold(),
                 ),
-                3 => word(f, row, &"─".repeat(row.width.into()), Style::new().fg(EDGE)),
+                4 => word(f, row, &"─".repeat(row.width.into()), Style::new().fg(EDGE)),
                 _ => {
-                    let item = Item::ALL[if position < 3 {
+                    let item = Item::ALL[if position < 4 {
                         position - 1
                     } else {
                         position - 3

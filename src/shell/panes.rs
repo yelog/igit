@@ -31,6 +31,7 @@ impl Shell {
             Conflicts => &self.merge.panes,
             Branch => &self.branch.panes,
             Stash => &self.stash.panes,
+            Remote => &self.remote.panes,
         }
     }
     pub(super) fn layout_mut(&mut self, tab: Tab) -> &mut PaneLayout {
@@ -41,6 +42,7 @@ impl Shell {
             Conflicts => &mut self.merge.panes,
             Branch => &mut self.branch.panes,
             Stash => &mut self.stash.panes,
+            Remote => &mut self.remote.panes,
         }
     }
     fn focus_id(&self) -> PaneId {
@@ -51,6 +53,7 @@ impl Shell {
             Conflicts => self.merge.focused_pane(),
             Branch => self.branch.focused_pane(),
             Stash => self.stash.focused_pane(),
+            Remote => PaneId::Remotes,
         }
     }
     fn focus_pane(&mut self, id: PaneId) {
@@ -61,6 +64,7 @@ impl Shell {
             Conflicts => self.merge.focus_pane(id),
             Branch => self.branch.focus_pane(id),
             Stash => self.stash.focus_pane(id),
+            Remote => (),
         }
     }
 

@@ -152,12 +152,8 @@ impl CommitPanel {
     }
 
     pub(super) fn ai_spinner(&self) -> char {
-        let frames: &[char] = if self.icons == IconMode::Ascii {
-            &['|', '/', '-', '\\']
-        } else {
-            &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧']
-        };
-        frames[self.ai_pending.as_ref().map_or(0, |p| p.frame) % frames.len()]
+        self.icons
+            .spinner(self.ai_pending.as_ref().map_or(0, |p| p.frame))
     }
 
     pub(super) fn ai_progress(&self) -> &str {

@@ -509,6 +509,9 @@ impl Menu {
 
 impl LogPanel {
     pub(crate) fn hover_menu_at(&mut self, x: u16, y: u16) -> bool {
+        if matches!(self.editor, Some((Field::Author, _))) {
+            return self.hover_author_at(x, y);
+        }
         if self.view_menu.is_none() && self.branch_menu.is_none() {
             return false;
         }

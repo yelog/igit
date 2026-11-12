@@ -1,6 +1,5 @@
-use super::model::Branch;
-use crate::core::{git, Repo};
-use std::{cmp::Reverse, collections::BTreeMap};
+use crate::core::git;
+use std::{cmp::Reverse, collections::BTreeMap, path::Path};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct LastUsed {
@@ -8,9 +7,12 @@ pub(super) struct LastUsed {
     pub sequence: Reverse<usize>,
 }
 
-pub(super) fn read(repo: &Repo, branches: &BTreeMap<String, Branch>) -> BTreeMap<String, LastUsed> {
+pub(super) fn read<'a>(
+    path: &Path,
+    references: impl IntoIterator<Item = &'a str>,
+) -> BTreeMap<String, LastUsed> {
     git(
-        &repo.path,
+        path,
         &[
             "reflog",
             "show",
@@ -20,15 +22,18 @@ pub(super) fn read(repo: &Repo, branches: &BTreeMap<String, Branch>) -> BTreeMap
             "--",
         ],
     )
-    .map(|data| parse(&data, branches))
+    .map(|data| parse(&data, references))
     .unwrap_or_default()
 }
 
-fn parse(data: &str, branches: &BTreeMap<String, Branch>) -> BTreeMap<String, LastUsed> {
-    let mut names: BTreeMap<_, _> = branches
-        .values()
-        .filter(|branch| !branch.remote)
-        .map(|branch| (branch.reference.clone(), branch.reference.clone()))
+fn parse<'a>(
+    data: &str,
+    references: impl IntoIterator<Item = &'a str>,
+) -> BTreeMap<String, LastUsed> {
+    let mut names: BTreeMap<_, _> = references
+        .into_iter()
+        .filter(|reference| reference.starts_with("refs/heads/"))
+        .map(|reference| (reference.to_owned(), reference.to_owned()))
         .collect();
     let mut recent = BTreeMap::new();
     for (sequence, line) in data.lines().enumerate() {
@@ -76,26 +81,14 @@ mod tests {
 
     #[test]
     fn parser_ignores_unrelated_events_and_follows_rename_chains() {
-        let branches = ["main", "feature/新名", "unused"]
-            .into_iter()
-            .map(|name| {
-                let reference = format!("refs/heads/{name}");
-                (
-                    reference.clone(),
-                    Branch {
-                        reference,
-                        name: name.into(),
-                        oid: String::new(),
-                        upstream: String::new(),
-                        worktree: String::new(),
-                        current: name == "main",
-                        remote: false,
-                        gone: false,
-                    },
-                )
-            })
-            .collect();
+        let references = [
+            "refs/heads/main",
+            "refs/heads/feature/新名",
+            "refs/heads/unused",
+            "refs/remotes/origin/unused",
+        ];
         let data = concat!(
+            "HEAD@{1000}\0checkout: moving from main to origin/unused\n",
             "HEAD@{900}\0commit: checkout: moving from main to unused\n",
             "HEAD@{bad}\0checkout: moving from main to unused\n",
             "HEAD@{800}\0checkout: moving from main to deadbeef\n",
@@ -107,10 +100,10 @@ mod tests {
             "HEAD@{200}\0checkout: moving from main to removed\n",
             "malformed\n",
         );
-        let recent = parse(data, &branches);
+        let recent = parse(data, references);
         assert_eq!(recent.len(), 2);
         assert_eq!(recent["refs/heads/main"].timestamp, 700);
         assert_eq!(recent["refs/heads/feature/新名"].timestamp, 400);
-        assert_eq!(recent["refs/heads/feature/新名"].sequence, Reverse(6));
+        assert_eq!(recent["refs/heads/feature/新名"].sequence, Reverse(7));
     }
 }

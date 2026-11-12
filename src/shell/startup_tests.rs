@@ -335,6 +335,7 @@ fn direct_panel_startup_uses_normal_activation_and_keeps_git_state() {
         ("push", Push),
         ("branch", Branch),
         ("stash", Stash),
+        ("remote", Remote),
     ] {
         let mut loading = start_command(repo, &[name.into()], previous.config.clone()).unwrap();
         let mut app = wait_workspace(&mut loading).unwrap();
@@ -358,6 +359,7 @@ fn direct_panel_startup_uses_normal_activation_and_keeps_git_state() {
                 assert!(screen(&mut app, 120, 36).contains("repo"));
             }
             Stash => assert!(screen(&mut app, 120, 36).contains("startup stash")),
+            Remote => assert!(screen(&mut app, 120, 36).contains("No remotes")),
             Commit => assert!(matches!(app.log_load, LogLoad::Dormant)),
             Conflicts => unreachable!(),
         }

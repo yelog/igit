@@ -7,11 +7,12 @@ use crate::{
     core::Context,
     ui::icons::{Icon, IconMode},
     ui::idea::{
-        button_style, clipped as fit, diff_line, repo_tint, BLUE, DIM, EDGE, GREEN, INK, PANEL,
-        RED, SELECT, TAG,
+        button_style, clipped as fit, diff_line, repo_tint, BLUE, DIM, EDGE, GOLD, GREEN, INK,
+        PANEL, RED, SELECT, TAG,
     },
     ui::panes::{pane_frame, Axis, PaneId, SplitId},
     ui::selection::{TextLayout, TextSelection, Wrap},
+    ui::Panel,
 };
 use ratatui::{
     layout::{Constraint, Layout, Margin, Rect},
@@ -103,7 +104,33 @@ impl CommitPanel {
                 _ => fg(DIM),
             }
         };
-        word(f, area, &format!(" {txt} "), style);
+        let shortcut = match hit {
+            Hit::MessageAction(action)
+                if !disabled
+                    && self.pane_focused(PaneId::Message)
+                    && !self.editing()
+                    && !self.execution_running()
+                    && !(action == MessageAction::Generate && self.ai_running()) =>
+            {
+                Some(action.shortcut()).filter(|key| self.message_mnemonics.contains(key))
+            }
+            _ => None,
+        };
+        let label = if let Some(index) =
+            shortcut.and_then(|key| txt.find(|ch: char| ch.to_ascii_lowercase() == key))
+        {
+            Line::from(vec![
+                Span::raw(format!(" {}", &txt[..index])),
+                Span::styled(
+                    txt[index..index + 1].to_string(),
+                    fg(GOLD).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                ),
+                Span::raw(format!("{} ", &txt[index + 1..])),
+            ])
+        } else {
+            Line::raw(format!(" {txt} "))
+        };
+        f.render_widget(Paragraph::new(label).style(style), area);
         if !disabled {
             self.hits.push((area, hit));
         }
@@ -318,9 +345,9 @@ impl CommitPanel {
             action_row,
             &mut x,
             if short_actions {
-                "Commit+Push"
+                "Cmt and Push"
             } else if compact_actions {
-                "Commit & Push…"
+                "Commit and Push…"
             } else {
                 "Commit and Push..."
             },
@@ -341,7 +368,7 @@ impl CommitPanel {
                 self.ai_progress()
             }
         } else if short_actions {
-            "AI"
+            "Gen"
         } else if compact_actions {
             "Generate"
         } else {
@@ -586,7 +613,7 @@ impl CommitPanel {
                     format!("Worktree  {}", super::display_path(&c.repos[*r].path)),
                     fg(DIM),
                 )),
-                Kind::Directory(path) if !self.options.modules => {
+                Kind::Directory(path) if !self.options.repository_grouping() => {
                     details.push(Line::styled(
                         format!(
                             "Workspace  {}",

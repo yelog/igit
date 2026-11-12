@@ -156,6 +156,15 @@ glyphs! {
 }
 
 impl IconMode {
+    pub(crate) const fn spinner(self, frame: usize) -> char {
+        const ASCII: [char; 4] = ['|', '/', '-', '\\'];
+        const UNICODE: [char; 8] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
+        match self {
+            Self::Ascii => ASCII[frame % ASCII.len()],
+            Self::NerdFont | Self::Unicode => UNICODE[frame % UNICODE.len()],
+        }
+    }
+
     pub(crate) const fn check(self, checked: bool) -> &'static str {
         self.glyph(if checked {
             Icon::Checked
@@ -295,6 +304,28 @@ const CYAN: Color = Color::Rgb(97, 190, 208);
 mod tests {
     use super::*;
     use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn spinners_have_mode_specific_frames() {
+        assert_eq!(
+            (0..5)
+                .map(|frame| IconMode::Ascii.spinner(frame))
+                .collect::<String>(),
+            "|/-\\|"
+        );
+        assert_eq!(
+            (0..9)
+                .map(|frame| IconMode::Unicode.spinner(frame))
+                .collect::<String>(),
+            "⠋⠙⠹⠸⠼⠴⠦⠧⠋"
+        );
+        for frame in 0..8 {
+            assert_eq!(
+                IconMode::NerdFont.spinner(frame),
+                IconMode::Unicode.spinner(frame)
+            );
+        }
+    }
 
     #[test]
     fn fallbacks_are_printable_without_a_patched_font() {

@@ -115,7 +115,14 @@ impl LogPanel {
         if k == Field::Branch {
             self.branch_menu = Some(branches::Menu::open(&self.hist, &self.filter, c)?);
         }
-        self.editor = Some((k, self.value(k)));
+        self.editor = Some((
+            k,
+            if k == Field::Author {
+                String::new()
+            } else {
+                self.value(k)
+            },
+        ));
         self.edit_changed(c);
         Ok(())
     }
@@ -126,6 +133,7 @@ impl LogPanel {
         self.editor = None;
         self.date_range = None;
         self.choice = None;
+        self.author_top = 0;
         self.suggestions.clear();
     }
     pub(crate) fn dismiss_filter_dropdown(&mut self) {
@@ -137,6 +145,7 @@ impl LogPanel {
     }
     pub(super) fn edit_changed(&mut self, c: &Context) {
         self.choice = None;
+        self.author_top = 0;
         self.suggestions.clear();
         let Some((k, input)) = &self.editor else {
             return;
@@ -151,14 +160,23 @@ impl LogPanel {
             Field::Text | Field::Branch => return,
             Field::Author => {
                 opts.push(("me".into(), "me  · Git identity".into()));
-                let authors = self
+                let mut authors = self
                     .hist
                     .revs
                     .iter()
                     .filter(|r| self.filter.includes_root(r.root))
-                    .map(|r| &r.author)
+                    .map(|r| r.author.clone())
                     .collect::<BTreeSet<_>>();
-                opts.extend(authors.into_iter().map(|s| (s.clone(), s.clone())));
+                if !self.filter.author.is_empty() && !self.filter.author.eq_ignore_ascii_case("me")
+                {
+                    authors.insert(self.filter.author.clone());
+                }
+                opts.extend(
+                    authors
+                        .into_iter()
+                        .filter(|author| !author.is_empty() && !author.eq_ignore_ascii_case("me"))
+                        .map(|author| (author.clone(), author)),
+                );
             }
             Field::Date => {
                 self.suggestions = ["Select...", "Last 24 hours", "Last 7 days"]
@@ -189,6 +207,12 @@ impl LogPanel {
             .extend(opts.into_iter().filter(|(val, label)| {
                 val.to_lowercase().contains(&needle) || label.to_lowercase().contains(&needle)
             }));
+        if *k == Field::Author && input.is_empty() {
+            self.choice = self
+                .suggestions
+                .iter()
+                .position(|(value, _)| self.author_applied(value));
+        }
     }
     pub(super) fn accept_choice(&mut self, i: usize, c: &Context) -> Result<()> {
         if self.editing_paths() {
@@ -239,10 +263,7 @@ impl LogPanel {
             return Ok(());
         };
         match k {
-            Field::Refs => {
-                self.ref_query = v;
-                self.ref_search.invalidate();
-            }
+            Field::Refs => self.ref_query = v,
             Field::Text => {
                 self.matcher(&v)?;
                 self.filter.query = v;
@@ -301,6 +322,9 @@ impl LogPanel {
     pub(super) fn edit_key(&mut self, k: &KeyEvent, c: &Context) -> Result<()> {
         if self.branch_menu.is_some() {
             return self.branch_input(branches::Input::Key(k), c);
+        }
+        if matches!(self.editor, Some((Field::Author, _))) && self.author_navigation(k) {
+            return Ok(());
         }
         if self.editing_paths() {
             if self.path_dialog.is_some() {
@@ -424,7 +448,6 @@ impl LogPanel {
         ViewState {
             filter: self.filter.clone(),
             ref_query: self.ref_query.clone(),
-            ref_search: self.ref_search.clone(),
             file_search: self.file_search.clone(),
             regex: self.regex,
             case_sensitive: self.case_sensitive,
@@ -435,7 +458,6 @@ impl LogPanel {
         let s = self.views[self.view_index].clone();
         self.filter = s.filter;
         self.ref_query = s.ref_query;
-        self.ref_search = s.ref_search;
         self.file_search = s.file_search;
         self.regex = s.regex;
         self.case_sensitive = s.case_sensitive;
