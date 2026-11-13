@@ -70,12 +70,16 @@ impl PathFilter {
     }
 
     fn line(root: Option<usize>, path: &Path, c: &Context) -> String {
-        let relative = path.to_string_lossy();
+        let relative = path
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
         match root {
             Some(id) => format!("{}/{}", c.repos[id].name, relative),
             None if relative.is_empty() => ".".into(),
             None if Self::split(&relative, c).0.is_some() => format!("./{relative}"),
-            None => relative.into_owned(),
+            None => relative,
         }
     }
 
