@@ -1140,16 +1140,17 @@ mod tests {
             let buffer = terminal.backend().buffer();
             let y = help.viewport.y;
             let row: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
-            for (label, hits) in [
-                ("Ctrl-Shift-s", [0, 5, 11]),
-                ("Save current file", [0, 5, 13]),
+            for (label, hits, base) in [
+                ("Ctrl-Shift-s", [0, 5, 11], BLUE),
+                ("Save current file", [0, 5, 13], INK),
             ] {
                 let start = row[..row.find(label).expect("matching label is visible")].width();
                 for offset in 0..label.len() {
                     let cell = &buffer[((start + offset) as u16, y)];
                     let highlighted = cell.modifier.contains(Modifier::UNDERLINED);
                     if !crossterm::style::Colored::ansi_color_disabled_memoized() {
-                        assert_eq!(cell.fg, GOLD, "{width}x{height}: {label} at {offset}");
+                        let color = if hits.contains(&offset) { GOLD } else { base };
+                        assert_eq!(cell.fg, color, "{width}x{height}: {label} at {offset}");
                     }
                     assert_eq!(
                         highlighted,
