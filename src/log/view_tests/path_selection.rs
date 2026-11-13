@@ -1,5 +1,4 @@
 use super::*;
-use std::path::Path;
 
 const LITERAL_NAME: &str = if cfg!(windows) { "[x].rs" } else { "[x]*.rs" };
 
@@ -469,10 +468,7 @@ fn paths_tree_applies_only_checked_roots_files_and_directories_after_ok() {
     assert_eq!(subjects(&p), ["api literal", "web docs"]);
     assert_eq!(
         p.filter.paths.text(&c).unwrap(),
-        format!(
-            "api/{}\nweb/docs",
-            Path::new("lib").join(LITERAL_NAME).display()
-        )
+        format!("api/lib/{LITERAL_NAME}\nweb/docs")
     );
     assert_eq!(c.scope.len(), 2);
 

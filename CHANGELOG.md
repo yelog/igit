@@ -3,6 +3,38 @@
 Release notes follow Keep a Changelog categories. Versions use the project's
 decimal rollover policy described in [Releasing](docs/releasing.md).
 
+## [0.1.3] - 2026-11-13
+
+### Added
+
+- Add recent Log path filters with compact, width-aware labels and a single-line summary in the Paths control and Log title.
+
+### Changed
+
+- Resume stable distribution at 0.1.3 and include the feature set prepared for the unpublished v0.1.2 tag.
+
+### Fixed
+
+- Render lowercase `b/u/d/p` in the Log filter prefix so displayed initials match the actual shortcuts.
+- Render Log path labels with Git's `/` separators on every platform.
+- Normalize Windows verbatim paths before invoking Git and keep checkout worktree paths in Git's representation.
+
+### Internal
+
+- Corrected color-enabled help-search assertions and Windows path-label assertions so stable release checks validate the intended behavior.
+- Raise the native build job timeout to 45 minutes so slower runners can finish tests and packaging.
+
+### Commits
+
+- [`96a9f75`](https://github.com/yelog/igit/commit/96a9f75c700311558a1fcb832640207bfaaeede1) fix: correct help fuzzy highlight assertion
+- [`d378cf5`](https://github.com/yelog/igit/commit/d378cf531ff3a4550cefdcdaa627f38e36741739) fix(log): lowercase filter shortcut initials
+- [`ab967f4`](https://github.com/yelog/igit/commit/ab967f406de028f9651e412557c483b12102e1bf) fix: normalize Windows Git paths and checkout worktrees
+- [`ba49b57`](https://github.com/yelog/igit/commit/ba49b57008e1c037aaad893d10f02ef016946cb8) fix: strip verbatim roots from Windows Git paths
+- [`8652421`](https://github.com/yelog/igit/commit/8652421bd9353d4d99c4ee634db7550728e7178c) feat(log): add recent path filters and compact labels
+- [`85bbb31`](https://github.com/yelog/igit/commit/85bbb31419b0c593fab8f8c93370236a18e17c6a) ci: allow slower native builds to finish
+- [`41c6b4d`](https://github.com/yelog/igit/commit/41c6b4d4923bcb76eb395c1136c07c659e7e3d86) fix(log): render path labels with Git separators
+- [`8554aa3`](https://github.com/yelog/igit/commit/8554aa3c95a585398a097df65cac1db11c4ef302) test(log): expect Git separators in path labels
+
 ## [0.1.2] - 2026-11-13
 
 ### Added
