@@ -3,6 +3,47 @@
 Release notes follow Keep a Changelog categories. Versions use the project's
 decimal rollover policy described in [Releasing](docs/releasing.md).
 
+## [0.1.2] - 2026-11-13
+
+### Added
+
+- Add a Remote workspace tab for browsing, adding, editing, and removing repository remotes across Roots, with reviewed local Git writes, hidden credentials, and preserved tracking configuration.
+- Add live notifications and a searchable session Notification Center, plus Push commit copying, browser links for commits, and richer Log filters and navigation.
+- Add two-way branch comparison, recent-branch sorting, Smart Checkout with stash-backed recovery, and reviewed fast-forward Pull and Push actions for the focused branch.
+- Add reviewed Push updates with a persistent Merge/Rebase default, fetching of the actual target, integration before publication, and conflict routing.
+- Add transactional Log actions for dropping, undoing, reverting, and editing commits; file-history and working-tree comparisons; and `igit diff --line` with guarded hunk restores.
+
+### Changed
+
+- Add Remote as tab `6` and move Conflicts to `7`; use `g n` for Notification History and `gg` / `G` for first and last item navigation where applicable.
+- Group Commit changes by repository and expand batch navigation, path copying, message actions, and immediate checkbox toggles.
+- Standardize review layouts with default primary-action focus, clearer branch and Push evidence, and asynchronous progress across repository operations.
+- Share the saved Merge/Rebase update strategy with Pull and Push, and support `Ctrl-W` word deletion in editors and searches.
+- Keep notification chords isolated from immediate Space actions in Commit and Push, and expose key-sequence hints without blocking completed input.
+
+### Fixed
+
+- Include every path changed by outgoing commits in Push, including commits beyond the visible recent list.
+- Preserve remote rejection output and prioritize server policy errors over hook progress messages in Push details and notifications.
+
+### Internal
+
+- Retry release draft lookup after creation, serialize paired local binary builds, share bounded revision reads, and expand integration coverage and documentation.
+- Align shortcut regression tests with the current workspace interactions and keep all-target Clippy clean.
+
+### Commits
+
+- [`85bfa7a`](https://github.com/yelog/igit/commit/85bfa7ae25a99186653215fa33ec7daba217bf5e) fix(release): retry lookup after creating draft
+- [`fb358c4`](https://github.com/yelog/igit/commit/fb358c40e9fe3e134d59e2b5e6622db472d904f4) fix(push): aggregate files from outgoing commits
+- [`3d1edc1`](https://github.com/yelog/igit/commit/3d1edc1b9c18f6b950c9cba2cc98618f70dbb40d) feat: enhance workspace interactions and notifications
+- [`7c24ba7`](https://github.com/yelog/igit/commit/7c24ba7799ce62e416643d2945428247df0b7aba) feat: improve branch, search, and push workflows
+- [`b2569d0`](https://github.com/yelog/igit/commit/b2569d08827db870bc3bf50f4461461a2f3ac7e7) feat: expand log workflows and review interactions
+- [`434e0ff`](https://github.com/yelog/igit/commit/434e0ffb5337c45f5b13685d937c44c9f942edc7) feat(branch): add two-way branch comparison
+- [`99aa97d`](https://github.com/yelog/igit/commit/99aa97d1a7ad559ecaa07b7266c7df363b7fc26c) feat(log): expand comparison and navigation workflows
+- [`13dbd5a`](https://github.com/yelog/igit/commit/13dbd5a9f1b8c097454fb45fbe56b59299e4207e) feat: expand repository workflows and review controls
+- [`dc03dcd`](https://github.com/yelog/igit/commit/dc03dcd35ee131f7be1a9aa7fd106c625fcea3d3) feat: expand reviewed diff workflows
+- [`0e7d185`](https://github.com/yelog/igit/commit/0e7d185f829a604680c127dac1b388455d338488) fix: align shortcut tests and satisfy clippy
+
 ## [0.1.1] - 2026-11-10
 
 ### Added
