@@ -69,14 +69,14 @@ pub(crate) fn git_path(path: &Path) -> PathBuf {
             match prefix.kind() {
                 Prefix::VerbatimDisk(drive) => {
                     let mut normalized = PathBuf::from(format!("{}:\\", char::from(drive)));
-                    normalized.extend(components);
+                    extend_without_root(&mut normalized, components);
                     return normalized;
                 }
                 Prefix::VerbatimUNC(server, share) => {
                     let mut normalized = PathBuf::from(r"\\");
                     normalized.push(server);
                     normalized.push(share);
-                    normalized.extend(components);
+                    extend_without_root(&mut normalized, components);
                     return normalized;
                 }
                 _ => {}
@@ -84,6 +84,18 @@ pub(crate) fn git_path(path: &Path) -> PathBuf {
         }
     }
     path.to_path_buf()
+}
+
+#[cfg(windows)]
+fn extend_without_root<'a>(
+    path: &mut PathBuf,
+    components: impl Iterator<Item = std::path::Component<'a>>,
+) {
+    for component in components {
+        if !matches!(component, std::path::Component::RootDir) {
+            path.push(component.as_os_str());
+        }
+    }
 }
 pub fn git_bytes(path: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let o = command(path)
