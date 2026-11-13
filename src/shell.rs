@@ -1595,9 +1595,7 @@ impl Shell {
                 || push_space
                 || filter_prefix && self.log.begin_filter_prefix_on_space(),
         );
-        if dispatched == 1 && filter_prefix {
-            self.key_picker = KeySequencePicker::pending_with_delay(now, hint_delay);
-        } else if panel_prefix {
+        if (dispatched == 1 && filter_prefix) || panel_prefix {
             self.key_picker = KeySequencePicker::pending_with_delay(now, hint_delay);
         }
         self.notification_prefix = Some(NotificationPrefix {
@@ -2795,15 +2793,6 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        // Enable Module so the repository row and its branch badge are visible.
-        for k in [
-            KeyCode::Char('o'),
-            KeyCode::Down,
-            KeyCode::Enter,
-            KeyCode::Esc,
-        ] {
-            key(&mut app, k);
-        }
         key(&mut app, KeyCode::Char('j')); // Highlight the repository.
         assert!(screen(&mut app).contains("on main"));
         git(&repo, &["switch", "-qc", "fresh-main"]).unwrap();

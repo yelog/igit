@@ -352,7 +352,7 @@ fn smart_checkout_does_not_change_a_dirty_hidden_submodule() {
         "child working\n"
     );
     assert_eq!(
-        fs::read_to_string(&c.repos[1].path.join("file")).unwrap(),
+        fs::read_to_string(c.repos[1].path.join("file")).unwrap(),
         "base\n"
     );
 }

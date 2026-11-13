@@ -8,6 +8,7 @@ fn commit_revision_controls_keep_global_keys_and_panel_focus_in_their_contexts()
     let before = snapshot(&repo);
     app.dispatch(&key(KeyCode::Home));
     app.dispatch(&key(KeyCode::Down));
+    app.dispatch(&key(KeyCode::Down));
     screen(&mut app, 160, 36);
     app.commit.focus_pane(PaneId::Preview);
     let text = screen(&mut app, 160, 36);
@@ -70,6 +71,7 @@ fn configured_tree_bindings_do_not_take_keys_from_the_revision_preview() {
     let repo = app.ctx.repos[0].path.clone();
     let before = snapshot(&repo);
     app.dispatch(&key(KeyCode::Home));
+    app.dispatch(&key(KeyCode::Down));
     app.dispatch(&key(KeyCode::Down));
     screen(&mut app, 160, 36);
     app.commit.focus_pane(PaneId::Preview);

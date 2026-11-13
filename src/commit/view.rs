@@ -111,7 +111,7 @@ impl CommitPanel {
                     && self.pane_focused(PaneId::Message)
                     && !self.editing()
                     && !self.execution_running()
-                    && !(action == MessageAction::Generate && self.ai_running()) =>
+                    && (action != MessageAction::Generate || !self.ai_running()) =>
             {
                 Some(action.shortcut()).filter(|key| self.message_mnemonics.contains(key))
             }

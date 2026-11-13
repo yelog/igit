@@ -25,6 +25,7 @@ fn configuration_hunk_view_remaps_and_help_review_keeps_git_unchanged_on_cancel(
     configure(&mut app, "[keybindings.commit]\nstage-hunks=['Ctrl-y']");
     screen(&mut app, 120, 36);
     send(&mut app, "Home Down");
+    send(&mut app, "Down");
     let before = snapshot(&repo);
     send(&mut app, "Ctrl-g");
     assert_ne!(app.help_content().context(), "Commit / Stage Hunks");
@@ -247,7 +248,7 @@ fn configuration_smart_resize_keeps_tabs_isolated_and_help_executes_the_action()
     send(&mut app, "Cmd+Ctrl+Shift+j");
     assert_eq!(app.kitty.resizes, [Direction::Down]);
     assert!(app.log.panes.nodes().is_empty());
-    send(&mut app, "Esc 6");
+    send(&mut app, "Esc 7");
     screen(&mut app, 120, 36);
     send(&mut app, "Cmd+Ctrl+Shift+h");
     assert_eq!(app.tab, Conflicts);
@@ -417,7 +418,7 @@ fn configuration_smart_focus_stays_in_the_tab_and_survives_workspace_rescan() {
     send(&mut app, "Cmd+Ctrl+k");
     assert_eq!(app.tab, Push);
     assert_eq!(app.kitty.requests, [Direction::Up]);
-    send(&mut app, "Esc 6");
+    send(&mut app, "Esc 7");
     screen(&mut app, 120, 36);
     send(&mut app, "Cmd+Ctrl+h");
     assert_eq!(app.tab, Conflicts);
