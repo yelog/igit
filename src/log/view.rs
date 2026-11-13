@@ -516,9 +516,10 @@ impl LogPanel {
                 == Some(crate::ui::key_sequence::KeySequence::LogFilters)
                 && label.starts_with(&prefix[..1])
             {
+                let (shortcut, rest) = label.split_at(1);
                 Line::from(vec![
-                    Span::styled(label[..1].to_owned(), fg(BLUE).bold().underlined()),
-                    Span::raw(label[1..].to_owned()),
+                    Span::styled(shortcut.to_ascii_lowercase(), fg(BLUE).bold().underlined()),
+                    Span::raw(rest.to_owned()),
                 ])
             } else {
                 Line::from(label)

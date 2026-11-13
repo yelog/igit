@@ -324,7 +324,7 @@ fn log_space_filters_inline_focus_and_mouse_use_existing_labels() {
         assert_eq!(app.log.filter_shortcut_targets().unwrap(), targets);
         for (index, rect) in targets.iter().enumerate() {
             let cell = &terminal.backend().buffer()[(rect.x, rect.y)];
-            assert_eq!(cell.symbol(), ["B", "U", "D", "P"][index]);
+            assert_eq!(cell.symbol(), ["b", "u", "d", "p"][index]);
             assert_eq!(cell.fg, crate::ui::ACCENT);
             assert!(cell
                 .modifier

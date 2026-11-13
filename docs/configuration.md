@@ -416,7 +416,7 @@ to cancel. Those editor/review controls are fixed, like other text input.
 History from any normal workspace panel. The leading `g` waits indefinitely.
 Commit, Stash, Remote, and the Merge conflict list share that prefix for
 `first-item` (`g g`); `last-item` remains `G`. Log's Space filter prefix is
-unchanged: the first Space immediately shows B/U/D/P and the filter footer, and
+unchanged: the first Space immediately shows b/u/d/p and the filter footer, and
 `b/u/d/p` opens those filters. If `notification-history` is rebound to a Space
 suffix, Commit's Changes tree and Push's outgoing list still apply standalone
 Space immediately when `commit.toggle` or `push.toggle` includes it: every Space

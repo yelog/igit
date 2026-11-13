@@ -22,7 +22,11 @@ fn log_space_filters_keep_labels_values_and_clear_targets() {
                 assert!(cell
                     .modifier
                     .contains(Modifier::BOLD | Modifier::UNDERLINED));
-                for offset in 0..rect.width {
+                assert_eq!(
+                    cell.symbol(),
+                    before[(rect.x, rect.y)].symbol().to_ascii_lowercase()
+                );
+                for offset in 1..rect.width {
                     assert_eq!(
                         terminal.backend().buffer()[(rect.x + offset, rect.y)].symbol(),
                         before[(rect.x + offset, rect.y)].symbol()
