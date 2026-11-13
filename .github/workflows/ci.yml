@@ -58,7 +58,7 @@ jobs:
   build:
     name: Test and package (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
