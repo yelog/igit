@@ -32,7 +32,7 @@ fn click_label(app: &mut Shell, label: &str) {
 }
 
 fn focus_commit_file(app: &mut Shell, name: &str) {
-    send(app, "1 g");
+    send(app, "1 g g");
     let rendered = screen(app, 120, 36);
     let tree = app
         .commit

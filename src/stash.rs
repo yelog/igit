@@ -11,6 +11,7 @@ use crate::{
     ui::{
         help::{HelpContent, HelpSection},
         icons::IconMode,
+        key_sequence::KeySequence,
         panes::{PaneId, PaneLayout},
         *,
     },
@@ -40,6 +41,7 @@ pub struct StashPanel {
     folded: BTreeSet<usize>,
     empty_expanded: bool,
     cursor: usize,
+    goto_pending: bool,
     top: usize,
     focus: PaneId,
     viewport: Rect,
@@ -60,6 +62,7 @@ impl Default for StashPanel {
             folded: BTreeSet::new(),
             empty_expanded: false,
             cursor: 0,
+            goto_pending: false,
             top: 0,
             focus: PaneId::Stashes,
             viewport: Rect::default(),
@@ -277,6 +280,9 @@ impl StashPanel {
             self.panes.cancel_drag();
             return Ok(Action::None);
         }
+        if !matches!(e, Event::Key(k) if k.code == K::Char('g') && k.modifiers.is_empty()) {
+            self.goto_pending = false;
+        }
         if let Event::Mouse(m) = e {
             if self.panes.mouse(m) {
                 return Ok(Action::None);
@@ -322,6 +328,20 @@ impl StashPanel {
         {
             return Ok(Action::None);
         }
+        if k.code == K::Char('g') {
+            if self.goto_pending {
+                self.goto_pending = false;
+                if self.focus == PaneId::Files {
+                    self.files.first_file();
+                } else {
+                    self.select(0);
+                }
+            } else {
+                self.goto_pending = true;
+            }
+            return Ok(Action::None);
+        }
+        self.goto_pending = false;
         match k.code {
             K::Char('a') => return self.review_operation(c, Operation::Apply),
             K::Char('P') => return self.review_operation(c, Operation::Pop),
@@ -342,7 +362,7 @@ impl StashPanel {
             match k.code {
                 K::Char('j') | K::Down => self.select(self.cursor.saturating_add(1)),
                 K::Char('k') | K::Up => self.select(self.cursor.saturating_sub(1)),
-                K::Char('g') | K::Home => self.select(0),
+                K::Home => self.select(0),
                 K::Char('G') | K::End => self.select(self.rows.len().saturating_sub(1)),
                 K::PageDown => self.select(
                     self.cursor
@@ -376,7 +396,7 @@ impl StashPanel {
                 ("l", "Expand group or focus files"),
                 ("Space", "Toggle group"),
                 ("Enter", "Focus saved files or toggle group"),
-                ("g", "Select first row"),
+                ("gg", "Select first row"),
                 ("G", "Select last row"),
                 ("PgDn", "Move down one page"),
                 ("PgUp", "Move up one page"),
@@ -395,7 +415,7 @@ impl StashPanel {
                 ("yf", "Copy name"),
                 ("yn", "Copy name without extension"),
                 ("yr", "Copy relative path"),
-                ("g", "Select first row"),
+                ("gg", "Select first row"),
                 ("G", "Select last row"),
                 ("PgDn", "Move down one page"),
                 ("PgUp", "Move up one page"),
@@ -417,6 +437,14 @@ impl StashPanel {
         } else {
             HelpContent::new(files, vec![actions, list])
         }
+    }
+
+    pub(crate) fn key_sequence(&self) -> Option<KeySequence> {
+        self.goto_pending.then_some(KeySequence::FirstItem)
+    }
+
+    pub(crate) fn cancel_key_sequence(&mut self) {
+        self.goto_pending = false;
     }
 }
 

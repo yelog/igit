@@ -175,15 +175,17 @@ fn push_space_toggles_immediately_and_movement_never_replays_it() {
 
 #[test]
 fn push_notification_chords_restore_only_their_own_checkbox_toggle() {
-    for (configuration, suffix) in [
-        ("", vec!['n']),
+    for (configuration, suffix, restores) in [
+        ("", vec!['g', 'n'], false),
         (
             "[keybindings.global]\nnotification-history=['Space H x']",
             vec!['H', 'x'],
+            true,
         ),
         (
             "[keybindings.global]\nnotification-history=['Space Space']",
             vec![' '],
+            true,
         ),
     ] {
         let (_directory, mut app) = push_fixture();
@@ -201,7 +203,10 @@ fn push_notification_chords_restore_only_their_own_checkbox_toggle() {
             }
             assert!(matches!(app.pop, Some(Popup::Notifications(_))));
             app.dispatch(&key(KeyCode::Esc));
-            assert_eq!(repository_checked(&mut app), checked);
+            assert_eq!(
+                repository_checked(&mut app),
+                if restores { checked } else { !checked }
+            );
         }
         assert_eq!(snapshot(&app.ctx.repos[0].path), before);
     }
@@ -218,6 +223,7 @@ fn push_space_respects_a_remapped_repository_toggle() {
     app.dispatch(&key(KeyCode::Char('z')));
     assert!(!repository_checked(&mut app));
     app.dispatch(&key(KeyCode::Char(' ')));
+    app.dispatch(&key(KeyCode::Char('g')));
     app.dispatch(&key(KeyCode::Char('n')));
     assert!(matches!(app.pop, Some(Popup::Notifications(_))));
     app.dispatch(&key(KeyCode::Esc));

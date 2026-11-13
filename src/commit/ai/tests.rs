@@ -139,7 +139,7 @@ fn wait(panel: &mut CommitPanel, c: &Context) -> Action {
 }
 
 #[test]
-fn message_action_shortcuts_generate_with_g_without_changing_git() {
+fn message_action_shortcuts_generate_with_a_without_changing_git() {
     let (_dir, c, mut panel) = fixture();
     let before: Vec<_> = c
         .repos
@@ -157,7 +157,7 @@ fn message_action_shortcuts_generate_with_g_without_changing_git() {
     panel.ai_settings = ai_settings(endpoint, 160_000);
     panel.focus_pane(PaneId::Message);
     let action = panel.event(
-        &Event::Key(crossterm::event::KeyEvent::new(K::Char('g'), Mod::NONE)),
+        &Event::Key(crossterm::event::KeyEvent::new(K::Char('A'), Mod::NONE)),
         &c,
     );
     assert!(matches!(action, Action::Notice(NoticeLevel::Info, _)));

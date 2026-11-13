@@ -369,6 +369,45 @@ fn stash_group_empty_and_stale_rows_cannot_start_operations() {
 }
 
 #[test]
+fn stash_list_and_files_use_gg_for_first_and_uppercase_g_for_last() {
+    let (_temp, c, mut panel) = fixture();
+    finish(&mut panel, &c);
+
+    panel.select(1);
+    let before = panel.cursor;
+    key(&mut panel, &c, K::Char('g'));
+    assert_eq!(panel.cursor, before);
+    assert_eq!(panel.key_sequence(), Some(KeySequence::FirstItem));
+    key(&mut panel, &c, K::Char('g'));
+    assert_eq!(panel.cursor, 0);
+    key(&mut panel, &c, K::Char('G'));
+    assert_eq!(panel.cursor, panel.rows.len() - 1);
+
+    let row = panel
+        .rows
+        .iter()
+        .position(|row| matches!(row, Row::Stash { .. }))
+        .unwrap();
+    panel.select(row);
+    finish(&mut panel, &c);
+    panel.focus_pane(PaneId::Files);
+    finish(&mut panel, &c);
+    let relative = |panel: &StashPanel| match panel.path_copy_target(&c).unwrap().copy('r') {
+        Action::Copy { text, .. } => text,
+        _ => panic!("expected the highlighted saved file"),
+    };
+    key(&mut panel, &c, K::Char('G'));
+    let last = relative(&panel);
+    key(&mut panel, &c, K::Char('g'));
+    assert_eq!(relative(&panel), last);
+    key(&mut panel, &c, K::Char('g'));
+    let first = relative(&panel);
+    assert_ne!(first, last);
+    key(&mut panel, &c, K::Char('G'));
+    assert_eq!(relative(&panel), last);
+}
+
+#[test]
 fn stash_drop_refresh_keeps_a_nearby_entry_in_the_same_repository_and_consumes_review() {
     let (_temp, c, mut panel) = fixture();
     let root = c.repos.iter().position(|repo| repo.name == "web").unwrap();

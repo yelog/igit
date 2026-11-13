@@ -129,6 +129,52 @@ fn file_preview_shares_history_split_rendering_and_preserves_commit_candidates()
 }
 
 #[test]
+fn preview_requires_gg_for_start_and_uppercase_g_for_end() {
+    let (_dir, c) = fixture();
+    commit_base(&c);
+    let repo = &c.repos[0].path;
+    let file = "src/long-preview.txt";
+    let body = (0..80)
+        .map(|line| format!("line {line:02}\n"))
+        .collect::<String>();
+    let path = repo.join(file);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, &body).unwrap();
+    git(repo, &["add", "--", file]).unwrap();
+
+    let mut p = CommitPanel::default();
+    p.refresh(&c).unwrap();
+    select_file(&mut p, file);
+    p.launch(Hit::Show(Focus::Diff), &c);
+    let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+    draw(&mut p, &mut terminal, &c);
+    assert!(p.comparison_visible());
+
+    key(&mut p, &c, K::Char('G'));
+    draw(&mut p, &mut terminal, &c);
+    let bottom = read(terminal.backend().buffer(), p.diff);
+    assert!(
+        bottom.contains("line 79") && !bottom.contains("line 00"),
+        "{bottom}"
+    );
+
+    key(&mut p, &c, K::Char('g'));
+    assert_eq!(p.key_sequence(), Some(KeySequence::FirstItem));
+    draw(&mut p, &mut terminal, &c);
+    let waiting = read(terminal.backend().buffer(), p.diff);
+    assert!(
+        waiting.contains("line 79") && !waiting.contains("line 00"),
+        "{waiting}"
+    );
+
+    key(&mut p, &c, K::Char('g'));
+    assert!(p.key_sequence().is_none());
+    draw(&mut p, &mut terminal, &c);
+    let top = read(terminal.backend().buffer(), p.diff);
+    assert!(top.contains("line 00") && !top.contains("line 79"), "{top}");
+}
+
+#[test]
 fn narrow_file_preview_switches_revisions_and_container_overview_stays_available() {
     let (_dir, c) = fixture();
     let mut p = CommitPanel::default();

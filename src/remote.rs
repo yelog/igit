@@ -8,6 +8,7 @@ use crate::{
     ui::{
         help::{HelpContent, HelpSection},
         icons::IconMode,
+        key_sequence::KeySequence,
         panes::PaneLayout,
         *,
     },
@@ -74,6 +75,7 @@ pub struct RemotePanel {
     rows: Vec<Row>,
     folded: BTreeSet<usize>,
     cursor: usize,
+    goto_pending: bool,
     top: usize,
     viewport: Rect,
     hits: Vec<(Rect, Hit)>,
@@ -301,6 +303,20 @@ impl RemotePanel {
                 editor::Event::Review => self.review_editor(c),
             };
         }
+        if let Event::Key(key) = event {
+            if key.code == K::Char('g') && key.modifiers.is_empty() {
+                if self.goto_pending {
+                    self.goto_pending = false;
+                    self.cursor = 0;
+                } else {
+                    self.goto_pending = true;
+                }
+                return Ok(Action::None);
+            }
+            self.goto_pending = false;
+        } else {
+            self.goto_pending = false;
+        }
         let length = self.rows.len();
         let page = usize::from(self.viewport.height).max(1);
         match event {
@@ -311,7 +327,7 @@ impl RemotePanel {
                 (K::Char('k') | K::Up, Mods::NONE) => {
                     self.cursor = self.cursor.saturating_sub(1);
                 }
-                (K::Char('g') | K::Home, Mods::NONE) => self.cursor = 0,
+                (K::Home, Mods::NONE) => self.cursor = 0,
                 (K::Char('G') | K::End, _) => self.cursor = length.saturating_sub(1),
                 (K::PageDown, _) | (K::Char('f'), Mods::CONTROL) => {
                     self.cursor = (self.cursor + page).min(length.saturating_sub(1));
@@ -391,7 +407,7 @@ impl RemotePanel {
                     ("a", "Add remote to selected repository"),
                     ("e", "Edit selected remote"),
                     ("d", "Review removal of selected remote"),
-                    ("g", "Select first row"),
+                    ("gg", "Select first row"),
                     ("G", "Select last row"),
                     ("PgDn", "Move down one page"),
                     ("PgUp", "Move up one page"),
@@ -399,6 +415,14 @@ impl RemotePanel {
             ),
             vec![],
         )
+    }
+
+    pub(crate) fn key_sequence(&self) -> Option<KeySequence> {
+        self.goto_pending.then_some(KeySequence::FirstItem)
+    }
+
+    pub(crate) fn cancel_key_sequence(&mut self) {
+        self.goto_pending = false;
     }
 }
 

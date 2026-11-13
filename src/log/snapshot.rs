@@ -61,6 +61,7 @@ impl Snapshot {
 pub(crate) struct SnapshotPreview {
     panel: LogPanel,
     sources: Vec<model::Rev>,
+    goto_pending: bool,
 }
 
 impl SnapshotPreview {
@@ -91,6 +92,10 @@ impl SnapshotPreview {
 
     pub(crate) fn search_event(&mut self, event: &Event, c: &Context) -> bool {
         self.panel.file_search_event(event, c)
+    }
+
+    pub(crate) fn first_file(&mut self) {
+        self.panel.file_move(isize::MIN);
     }
 
     pub(crate) fn draw_files(
@@ -206,10 +211,20 @@ impl SnapshotPreview {
                     .modifiers
                     .intersects(Mods::CONTROL | Mods::ALT | Mods::SUPER) =>
             {
+                if k.code == K::Char('g') {
+                    if self.goto_pending {
+                        self.goto_pending = false;
+                        self.panel.file_move(isize::MIN);
+                    } else {
+                        self.goto_pending = true;
+                    }
+                    return Ok(Action::None);
+                }
+                self.goto_pending = false;
                 match k.code {
                     K::Char('j') | K::Down => self.panel.file_move(1),
                     K::Char('k') | K::Up => self.panel.file_move(-1),
-                    K::Char('g') | K::Home => self.panel.file_move(isize::MIN),
+                    K::Home => self.panel.file_move(isize::MIN),
                     K::Char('G') | K::End => self.panel.file_move(isize::MAX),
                     K::PageDown => self.panel.file_move(12),
                     K::PageUp => self.panel.file_move(-12),

@@ -47,7 +47,7 @@ fn help_search_puts_notification_history_before_scattered_matches() {
     let text = screen(&mut app, 120, 36);
     assert!(
         text.lines()
-            .any(|line| line.contains("> Space n") && line.contains("Open notification history")),
+            .any(|line| line.contains("> g n") && line.contains("Open notification history")),
         "{text}"
     );
     app.dispatch(&key(KeyCode::Enter));

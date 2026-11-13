@@ -339,11 +339,11 @@ impl Shell {
         } else {
             (
                 if foot.width < 60 {
-                    "Space n Notices  F1 Help".into()
+                    "g n Notices  F1 Help".into()
                 } else if foot.width < 100 {
                     "Tab Panes  p Pull  f Fetch  F1 Help".to_string()
                 } else {
-                    "Tab Panes  Ctrl-W Pane keys  p Pull  f Fetch  Space n Notices  F9 Updates  F1 Help"
+                    "Tab Panes  Ctrl-W Pane keys  p Pull  f Fetch  g n Notices  F9 Updates  F1 Help"
                         .into()
                 },
                 MUTED,

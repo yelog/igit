@@ -148,22 +148,37 @@ impl CommitPanel {
     pub(super) fn view_menu_event(&mut self, event: &Event, c: &Context) -> Option<Action> {
         let menu = self.view_menu?;
         match event {
-            Event::Key(key) => match key.code {
-                K::Up | K::Char('k') | K::BackTab => self.move_view_menu(-1),
-                K::Down | K::Char('j') | K::Tab => self.move_view_menu(1),
-                K::Home | K::Char('g') => self.view_menu.as_mut().unwrap().row = 0,
-                K::End | K::Char('G') => self.view_menu.as_mut().unwrap().row = Item::ALL.len() - 1,
-                K::Enter | K::Char(' ') => {
-                    return Some(
-                        self.toggle_view_item(Item::ALL[menu.row], c)
-                            .map(|_| Action::None)
-                            .unwrap_or_else(err),
-                    )
+            Event::Key(key) => {
+                if key.code == K::Char('g') && key.modifiers.is_empty() {
+                    if self.goto_pending {
+                        self.goto_pending = false;
+                        self.view_menu.as_mut().unwrap().row = 0;
+                    } else {
+                        self.goto_pending = true;
+                    }
+                    return Some(Action::None);
                 }
-                K::Esc | K::Char('o') | K::Left | K::Char('h') => self.dismiss_view_menu(),
-                _ => (),
-            },
+                self.goto_pending = false;
+                match key.code {
+                    K::Up | K::Char('k') | K::BackTab => self.move_view_menu(-1),
+                    K::Down | K::Char('j') | K::Tab => self.move_view_menu(1),
+                    K::Home => self.view_menu.as_mut().unwrap().row = 0,
+                    K::End | K::Char('G') => {
+                        self.view_menu.as_mut().unwrap().row = Item::ALL.len() - 1
+                    }
+                    K::Enter | K::Char(' ') => {
+                        return Some(
+                            self.toggle_view_item(Item::ALL[menu.row], c)
+                                .map(|_| Action::None)
+                                .unwrap_or_else(err),
+                        )
+                    }
+                    K::Esc | K::Char('o') | K::Left | K::Char('h') => self.dismiss_view_menu(),
+                    _ => (),
+                }
+            }
             Event::Mouse(mouse) => {
+                self.goto_pending = false;
                 let inside_menu = inside(menu.area, mouse.column, mouse.row);
                 match mouse.kind {
                     M::Down(MouseButton::Left) if inside_menu => {

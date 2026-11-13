@@ -13,7 +13,7 @@ struct Candidate {
 impl Candidate {
     fn press_only(&self, context: u32) -> bool {
         matches!(self.action.keys(), Some("Ctrl-w f" | "O"))
-            || context == keys::MESSAGE && matches!(self.action.keys(), Some("c" | "a" | "g"))
+            || context == keys::MESSAGE && matches!(self.action.keys(), Some("c" | "a" | "A"))
     }
 }
 
@@ -73,7 +73,7 @@ impl Shell {
         true
     }
 
-    fn binding_context(&self) -> u32 {
+    pub(super) fn binding_context(&self) -> u32 {
         if self.pop.is_some() || self.panel().editing() {
             return 0;
         }
@@ -378,8 +378,13 @@ impl Shell {
             );
         }
         if self.tab == Log && self.log.comparing_workspace() {
+            let apply = if self.log.workspace_apply_available() {
+                "L Apply hunk  "
+            } else {
+                ""
+            };
             return format!(
-                "{} Panes  [/] Revisions  n/p Changes  J/K Scroll  F5 Refresh  Esc Log  F1 Help",
+                "{} Panes  [/] Revisions  n/p Changes  {apply}J/K Scroll  F5 Refresh  Esc Log  F1 Help",
                 self.config.label("panes", "focus-next"),
             );
         }

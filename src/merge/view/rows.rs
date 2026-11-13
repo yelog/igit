@@ -1,5 +1,6 @@
 use super::highlight::{padding_tint, revision_line, Fragment};
 use super::*;
+use ratatui::style::Modifier;
 use std::ops::Range;
 
 const CONTEXT: usize = 4;
@@ -293,6 +294,11 @@ impl Rows<'_> {
         let end = self.scroll + usize::from(col.code.height);
         let sections = &self.map.sections;
         let first = sections.partition_point(|s| s.first + s.height <= self.scroll);
+        let focused_change = if self.active && self.read_only {
+            self.selected_change_group()
+        } else {
+            None
+        };
         let source = FileSide::ALL.into_iter().find(|s| s.pane() == pane);
         let offset = self.view.hscroll[pane];
         for (i, section) in sections
@@ -363,8 +369,20 @@ impl Rows<'_> {
                 } else {
                     padding_tint
                 };
-                let line_bg = tint.map_or(EDITOR_BG, |t| t.line);
-                let gutter_bg = tint.map_or(EDITOR_BG, |t| t.gutter);
+                let focused = focused_change.as_ref().map_or_else(
+                    || self.active && !self.read_only && i == self.selected && pane == self.side,
+                    |group| group.contains(&i),
+                );
+                let line_bg = if focused && raw.is_none() {
+                    crate::ui::SEL
+                } else {
+                    tint.map_or(EDITOR_BG, |t| t.line)
+                };
+                let gutter_bg = if focused {
+                    crate::ui::SEL
+                } else {
+                    tint.map_or(EDITOR_BG, |t| t.gutter)
+                };
                 if let Some(x) = col.rule {
                     put(f, rect(x, y, 1, 1), glyphs.edge, style(EDGE).bg(gutter_bg));
                 }
@@ -373,7 +391,6 @@ impl Rows<'_> {
                 fill(f, controls, gutter_bg);
                 if let Some(raw) = raw {
                     let n = section.numbers[pane] + line + 1;
-                    let focused = self.active && i == self.selected && pane == self.side;
                     if !number.is_empty() {
                         let w = number.width as usize;
                         let text = if pane == 0 {
@@ -385,7 +402,7 @@ impl Rows<'_> {
                             f,
                             number,
                             text,
-                            style(if focused { FG } else { NUMBER }).bg(gutter_bg),
+                            style(if focused { Color::White } else { NUMBER }).bg(gutter_bg),
                         );
                         if change.indent_marker() {
                             put(
@@ -401,7 +418,10 @@ impl Rows<'_> {
                     } else {
                         Vec::new()
                     };
-                    let line_style = style(FG).bg(line_bg);
+                    let mut line_style = style(FG).bg(line_bg);
+                    if focused {
+                        line_style = line_style.add_modifier(Modifier::BOLD);
+                    }
                     let syntax = syntax::tokens(self.file, raw);
                     let text = self
                         .view
@@ -446,6 +466,14 @@ impl Rows<'_> {
                         );
                     }
                 }
+                if focused && !number.is_empty() {
+                    put(
+                        f,
+                        rect(number.right() - 1, y, 1, 1),
+                        if self.ascii { "|" } else { "▌" },
+                        style(ACCENT).bg(gutter_bg),
+                    );
+                }
                 if pane == 1 && !self.read_only {
                     hits.push((code, Hit::ResultLine(i, line)));
                 }
@@ -456,6 +484,21 @@ impl Rows<'_> {
                 }
             }
         }
+    }
+
+    fn selected_change_group(&self) -> Option<Range<usize>> {
+        let mut start = self.selected;
+        if self.chunks.get(start)?.kind == Kind::Context {
+            return None;
+        }
+        while start > 0 && self.chunks[start - 1].kind != Kind::Context {
+            start -= 1;
+        }
+        let mut end = self.selected + 1;
+        while end < self.chunks.len() && self.chunks[end].kind != Kind::Context {
+            end += 1;
+        }
+        Some(start..end)
     }
 }
 

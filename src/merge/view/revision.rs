@@ -57,8 +57,10 @@ pub(crate) struct RevisionDiff {
     search: Search<(usize, usize)>,
     search_hit: Option<SearchHit<(usize, usize)>>,
     reveal_search: bool,
+    reveal_line: Option<usize>,
+    goto_pending: bool,
     local_merge: bool,
-    local_apply_all: bool,
+    local_apply_all: Option<bool>,
 }
 
 impl RevisionDiff {
@@ -113,8 +115,10 @@ impl RevisionDiff {
             search: Search::default(),
             search_hit: None,
             reveal_search: false,
+            reveal_line: None,
+            goto_pending: false,
             local_merge: false,
-            local_apply_all: false,
+            local_apply_all: None,
         }
     }
 
@@ -145,9 +149,11 @@ impl RevisionDiff {
         revision: String,
         texts: [String; 2],
         annotations: [String; 2],
+        writable: bool,
     ) -> Self {
         let mut diff = Self::two_way(name, [revision, String::new()], texts, annotations);
         diff.titles = ["Commit", "Working tree", ""];
+        diff.local_merge = writable;
         diff
     }
 
@@ -169,7 +175,7 @@ impl RevisionDiff {
             [revision_note, local_note],
         );
         diff.local_merge = true;
-        diff.local_apply_all = apply_all;
+        diff.local_apply_all = Some(apply_all);
         diff.titles = ["Revision", "Local", ""];
         diff
     }
@@ -182,14 +188,93 @@ impl RevisionDiff {
         self.local_merge
     }
 
+    pub(crate) fn go_to_start(&mut self) {
+        self.scroll = 0;
+        self.follow = false;
+        self.goto_pending = false;
+    }
+
+    pub(crate) fn go_to_end(&mut self) {
+        self.scroll = self.total.saturating_sub(self.page);
+        self.follow = false;
+        self.goto_pending = false;
+    }
+
+    pub(crate) fn cancel_key_sequence(&mut self) {
+        self.goto_pending = false;
+    }
+
+    pub(crate) fn key_sequence(&self) -> Option<KeySequence> {
+        self.goto_pending.then_some(KeySequence::FirstItem)
+    }
+
     pub(crate) fn selected_change(&self) -> Option<usize> {
         self.change_at(self.selected)
             .or_else(|| self.adjacent_change(1))
             .or_else(|| self.adjacent_change(-1))
     }
 
+    pub(crate) fn selected_change_position(&self) -> Option<usize> {
+        let change = self.selected_change()?;
+        self.changes.iter().position(|&start| start == change)
+    }
+
+    pub(crate) fn select_change_position(&mut self, position: usize) {
+        if let Some(&change) = self.changes.get(position) {
+            self.selected = change;
+            self.follow = true;
+        }
+    }
+
     pub(crate) fn change_count(&self) -> usize {
         self.changes.len()
+    }
+
+    pub(crate) fn change_visible(&self, change: usize) -> bool {
+        let Some(start) = self.change_at(change) else {
+            return false;
+        };
+        let map = RowMap::revision(&self.chunks, &self.view, self.single_pane);
+        (start..self.change_end(start)).any(|index| {
+            let section = &map.sections[index];
+            self.chunks[index].kind != Kind::Context
+                && section.height > 0
+                && section.first < self.scroll + self.page
+                && section.first + section.height > self.scroll
+        })
+    }
+
+    pub(crate) fn reveal_local_line(&mut self, line: usize) {
+        self.select_side(1);
+        self.reveal_line = Some(
+            line.saturating_sub(1)
+                .min(self.line_ranges[1].len().saturating_sub(1)),
+        );
+    }
+
+    pub(crate) fn label_head(&mut self, buffer: bool) {
+        self.titles[0] = "HEAD";
+        if buffer {
+            self.annotations[1] = "Neovim buffer · includes unsaved edits".into();
+        }
+    }
+
+    pub(crate) fn inherit_local_view(&mut self, previous: &Self) {
+        self.side = previous.side;
+        self.zoom = previous.zoom;
+        self.single_pane = previous.single_pane;
+        self.view.folding = previous.view.folding;
+        self.view.hscroll = previous.view.hscroll;
+        self.scroll = previous.scroll;
+        self.selected = self
+            .changes
+            .iter()
+            .copied()
+            .find(|&index| index >= previous.selected)
+            .or_else(|| self.changes.last().copied())
+            .unwrap_or(0);
+        self.follow = false;
+        self.inherit_query(previous.search_prompt());
     }
 
     /// Build the local text with one aligned change, or every change, taken
@@ -209,7 +294,7 @@ impl RevisionDiff {
                         .iter()
                         .enumerate()
                         .map(|(i, chunk)| {
-                            if (start..end).contains(&i) {
+                            if (start..end).contains(&i) && chunk.kind != Kind::Context {
                                 chunk.left.as_str()
                             } else {
                                 chunk.result.as_str()
@@ -490,6 +575,15 @@ impl RevisionDiff {
         let mut tools = toolbar;
         let summary = if self.three_way {
             format!(" {} changes, No conflicts ", self.changes.len())
+        } else if self.local_merge && !self.changes.is_empty() {
+            format!(
+                " Change {}/{} · {} difference{} ",
+                self.selected_change_position()
+                    .map_or(1, |position| position + 1),
+                self.changes.len(),
+                self.changes.len(),
+                if self.changes.len() == 1 { "" } else { "s" }
+            )
         } else {
             format!(
                 " {} difference{} ",
@@ -506,7 +600,7 @@ impl RevisionDiff {
         let summary_min_width = if inline {
             (6 + fold.width() + zoom.width() + summary.width()) as u16
         } else {
-            70
+            70.max(summary.width().saturating_add(50) as u16)
         };
         if tools.width >= summary_min_width {
             let status = right(&mut tools, summary.width() as u16);
@@ -545,13 +639,15 @@ impl RevisionDiff {
                 Target::Apply(self.selected_change().unwrap_or(0)),
                 self.selected_change().is_some(),
             );
-            self.button(
-                f,
-                &mut tools,
-                " All ",
-                Target::ApplyAll,
-                self.local_apply_all && !self.changes.is_empty(),
-            );
+            if let Some(enabled) = self.local_apply_all {
+                self.button(
+                    f,
+                    &mut tools,
+                    " All ",
+                    Target::ApplyAll,
+                    enabled && !self.changes.is_empty(),
+                );
+            }
         }
 
         let split = area.width >= if self.three_way { 72 } else { 48 } && !self.zoom;
@@ -582,6 +678,54 @@ impl RevisionDiff {
         }
         self.single_pane = single_pane;
         self.page = body.height.saturating_sub(if inline { 2 } else { 3 }) as usize;
+        if self.page > 0 {
+            if let Some(line) = self.reveal_line.take() {
+                if let Some((index, offset)) =
+                    map.sections
+                        .iter()
+                        .enumerate()
+                        .find_map(|(index, section)| {
+                            (section.numbers[1]..section.numbers[1] + section.lines[1].len())
+                                .contains(&line)
+                                .then(|| (index, line - section.numbers[1]))
+                        })
+                {
+                    if self.view.expanded.insert(index) {
+                        map = RowMap::revision(&self.chunks, &self.view, single_pane);
+                    }
+                    let position = |map: &RowMap<'_>| {
+                        let section = &map.sections[index];
+                        section.first
+                            + (0..section.height)
+                                .find(|&row| section.line_at(row) == Some(offset))
+                                .unwrap_or(0)
+                    };
+                    for previous in (0..index).rev() {
+                        if position(&map) >= self.page / 2 {
+                            break;
+                        }
+                        if self.chunks[previous].kind == Kind::Context
+                            && self.view.expanded.insert(previous)
+                        {
+                            map = RowMap::revision(&self.chunks, &self.view, single_pane);
+                        }
+                    }
+                    for next in index + 1..self.chunks.len() {
+                        if map.total.saturating_sub(position(&map)) >= self.page - self.page / 2 {
+                            break;
+                        }
+                        if self.chunks[next].kind == Kind::Context
+                            && self.view.expanded.insert(next)
+                        {
+                            map = RowMap::revision(&self.chunks, &self.view, single_pane);
+                        }
+                    }
+                    self.selected = index;
+                    self.scroll = position(&map).saturating_sub(self.page / 2);
+                    self.follow = false;
+                }
+            }
+        }
         let position_search =
             self.reveal_search || usize::from(previous_code[self.side].height) != self.page;
         let search_line = self
@@ -695,7 +839,12 @@ impl RevisionDiff {
             if inline {
                 // The inline view has one revision heading and no annotation
                 // row. Keep the same gutters and scrollbar, reclaiming its row.
-                for area in [&mut metrics.code, &mut metrics.numbers, &mut metrics.rail] {
+                for area in [
+                    &mut metrics.code,
+                    &mut metrics.numbers,
+                    &mut metrics.controls,
+                    &mut metrics.rail,
+                ] {
                     area.y -= 1;
                     area.height += 1;
                 }
@@ -732,7 +881,7 @@ impl RevisionDiff {
                 side: self.side,
                 scroll: self.scroll,
                 caret: None,
-                active: false,
+                active: self.local_merge,
                 ascii,
             }
             .draw(f, pane, col, metrics, &mut row_hits);
@@ -859,9 +1008,9 @@ impl RevisionDiff {
                 return;
             }
             let hint = if self.local_merge && footer.width >= 105 {
-                " Esc Close · L Apply change · A Apply all · n/p Change · Tab Pane · f Fold · z Zoom"
+                " Esc Close · L Apply · u/U Undo · A Apply all · n/p Change · Tab Pane · f Fold · z Zoom"
             } else if self.local_merge {
-                " Esc Close · L Apply · A Apply all · n/p Change"
+                " Esc Close · L Apply · u/U Undo · A Apply all · n/p Change"
             } else if footer.width >= 105 {
                 " Esc Close · Tab Pane · n/p Change · [/] File · f Fold · z Zoom · h/l Scroll · y Copy"
             } else if footer.width >= 65 {
@@ -944,6 +1093,11 @@ impl RevisionDiff {
     }
 
     pub(crate) fn event(&mut self, event: &Event) -> RevisionEvent {
+        if !matches!(event, Event::Key(key)
+            if key.code == K::Char('g') && key.modifiers.is_empty())
+        {
+            self.goto_pending = false;
+        }
         if matches!(event, Event::FocusLost) {
             self.clear_selection();
         }
@@ -1023,7 +1177,9 @@ impl RevisionDiff {
                     .map_or(RevisionEvent::None, RevisionEvent::Apply);
             }
             K::Char('A')
-                if self.local_merge && self.local_apply_all && !self.changes.is_empty() =>
+                if self.local_merge
+                    && self.local_apply_all == Some(true)
+                    && !self.changes.is_empty() =>
             {
                 return RevisionEvent::ApplyAll;
             }
@@ -1075,14 +1231,20 @@ impl RevisionDiff {
                 self.move_scroll(-((self.page / 2) as isize));
                 None
             }
-            K::Char('g') | K::Home => {
-                self.scroll = 0;
-                self.follow = false;
+            K::Char('g') if key.modifiers.is_empty() => {
+                if std::mem::take(&mut self.goto_pending) {
+                    self.go_to_start();
+                } else {
+                    self.goto_pending = true;
+                }
+                None
+            }
+            K::Home => {
+                self.go_to_start();
                 None
             }
             K::Char('G') | K::End => {
-                self.scroll = self.total.saturating_sub(self.page);
-                self.follow = false;
+                self.go_to_end();
                 None
             }
             _ => None,

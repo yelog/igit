@@ -166,7 +166,7 @@ another window. Smart focus or resize enables the terminal marker. The helper
 has no dependency on the user's Neovim or LazyDB helper.
 
 1. [shell::run](../src/shell.rs) enables alternate screen, raw mode, mouse reporting, and bracketed paste, then paints the workbench before any repository discovery. [startup.rs](../src/shell/startup.rs) uses a render-only `LoadingView` containing a default Commit panel, requested tab, icon mode and workspace path. It shares header rendering and footer identity with [workspace.rs](../src/shell/workspace.rs), without constructing a `Shell`, discovering a `Context`, or performing filesystem/Git reads on the terminal thread. [Commit loading](../src/commit/loading.rs) shares pane geometry with [view.rs](../src/commit/view.rs), rendering disabled composer actions, tree placeholders and a waiting preview. The startup worker discovers repositories and initializes Commit and Conflicts, reporting stages and the discovered root count over `mpsc`. The terminal thread handles resize and cancellation while polling, and redraws the spinner every 120 ms independently of stage changes; errors and cancellation restore terminal modes. Discovered branch labels are reused without another branch scan. The loaded `Shell` replaces the loading view once ready; pending input is never replayed. `--list-roots` remains a synchronous plain-output command.
-2. [Workspace layout](../src/shell/workspace.rs) records the positions of right-aligned workspace tabs, the left-side Log tab strip in the same header row, and the active panel. The footer prefixes contextual hints with `IGit v<VERSION>` and software-update status. `Shell::dispatch` handles top-level overlays such as help, notification history, and reviews before routing input to the active tab. It also resolves the `Space n` notification prefix before panel routing. The prefix waits indefinitely; in Log, the leading Space also starts the filter prefix immediately so its inline cues and footer appear on the first press, while `n` still opens History. In other panels, a second Space replays the standalone Space action. The configured hint delay only controls when a continuation overlay appears. Panels report text input through `editing()` so ordinary characters do not trigger global commands. [Pane geometry](../src/ui/panes.rs) registers pane rectangles/dividers for the active tab; adjustable sizes are stored in session character cells. Keyboard and mouse share bounds and size preferences; restoring defaults reallocates against the current terminal size. [Pane routing](../src/shell/panes.rs) handles Tab in registration order, finds directional neighbors by actual edges/overlap, and keeps an entire drag with the divider that received the press. Text selection and file dragging keep their original panel event routes.
+2. [Workspace layout](../src/shell/workspace.rs) records the positions of right-aligned workspace tabs, the left-side Log tab strip in the same header row, and the active panel. The footer prefixes contextual hints with `IGit v<VERSION>` and software-update status. `Shell::dispatch` handles top-level overlays such as help, notification history, and reviews before routing input to the active tab. It also resolves the default `g n` notification prefix before panel routing. The prefix waits indefinitely and shares its first key with panel `g g` navigation: it forwards the first `g` to the affected list so a single `g` does nothing, the second `g` completes `first-item`, and `G` remains the independent last-item action. Log's Space filter prefix remains immediate and does not claim Notifications. If `notification-history` is rebound to a Space suffix, Commit Changes and Push outgoing rows apply their configured standalone Space check immediately; completing that chord restores only that check. In other panels, a second Space replays the standalone Space action. The configured hint delay only controls when a continuation overlay appears. Panels report text input through `editing()` so ordinary characters do not trigger global commands. [Pane geometry](../src/ui/panes.rs) registers pane rectangles/dividers for the active tab; adjustable sizes are stored in session character cells. Keyboard and mouse share bounds and size preferences; restoring defaults reallocates against the current terminal size. [Pane routing](../src/shell/panes.rs) handles Tab in registration order, finds directional neighbors by actual edges/overlap, and keeps an entire drag with the divider that received the press. Text selection and file dragging keep their original panel event routes.
 3. The active panel receives `Panel::event` and returns an `Action`. It owns its selected row, focus, and scroll position. Shell owns panel switching, notification history and live-card state, and confirmation. The notification center retains up to 500 stable-ID entries per process and presents four newest live cards; workspace rescans do not clear this session state. Notification cards are separate from footer hints and operation progress. The `notification-history` global binding and Actions entry open the history view. A card body opens its matching history entry only when no dialog or text input is active; close hit areas remain active over dialogs and block clicks beneath. To request confirmation, the panel stores a concrete plan and returns `Confirm { title, body, token }`. Shell records the requesting panel, initially selects Cancel, and calls that panel's `confirm(token, context)` only after confirmation.
 4. The notification view adapts at 72 columns: wider layouts show a list and detail pane in a maximum 100×18 frame; narrow layouts show a selected notification detail on Enter. Search, copy, and clear act on history entries, while closing a live card leaves its history record intact. Severity determines icon, palette color, TTL, and a creation timestamp on each card. Panel operations report explicit severity, but detailed review, loading, progress, input validation, and per-repository outcomes remain in their owning views. Update availability (including automatic checks) and installation completion become notifications; manual checks also report up-to-date results and errors, while automatic no-update and check errors stay quiet. AI request errors become notifications and leave the editable draft/focus in place.
 5. For **Commit & Push**: the button or shortcut starts the local batch → Commit builds per-repository plans from the panel's selection and commits each repository individually → `Action::Committed` returns the successful repository set → Shell refreshes the workspace, switches to Push, and initially checks those repositories → user separately reviews and starts pushing. A local commit created and a remote updated are independent results.
@@ -301,6 +301,33 @@ the revision omitted the file; each successful apply rebuilds the comparison
 from the new working file; closing it
 returns `Action::Refresh` so Commit and the workspace see the changed bytes.
 HEAD and immutable objects are never modified.
+
+The focused `igit diff --line N -- <file>` route uses
+[file_diff.rs](../src/shell/file_diff.rs) to load the owning workspace and HEAD
+comparison on a background worker, then runs only the revision viewer.
+[FileDiff](../src/log/file_diff.rs) reuses `LocalCompare` source validation,
+line-ending conversion, stale-write checks, aligned hunk reconstruction, and
+the shared review dialog. It checks that HEAD still identifies the opened
+commit before restoring. Each successful single-group or reviewed full restore
+records the previous Local text and selected change position in a session-local
+undo stack. `u` / `U` writes the latest entry back through the same snapshot and
+stale-write guards, rebuilds the comparison, and restores focus to that change
+position; closing the viewer discards the stack. `RevisionDiff` carries a
+pending one-based Local line until its first usable draw, finds that line in
+the aligned row map, expands its context fold if needed, and centers the row
+using the actual code height. The pending location is consumed once so later
+scrolling remains independent.
+
+The Neovim companion supplies an absolute private UTF-8 snapshot through
+`IGIT_DIFF_BUFFER`. This snapshot remains outside discovered Git working trees.
+The native viewer reads HEAD from the real repository and Local from the
+snapshot; restores replace only that snapshot using checked temporary-file
+replacement. The companion imports reviewed text on exit or hide, checking the
+original buffer name and changedtick and providing normal editor undo. A stale
+buffer keeps its newer contents and the reviewed result remains recoverable.
+Neither side automatically saves the source buffer or updates the index.
+Standalone File Diff omits the snapshot and uses the original guarded
+working-file write path.
 
 ### Editing working files
 
@@ -534,7 +561,7 @@ version, handles staged deletions followed by recreation, and leaves the real
 index and repository metadata unchanged. List and debounced preview jobs use
 independent generation-safe readers and validate the original repository
 against Roots. Refresh keeps the selected commit fixed; closing restores the
-resident Log state.
+resident Log state and refreshes the workspace when an apply occurred.
 
 The [bounded working-source reader](../src/core/revision/working.rs) is shared
 with Commit previews. It rejects parent symlinks/nested repositories, reads
@@ -542,8 +569,29 @@ symlink text, enforces 512 KiB tracked and 96 KiB untracked-file limits, and exp
 unsupported content or conversions. Immutable commit blobs still come from
 the revision reader's exact tree/blob queries. Successful sources use the
 shared two-pane Diff with Commit / Working tree titles, synchronized scrolling,
-alignment, folding, search, and copying. No local apply state or write controls
-are enabled. File History retains its separate reviewed LocalCompare writer.
+alignment, folding, search, and copying. Supported previews expose one aligned
+change group at a time through the revision gutter's `»` (or `>>` in ASCII)
+control, `L`, and **Apply**. The write delegates to
+[LocalCompare](../src/log/file_history/compare.rs) through
+`prepare_working_tree`, takes the complete group from the commit side, and can
+insert or delete lines. The workspace has no Apply All path.
+
+Before replacement, the guarded writer verifies Roots, repository identity,
+the captured commit OID and file path, the opened bytes and permissions
+snapshot, Git conversion attributes/config, and path safety including
+symlinks and nested repositories. Writable content is UTF-8 with uniform LF or
+CRLF, and the working file's line-ending style is retained. Root identity
+captures the canonical directory, creation metadata, and Unix device/inode;
+refresh and replacement preflight recheck it. A single-group apply retains
+the original working bytes for aligned context, including visually equivalent
+tabs and spaces. The write changes
+only that working file, preserving unrelated hunks, exact real-index bytes
+including the selected file's staged content and unselected staged siblings,
+other files/repositories, HEAD, refs, and reflogs. Unsupported previews remain
+read-only with an explanation. A successful apply rebuilds the current preview
+in place and requests an asynchronous changed-file refresh; closing after any
+apply refreshes the normal workspace. File History retains its separate
+Compare with Local flow with one-group apply and reviewed Apply All.
 
 Log holds cherry-pick selections by repository and immutable object ID. Review validates all sources against the same destination HEAD and passes the reviewed order to Git in one command. Git owns the pending queue and Conflicts handles continuation, skipping, and aborting.
 
@@ -571,7 +619,7 @@ The shared renderer uses the aligned row for read-only tint and fragment compari
 
 The live editor caches line pairings by section, comparison and exact text. Panes share the entries and reuse them while scrolling or resizing. Edits replace the affected entry and a new document clears the cache. Small comparisons use a fixed work limit to keep highlights stable under load. Larger comparisons use deadlines, limited lookahead and prefix and suffix sampling. Long lines use row colors when fragment analysis would exceed its limit. The display lexer includes basic single-line XML markup. [Syntax colors](../src/merge/view/syntax.rs)
 
-[List navigation](../src/log/navigation.rs) stores vertical origin and the most recently drawn usable row count. It corrects edges after every selection change so batched input and per-key redraw have identical scrolling. Rendering corrects again for new window height. `gg` and `y` sequences are recognized only in the commit list; focus changes/overlays clear prefixes. `Action::Copy` routes through Shell and the [clipboard adapter](../src/ui/clipboard.rs), using command stdin rather than interpolating text into commands or notifications. Log ID/name/email come from the current row. Its `ym` runs read-only `git show` for that exact repository/OID to retrieve the full message, independent of potentially pending details.
+[List navigation](../src/log/navigation.rs) stores vertical origin and the most recently drawn usable row count. It corrects edges after every selection change so batched input and per-key redraw have identical scrolling. Rendering corrects again for new window height. `gg` is recognized in the non-graph Log panes, while `y` commit-copy sequences are limited to the commit list; focus changes/overlays clear prefixes. `Action::Copy` routes through Shell and the [clipboard adapter](../src/ui/clipboard.rs), using command stdin rather than interpolating text into commands or notifications. Log ID/name/email come from the current row. Its `ym` runs read-only `git show` for that exact repository/OID to retrieve the full message, independent of potentially pending details.
 
 [Commit copying](../src/ui/commit_copy.rs) shares ID, message, and author formatting between Log and Push. [Push's handler](../src/push/commit_copy.rs) resolves only the focused outgoing commit and owns its pending prefix; Shell exposes the same `CommitCopy` chooser and cancellation route. Push reuses the row's full ID and reads message/author on demand with immutable repository/OID arguments, without adding metadata to outgoing snapshots or relying on asynchronous preview results. Help and `[keybindings.push]` expose all three commands. File-tree path copying remains a separate focus context.
 
@@ -594,7 +642,7 @@ without waiting for the browser to close. No shell
 interpolation, Git writes, network discovery, or new dependency is involved.
 Tests capture launches and use fake native commands without opening browsers.
 
-[Key sequence hints](../src/ui/key_sequence.rs) derive candidates from pending Branch `g`, Log `g/y`, and Merge `[/]` states. Panels still recognize sequences. Shell candidate state stores cursor, last-rendered hit areas, and a display deadline. The deadline participates in the event poll's minimum wait; reaching it only shows the hint, without expiring the prefix or blocking later keys. Completion/cancel clears timing, and a new prefix restarts it. The bottom overlay uses shared colors and cell-width-based columns. Once visible, arrows, Enter, and mouse events inside it run before ordinary panel/global events. Esc/Ctrl-C can cancel during the delay too. Choosing a candidate returns the continuation key to the original panel route rather than creating another Git entry point. Global panel changes, refresh, and dialogs clear both kinds of prefixes. Single-key actions without prefixes and text editing bypass the candidate overlay.
+[Key sequence hints](../src/ui/key_sequence.rs) derive candidates from pending `g` states in Branch, Commit, Stash, Remote, Log, and the Merge conflict list, plus Log `y` and Merge `[/]` states. The same `g` prefix can also start the global notification chord; forwarding its first key to the panel leaves a single `g` inert and lets `gg` complete `first-item`. Shell candidate state stores cursor, last-rendered hit areas, and a display deadline. The deadline participates in the event poll's minimum wait; reaching it only shows the hint, without expiring the prefix or blocking later keys. Completion/cancel clears timing, and a new prefix restarts it. The bottom overlay uses shared colors and cell-width-based columns. Once visible, arrows, Enter, and mouse events inside it run before ordinary panel/global events. Esc/Ctrl-C can cancel during the delay too. Choosing a candidate returns the continuation key to the original panel route rather than creating another Git entry point. Global panel changes, refresh, and dialogs clear both kinds of prefixes. Single-key actions without prefixes and text editing bypass the candidate overlay.
 
 **Commit: checked content, not the entire real index.** Changes come from `git status --porcelain=v1 -z`. The tree starts with Directory and Repository grouping enabled and legacy Module disabled. Native paths drive browsing identity, checkboxes, and regrouping; parent-directory hints are display-only. The tree projects scoped unmerged paths into Merge Conflicts as a flat special child while keeping their saved changelist membership. Resolve uses the existing Shell tab action; it does not apply a resolution. Grouping and expansion changes never touch the index. Preview starts enabled; closed previews do not read patches. Open previews use the current row to choose a file Diff or in-memory container summary. Submission builds a temporary index from HEAD, or the empty tree for an initial commit. Selected files with staged content use that version; otherwise, selected working-tree content is read. A file staged and then edited again therefore commits only its staged version. `write-tree` obtains the planned tree, while HEAD, branch, and selected index records are retained. Preparing the snapshot may create Git objects but does not move HEAD or overwrite the real index.
 
@@ -718,12 +766,13 @@ Checkboxes, target overrides, and grouping belong to the UI, not the returned
 snapshot. The first current snapshot checks and expands every scoped repository
 with outgoing commits; later refreshes retain manual checkbox and fold choices.
 Commit and Push reseeds checks only from successful repositories, independently
-of expanding all outgoing repositories. Shell eagerly applies standalone
-Space in Push's repository pane when configured as its toggle, records the owning
-repository's previous checkbox state in the notification prefix, and marks Space
-dispatched. A completed notification chord restores only that checkbox; unrelated
-keys cannot replay the toggle, and canceling the prefix retains the immediate
-change. Selection follows repository and commit OID; unchanged snapshots retain
+of expanding all outgoing repositories. If `notification-history` is bound to a
+Space suffix, Shell eagerly applies standalone Space in Commit's Changes tree
+and Push's repository pane when configured as their toggle, records the
+previous check state in the notification prefix, and marks Space dispatched. A
+completed notification chord restores only those checks; unrelated keys cannot
+replay the toggle, and canceling the prefix retains the immediate change.
+Selection follows repository and commit OID; unchanged snapshots retain
 the selected file, folds, Diff scroll, and text selection. Commit and Push applies
 its reseed when the current batch arrives. Loading and reader failures disable
 Push/Retry/Fetch until a current snapshot is available, while navigation, Cancel,

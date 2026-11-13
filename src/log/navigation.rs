@@ -21,12 +21,30 @@ impl LogPanel {
     }
 
     pub(crate) fn key_sequence(&self) -> Option<KeySequence> {
-        if self.editing() || self.workspace_comparison.is_some() {
+        if self.editing() {
             return None;
+        }
+        if let Some(comparison) = &self.workspace_comparison {
+            return comparison.panel.key_sequence();
+        }
+        if let Some(view) = self.diff.as_ref().and_then(|diff| diff.comparison.as_ref()) {
+            if let Some(sequence) = view.key_sequence() {
+                return Some(sequence);
+            }
+        }
+        if let Some(view) = self
+            .history_diff
+            .as_ref()
+            .and_then(|diff| diff.comparison.as_ref())
+        {
+            if let Some(sequence) = view.key_sequence() {
+                return Some(sequence);
+            }
         }
         match self.key_prefix {
             Some(' ') => Some(KeySequence::LogFilters),
             Some('g') if self.focus == Pane::Graph => Some(KeySequence::LogGoto),
+            Some('g') => Some(KeySequence::FirstItem),
             Some('y') if self.focus == Pane::Graph => Some(KeySequence::CommitCopy),
             _ => None,
         }
@@ -34,6 +52,19 @@ impl LogPanel {
 
     pub(crate) fn cancel_key_sequence(&mut self) {
         self.key_prefix = None;
+        if let Some(comparison) = &mut self.workspace_comparison {
+            comparison.panel.cancel_key_sequence();
+        }
+        if let Some(view) = self.diff.as_mut().and_then(|diff| diff.comparison.as_mut()) {
+            view.cancel_key_sequence();
+        }
+        if let Some(view) = self
+            .history_diff
+            .as_mut()
+            .and_then(|diff| diff.comparison.as_mut())
+        {
+            view.cancel_key_sequence();
+        }
     }
 
     pub(super) fn filter_key(&mut self, key: &KeyEvent, c: &Context) -> Result<bool> {
@@ -67,6 +98,26 @@ impl LogPanel {
             .min(self.cursor)
             .min(self.visible.len().saturating_sub(self.graph_height))
             .max((self.cursor + 1).saturating_sub(self.graph_height));
+    }
+
+    pub(super) fn first_item_key(&mut self, key: &KeyEvent) -> bool {
+        if !key.modifiers.is_empty() && key.modifiers != Mods::SHIFT {
+            self.cancel_key_sequence();
+            return false;
+        }
+        if key.code == K::Char('g') {
+            if self.key_prefix == Some('g') {
+                self.key_prefix = None;
+                self.mv(-1_000_000);
+            } else {
+                self.key_prefix = Some('g');
+            }
+            return true;
+        }
+        if self.key_prefix == Some('g') {
+            self.key_prefix = None;
+        }
+        false
     }
 
     fn page_graph(&mut self, down: bool, half: bool) {

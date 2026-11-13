@@ -55,7 +55,7 @@ original installation method. See
 Build and launch from this source directory. On macOS/Linux, use the serial entry point below; on Windows, replace `python3 scripts/cargo_serial.py` with `cargo`. To use `igit` or `ig` in any workspace, optionally install both commands into Cargo's bin directory:
 
 ```sh
-python3 scripts/cargo_serial.py build --release --locked
+python3 scripts/cargo_serial.py build --release --locked --bins
 ./target-serial/release/igit /path/to/workspace
 ./target-serial/release/ig /path/to/workspace
 
@@ -85,6 +85,7 @@ igit branch
 igit stash
 igit remote
 igit log -- "src/example.js"
+igit diff --line 42 -- "src/example.js"
 ```
 
 `ig` accepts the same arguments. `log` accepts either a workspace directory or
@@ -115,14 +116,29 @@ Both the native binary and companion plugin need this feature's implementation.
 **Compare with Local.** `D` opens a two-pane comparison between the selected
 immutable revision and the current working file. The revision side shows its
 short hash and the right side is labeled **Local**. `n/p` visits aligned
-changes; the `»` control, `L`, or the toolbar **Apply** button replaces that
-whole change group in the working file with the revision text. **All** or `A`
+changes and marks the complete focused group in both panes; the `»` control,
+`L`, or the toolbar **Apply** button replaces that whole change group in the
+working file with the revision text. **All** or `A`
 reviews and applies every revision block; it is disabled when the selected
 revision did not contain the file. Each write verifies that the working file
 and its parent path are still safe, matches the opened snapshot, preserves its
 permissions, and updates only the working tree. Binary, non-UTF-8, symlink,
 oversized, externally changed, custom-filter, or mixed-line-ending files are
 rejected with an explanation.
+
+**Current file against HEAD.** `igit diff --line 42 -- src/example.js` opens
+the same aligned comparison directly, with **HEAD** on the left and **Local**
+on the right. The optional one-based line number expands its unchanged region
+and centers that Local line in the available viewport, bounded by the start
+and end of the file. Use `n/p` to visit changed blocks, `L`, **Apply**, or `»`
+to restore one block from HEAD, and `A` / **All** for a separate full-file
+review. The complete current block is highlighted in both panes, and the
+toolbar reports its position. Press `u` or `U` to undo the latest restore
+without closing the viewer. `F1` opens contextual help; `Esc` / `q` closes the
+viewer. Standalone restores update the working file while retaining existing staged content.
+When the originating line is outside a visible change, first use `n/p` to
+reveal a block before restoring it.
+A repository with an existing HEAD commit is required.
 
 **Choose terminal icons.** The default uses Nerd Font icons for repositories, branches, file types, and actions. If icons appear as boxes, try `ig --icons unicode`; for text markers such as `[x]`, use `ig --icons ascii`. Both commands accept `--icons mode [directory]`. The selected mode applies to all panels and any workspace reopened during the same run.
 
@@ -166,6 +182,15 @@ an explicit filename also works. The plugin supplies an interactive lowercase
 `:igit` abbreviation because Neovim user commands must begin with an uppercase
 letter. Scripts and mappings should use `:Igit` or `require("igit").open(...)`.
 `:IgitClose` hides the plugin window while retaining its running session.
+`:Igit diff` / `:IgitDiff` opens the current editing buffer against HEAD in a
+float, including unsaved edits, and centers the originating cursor line.
+`require("igit").file_diff()` provides the same action for mappings. Restored
+blocks are highlighted in both panes, and `u` / `U` undoes the latest restore
+inside the open viewer. Restored hunks return to the source buffer when the
+viewer closes or hides; source-buffer `u` undoes that imported change, and
+saving remains an explicit editor action. If the source buffer changes while
+the diff is open, the plugin retains the restored result for recovery instead
+of overwriting those newer edits.
 The plugin's README and `:help igit.nvim` document all window and session options.
 Build this source version before using panel/file arguments with an older installed binary.
 
@@ -283,7 +308,7 @@ IGit kitten helper and pass through these chords as described in
 
 The single header row shows Log's filter tabs and `+` on the left, with **Commit**, **Log**, **Push**, **Branch**, **Stash**, and **Remote** on the right. In Push, the left side shows its contextual title. The active tab fills the workspace, and Commit is selected at startup. **Conflicts** appears in amber when any repository in Roots has unresolved files or a Git operation ready to continue. It disappears when that work is complete. Narrow headers shorten Commit, Branch, and Remote to Cmt, Br, and Rem when needed, retaining every tab's mouse target. Commit automatically refreshes files and the current Diff while active. Press `F5` to refresh the entire workspace, including Log, Remote, and Conflicts. The footer starts with **IGit**, followed by the current shortcut hints.
 
-Press `Space`, then `n`, from any normal workspace panel to open session notification history. The leading `Space` waits indefinitely, like other key-sequence prefixes. The default 200ms `hint_delay_ms` controls only when a continuation overlay appears, not a timeout. In Log, the first `Space` immediately enters the filter prefix: B/U/D/P are highlighted and the footer shows the filter controls without another keypress. `Space b/u/d/p` opens those filters directly, while `Space n` still opens Notifications. In panels where Space acts alone without starting a filter prefix, press `Space` again to apply that standalone action, or type another key to replay Space and then process that key. `Esc` cancels. Dialogs and text input keep their own Space behavior. Four newest live cards can appear in the upper-right while work continues; click a card body to inspect that entry, or click its close control. The center keeps up to 500 entries until IGit exits. In History, use `j/k` or arrows to browse, `/` to search, `n/N` for the next/previous match, and `y` to copy the full message. Press `c`, then `y` to clear history or `n` to keep it; `Esc` or `q` closes. On wide terminals, select a row and read its details beside the list; on narrow terminals, press Enter to open the selected detail and `Esc`/`q` to return. See [notification history](docs/design.md#notification-center) and [configuration](docs/configuration.md#settings) to rebind `notification-history`.
+Press `g`, then `n`, from any normal workspace panel to open session notification history. The leading `g` waits indefinitely, like other key-sequence prefixes. In Commit, Stash, Remote, and the Merge conflict list, the same prefix forms `gg` for the first item; `G` selects the last item. The default 200ms `hint_delay_ms` controls only when a continuation overlay appears, not a timeout. Log's Space filter prefix is unchanged: the first `Space` immediately enters it, and `Space b/u/d/p` opens those filters directly. If `notification-history` is rebound to a Space suffix, Commit's Changes tree and Push's outgoing list still apply each standalone Space immediately; completing that chord restores the checkboxes changed by the last press, while another key never replays the toggle. In other panels where Space acts alone without starting a filter prefix, press `Space` again to apply that standalone action, or type another key to replay Space and then process that key. `Esc` cancels. Dialogs and text input keep their own Space behavior. Four newest live cards can appear in the upper-right while work continues; click a card body to inspect that entry, or click its close control. The center keeps up to 500 entries until IGit exits. In History, use `j/k` or arrows to browse, `/` to search, `n/N` for the next/previous match, and `y` to copy the full message. Press `c`, then `y` to clear history or `n` to keep it; `Esc` or `q` closes. On wide terminals, select a row and read its details beside the list; on narrow terminals, press Enter to open the selected detail and `Esc`/`q` to return. See [notification history](docs/design.md#notification-center) and [configuration](docs/configuration.md#settings) to rebind `notification-history`.
 
 | Action | Keyboard | Mouse |
 | --- | --- | --- |
@@ -293,7 +318,7 @@ Press `Space`, then `n`, from any normal workspace panel to open session notific
 | Switch panes | `Tab` / `Shift-Tab` cycles forward/backward (also `F6` / `Shift-F6`); press `Ctrl-W`, then `h/j/k/l` for left/down/up/right | Click the target pane. |
 | Resize panes | After `Ctrl-W`, use `>` / `<` to increase/decrease width, `+` / `-` for height, or `=` to restore defaults | Drag the divider between adjacent panes in the active tab. |
 | Maximize or restore a pane | `Ctrl-W f`; optional Kitty synchronization uses `smart-toggle-pane-maximized` | In maximized mode, only the focused pane is shown; Tab still switches panes. |
-| Actions and help | `:` action list; `?` / `F1` help for the current area; `Space n` opens Notifications from normal workspace panels | Once open, click an action or select a help entry. |
+| Actions and help | `:` action list; `?` / `F1` help for the current area; `g n` opens Notifications from normal workspace panels | Once open, click an action or select a help entry. |
 | Refresh and quit | `F5` refreshes; `q` or normal-mode `Ctrl-C` quits immediately | Open Actions with `:`, then click Refresh workspace or Quit; quitting needs no confirmation. |
 | Review writes | `Tab` switches buttons, `Enter` activates the focused button, and `Esc` cancels; scroll long content with `j/k` or arrow keys | Click Confirm / Cancel; use the wheel to scroll. |
 
@@ -356,7 +381,7 @@ Use `n/p` for changes, `Tab` for panes, `h/l` for horizontal scrolling, `f` to f
 
 **Context help:** `?` or `F1` opens a lazydb-style `KEYMAP // current area` panel with Search focused and IGit's shared window palette. Type a shortcut, description, or area name to filter. Search ignores case and matches characters in order, including nonadjacent characters; space-separated terms must all match. Matched characters in shortcuts and descriptions are highlighted, preferring contiguous matches when available. A row can also match its area name without a highlight in its visible text. With no query, actions for the current area come first, followed by panel-wide and global actions. Search ranks full-field matches first, followed by field prefixes, contiguous substrings, and nonadjacent matches. Earlier match positions break ties, followed by catalogue order. Each row represents one action. `↑/↓` selects, and `Enter` closes help and executes the selected shortcut. `PgUp/PgDn` changes selection by a page; click to select, or use the wheel/scrollbar to browse. Search supports left/right, Home/End, deletion, and `Ctrl-W/U/A/E` editing. `Esc/F1` cancels help and restores the original focus, draft, or dialog. `F1` also works in input fields, Diff, Roots, and review dialogs. Choosing Commit starts the local commit; Push and Apply file still open their reviews.
 
-**Key sequence hints:** In normal mode, press `Ctrl-W`; in Branch, press `g`; in the Log commit list, press `g` / `y`; or in a Merge conflict document, press `[` / `]`. After 200ms without another key, a bottom overlay lists valid continuation keys and descriptions; the prefix itself does not time out. Type the next key to execute; quickly completed sequences do not flash a hint. Once visible, use arrow keys and `Enter`, or click a candidate. `Esc/Ctrl-C` cancels only the pending prefix. Switching panels/focus, opening a menu, pasting, or resizing also dismisses it; another prefix restarts the delay. The overlay uses one to three columns according to width. Letters in text fields and single-key actions in Commit/Push keep their existing meanings.
+**Key sequence hints:** In normal mode, press `Ctrl-W`; in Branch, Commit, Stash, Remote, or the Merge conflict list, press `g`; in the Log commit list, press `g` / `y`; or in a Merge conflict document, press `[` / `]`. After 200ms without another key, a bottom overlay lists valid continuation keys and descriptions; the prefix itself does not time out. Type the next key to execute; quickly completed sequences do not flash a hint. Once visible, use arrow keys and `Enter`, or click a candidate. `Esc/Ctrl-C` cancels only the pending prefix. Switching panels/focus, opening a menu, pasting, or resizing also dismisses it; another prefix restarts the delay. The overlay uses one to three columns according to width. Letters in text fields and single-key actions keep their existing meanings.
 
 ## Workspace Panels
 
@@ -628,7 +653,7 @@ The left branch/tag tree follows the applied Paths scope: local branches, remote
 
 **Compare a commit with Local:** Highlight a commit in Log and press `D`, or
 choose **Compare with Working Tree** from its right-click / `a` menu. The
-read-only comparison shows all cumulative file changes from that commit to
+comparison shows all cumulative file changes from that commit to
 its repository's current working tree, including later commits, staged and
 unstaged edits, and non-ignored untracked files. The highlighted commit sets
 the target independently of cherry-pick checkboxes and Log filters.
@@ -641,11 +666,28 @@ changes, `f` folds context, `z` zooms, `/` searches, and `y` copies the focused
 revision. `J/K` scrolls the right preview down/up without moving the file
 selection, from either pane. Narrow panes show one revision at a time. `F5`
 rereads the working tree; `Esc` clears search/selection first, then restores
-the original Log position, filters, and checked commits. Binary, oversized,
-converted, and unsupported entries show an explanation. The comparison never
-stages files or changes HEAD, refs, or the real index. Configure the entry with
-`compare-with-local` under `[keybindings.log]`. File History retains its
-existing file-specific `D` action and separately reviewed apply controls.
+the original Log position, filters, and checked commits.
+
+For a supported preview, `L`, the toolbar **Apply** button, or the change
+group's `»` (`>>` in ASCII icon mode) control restores that complete aligned
+group from the captured commit to the previewed working file, inserting or
+deleting lines as needed. Only that file and group change; unrelated local
+hunks, the real index (including staged content of the previewed file and
+staged siblings), other files or repositories, HEAD, refs, and reflogs remain
+unchanged. This workspace has no Apply All. Writes recheck Roots and the
+repository, captured commit and file identity, current bytes and permissions,
+Git conversion attributes/config, and path safety without symlinks or nested
+repositories. They support UTF-8 text with uniform LF or CRLF and preserve the
+working file's line endings. Failed checks and unsupported content keep an
+explained read-only preview. After an apply, the preview rebuilds and the
+changed-file list refreshes asynchronously; closing after applied hunks
+refreshes the normal workspace.
+
+Binary, oversized, converted, and unsupported entries show an explanation.
+Browsing or canceling never stages files or changes HEAD, refs, the real index,
+or working files. Configure the entry with `compare-with-local` under
+`[keybindings.log]`. File History retains its existing file-specific `D`
+action and separate single-group and reviewed Apply All controls.
 
 **Log commit actions:** Right-click a commit, click the list's `...` button, or press `a` with the list focused. The menu also creates a local branch or lightweight tag, checks out a revision in detached HEAD, and cherry-picks commits. These direct shortcuts address the highlighted commit in its repository:
 
@@ -669,7 +711,7 @@ search still covers the loaded page, with up to 3,200 commits per repository.
 | Panel | Available operations |
 | --- | --- |
 | **Log** | [Three-column layout](docs/reference/IGit-Log-Graph.png). Identically named branches are combined across repositories. Commit rows default to author, local date/time, colored graph, subject, and references. Hold `j/k` to browse; once selection settles, the right pane loads that commit's files and containing branches. The Diff file tree uses filename colors for change types, without appended status letters. Enter or double-click opens a file Diff. `/` in the commit list searches text or hashes. `Space b/u/d/p` opens Branch/User/Date/Paths; press Space first, then the letter. In the branch tree, `/` or `S` focuses **Branch or tag** to filter names; `Enter` keeps the query, then `Enter` or `s` selects a ref. With a menu open, clicking another filter switches directly; clicking a commit selects it directly. `x` clears filters; `+` loads more history. |
-| **Commit** | Files start grouped by repository, then by repository-relative directory. The historical [flat layout](docs/reference/IGit-Commit-Flat.png) reference shows gray parent paths for flat rows. Click rows to browse, boxes or `Space` to check, and arrows to expand/collapse. Double-click a file or press `Enter` for its patch. `v` toggles preview, `o` opens View Options (Directory, Repository, and legacy Module), and `t` switches directory grouping. Click the message area or press `c` from Changes or Preview to focus Message and edit. Press `i` to edit again. In the editor, Enter adds a newline, `Tab` inserts four spaces, and `Esc`, `F2`, or `Ctrl-S` saves and returns to the message actions. Clicking another workspace control, or using `Shift-Tab/F6`, saves the shared draft before moving focus; `[/]` browses repositories in Changes in normal mode. With Message focused outside the editor, `c` commits, `a` commits and opens Push for separate confirmation, and `g` generates a message. The matching C/a/G letters are accented and underlined only while those shortcuts are available in the focused Message pane. Left/Right still selects an action (starting on **Commit**) and Enter runs it. **Commit** commits checked files in Roots directly. **Commit and Push...** / `P` commits them and opens Push for separate confirmation. |
+| **Commit** | Files start grouped by repository, then by repository-relative directory. The historical [flat layout](docs/reference/IGit-Commit-Flat.png) reference shows gray parent paths for flat rows. Click rows to browse, boxes or `Space` to check, and arrows to expand/collapse. Double-click a file or press `Enter` for its patch. `v` toggles preview, `o` opens View Options (Directory, Repository, and legacy Module), and `t` switches directory grouping. Click the message area or press `c` from Changes or Preview to focus Message and edit. Press `i` to edit again. In the editor, Enter adds a newline, `Tab` inserts four spaces, and `Esc`, `F2`, or `Ctrl-S` saves and returns to the message actions. Clicking another workspace control, or using `Shift-Tab/F6`, saves the shared draft before moving focus; `[/]` browses repositories in Changes in normal mode. With Message focused outside the editor, `c` commits, `a` commits and opens Push for separate confirmation, and `A` generates a message. The matching C and a letters are accented and underlined only while those shortcuts are available in the focused Message pane. Left/Right still selects an action (starting on **Commit**) and Enter runs it. **Commit** commits checked files in Roots directly. **Commit and Push...** / `P` commits them and opens Push for separate confirmation. |
 | **Push** | One contextual title, aligned pane toolbars, complete focus-colored borders, and a footer with Follow tags / Hooks, Cancel, and Push. The lowercase **fetch** control sits at the left of the outgoing toolbar; **Update strategy: Merge/Rebase** stays at its right edge. Retry appears after a push failure. The s/f/P/F/H mnemonic letters use the same gold, bold underline as Commit's message actions. Repository name, branch, target, divergence, and submodule align in left-side columns. Green ahead / blue behind counters compare with the selected Push target. The right side defaults to a full-height repository → directory → file tree with directory counts and filename colors: added green, modified blue, deleted red, renamed amber, without trailing status letters. If the current repository has no outgoing commits or no row is selected, it centers `No commits selected`. Click the **Group By** eye or press `o` to toggle Directory, Repository, and Module independently; Directory / Repository start on and Module starts off. Without Directory, files are flat with parent paths. Arrows or `h/l` expand/collapse; `[/]` expands/collapses all in the file area. Click a file or press `Enter` for the same Before/After Diff as Log. Details opens the selected file or toggles the scope summary. Cancel returns to the last Commit, Log, Branch, Stash, or Remote tab. Boxes or `Space` select repositories. Click a row's target or press `t` to edit `remote:branch` (`Ctrl-U` clears input). `s` or clicking the strategy directly toggles and saves Merge/Rebase. `F/H` toggles Follow tags/Hooks. `P` opens one review authorizing Fetch, any necessary update, and publication, with Confirm focused; `Enter` confirms and `Esc` cancels. `R` freshly reviews only visible failures; `f` fetches the Push targets. `C` or Conflicts opens conflict resolution after an interrupted update. Push reviews visible eligible repositories and is disabled when none are checked or while busy. Network operations run in the background; failures remain visible per repository. At most 60 recent commits per repository are expanded, but counts and review use the full branch tip. |
 | **Conflicts** | Lists unresolved paths and Git operations ready for Continue in the current Roots. Press Enter on a file or double-click it to open the three-pane merge editor. Apply Changes reviews and stages one file; Continue reviews the repository operation separately. |
 
@@ -841,7 +883,7 @@ the focused button, Tab switches buttons, and Esc cancels.
 - Selection is per file. Files with staged changes use the **index version**; otherwise, they use the **working-tree version**. If line A was staged and line B changed afterward, only A is committed. Unselected staged entries in the real index remain intact. When a tracked file is replaced by a directory of the same name, selecting only the old file's deletion does not include files inside the new directory; AI patches use the same scope. This version does not offer manual line selection or split one file across multiple changelists.
 - Clicking **Commit** starts a local batch with the current selection and message. If the branch, HEAD, or selected content no longer matches the prepared batch, IGit stops the affected commit. Refresh with `F5` and check the selection before retrying.
 - Commits run real hooks. Amend is blocked for commits contained in known remote-tracking refs; local tracking records are not absolute proof of the server's publication state. Signing, hooks, or credential helpers that need interaction must use a system-configured agent / pinentry. The workspace does not collect Git passwords.
-- On first direct entry, Push checks and expands every repository in the current Roots with outgoing commits. Refresh and tab switching retain manual checkbox and fold choices. Commit and Push checks only the repositories that just committed successfully, while expanding all repositories with outgoing commits. In the outgoing list, `Space` toggles the current repository immediately. Completing `Space n` restores that toggle and opens Notification History.
+- On first direct entry, Push checks and expands every repository in the current Roots with outgoing commits. Refresh and tab switching retain manual checkbox and fold choices. Commit and Push checks only the repositories that just committed successfully, while expanding all repositories with outgoing commits. In the outgoing list, `Space` toggles the current repository immediately. With the default `g n`, that toggle is independent of Notifications; if `notification-history` is rebound to a Space suffix, completing that chord restores the toggle and opens Notification History.
 - Push confirmation authorizes Fetch of the actual selected push target, any necessary Merge/Rebase, and immediate publication of the resulting exact OID. Source branch, HEAD, configuration, and endpoint are rechecked; the fetched target must be an ancestor of the published commit, and an exact-tip lease rejects a remote race before publication. External source/configuration changes require a fresh review. There is no force-overwrite button. Follow tags includes only reachable annotated tags as defined by Git, not all tags.
 - Remote push-hook rejections retain the captured Git error output in Push Details and notification history. The completion notification prioritizes explicit server errors over hook progress banners, so repository policy failures such as a missing issue key are visible. A successful local update does not guarantee acceptance by remote hooks; correct the rejected commit messages according to that repository's policy before retrying.
 - When parent and child repositories are pushed together, children run first; a failed child blocks its dependent parent. Independent repositories may run concurrently, up to four at a time. Changes to submodule pointers or only their sources in `.gitmodules` require proof that the child commit is available from the source declared in that version. Intermediate commits must pass too. Failure to verify blocks the parent push without publishing unchecked children.
@@ -868,7 +910,7 @@ total_timeout_seconds = 300
 
 Use a full OpenAI-compatible chat completions URL. HTTPS services and localhost HTTP services with an explicit port are supported. The system executable `curl` is required. Set the key in the named environment variable before launching IGit; credentials are not stored in settings or workspace state. See [AI configuration](docs/configuration.md#ai-commit-messages) for defaults and precedence. `S` still edits endpoint/model/prompt in the workspace; user `[ai]` settings take precedence on the next launch.
 
-Click **Generate message**, press `g` with Message focused outside the editor, or use `A` to prepare the checked files in the current Roots in the background. Small selections use one request. For larger patches, IGit splits at file, hunk, or line boundaries where possible and summarizes every fragment. The final request retains every selected file in its manifest and uses your custom prompt. Large selections can use additional reduction requests, take longer, and cost more.
+Click **Generate message** or press `A` to prepare the checked files in the current Roots in the background. Small selections use one request. For larger patches, IGit splits at file, hunk, or line boundaries where possible and summarizes every fragment. The final request retains every selected file in its manifest and uses your custom prompt. Large selections can use additional reduction requests, take longer, and cost more.
 
 `input_budget_bytes` bounds each serialized JSON request in bytes, including prompts, metadata, and escaping. Choose a budget that fits the configured model's context. `max_requests` includes summaries, reductions, and the final request. `timeout_seconds` applies to each HTTP request. `total_timeout_seconds` covers the whole job. Preparation also has a 32 MiB patch safety cap. See [AI configuration](docs/configuration.md#ai-commit-messages) for valid ranges and endpoint requirements.
 
@@ -880,12 +922,15 @@ Local groups, the shared message draft and workspace AI settings are stored in a
 
 For local macOS/Linux development, the entry point below serializes entire Cargo commands across terminals and IGit checkouts. It uses a fresh `target-serial/` directory, one compilation job and one test thread. Existing `target/` artifacts are retained. A second command waits for the first to finish; `run` holds the lock until the application exits. Avoid mixing this entry point with raw Cargo commands. On Windows, use the corresponding native Cargo commands: the project defaults still limit build/test threads and use `target-serial/`, but there is no whole-command lock. CI explicitly retains its existing `target/` layout.
 
+Rebuild the application with `python3 scripts/cargo_serial.py build --locked --bins` so both `target-serial/debug/igit` and `target-serial/debug/ig` are current. These are independent Cargo binary targets. On macOS/Linux, the wrapper automatically adds the companion target when a `build` selects only `--bin igit` or `--bin ig` (including `--bin=NAME` and glob selectors), and prints the effective command. Focused library/example builds stay focused. `run --bin NAME` builds and launches only the selected command; tests, checks, and Clippy do not refresh both standalone executables. Rebuild both before launching the other command from another terminal. Local builds do not replace installed commands.
+
 During the macOS freeze investigation, run a focused check first, for example `python3 scripts/cargo_serial.py test --locked --lib commit::`. The complete checks below are for deliberate broader verification, not an automatic retry loop. Do not clean the old target directory.
 
 ```sh
 python3 scripts/cargo_serial.py test --locked
 python3 scripts/cargo_serial.py fmt --all --check
 python3 scripts/cargo_serial.py clippy --locked --all-targets -- -D warnings
+python3 -B -m unittest discover -s scripts -p 'test_cargo_serial.py'
 python3 -B -m unittest discover -s scripts/release -p 'test_*.py'
 ```
 

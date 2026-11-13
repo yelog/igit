@@ -15,7 +15,7 @@ use unicode_width::UnicodeWidthStr;
 const TAG: Color = Color::Rgb(44, 45, 51);
 const ADDED: Color = Color::Rgb(110, 191, 124);
 const UNTRACKED: Color = Color::Rgb(240, 140, 134);
-const DELETED: Color = Color::Rgb(205, 154, 135);
+const DELETED: Color = Color::Rgb(116, 117, 131);
 const FOLDER: Color = Color::Rgb(197, 173, 121);
 const CONFLICT_NAME: Color = Color::Rgb(221, 107, 101);
 const CONFLICT_META: Color = Color::Rgb(115, 118, 123);

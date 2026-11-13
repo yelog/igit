@@ -24,6 +24,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 const SPLIT_AT: u16 = 92;
+const DELETED: Color = Color::Rgb(116, 117, 131);
 
 fn fg(color: Color) -> Style {
     Style::default().fg(color)
@@ -47,7 +48,7 @@ fn file_line(icons: IconMode, change: &backend::Change, width: usize) -> Line<'s
             change.xy[1]
         } {
             b'A' => GREEN,
-            b'D' => RED,
+            b'D' => DELETED,
             b'?' => RED,
             _ => BLUE,
         }

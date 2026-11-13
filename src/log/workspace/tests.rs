@@ -8,6 +8,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod apply;
+
 fn snapshot(repo: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     fn walk(root: &Path, directory: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
         for entry in fs::read_dir(directory).unwrap() {
@@ -62,6 +64,11 @@ fn source(diff: &mut DiffView, side: usize) -> String {
         crate::merge::RevisionEvent::Copy(text) => text,
         _ => panic!("copy revision"),
     }
+}
+
+fn preview(repo: &Path, oid: &str, file: &model::File) -> DiffView {
+    let context = Context::discover(repo).unwrap();
+    backend::diff(&context.repos[0], 0, oid, file).unwrap()
 }
 
 fn render(panel: &mut LogPanel, context: &Context, width: u16, height: u16) -> String {
@@ -131,7 +138,7 @@ fn workspace_compare_includes_committed_staged_unstaged_and_untracked_changes_wi
             .iter()
             .find(|file| file.raw == name.as_bytes())
             .unwrap();
-        let mut diff = backend::diff(repo, &oid, file).unwrap();
+        let mut diff = preview(repo, &oid, file);
         assert_eq!(source(&mut diff, 0), expected_before);
         assert_eq!(source(&mut diff, 1), expected_after);
     }
@@ -204,7 +211,6 @@ fn workspace_compare_shortcut_preserves_highlight_filters_tabs_checks_and_git_st
     ));
     for code in [
         K::Char('A'),
-        K::Char('L'),
         K::Char('C'),
         K::Char('d'),
         K::Char('u'),
@@ -223,6 +229,73 @@ fn workspace_compare_shortcut_preserves_highlight_filters_tabs_checks_and_git_st
     assert_eq!(panel.picks[0].oid, picked);
     assert!(panel.pick_mode);
     assert_eq!(snapshot(temp.path()), before);
+}
+
+#[test]
+fn workspace_compare_applies_only_the_selected_hunk() {
+    let temp = init();
+    let repo = temp.path();
+    commit(repo, "file", "alpha\nkeep one\nkeep two\nomega\n");
+    commit(repo, "sibling", "sibling base\n");
+    let oid = git(repo, &["rev-parse", "HEAD"]);
+    fs::write(
+        repo.join("file"),
+        "ALPHA\ninserted\nkeep one\nkeep two\nstaged omega\n",
+    )
+    .unwrap();
+    fs::write(repo.join("sibling"), "sibling staged\n").unwrap();
+    git(repo, &["add", "."]);
+    fs::write(
+        repo.join("file"),
+        "ALPHA\ninserted\nkeep one\nkeep two\nworking omega\n",
+    )
+    .unwrap();
+    let context = Context::discover(repo).unwrap();
+    let mut panel = LogPanel::default();
+    panel.refresh(&context).unwrap();
+    key(&mut panel, K::Char('D'), &context);
+    finish(&mut panel, &context);
+    key(&mut panel, K::Enter, &context);
+    let before = snapshot(repo);
+    let diff = panel
+        .workspace_comparison
+        .as_ref()
+        .unwrap()
+        .panel
+        .diff
+        .as_ref()
+        .unwrap();
+    assert_eq!(diff.comparison.as_ref().unwrap().change_count(), 2);
+    assert!(matches!(
+        key(&mut panel, K::Char('L'), &context),
+        Action::None
+    ));
+    assert_eq!(
+        fs::read_to_string(repo.join("file")).unwrap(),
+        "alpha\nkeep one\nkeep two\nworking omega\n"
+    );
+    finish(&mut panel, &context);
+    let mut expected = before;
+    expected.insert(
+        PathBuf::from("file"),
+        b"alpha\nkeep one\nkeep two\nworking omega\n".to_vec(),
+    );
+    assert_eq!(snapshot(repo), expected);
+    assert_eq!(git(repo, &["rev-parse", "HEAD"]), oid);
+    let diff = panel
+        .workspace_comparison
+        .as_mut()
+        .unwrap()
+        .panel
+        .diff
+        .as_mut()
+        .unwrap();
+    assert_eq!(diff.comparison.as_ref().unwrap().change_count(), 1);
+    assert_eq!(source(diff, 0), "alpha\nkeep one\nkeep two\nomega\n");
+    assert_eq!(
+        source(diff, 1),
+        "alpha\nkeep one\nkeep two\nworking omega\n"
+    );
 }
 
 #[test]
@@ -281,6 +354,52 @@ fn workspace_compare_uppercase_jk_scrolls_preview_without_moving_file_selection(
             .file_cursor(),
         cursor
     );
+}
+
+#[test]
+fn workspace_compare_requires_gg_before_selecting_the_first_file() {
+    let temp = init();
+    commit(temp.path(), "alpha.txt", "base alpha\n");
+    commit(temp.path(), "beta.txt", "base beta\n");
+    fs::write(temp.path().join("alpha.txt"), "changed alpha\n").unwrap();
+    fs::write(temp.path().join("beta.txt"), "changed beta\n").unwrap();
+    let context = Context::discover(temp.path()).unwrap();
+    let mut panel = LogPanel::default();
+    panel.refresh(&context).unwrap();
+    key(&mut panel, K::Char('D'), &context);
+    finish(&mut panel, &context);
+    render(&mut panel, &context, 120, 36);
+
+    let comparison = panel.workspace_comparison.as_mut().unwrap();
+    comparison.panel.select_file(1);
+    let moved = comparison.path().unwrap();
+    let first = comparison.panel.details.files[0].raw.clone();
+    assert_ne!(moved, first);
+
+    key(&mut panel, K::Char('g'), &context);
+    let comparison = panel.workspace_comparison.as_ref().unwrap();
+    assert_eq!(comparison.path().unwrap(), moved);
+    assert_eq!(comparison.panel.key_prefix, Some('g'));
+
+    panel.cancel_key_sequence();
+    assert_eq!(
+        panel
+            .workspace_comparison
+            .as_ref()
+            .unwrap()
+            .panel
+            .key_prefix,
+        None
+    );
+    key(&mut panel, K::Char('g'), &context);
+    let comparison = panel.workspace_comparison.as_ref().unwrap();
+    assert_eq!(comparison.path().unwrap(), moved);
+    assert_eq!(comparison.panel.key_prefix, Some('g'));
+
+    key(&mut panel, K::Char('g'), &context);
+    let comparison = panel.workspace_comparison.as_ref().unwrap();
+    assert_eq!(comparison.panel.file_cursor(), 0);
+    assert_eq!(comparison.panel.key_prefix, None);
 }
 
 #[test]
@@ -470,7 +589,7 @@ fn workspace_compare_reports_binary_and_oversized_limits_without_writes() {
             .iter()
             .find(|file| file.raw == name.as_bytes())
             .unwrap();
-        let diff = backend::diff(temp.path(), &oid, file).unwrap();
+        let diff = preview(temp.path(), &oid, file);
         assert!(diff.comparison.is_none());
         assert!(
             diff.lines.iter().any(|line| line.contains(explanation)),
@@ -486,7 +605,7 @@ fn workspace_compare_reports_binary_and_oversized_limits_without_writes() {
         .iter()
         .find(|file| file.raw == b"tracked-large")
         .unwrap();
-    let mut diff = backend::diff(temp.path(), &oid, file).unwrap();
+    let mut diff = preview(temp.path(), &oid, file);
     assert_eq!(source(&mut diff, 1).len(), 128 * 1024);
     assert_eq!(snapshot(temp.path()), before);
 }
@@ -522,7 +641,7 @@ fn workspace_compare_handles_literal_and_unicode_paths_independently() {
             .iter()
             .find(|file| file.raw == name.as_os_str().as_encoded_bytes())
             .unwrap();
-        let mut diff = backend::diff(temp.path(), &oid, file).unwrap();
+        let mut diff = preview(temp.path(), &oid, file);
         assert_eq!(source(&mut diff, 0), format!("base {index}\n"));
         assert_eq!(source(&mut diff, 1), format!("working {index}\n"));
     }
@@ -565,7 +684,7 @@ fn workspace_compare_preserves_historical_native_byte_path_identity() {
             .text,
         "native contents\n"
     );
-    let mut diff = backend::diff(temp.path(), &oid, file).unwrap();
+    let mut diff = preview(temp.path(), &oid, file);
     if diff.comparison.is_some() {
         assert_eq!(source(&mut diff, 0), "native contents\n");
         assert_eq!(source(&mut diff, 1), "");
@@ -600,14 +719,14 @@ fn workspace_compare_reads_link_text_and_rejects_parent_symlinks_without_touchin
     let before = snapshot(temp.path());
     let files = backend::files(temp.path(), &oid).unwrap();
     let link = files.iter().find(|file| file.raw == b"link").unwrap();
-    let mut diff = backend::diff(temp.path(), &oid, link).unwrap();
+    let mut diff = preview(temp.path(), &oid, link);
     assert_eq!(source(&mut diff, 0), "old-target");
     assert_eq!(source(&mut diff, 1), "new-target");
     let child = files
         .iter()
         .find(|file| file.raw == b"directory/file")
         .unwrap();
-    let diff = backend::diff(temp.path(), &oid, child).unwrap();
+    let diff = preview(temp.path(), &oid, child);
     assert!(diff.comparison.is_none());
     assert!(diff
         .lines

@@ -145,6 +145,7 @@ pub struct MergePanel {
     drafts: HashMap<(usize, PathBuf), (Stages, Snapshot)>,
     edit: Option<Editor>,
     prefix: Option<char>,
+    goto_pending: bool,
     hits: Vec<(Rect, Hit)>,
     rows_height: usize,
     rows_total: usize,
@@ -228,11 +229,15 @@ impl MergePanel {
     /// Shared cancellation for Shell overlays and the panel's input transitions.
     pub(crate) fn cancel_key_sequence(&mut self) {
         self.prefix = None;
+        self.goto_pending = false;
     }
 
     pub(crate) fn key_sequence(&self) -> Option<KeySequence> {
-        if self.doc.is_none() || self.editing() {
+        if self.editing() {
             return None;
+        }
+        if self.doc.is_none() {
+            return self.goto_pending.then_some(KeySequence::FirstItem);
         }
         match self.prefix {
             Some('[') => Some(KeySequence::MergePrevious),
@@ -897,6 +902,12 @@ impl Panel for MergePanel {
         if k.kind == crossterm::event::KeyEventKind::Release {
             return Action::None;
         }
+        if self.edit.is_some()
+            || self.doc.is_some()
+            || !matches!(e, Event::Key(k) if k.code == K::Char('g') && k.modifiers.is_empty())
+        {
+            self.goto_pending = false;
+        }
         if let Some(edit) = &mut self.edit {
             match k.code {
                 K::Esc => return self.act(Hit::CancelEdit, c),
@@ -937,10 +948,20 @@ impl Panel for MergePanel {
             if k.modifiers.intersects(M::CONTROL | M::ALT | M::SUPER) {
                 return Action::None;
             }
+            if k.code == K::Char('g') {
+                if self.goto_pending {
+                    self.goto_pending = false;
+                    self.list.move_by(isize::MIN);
+                } else {
+                    self.goto_pending = true;
+                }
+                return Action::None;
+            }
+            self.goto_pending = false;
             match k.code {
                 K::Char('j') | K::Down => self.list.move_by(1),
                 K::Char('k') | K::Up => self.list.move_by(-1),
-                K::Char('g') | K::Home => self.list.move_by(isize::MIN),
+                K::Home => self.list.move_by(isize::MIN),
                 K::Char('G') | K::End => self.list.move_by(isize::MAX),
                 K::Char('S') => return self.act(Hit::PrepareSimple, c),
                 K::Char(key @ ('Y' | 'T')) => {

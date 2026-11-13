@@ -189,16 +189,10 @@ impl PushPanel {
         })
     }
 
-    fn footer_options(&self) -> [(String, Hit); 2] {
+    fn footer_options(&self) -> [(&'static str, bool, Hit); 2] {
         [
-            (
-                format!("{} Follow tags", self.icons.check(self.follow_tags)),
-                Hit::Tags,
-            ),
-            (
-                format!("{} Hooks", self.icons.check(!self.skip_hooks)),
-                Hit::Hooks,
-            ),
+            ("Follow tags", self.follow_tags, Hit::Tags),
+            ("Hooks", !self.skip_hooks, Hit::Hooks),
         ]
     }
 
@@ -216,7 +210,12 @@ impl PushPanel {
         let options = self
             .footer_options()
             .iter()
-            .map(|(label, _)| label.width() + 2)
+            .map(|(label, checked, hit)| {
+                let mut line = self.control_line(label, *hit, true);
+                line.spans.insert(0, checkbox(self.icons, *checked));
+                line.spans.insert(1, Span::raw(" "));
+                line.width() + 2
+            })
             .sum::<usize>();
         let actions = self
             .footer_actions()
@@ -882,15 +881,18 @@ impl PushPanel {
         let wrap = self.footer_wraps(area.width);
         let y = area.y;
         let mut x = area.x;
-        for (label, hit) in self.footer_options() {
+        for (label, checked, hit) in self.footer_options() {
+            let mut line = self.control_line(label, hit, true);
+            line.spans.insert(0, checkbox(self.icons, checked));
+            line.spans.insert(1, Span::raw(" "));
+            let width = line.width();
             let row = cell(
                 Rect::new(area.x, y, area.width, 1),
                 usize::from(x - area.x),
-                label.width(),
+                width,
             );
             f.render_widget(
-                Paragraph::new(self.control_line(&label, hit, true))
-                    .style(Style::new().fg(MUTED).bg(BG)),
+                Paragraph::new(line).style(Style::new().fg(MUTED).bg(BG)),
                 row,
             );
             if !row.is_empty() {

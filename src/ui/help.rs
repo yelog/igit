@@ -95,7 +95,7 @@ pub(crate) fn global_section(show_conflicts: bool, show_scope_actions: bool) -> 
         (":", "Open Actions"),
         ("F5", "Refresh workspace"),
         ("F9", "Open Update Center"),
-        ("Space n", "Open notification history"),
+        ("g n", "Open notification history"),
         ("F1", "Open help for current pane"),
         ("?", "Open help for current pane"),
         ("q", "Quit IGit"),
@@ -127,7 +127,7 @@ impl HelpCommand {
             ]);
         }
         if sequence.contains(char::is_whitespace) {
-            if sequence == "Space n" {
+            if sequence == "g n" {
                 return Some(
                     keys::catalogue_sequence(sequence)
                         .into_iter()

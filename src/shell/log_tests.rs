@@ -446,3 +446,51 @@ fn workspace_compare_remapped_entry_help_panes_refresh_and_return_keep_log_and_g
     assert_eq!(app.log.focused_pane(), PaneId::Graph);
     assert_eq!(snapshot(&repo), before);
 }
+
+#[test]
+fn workspace_compare_shell_applies_the_current_hunk_and_refreshes_without_staging() {
+    let (_temp, mut app) = fixture();
+    let repo = app.ctx.repos[0].path.clone();
+    app.go(Log);
+    screen(&mut app, 184, 36);
+    let oid = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+    let index = std::fs::read(repo.join(".git/index")).unwrap();
+    app.dispatch(&key(KeyCode::Char('D')));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.log.preview_wakeup().is_some() {
+        app.poll();
+        assert!(Instant::now() < deadline, "workspace comparison timed out");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    app.dispatch(&key(KeyCode::Enter));
+    let text = screen(&mut app, 184, 36);
+    assert!(
+        text.lines().last().unwrap().contains("L Apply hunk"),
+        "{text}"
+    );
+    app.dispatch(&key(KeyCode::Char('L')));
+    assert_eq!(
+        std::fs::read_to_string(repo.join("mixed.txt")).unwrap(),
+        "base\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.join("other.txt")).unwrap(),
+        "unselected staged\n"
+    );
+    assert_eq!(std::fs::read(repo.join(".git/index")).unwrap(), index);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.log.preview_wakeup().is_some() {
+        app.poll();
+        assert!(Instant::now() < deadline, "workspace refresh timed out");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    app.dispatch(&key(KeyCode::Esc));
+    assert!(!app.log.comparing_workspace());
+    assert!(app
+        .notifications
+        .latest_body()
+        .contains("Applied commit hunks"));
+    assert_eq!(app.tab, Log);
+    assert_eq!(std::fs::read(repo.join(".git/index")).unwrap(), index);
+    assert_eq!(git(&repo, &["rev-parse", "HEAD"]).unwrap(), oid);
+}

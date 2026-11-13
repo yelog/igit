@@ -20,7 +20,7 @@ fn notifications_keep_the_footer_and_complete_history_after_expiry() {
     assert!(rendered.contains("ERROR Commit"));
     assert!(rendered.contains("Changed file was not applied."));
     let footer = rendered.lines().last().unwrap();
-    assert!(footer.contains("Space n Notices"));
+    assert!(footer.contains("g n Notices"));
     assert!(!footer.contains("Changed file"));
     app.go(Log);
     let entry = app.notifications.history().next().unwrap();
@@ -31,9 +31,9 @@ fn notifications_keep_the_footer_and_complete_history_after_expiry() {
         .notifications
         .expire(Instant::now() + Duration::from_secs(9)));
     assert!(app.notifications.live().is_empty());
-    app.dispatch(&key(KeyCode::Char(' ')));
+    app.dispatch(&key(KeyCode::Char('g')));
     assert!(app.notification_prefix.is_some());
-    assert_eq!(app.key_sequence(), Some(KeySequence::LogFilters));
+    assert_eq!(app.key_sequence(), Some(KeySequence::LogGoto));
     app.dispatch(&key(KeyCode::Char('n')));
     assert!(matches!(app.pop, Some(Popup::Notifications(_))));
     assert!(screen(&mut app, 120, 36).contains("NOTIFICATION HISTORY"));
@@ -43,11 +43,11 @@ fn notifications_keep_the_footer_and_complete_history_after_expiry() {
 }
 
 #[test]
-fn space_n_opens_history_from_every_normal_workspace_panel() {
+fn g_n_opens_history_from_every_normal_workspace_panel() {
     let (_dir, mut app) = fixture();
-    for tab in [Commit, Log, Push, Branch, Stash] {
+    for tab in [Commit, Log, Push, Branch, Stash, Remote] {
         app.go(tab);
-        app.dispatch(&key(KeyCode::Char(' ')));
+        app.dispatch(&key(KeyCode::Char('g')));
         assert!(app.notification_prefix.is_some(), "{tab:?}");
         assert!(app.pop.is_none(), "{tab:?}");
         app.dispatch(&key(KeyCode::Char('n')));
@@ -55,27 +55,27 @@ fn space_n_opens_history_from_every_normal_workspace_panel() {
         app.dispatch(&key(KeyCode::Esc));
     }
     app.go(Commit);
-    app.dispatch(&key(KeyCode::Char(' ')));
+    app.dispatch(&key(KeyCode::Char('g')));
     app.dispatch(&key(KeyCode::Char('N')));
     assert!(app.pop.is_none());
 }
 
 #[test]
-fn space_n_does_not_override_review_dialog_input() {
+fn g_n_does_not_override_review_dialog_input() {
     let (_dir, mut app) = fixture();
     open_review(&mut app);
-    app.dispatch(&key(KeyCode::Char(' ')));
+    app.dispatch(&key(KeyCode::Char('g')));
     assert!(matches!(app.pop, Some(Popup::Confirm { .. })));
     app.dispatch(&key(KeyCode::Char('n')));
     assert!(app.pop.is_none());
 }
 
 #[test]
-fn notification_prefix_waits_indefinitely_and_second_space_applies_standalone_action() {
+fn notification_prefix_waits_indefinitely_and_space_toggles_immediately() {
     let (_dir, mut app) = fixture();
     let before = screen(&mut app, 120, 36);
-    assert!(screen(&mut app, 120, 36).contains("Space n Notices"));
-    app.dispatch(&key(KeyCode::Char(' ')));
+    assert!(screen(&mut app, 120, 36).contains("g n Notices"));
+    app.dispatch(&key(KeyCode::Char('g')));
     assert!(app.notification_prefix.is_some());
     assert!(app.pop.is_none());
     assert!(!screen(&mut app, 120, 36).contains("n Notifications"));
@@ -93,16 +93,18 @@ fn notification_prefix_waits_indefinitely_and_second_space_applies_standalone_ac
     app.dispatch(&key(KeyCode::Esc));
 
     app.dispatch(&key(KeyCode::Char(' ')));
+    assert!(screen(&mut app, 120, 36).contains("0 files selected"));
+    assert!(app.notification_prefix.is_none());
     app.dispatch(&key(KeyCode::Char(' ')));
     assert!(app.notification_prefix.is_none());
     assert!(app.pop.is_none());
-    assert_ne!(screen(&mut app, 120, 36), before);
+    assert_eq!(screen(&mut app, 120, 36), before);
     app.dispatch(&key(KeyCode::Char('n')));
     assert!(app.pop.is_none());
 }
 
 #[test]
-fn space_n_opens_history_in_an_empty_workspace_and_escape_cancels_the_chord() {
+fn g_n_opens_history_in_an_empty_workspace_and_escape_cancels_the_chord() {
     let (_dir, mut app) = fixture();
     let empty = tempfile::tempdir().unwrap();
     app.pop = Some(Popup::Open {
@@ -110,12 +112,12 @@ fn space_n_opens_history_in_an_empty_workspace_and_escape_cancels_the_chord() {
     });
     app.dispatch(&key(KeyCode::Enter));
     assert!(app.ctx.repos.is_empty());
-    app.dispatch(&key(KeyCode::Char(' ')));
+    app.dispatch(&key(KeyCode::Char('g')));
     assert!(app.notification_prefix.is_some());
     app.dispatch(&key(KeyCode::Esc));
     assert!(app.notification_prefix.is_none());
     assert!(app.pop.is_none());
-    app.dispatch(&key(KeyCode::Char(' ')));
+    app.dispatch(&key(KeyCode::Char('g')));
     assert!(app.notification_prefix.is_some());
     app.dispatch(&key(KeyCode::Char('n')));
     assert!(matches!(app.pop, Some(Popup::Notifications(_))));
@@ -134,7 +136,7 @@ fn notification_space_prefix_uses_custom_suffixes_with_other_bindings_enabled() 
     assert!(app.poll());
     assert_eq!(
         app.notification_prefix_hint().as_deref(),
-        Some("H Notifications  Space again applies  Esc cancel")
+        Some("H Notifications  Esc cancel")
     );
     app.dispatch(&key(KeyCode::Char('n')));
     assert!(app.pop.is_none());
@@ -144,9 +146,10 @@ fn notification_space_prefix_uses_custom_suffixes_with_other_bindings_enabled() 
     app.dispatch(&key(KeyCode::Esc));
     let before = screen(&mut app, 120, 36);
     app.dispatch(&key(KeyCode::Char(' ')));
+    assert_ne!(screen(&mut app, 120, 36), before);
     app.dispatch(&key(KeyCode::Char(' ')));
     assert!(app.notification_prefix.is_none());
-    assert_ne!(screen(&mut app, 120, 36), before);
+    assert_eq!(screen(&mut app, 120, 36), before);
 }
 
 #[test]
@@ -162,7 +165,7 @@ fn notification_prefix_honors_custom_hint_delay_and_multi_step_suffixes() {
     assert!(app.poll());
     assert_eq!(
         app.notification_prefix_hint().as_deref(),
-        Some("H x Notifications  Space again applies  Esc cancel")
+        Some("H x Notifications  Esc cancel")
     );
     app.notification_prefix.as_mut().unwrap().started = Instant::now() - Duration::from_secs(30);
     app.dispatch(&key(KeyCode::Char('H')));
@@ -218,11 +221,12 @@ fn notification_prefix_replays_standalone_space_through_log_filter_routing() {
 }
 
 #[test]
-fn notification_chord_preserves_commit_checks_and_log_cherry_picks() {
+fn notification_chord_does_not_toggle_commit_checks_or_log_cherry_picks() {
     let (_dir, mut app) = fixture();
     let before = screen(&mut app, 120, 36);
     assert!(before.contains("2 files selected"), "{before}");
-    app.dispatch(&key(KeyCode::Char(' ')));
+    app.dispatch(&key(KeyCode::Char('g')));
+    assert!(screen(&mut app, 120, 36).contains("2 files selected"));
     app.dispatch(&key(KeyCode::Char('n')));
     assert!(matches!(app.pop, Some(Popup::Notifications(_))));
     app.dispatch(&key(KeyCode::Esc));
@@ -231,13 +235,27 @@ fn notification_chord_preserves_commit_checks_and_log_cherry_picks() {
     app.go(Log);
     screen(&mut app, 120, 36);
     app.dispatch(&key(KeyCode::Char('v')));
-    app.dispatch(&key(KeyCode::Char(' ')));
+    app.dispatch(&key(KeyCode::Char('g')));
     app.dispatch(&key(KeyCode::Char('n')));
     assert!(matches!(app.pop, Some(Popup::Notifications(_))));
     app.dispatch(&key(KeyCode::Esc));
     app.dispatch(&key(KeyCode::Char(' ')));
-    app.dispatch(&key(KeyCode::Char(' ')));
     assert!(screen(&mut app, 120, 36).contains("Pick 1"));
+}
+
+#[test]
+fn commit_space_toggles_immediately_without_replaying_on_the_next_motion() {
+    let (_dir, mut app) = fixture();
+    screen(&mut app, 120, 36);
+    app.dispatch(&key(KeyCode::Char(' ')));
+    assert!(screen(&mut app, 120, 36).contains("0 files selected"));
+    assert!(app.notification_prefix.is_none());
+    app.dispatch(&key(KeyCode::Char('j')));
+    assert!(app.notification_prefix.is_none());
+    let moved = screen(&mut app, 120, 36);
+    assert!(moved.contains("0 files selected"), "{moved}");
+    app.dispatch(&key(KeyCode::Char('u')));
+    assert!(screen(&mut app, 120, 36).contains("2 files selected"));
 }
 
 #[test]
@@ -277,7 +295,7 @@ fn background_messages_keep_origin_without_interrupting_input_or_review() {
 fn notification_shortcuts_are_configurable_and_actions_open_the_same_history() {
     let (_dir, mut app) = fixture();
     app.go(Log);
-    app.dispatch(&key(KeyCode::Char(' ')));
+    app.dispatch(&key(KeyCode::Char('g')));
     app.dispatch(&key(KeyCode::Char('n')));
     assert!(matches!(app.pop, Some(Popup::Notifications(_))));
     app.dispatch(&key(KeyCode::Esc));
@@ -285,7 +303,7 @@ fn notification_shortcuts_are_configurable_and_actions_open_the_same_history() {
     assert!(app.pop.is_none());
     app.config =
         AppConfig::from_toml("[keybindings.global]\nnotification-history=['F10']").unwrap();
-    app.dispatch(&key(KeyCode::Char(' ')));
+    app.dispatch(&key(KeyCode::Char('g')));
     app.dispatch(&key(KeyCode::Char('n')));
     assert!(app.pop.is_none() && !app.log.editing());
     app.dispatch(&key(KeyCode::F(10)));
@@ -516,7 +534,7 @@ fn notification_help_cannot_replay_copy_as_clear_confirmation() {
         "Keep this complete message".into(),
     );
     app.go(Log);
-    app.dispatch(&key(KeyCode::Char(' ')));
+    app.dispatch(&key(KeyCode::Char('g')));
     app.dispatch(&key(KeyCode::Char('n')));
     app.dispatch(&key(KeyCode::Char('c')));
     app.dispatch(&key(KeyCode::F(1)));
@@ -545,7 +563,7 @@ fn resizing_help_below_minimum_discards_hidden_history_mouse_targets() {
         "Selected notification".into(),
     );
     app.go(Log);
-    app.dispatch(&key(KeyCode::Char(' ')));
+    app.dispatch(&key(KeyCode::Char('g')));
     app.dispatch(&key(KeyCode::Char('n')));
     let rendered = screen(&mut app, 80, 24);
     let (column, row) = rendered

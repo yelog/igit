@@ -128,7 +128,7 @@ commands! {
         "expand" => "l", STASH;
         "toggle" => "Space", STASH;
         "open" => "Enter", STASH;
-        "first-item" => "g", STASH;
+        "first-item" => "gg", STASH;
         "last-item" => "G", STASH;
         "page-down" => "PgDn", STASH;
         "page-up" => "PgUp", STASH;
@@ -145,7 +145,7 @@ commands! {
         "expand" => "l", REMOTE;
         "toggle" => "Space", REMOTE;
         "open" => "Enter", REMOTE;
-        "first-item" => "g", REMOTE;
+        "first-item" => "gg", REMOTE;
         "last-item" => "G", REMOTE;
         "page-down" => "PgDn", REMOTE;
         "page-up" => "PgUp", REMOTE;
@@ -209,7 +209,7 @@ commands! {
         "move-left" => "h", LOG;
         "move-right" => "l", LOG;
         "first-commit" => "gg", LOG_GRAPH;
-        "first-item" => "g", LOG_REFS | LOG_FILES | LOG_INFO;
+        "first-item" => "gg", LOG_REFS | LOG_FILES | LOG_INFO;
         "last-item" => "G", LOG;
         "page-down" => "PgDn", LOG;
         "page-up" => "PgUp", LOG;
@@ -263,7 +263,7 @@ commands! {
         "move-up" => "k", COMMIT;
         "collapse" => "h", CHANGES;
         "expand" => "l", CHANGES;
-        "first-item" => "g", CHANGES | PREVIEW;
+        "first-item" => "gg", CHANGES | PREVIEW;
         "last-item" => "G", COMMIT;
         "page-down" => "PgDn", COMMIT;
         "page-up" => "PgUp", COMMIT;
@@ -289,7 +289,7 @@ commands! {
         "amend" => "M", COMMIT;
         "commit" => "c", MESSAGE;
         "commit-and-push" => "a", MESSAGE;
-        "generate-message" => "g", MESSAGE;
+        "generate-message" => "A", MESSAGE;
         "ai-draft" => "A", COMMIT;
         "ai-settings" => "S", COMMIT;
         "review" => "c", CHANGES | PREVIEW;
@@ -324,7 +324,7 @@ commands! {
     "merge" {
         "move-down" => "j", MERGE;
         "move-up" => "k", MERGE;
-        "first-item" => "g", MERGE_FILES;
+        "first-item" => "gg", MERGE_FILES;
         "last-item" => "G", MERGE_FILES;
         "open" => "Enter", MERGE_FILES;
         "continue" => "C", MERGE_FILES;

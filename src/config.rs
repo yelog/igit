@@ -462,7 +462,7 @@ mod tests {
         assert_eq!(config.hint_delay, Duration::from_millis(200));
         assert_eq!(config.label("commit", "review"), "Ctrl-r");
         assert_eq!(config.label("global", "quit"), "q");
-        assert_eq!(config.label("global", "notification-history"), "Space n");
+        assert_eq!(config.label("global", "notification-history"), "g n");
         assert_eq!(config.label("log", "edit-message"), "F2");
         assert_eq!(config.label("log", "drop-commit"), "d");
         assert_eq!(config.label("log", "undo-commit"), "u");
@@ -632,7 +632,7 @@ mod tests {
             "[keybindings.commit]\nreveiw = ['x']",
             "[keybindings.commit]\nreview = ['i']",
             "[keybindings.global]\nquit = ['j']",
-            "[keybindings.commit]\nreview = ['g c']",
+            "[keybindings.commit]\nreview = ['g']",
             "[keybindings.commit]\nreview = ['Esc']",
             "[keybindings.commit]\nreview = ['F1']",
             "[keybindings.commit]\nreview = ['x', 'x']",

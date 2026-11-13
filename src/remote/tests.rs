@@ -268,3 +268,21 @@ fn write_guard_and_release_events_do_not_prepare_remote_changes() {
     panel.event(&event, &c);
     assert!(!panel.editing());
 }
+
+#[test]
+fn remote_navigation_uses_gg_for_first_and_uppercase_g_for_last() {
+    let (_temp, c, mut panel) = fixture();
+    assert!(panel.rows.len() > 2);
+    panel.cursor = 1;
+    key(&mut panel, &c, K::Char('g'));
+    assert_eq!(panel.cursor, 1);
+    assert_eq!(panel.key_sequence(), Some(KeySequence::FirstItem));
+    key(&mut panel, &c, K::Char('g'));
+    assert_eq!(panel.cursor, 0);
+    key(&mut panel, &c, K::Char('G'));
+    assert_eq!(panel.cursor, panel.rows.len() - 1);
+    key(&mut panel, &c, K::Home);
+    assert_eq!(panel.cursor, 0);
+    key(&mut panel, &c, K::End);
+    assert_eq!(panel.cursor, panel.rows.len() - 1);
+}

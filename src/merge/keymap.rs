@@ -47,7 +47,7 @@ impl MergePanel {
                     &[
                         ("j", "Select next row"),
                         ("k", "Select previous row"),
-                        ("g", "Select first item"),
+                        ("gg", "Select first item"),
                         ("G", "Select last item"),
                         (
                             "Enter",

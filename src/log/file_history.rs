@@ -13,7 +13,7 @@ pub(super) struct Target {
 }
 
 impl Target {
-    fn resolve(c: &Context, file: &Path) -> Result<Self> {
+    pub(in crate::log) fn resolve(c: &Context, file: &Path) -> Result<Self> {
         ensure!(!file.is_dir(), "File history requires a file path");
         let absolute = std::path::absolute(file)?;
         // Canonicalize an existing ancestor, so deleted files/directories still
@@ -293,7 +293,12 @@ impl LogPanel {
         if !mouse && scroll_key.is_none() && !self.inline_diff_key(event) {
             return None;
         }
-        self.cancel_key_sequence();
+        if !matches!(
+            event,
+            Event::Key(k) if k.code == K::Char('g') && k.modifiers.is_empty()
+        ) {
+            self.cancel_key_sequence();
+        }
         let mut forwarded = event.clone();
         if let Event::Key(k) = &mut forwarded {
             k.code = scroll_key.unwrap_or(match k.code {
@@ -325,6 +330,16 @@ impl LogPanel {
                 | RevisionEvent::ApplyAll => Action::None,
             });
         }
+        if matches!(forwarded, Event::Key(k)
+            if k.code == K::Char('g') && k.modifiers.is_empty())
+        {
+            if std::mem::take(&mut self.key_prefix) == Some('g') {
+                diff.y = 0;
+            } else {
+                self.key_prefix = Some('g');
+            }
+            return Some(Action::None);
+        }
         if let Some(action) = diff.selection.key(event, true) {
             return Some(action);
         }
@@ -347,7 +362,7 @@ impl LogPanel {
                 K::Char('l') | K::Right => diff.x = diff.x.saturating_add(4),
                 K::PageDown => diff.y = diff.y.saturating_add(12),
                 K::PageUp => diff.y = diff.y.saturating_sub(12),
-                K::Home | K::Char('g') => diff.y = 0,
+                K::Home => diff.y = 0,
                 K::End | K::Char('G') => diff.y = diff.lines.len().saturating_sub(1),
                 _ => (),
             }

@@ -1,6 +1,6 @@
 //! Prefix hints must follow the active panel without changing its selection or Git state.
 use super::{
-    test_support::{key, screen},
+    test_support::{fixture as workspace_fixture, key, screen},
     *,
 };
 use crate::core::git;
@@ -55,11 +55,40 @@ fn show_hints(app: &mut Shell, width: u16, height: u16) -> String {
 }
 
 #[test]
-fn first_space_in_log_shows_filter_prefix_and_preserves_space_n() {
+fn notification_prefix_shares_g_with_commit_goto_without_moving_on_one_g() {
+    let (_repo, mut app) = workspace_fixture();
+    app.go(Commit);
+    app.dispatch(&key(KeyCode::Char('j')));
+    let moved = screen(&mut app, 120, 36);
+
+    app.dispatch(&key(KeyCode::Char('g')));
+    assert!(app.notification_prefix.is_some());
+    assert_eq!(app.key_sequence(), Some(KeySequence::FirstItem));
+    assert_eq!(screen(&mut app, 120, 36), moved);
+
+    app.dispatch(&key(KeyCode::Char('n')));
+    assert!(matches!(app.pop, Some(Popup::Notifications(_))));
+    app.dispatch(&key(KeyCode::Esc));
+    assert_eq!(screen(&mut app, 120, 36), moved);
+
+    app.dispatch(&key(KeyCode::Char('g')));
+    app.dispatch(&key(KeyCode::Char('g')));
+    assert!(app.notification_prefix.is_none());
+    assert!(app.key_sequence().is_none());
+    let first = screen(&mut app, 120, 36);
+    assert_ne!(first, moved);
+
+    app.dispatch(&key(KeyCode::Char('G')));
+    let last = screen(&mut app, 120, 36);
+    assert_ne!(last, first);
+}
+
+#[test]
+fn first_space_in_log_shows_filter_prefix_without_claiming_notifications() {
     let (_repo, mut app) = fixture();
     screen(&mut app, 120, 36);
     app.dispatch(&key(KeyCode::Char(' ')));
-    assert!(app.notification_prefix.is_some());
+    assert!(app.notification_prefix.is_none());
     assert_eq!(app.key_sequence(), Some(KeySequence::LogFilters));
     let hints = screen(&mut app, 120, 36);
     assert!(hints.contains("Filters: b/u/d/p open"), "{hints}");
@@ -67,7 +96,7 @@ fn first_space_in_log_shows_filter_prefix_and_preserves_space_n() {
     let narrow = screen(&mut app, 44, 12);
     assert!(narrow.contains("b/u/d/p Filters"), "{narrow}");
     app.dispatch(&key(KeyCode::Char('n')));
-    assert!(matches!(app.pop, Some(Popup::Notifications(_))));
+    assert!(app.pop.is_none());
     assert!(app.key_sequence().is_none());
 }
 
@@ -192,7 +221,7 @@ fn log_space_filters_take_priority_over_global_pull_and_keep_editor_keys() {
         app.log.focus_pane(pane);
         assert_eq!(app.log.focused_pane(), pane);
         send(&mut app, ' ');
-        assert!(app.notification_prefix.is_some());
+        assert!(app.notification_prefix.is_none());
         send(&mut app, suffix);
         assert!(app.pop.is_none());
         assert_eq!(app.help_content().context(), context);
@@ -218,7 +247,7 @@ fn log_space_filters_take_priority_over_global_pull_and_keep_editor_keys() {
     }
     app.log.focus_pane(PaneId::Refs);
     send(&mut app, '/');
-    assert_eq!(app.help_content().context(), "Pane Search");
+    assert_eq!(app.help_content().context(), "Log / Branch Search");
     for ch in ['p', ' ', 'f'] {
         send(&mut app, ch);
     }
@@ -289,7 +318,7 @@ fn log_space_filters_inline_focus_and_mouse_use_existing_labels() {
         let targets = app.log.filter_shortcut_targets().unwrap();
         let original = terminal.backend().buffer().clone();
         app.dispatch(&key(KeyCode::Char(' ')));
-        assert!(app.notification_prefix.is_some());
+        assert!(app.notification_prefix.is_none());
         assert_eq!(app.key_sequence(), Some(KeySequence::LogFilters));
         terminal.draw(|frame| app.draw(frame)).unwrap();
         assert_eq!(app.log.filter_shortcut_targets().unwrap(), targets);
@@ -323,7 +352,7 @@ fn log_space_filters_inline_focus_and_mouse_use_existing_labels() {
         assert_eq!(app.help_content().context(), "Log / Branch Filter");
         app.dispatch(&key(KeyCode::Esc));
         app.dispatch(&key(KeyCode::Char(' ')));
-        assert!(app.notification_prefix.is_some());
+        assert!(app.notification_prefix.is_none());
         assert_eq!(app.key_sequence(), Some(KeySequence::LogFilters));
         terminal.draw(|frame| app.draw(frame)).unwrap();
         app.dispatch(&Event::Mouse(MouseEvent {

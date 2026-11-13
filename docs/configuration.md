@@ -210,13 +210,15 @@ in Changes and Preview. It focuses Message and starts editing.
 editor with Message focused. In Message, Left/Right selects an action and Enter
 (`keybindings.commit.open`) runs it. With Message focused outside editing,
 `keybindings.commit.commit` (`c`) commits, `keybindings.commit.commit-and-push`
-(`a`) commits and opens Push review, and `keybindings.commit.generate-message`
-(`g`) generates a message. Their C/a/G button letters are accented and underlined
-only while those default keys remain available in the focused Message pane.
-Remapping or disabling a key removes its mnemonic accent. The existing
+(`a`) commits and opens Push review. `keybindings.commit.generate-message` has
+no dedicated default binding, while `keybindings.commit.ai-draft` (`A`)
+generates a message. The C and a button letters are accented and underlined only
+while those default keys remain available in the focused Message pane.
+Remapping or disabling a key removes its mnemonic accent. Generate message has no
+default dedicated binding or accent; `generate-message` shows the fixed `A`
+accent only when explicitly bound to unmodified `A` in Message context. The existing
 `keybindings.commit.review-and-push` (`P`) still commits and opens Push for
-separate confirmation; `keybindings.commit.ai-draft` (`A`) still generates a
-message.
+separate confirmation.
 
 `keybindings.commit.stage-hunks` defaults to `["Ctrl-g"]` in Changes/Preview.
 It opens the highlighted tracked file's Staged/Unstaged hunk view. That view's
@@ -410,24 +412,25 @@ group expansion, and opening the editor. Remote's editor owns Tab / Shift-Tab,
 Enter for new URL lines, Ctrl-U to clear a field, Ctrl-S for review, and Esc
 to cancel. Those editor/review controls are fixed, like other text input.
 
-`global.notification-history` defaults
-to `Space n` and opens session Notification History from any normal workspace
-panel. The leading `Space` waits indefinitely. In Log it also starts the
-filter prefix immediately, so B/U/D/P and the footer hint appear on the first
-press; `b/u/d/p` opens filters and `n` opens History. In panels where Space is
-a standalone action, a second Space applies it, except in Push's outgoing list:
-when `push.toggle` includes standalone Space, the first Space toggles the current
-repository immediately. Completing the notification chord restores that
-checkbox's previous state, while another key never replays the toggle. Esc
-cancels the prefix and keeps the already applied checkbox change. The
-`hint_delay_ms` setting (200ms by default) only controls when a continuation
-overlay appears; it is not a chord timeout. This intentional prefix can share
-Space with selection and filter commands; other exact or prefix collisions
-remain invalid. Dialogs and text input keep their own Space behavior. Actions →
+`global.notification-history` defaults to `g n` and opens session Notification
+History from any normal workspace panel. The leading `g` waits indefinitely.
+Commit, Stash, Remote, and the Merge conflict list share that prefix for
+`first-item` (`g g`); `last-item` remains `G`. Log's Space filter prefix is
+unchanged: the first Space immediately shows B/U/D/P and the filter footer, and
+`b/u/d/p` opens those filters. If `notification-history` is rebound to a Space
+suffix, Commit's Changes tree and Push's outgoing list still apply standalone
+Space immediately when `commit.toggle` or `push.toggle` includes it: every Space
+changes the highlighted row's checkboxes and closes any pending notification
+prefix; completing that chord restores only the last change while another key
+never replays the toggle. In other panels where Space is a standalone action, a
+second Space applies it. Esc cancels the prefix and keeps an already applied
+checkbox change. The `hint_delay_ms` setting (200ms by default) only controls
+when a continuation overlay appears; it is not a chord timeout. Distinct panel
+commands may share the `g` prefix; other exact or prefix collisions remain
+invalid. Dialogs and text input keep their own Space behavior. Actions →
 Notifications also remains available if `notification-history` is unbound.
-Reusing another command's key requires
-rebinding `notification-history` or disabling it with
-`notification-history = []`. `[keybindings.branch]` controls `create`
+Reusing another command's key requires rebinding `notification-history` or
+disabling it with `notification-history = []`. `[keybindings.branch]` controls `create`
 (`a`), `delete` (`d`), `checkout` (`Enter`), `merge` (`m`), `rename` (`r`),
 `compare` (`c`, compares a non-current branch with the current branch),
 `pull` (`p`, `U`), `push` (`P`), `view-options` (`o`, opens Group By), and tree navigation. The comparison's
@@ -539,7 +542,7 @@ sequences may share a prefix (`g g` and `g a`), but `g` and `g a` cannot both
 be complete commands in the same context.
 
 The Message action keys have their own context: Changes can still use `a` to
-add files and `g` to select the first row. Rebinding `commit.edit-message` to `c`
+add files and `g g` to select the first row. Rebinding `commit.edit-message` to `c`
 also requires remapping or disabling `commit.commit`, because both apply in
 Message normal mode.
 

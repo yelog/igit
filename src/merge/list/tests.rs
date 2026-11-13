@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     core::git,
-    ui::{icons::IconMode, Panel},
+    ui::{icons::IconMode, key_sequence::KeySequence, Panel},
 };
 use crossterm::event::{
     Event, KeyCode as K, KeyEvent, KeyModifiers as M, MouseButton, MouseEvent, MouseEventKind,
@@ -193,6 +193,28 @@ fn conflict_list_enter_toggles_the_focused_unresolved_group() {
     key(&mut panel, &ctx, K::Char('j'));
     key(&mut panel, &ctx, K::Enter);
     assert_eq!(panel.doc.as_ref().unwrap().file.path, Path::new(FILE));
+}
+
+#[test]
+fn conflict_list_uses_gg_for_first_and_uppercase_g_for_last() {
+    let dir = tempfile::tempdir().unwrap();
+    repo(dir.path());
+    let ctx = Context::discover(dir.path()).unwrap();
+    let mut panel = panel(&ctx);
+    key(&mut panel, &ctx, K::Char('j'));
+    let before = panel.list.focus;
+    key(&mut panel, &ctx, K::Char('g'));
+    assert!(panel.list.focus == before);
+    assert_eq!(panel.key_sequence(), Some(KeySequence::FirstItem));
+    key(&mut panel, &ctx, K::Char('g'));
+    assert!(panel.list.focus == Some(Row::Unresolved));
+    key(&mut panel, &ctx, K::Char('G'));
+    let last = panel.list.focus;
+    assert!(last != Some(Row::Unresolved));
+    key(&mut panel, &ctx, K::Home);
+    assert!(panel.list.focus == Some(Row::Unresolved));
+    key(&mut panel, &ctx, K::End);
+    assert!(panel.list.focus == last);
 }
 
 #[test]

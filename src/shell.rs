@@ -1,6 +1,7 @@
 mod cli;
 mod configuration;
 mod editor;
+mod file_diff;
 mod kitty;
 mod panes;
 mod software_update;
@@ -11,7 +12,7 @@ mod workspace;
 use self::Tab::{Branch, Commit, Conflicts, Log, Push, Remote, Stash};
 use crate::{
     branch::BranchPanel,
-    commit::{CommitPanel, Rollback, RollbackEvent},
+    commit::{CheckRestore, CommitPanel, Rollback, RollbackEvent},
     config::{
         keys::{self, CommandAction, Sequence},
         AppConfig,
@@ -114,10 +115,13 @@ const HEADER: &str = concat!(
 const HELP: &str = "Usage: igit [OPTIONS] [DIRECTORY]  (alias: ig)
        igit [OPTIONS] <commit|log|push|branch|stash|remote> [DIRECTORY]
        igit [OPTIONS] log [FILE]
+       igit [OPTIONS] diff [--line N] -- <FILE>
 
   commit / log / push / branch / stash / remote
                              open the selected panel (default: Commit)
   log FILE                   open a file-history tab in its owning worktree
+  diff FILE                  compare HEAD with the current file; restore hunks
+  --line N                   center this one-based Local line in File Diff
   update [OPTIONS]           check or update a native installation
   --icons MODE               nerd-font (default), unicode or ascii
   --mouse MODE               on or off (overrides settings)
@@ -133,7 +137,7 @@ Options may appear before or after the panel. Use igit -- log or igit ./log
 to open a directory named log; use igit log -- -file for an option-like filename.
 
 Tabs: 1 Commit / 2 Log / 3 Push / 4 Branch / 5 Stash / 6 Remote / 7 Conflicts (when available)   p Pull / f Fetch
-r repositories (Branch: rename; use Actions for Roots)   Space n notifications   F9 updates   ? / F1 help   q quit
+r repositories (Branch: rename; use Actions for Roots)   g n notifications   F9 updates   ? / F1 help   q quit
 Runs Git on your local working trees; mutations require a reviewed confirmation.";
 struct NotificationPrefix {
     started: Instant,
@@ -141,6 +145,8 @@ struct NotificationPrefix {
     keys: Sequence,
     candidates: Vec<Sequence>,
     dispatched: usize,
+    immediate_check: bool,
+    commit_check: Option<CheckRestore>,
     push_check: Option<RepositoryCheck>,
 }
 
@@ -354,10 +360,12 @@ impl Shell {
         }
         match self.tab {
             Log => self.log.key_sequence(),
+            Commit => self.commit.key_sequence(),
             Push => self.push.key_sequence(),
             Branch => self.branch.key_sequence(),
             Conflicts => self.merge.key_sequence(),
-            _ => None,
+            Stash => self.stash.key_sequence(),
+            Remote => self.remote.key_sequence(),
         }
     }
     fn path_copy_target(&self) -> Option<crate::ui::path_copy::Target> {
@@ -424,9 +432,12 @@ impl Shell {
         self.window_prefix = None;
         self.notification_prefix = None;
         self.log.cancel_key_sequence();
+        self.commit.cancel_key_sequence();
         self.push.cancel_key_sequence();
         self.branch.cancel_key_sequence();
         self.merge.cancel_key_sequence();
+        self.stash.cancel_key_sequence();
+        self.remote.cancel_key_sequence();
         self.key_picker = KeySequencePicker::default();
     }
     fn panel_event(&mut self, ev: &Event) {
@@ -1412,15 +1423,34 @@ impl Shell {
             .collect()
     }
 
+    fn notification_starts_panel_sequence(&self, first: KeyEvent) -> bool {
+        let context = self.binding_context();
+        if context == 0 {
+            return false;
+        }
+        let first = keys::normalize(first);
+        self.config
+            .active(context)
+            .filter(|command| command.command.action != CommandAction::OpenNotifications)
+            .flat_map(|command| command.sequences.iter())
+            .any(|sequence| sequence.len() > 1 && sequence.first() == Some(&first))
+    }
+
     fn notification_prefix_event(&mut self, ev: &Event) -> NotificationPrefixEvent {
         if self.notification_prefix.is_some() {
             let Event::Key(key) = ev else {
+                if matches!(ev, Event::Mouse(m) if m.kind != MouseEventKind::Moved
+                    && self.key_picker.contains(m.column, m.row))
+                {
+                    self.notification_prefix = None;
+                    return NotificationPrefixEvent::Continue;
+                }
                 if matches!(
                     ev,
                     Event::Mouse(m) if m.kind != MouseEventKind::Moved
                 ) || matches!(ev, Event::Resize(..) | Event::FocusLost | Event::Paste(_))
                 {
-                    self.notification_prefix = None;
+                    self.cancel_key_sequences();
                     return NotificationPrefixEvent::Continue;
                 }
                 return NotificationPrefixEvent::Pass;
@@ -1434,12 +1464,25 @@ impl Shell {
             let key = keys::normalize(*key);
             let applies_space = key.code == KeyCode::Char(' ')
                 && key.modifiers.is_empty()
-                && self
+                && !self.notification_prefix.as_ref().is_some_and(|pending| {
+                    pending.candidates.iter().any(|sequence| {
+                        sequence.get(1).is_some_and(|key| {
+                            key.code == KeyCode::Char(' ') && key.modifiers.is_empty()
+                        })
+                    })
+                })
+                && self.notification_prefix.as_ref().is_some_and(|pending| {
+                    pending.space_replays_standalone_action() || pending.immediate_check
+                });
+            if applies_space {
+                let immediate = self
                     .notification_prefix
                     .as_ref()
-                    .is_some_and(NotificationPrefix::space_replays_standalone_action);
-            if applies_space {
+                    .is_some_and(|pending| pending.immediate_check);
                 self.flush_notification_prefix();
+                if immediate {
+                    self.dispatch_normal(ev);
+                }
                 return NotificationPrefixEvent::Handled;
             }
             let mut pending = self.notification_prefix.take().expect("pending prefix");
@@ -1452,6 +1495,9 @@ impl Shell {
                 .iter()
                 .any(|sequence| sequence.len() == pending.keys.len())
             {
+                if let Some(restore) = pending.commit_check {
+                    self.commit.restore_check_toggle(restore);
+                }
                 if let Some(check) = pending.push_check {
                     self.push.restore_repository_check(check);
                 }
@@ -1475,8 +1521,6 @@ impl Shell {
         };
         let first = keys::normalize(*key);
         if key.kind != KeyEventKind::Press
-            || first.code != KeyCode::Char(' ')
-            || !first.modifiers.is_empty()
             || self.pop.is_some()
             || self.panel().editing()
             || self.pending_keys.is_some()
@@ -1488,10 +1532,14 @@ impl Shell {
         }
         let candidates = self.notification_sequences(*key);
         if candidates.is_empty() {
-            if self.tab == Log
+            if first.code == KeyCode::Char(' ')
+                && first.modifiers.is_empty()
+                && self.tab == Log
                 && self.log_filter_prefix_is_default()
                 && self.log.begin_filter_prefix_on_space()
             {
+                self.key_picker =
+                    KeySequencePicker::pending_with_delay(Instant::now(), self.config.hint_delay);
                 return NotificationPrefixEvent::Handled;
             }
             return NotificationPrefixEvent::Pass;
@@ -1502,7 +1550,30 @@ impl Shell {
         }
         let now = Instant::now();
         let hint_delay = self.config.hint_delay;
-        let filter_prefix = self.tab == Log && self.log_filter_prefix_is_default();
+        let panel_prefix =
+            first.code != KeyCode::Char(' ') && self.notification_starts_panel_sequence(*key);
+        if panel_prefix {
+            self.dispatch_notification_replay(ev);
+        }
+        let filter_prefix = self.tab == Log
+            && first.code == KeyCode::Char(' ')
+            && first.modifiers.is_empty()
+            && self.log_filter_prefix_is_default();
+        let commit_space = self.tab == Commit
+            && self.commit.focused_pane() == crate::ui::panes::PaneId::Changes
+            && self.config.active(keys::CHANGES).any(|command| {
+                command.command.group == "commit"
+                    && command.command.name == "toggle"
+                    && command
+                        .sequences
+                        .iter()
+                        .any(|sequence| sequence.as_slice() == [first])
+            });
+        let commit_check = if commit_space {
+            self.commit.toggle_highlighted()
+        } else {
+            None
+        };
         let push_space = self.tab == Push
             && self.push.focused_pane() == crate::ui::panes::PaneId::Outgoing
             && self.config.active(keys::PUSH_REPOS).any(|command| {
@@ -1518,9 +1589,15 @@ impl Shell {
         } else {
             None
         };
-        let dispatched =
-            usize::from(push_space || filter_prefix && self.log.begin_filter_prefix_on_space());
+        let dispatched = usize::from(
+            panel_prefix
+                || commit_space
+                || push_space
+                || filter_prefix && self.log.begin_filter_prefix_on_space(),
+        );
         if dispatched == 1 && filter_prefix {
+            self.key_picker = KeySequencePicker::pending_with_delay(now, hint_delay);
+        } else if panel_prefix {
             self.key_picker = KeySequencePicker::pending_with_delay(now, hint_delay);
         }
         self.notification_prefix = Some(NotificationPrefix {
@@ -1529,6 +1606,8 @@ impl Shell {
             keys: vec![first],
             candidates,
             dispatched,
+            immediate_check: commit_space || push_space,
+            commit_check,
             push_check,
         });
         NotificationPrefixEvent::Handled
@@ -2447,7 +2526,9 @@ pub fn run() -> Result<()> {
         );
         return Ok(());
     }
-    let launch = options.launch(&env::current_dir()?)?;
+    let cwd = env::current_dir()?;
+    let launch = options.launch(&cwd)?;
+    let diff = options.diff_target(&cwd);
     if options.list {
         let ctx = Context::discover(&launch.workspace)?;
         for r in &ctx.repos {
@@ -2472,6 +2553,17 @@ pub fn run() -> Result<()> {
     guard.enter(config.mouse, kitty.available())?;
     let mut term = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     term.clear()?;
+    if let Some((file, line)) = diff {
+        let buffer = env::var_os("IGIT_DIFF_BUFFER").map(PathBuf::from);
+        return file_diff::run(
+            &mut term,
+            launch.workspace,
+            file,
+            line,
+            buffer,
+            config.icons,
+        );
+    }
     let Some(mut app) = startup::open(&mut term, launch, config)? else {
         return Ok(());
     };

@@ -28,6 +28,7 @@ use crate::{
         icons::{Icon, IconMode},
         idea::{BLUE, DIM as MUTED, INK as FG, PANEL, SELECT as SEL},
         inside,
+        key_sequence::KeySequence,
         panes::{PaneId, PaneLayout},
         preview_scroll_key,
         search::Search,
@@ -78,6 +79,12 @@ struct File {
     change: Change,
     group: String,
 }
+#[derive(Clone)]
+pub(crate) struct CheckRestore {
+    touched: Vec<(String, bool)>,
+    previous_undo: Vec<(String, bool)>,
+}
+
 impl File {
     fn movable(&self) -> bool {
         self.change.selectable() && self.change.xy != *b"??"
@@ -104,7 +111,7 @@ impl MessageAction {
         match self {
             Self::Commit => 'c',
             Self::CommitAndPush => 'a',
-            Self::Generate => 'g',
+            Self::Generate => 'A',
         }
     }
 
@@ -189,6 +196,7 @@ pub struct CommitPanel {
     last_click: Option<(String, Instant)>,
     last_check: Vec<(String, bool)>,
     cursor: usize,
+    goto_pending: bool,
     offset: usize,
     focus: Focus,
     message_action: MessageAction,
@@ -250,10 +258,11 @@ impl Default for CommitPanel {
             last_click: Default::default(),
             last_check: Default::default(),
             cursor: Default::default(),
+            goto_pending: false,
             offset: Default::default(),
             focus: Default::default(),
             message_action: Default::default(),
-            message_mnemonics: ['c', 'a', 'g'].into(),
+            message_mnemonics: ['c', 'a'].into(),
             edit: Default::default(),
             buf: Default::default(),
             caret: Default::default(),
@@ -373,6 +382,14 @@ impl CommitPanel {
                 .then_some(shortcut)
         })
         .collect();
+    }
+
+    pub(crate) fn key_sequence(&self) -> Option<KeySequence> {
+        self.goto_pending.then_some(KeySequence::FirstItem)
+    }
+
+    pub(crate) fn cancel_key_sequence(&mut self) {
+        self.goto_pending = false;
     }
 
     pub(crate) fn focused_pane(&self) -> PaneId {
@@ -552,6 +569,33 @@ impl CommitPanel {
             }
         }
     }
+    pub(crate) fn toggle_highlighted(&mut self) -> Option<CheckRestore> {
+        let previous_undo = std::mem::take(&mut self.last_check);
+        self.toggle(self.cursor);
+        let touched = std::mem::take(&mut self.last_check);
+        if touched.is_empty() {
+            self.last_check = previous_undo;
+            None
+        } else {
+            self.last_check = touched.clone();
+            Some(CheckRestore {
+                touched,
+                previous_undo,
+            })
+        }
+    }
+    pub(crate) fn restore_check_toggle(&mut self, restore: CheckRestore) {
+        let CheckRestore {
+            touched,
+            previous_undo,
+        } = restore;
+        for (key, was) in touched.iter() {
+            self.checks.insert(key.clone(), *was);
+        }
+        if self.last_check == touched {
+            self.last_check = previous_undo;
+        }
+    }
     fn fold(&mut self, index: usize, v: Option<bool>, c: &Context) {
         if let Some(r) = self.view.get(index) {
             if !r.foldable() {
@@ -693,7 +737,7 @@ impl CommitPanel {
                     Some(match action {
                         MessageAction::Commit => "Commit checked files  c",
                         MessageAction::CommitAndPush => "Commit, then open Push preview  a",
-                        MessageAction::Generate => "Generate an AI commit message  g",
+                        MessageAction::Generate => "Generate an AI commit message  A",
                     })
                 }
                 _ => hit.hint(),
@@ -928,6 +972,12 @@ impl Panel for CommitPanel {
         if matches!(e, Event::Key(k) if k.kind == KeyEventKind::Release) {
             return Action::None;
         }
+        if !matches!(
+            e,
+            Event::Key(k) if k.code == K::Char('g') && k.modifiers.is_empty()
+        ) {
+            self.goto_pending = false;
+        }
         if self.editing() {
             self.invalidate_ai_check();
         }
@@ -1071,6 +1121,32 @@ impl Panel for CommitPanel {
             self.last_click = None;
         }
         self.hover = None;
+        if let Event::Key(k) = e {
+            if k.code == K::Char('g')
+                && k.modifiers.is_empty()
+                && self.focus != Focus::Message
+                && self.edit.is_none()
+                && self.view_menu.is_none()
+            {
+                if std::mem::take(&mut self.goto_pending) {
+                    if self.focus == Focus::Diff {
+                        self.diff_anchor = None;
+                        self.diff_scroll = 0;
+                        if let Some(view) = &mut self.diff_comparison {
+                            view.go_to_start();
+                        }
+                    } else {
+                        self.cursor = 0;
+                    }
+                } else {
+                    self.goto_pending = true;
+                }
+                return Action::None;
+            }
+            self.goto_pending = false;
+        } else {
+            self.goto_pending = false;
+        }
         if let Some(key) = scroll_key.filter(|_| self.file_preview_visible()) {
             let step = if key == K::Down { 1 } else { -1 };
             self.diff_anchor = None;
@@ -1178,14 +1254,14 @@ impl Panel for CommitPanel {
                 }
             }
             Event::Key(k) => match k.code {
-                K::Char(shortcut @ ('c' | 'a' | 'g'))
+                K::Char(shortcut @ ('c' | 'a'))
                     if self.focus == Focus::Message && k.modifiers.is_empty() =>
                 {
                     if k.kind == KeyEventKind::Press {
                         let action = match shortcut {
                             'c' => MessageAction::Commit,
                             'a' => MessageAction::CommitAndPush,
-                            _ => MessageAction::Generate,
+                            _ => unreachable!(),
                         };
                         return self.launch(Hit::MessageAction(action), c);
                     }
@@ -1209,15 +1285,18 @@ impl Panel for CommitPanel {
                         self.move_cursor(-1)
                     }
                 }
-                K::Char('g') | K::Home if self.focus == Focus::Diff => {
+                K::Home if self.focus == Focus::Diff => {
                     self.diff_anchor = None;
                     self.diff_scroll = 0;
                 }
                 K::Char('G') | K::End if self.focus == Focus::Diff => {
                     self.diff_anchor = None;
                     self.diff_scroll = usize::MAX;
+                    if let Some(view) = &mut self.diff_comparison {
+                        view.go_to_end();
+                    }
                 }
-                K::Char('g') | K::Home => self.cursor = 0,
+                K::Home => self.cursor = 0,
                 K::Char('G') | K::End => self.cursor = self.view.len().saturating_sub(1),
                 K::PageUp | K::PageDown => {
                     let forward = k.code == K::PageDown;

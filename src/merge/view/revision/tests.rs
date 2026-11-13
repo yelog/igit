@@ -53,6 +53,121 @@ fn key(view: &mut RevisionDiff, code: K) -> RevisionEvent {
     view.event(&Event::Key(KeyEvent::new(code, M::NONE)))
 }
 
+fn pane_has_focus(
+    terminal: &Terminal<TestBackend>,
+    view: &RevisionDiff,
+    map: &RowMap<'_>,
+    pane: usize,
+    index: usize,
+) -> bool {
+    let section = &map.sections[index];
+    let y = view.code_areas[pane].y + (section.first - view.scroll) as u16;
+    let width = terminal.backend().buffer().area.width;
+    let (start, end) = if pane == 0 {
+        (0, width / 2)
+    } else {
+        (width / 2, width)
+    };
+    let buffer = terminal.backend().buffer();
+    (start..end).any(|x| buffer[(x, y)].bg == crate::ui::SEL)
+}
+
+#[test]
+fn local_source_line_is_centered_through_alignment_and_folded_context() {
+    let before = (1..=180)
+        .map(|line| format!("source line {line}\n"))
+        .collect::<String>();
+    let after = before
+        .replacen("source line 3\n", "", 1)
+        .replacen("source line 9\n", "inserted one\ninserted two\n", 1)
+        .replace("source line 160\n", "changed near end\n");
+    for (width, height) in [(160, 36), (80, 24), (44, 12)] {
+        let mut view = RevisionDiff::local(
+            "source.txt".into(),
+            "12345678".into(),
+            before.clone(),
+            after.clone(),
+            String::new(),
+            String::new(),
+            true,
+        );
+        view.reveal_local_line(85);
+        let screen = text(&draw(&mut view, width, height, IconMode::Unicode));
+        assert!(screen.contains("source line 85"), "{screen}");
+        assert_eq!(view.side, 1);
+        let map = RowMap::revision(&view.chunks, &view.view, view.single_pane);
+        let row = map
+            .sections
+            .iter()
+            .find_map(|section| {
+                let offset = 84usize.checked_sub(section.numbers[1])?;
+                (offset < section.lines[1].len()).then(|| {
+                    section.first
+                        + (0..section.height)
+                            .find(|&row| section.line_at(row) == Some(offset))
+                            .unwrap()
+                })
+            })
+            .unwrap();
+        assert_eq!(row - view.scroll, view.page / 2, "{width}x{height}");
+        let scroll = view.scroll;
+        key(&mut view, K::Char('j'));
+        draw(&mut view, width, height, IconMode::Unicode);
+        assert_eq!(view.scroll, scroll + 1);
+    }
+}
+
+#[test]
+fn local_source_line_clamps_at_boundaries_and_accepts_empty_files() {
+    for text in ["", "single line\n", "first\nlast"] {
+        for line in [0, 1, usize::MAX] {
+            let mut view = RevisionDiff::local(
+                "source.txt".into(),
+                "12345678".into(),
+                text.into(),
+                text.into(),
+                String::new(),
+                String::new(),
+                true,
+            );
+            view.reveal_local_line(line);
+            draw(&mut view, 120, 24, IconMode::Ascii);
+            assert!(view.reveal_line.is_none());
+            assert_eq!(view.side, 1);
+            assert_eq!(view.scroll, 0);
+        }
+    }
+}
+
+#[test]
+fn local_source_line_centers_a_changed_row_even_when_surrounding_context_is_folded() {
+    let before = (1..=200)
+        .map(|line| format!("source line {line}\n"))
+        .collect::<String>();
+    let after = before.replace("source line 100\n", "changed line 100\n");
+    for (width, height) in [(160, 36), (80, 24), (44, 12)] {
+        let mut view = RevisionDiff::local(
+            "source.txt".into(),
+            "12345678".into(),
+            before.clone(),
+            after.clone(),
+            String::new(),
+            String::new(),
+            true,
+        );
+        view.reveal_local_line(100);
+        let terminal = draw(&mut view, width, height, IconMode::Unicode);
+        let row = view.code_areas[1].y + (view.page / 2) as u16;
+        let center = (0..width)
+            .map(|column| terminal.backend().buffer()[(column, row)].symbol())
+            .collect::<String>();
+        assert!(
+            center.contains("changed line 100"),
+            "{width}x{height}: {center}"
+        );
+    }
+}
+
 #[test]
 fn historical_alignment_highlights_only_changed_sides_and_has_no_write_controls() {
     let mut view = fixture();
@@ -159,6 +274,37 @@ fn revision_navigation_folds_scrollbars_and_narrow_panes_are_read_only() {
     for (w, h) in [(80, 24), (24, 7), (10, 4), (1, 1)] {
         draw(&mut view, w, h, IconMode::Ascii);
     }
+}
+
+#[test]
+fn revision_goto_requires_gg_and_cancels_its_prefix_on_other_keys() {
+    let mut view = fixture();
+    key(&mut view, K::Char('f'));
+    draw(&mut view, 120, 20, IconMode::NerdFont);
+    assert!(view.total > view.page + 2);
+    let bottom = view.total.saturating_sub(view.page);
+    view.scroll = bottom;
+
+    key(&mut view, K::Char('g'));
+    assert_eq!(view.scroll, bottom);
+    key(&mut view, K::Char('g'));
+    assert_eq!(view.scroll, 0);
+
+    key(&mut view, K::Char('G'));
+    assert_eq!(view.scroll, bottom);
+    key(&mut view, K::Home);
+    assert_eq!(view.scroll, 0);
+
+    key(&mut view, K::Char('j'));
+    assert_eq!(view.scroll, 1);
+    key(&mut view, K::Char('g'));
+    assert_eq!(view.scroll, 1);
+    key(&mut view, K::Char('j'));
+    assert_eq!(view.scroll, 2);
+    key(&mut view, K::Char('g'));
+    assert_eq!(view.scroll, 2);
+    key(&mut view, K::Char('g'));
+    assert_eq!(view.scroll, 0);
 }
 
 #[test]
@@ -297,6 +443,137 @@ fn local_merge_treats_adjacent_alignment_chunks_as_one_change_group() {
     assert!(matches!(
         key(&mut view, K::Char('L')),
         RevisionEvent::Apply(index) if index == start
+    ));
+}
+
+#[test]
+fn local_merge_marks_the_current_change_group_in_both_panes() {
+    let revision = (1..=32)
+        .map(|line| format!("source line {line}\n"))
+        .collect::<String>();
+    let local = revision
+        .replace("source line 5\n", "changed line 5\ninserted after 5\n")
+        .replace("source line 24\n", "changed line 24\n");
+    let mut view = RevisionDiff::local(
+        "sample.txt".into(),
+        "11111111".into(),
+        revision,
+        local,
+        "LF".into(),
+        "LF".into(),
+        true,
+    );
+    assert_eq!(view.changes.len(), 2);
+    let terminal = draw(&mut view, 120, 32, IconMode::Unicode);
+    let screen = text(&terminal);
+    assert!(screen.contains("Change 1/2"), "{screen}");
+
+    let first = view.changes[0];
+    let second = view.changes[1];
+    let group: Vec<_> = (first..view.change_end(first))
+        .filter(|&index| view.chunks[index].kind != Kind::Context)
+        .collect();
+    assert!(group.len() > 1);
+    {
+        let map = RowMap::revision(&view.chunks, &view.view, view.single_pane);
+        for pane in 0..2 {
+            for &index in &group {
+                assert!(
+                    pane_has_focus(&terminal, &view, &map, pane, index),
+                    "pane {pane}, chunk {index}: {screen}"
+                );
+            }
+            assert!(
+                !pane_has_focus(&terminal, &view, &map, pane, second),
+                "pane {pane}: {screen}"
+            );
+        }
+    }
+
+    assert!(matches!(key(&mut view, K::Char('n')), RevisionEvent::None));
+    assert_eq!(view.selected, second);
+    let terminal = draw(&mut view, 120, 32, IconMode::Unicode);
+    let screen = text(&terminal);
+    assert!(screen.contains("Change 2/2"), "{screen}");
+    let map = RowMap::revision(&view.chunks, &view.view, view.single_pane);
+    for pane in 0..2 {
+        assert!(
+            !pane_has_focus(&terminal, &view, &map, pane, first),
+            "pane {pane}: {screen}"
+        );
+        assert!(
+            pane_has_focus(&terminal, &view, &map, pane, second),
+            "pane {pane}: {screen}"
+        );
+    }
+}
+
+#[test]
+fn local_merge_inline_gutter_arrows_align_with_each_hunk_first_row() {
+    let revision = "alpha\none old\ncontext one\ncontext two\ncontext three\ntwo old\ntail\n";
+    let local = "alpha\none new\ncontext one\ncontext two\ncontext three\ntwo new\ntail\n";
+    let mut view = RevisionDiff::local(
+        "sample.ts".into(),
+        "11111111".into(),
+        revision.into(),
+        local.into(),
+        "LF".into(),
+        "LF".into(),
+        true,
+    );
+    let terminal = draw_inline(&mut view, 120, 24, IconMode::Unicode);
+    let screen = text(&terminal);
+    let map = RowMap::revision(&view.chunks, &view.view, None);
+    let code = view.code_areas[0];
+    let arrows: Vec<_> = view
+        .hits
+        .iter()
+        .filter_map(|(rect, target)| {
+            (rect.y >= code.y && matches!(target, Target::Apply(_))).then_some((*rect, *target))
+        })
+        .collect();
+    assert_eq!(arrows.len(), 2, "{screen}");
+    for (rect, target) in arrows {
+        let Target::Apply(index) = target else {
+            unreachable!();
+        };
+        let section = &map.sections[index];
+        let expected_y = code.y + (section.first - view.scroll) as u16;
+        assert_eq!(rect.y, expected_y, "{screen}");
+        let first_line = rows::line_body(section.lines[0][0]);
+        assert!(
+            screen
+                .lines()
+                .nth(rect.y as usize)
+                .unwrap()
+                .contains(first_line),
+            "arrow for change {index} is not on `{first_line}`:\n{screen}"
+        );
+    }
+}
+
+#[test]
+fn local_merge_preserves_equivalent_context_indentation_for_one_change() {
+    let revision = "top\nold\n\ttabbed\nend\n";
+    let mut view = RevisionDiff::local(
+        "sample.ts".into(),
+        "11111111".into(),
+        revision.into(),
+        "top\nnew\n    tabbed\nend\n".into(),
+        "LF".into(),
+        "LF".into(),
+        true,
+    );
+    assert_eq!(view.change_count(), 1);
+    let change = view.selected_change().unwrap();
+    assert_eq!(
+        view.merged_local_text(Some(change)).as_deref(),
+        Some("top\nold\n    tabbed\nend\n")
+    );
+    assert_eq!(view.merged_local_text(None).as_deref(), Some(revision));
+    assert!(matches!(
+        key(&mut view, K::Char('L')),
+        RevisionEvent::Apply(index) if index == change
     ));
 }
 

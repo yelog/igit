@@ -23,7 +23,7 @@ use std::{
 use unicode_width::UnicodeWidthStr;
 
 const GREEN: Color = Color::Rgb(123, 196, 145);
-const RED: Color = Color::Rgb(224, 131, 135);
+const DELETED: Color = Color::Rgb(116, 117, 131);
 
 enum Kind {
     Repository,
@@ -537,7 +537,7 @@ impl LogPanel {
             let (icon, tint) = self.icons.file(path);
             let color = match file.status.as_bytes().first() {
                 Some(b'A' | b'C') => GREEN,
-                Some(b'D') => RED,
+                Some(b'D') => DELETED,
                 Some(b'R' | b'T') => GOLD,
                 _ => BLUE,
             };

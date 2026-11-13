@@ -1,5 +1,5 @@
 use super::*;
-use crate::ui::idea::GOLD;
+use crate::ui::idea::{CHECK, DIM, GOLD};
 
 fn control(panel: &PushPanel, predicate: impl Fn(&Hit) -> bool) -> Rect {
     panel
@@ -145,6 +145,27 @@ fn push_option_shortcuts_keep_repository_selection_and_match_mouse_toggles() {
         assert_eq!(panel.checked, checked);
         assert_eq!(panel.selected(), selected);
     }
+}
+
+#[test]
+fn push_footer_checkboxes_share_the_repository_checkbox_style() {
+    let (mut panel, context) = fixture(IconMode::Unicode);
+    let buffer = draw(&mut panel, &context, 80, 24);
+    let tags = control(&panel, |hit| matches!(hit, Hit::Tags));
+    let hooks = control(&panel, |hit| matches!(hit, Hit::Hooks));
+    let repository = control(&panel, |hit| matches!(hit, Hit::Check(0)));
+
+    let tags = &buffer[(tags.x, tags.y)];
+    let hooks = &buffer[(hooks.x, hooks.y)];
+    let repository = &buffer[(repository.x, repository.y)];
+    assert_eq!(tags.symbol(), panel.icons.check(false));
+    assert_eq!(tags.fg, DIM);
+    assert!(!tags.modifier.contains(Modifier::BOLD));
+    assert_eq!(hooks.symbol(), panel.icons.check(true));
+    assert_eq!(hooks.fg, CHECK);
+    assert!(hooks.modifier.contains(Modifier::BOLD));
+    assert_eq!(hooks.fg, repository.fg);
+    assert_eq!(hooks.modifier, repository.modifier);
 }
 
 #[test]

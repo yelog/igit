@@ -8,7 +8,7 @@ use crate::{
     },
     ui::help::{HelpContent, HelpSection},
 };
-use anyhow::{ensure, Context as _};
+use anyhow::{anyhow, ensure, Context as _};
 
 pub(super) struct Comparison {
     target: operations::Target,
@@ -23,6 +23,7 @@ pub(super) struct Comparison {
     status: Option<String>,
     close: Rect,
     refresh: Rect,
+    changed: bool,
 }
 
 impl Comparison {
@@ -62,6 +63,7 @@ impl Comparison {
             status: None,
             close: Rect::default(),
             refresh: Rect::default(),
+            changed: false,
         };
         comparison.refresh(context);
         Ok(comparison)
@@ -104,6 +106,7 @@ impl Comparison {
 
     fn request_preview(&mut self, delay: Duration) {
         let path = self.path();
+        self.selected = path.clone();
         if path != self.requested {
             self.preview.cancel();
             self.panel.diff = None;
@@ -190,10 +193,11 @@ impl Comparison {
                 .and_then(|index| self.panel.details.files.get(index))
                 .cloned()
             {
-                let repo = self.repo.path.clone();
+                let repo = self.repo.clone();
+                let root = self.target.root;
                 let oid = self.target.oid.clone();
                 if let Err(error) = self.preview.start("igit-workspace-preview", move |_| {
-                    backend::diff(&repo, &oid, &file)
+                    backend::diff(&repo, root, &oid, &file)
                 }) {
                     self.panel.diff = Some(DiffView {
                         lines: vec![format!("Cannot load preview: {error} · F5 retry")],
@@ -240,7 +244,67 @@ impl Comparison {
         }
     }
 
-    fn diff_event(&mut self, event: &Event) -> (bool, Action) {
+    pub(super) fn changed(&self) -> bool {
+        self.changed
+    }
+
+    fn apply_change(&mut self, context: &Context, change: usize) -> Result<()> {
+        ensure!(
+            self.available(context),
+            "Comparison repository is outside Roots or unavailable"
+        );
+        let path = self.path().context("Select a file first")?;
+        let target = file_history::Target {
+            root: self.target.root,
+            path: model::path_from_bytes(&path)?.to_path_buf(),
+        };
+        let diff = self
+            .panel
+            .diff
+            .as_ref()
+            .context("Wait for the file comparison")?;
+        let local = diff
+            .local
+            .as_ref()
+            .context("This file comparison is read-only")?;
+        let view = diff
+            .comparison
+            .as_ref()
+            .context("File comparison is unavailable")?;
+        let revision = self
+            .panel
+            .rev()
+            .context("Comparison commit is unavailable")?;
+        local.ensure_matches(context, revision, &target)?;
+        let text = view
+            .merged_local_text(Some(change))
+            .context("Select a changed block first")?;
+        local.write(&text)?;
+        self.changed = true;
+        self.selected = Some(path);
+        self.files.request();
+        self.panel.hits.clear();
+        let next = local.refresh().and_then(|local| local.diff());
+        match next {
+            Ok(mut next) => {
+                if let Some(next_view) = next.comparison.as_mut() {
+                    next_view.inherit_local_view(view);
+                }
+                self.panel.diff = Some(next);
+                Ok(())
+            }
+            Err(error) => {
+                self.panel.diff = None;
+                self.requested = None;
+                self.request_preview(Duration::ZERO);
+                Err(anyhow!(
+                    "Hunk applied, but the comparison could not refresh: {error:#}. Press F5 to refresh."
+                ))
+            }
+        }
+    }
+
+    fn diff_event(&mut self, event: &Event, context: &Context) -> (bool, Action) {
         if let Some(view) = self
             .panel
             .diff
@@ -267,6 +331,22 @@ impl Comparison {
                         label: "revision",
                     },
                 ),
+                crate::merge::RevisionEvent::Apply(change)
+                    if !matches!(
+                        event,
+                        Event::Key(key)
+                            if key.kind != crossterm::event::KeyEventKind::Press
+                                || key.modifiers.intersects(Mods::ALT | Mods::CONTROL | Mods::SUPER)
+                    ) =>
+                {
+                    (
+                        false,
+                        self.apply_change(context, change).map_or_else(
+                            |error| Action::Notice(NoticeLevel::Error, format!("Log: {error:#}")),
+                            |()| Action::None,
+                        ),
+                    )
+                }
                 _ => (false, Action::None),
             };
         }
@@ -298,7 +378,13 @@ impl Comparison {
                 K::Char('l') | K::Right => diff.x = diff.x.saturating_add(4),
                 K::PageDown => diff.y = diff.y.saturating_add(12),
                 K::PageUp => diff.y = diff.y.saturating_sub(12),
-                K::Char('g') => diff.y = 0,
+                K::Char('g') if key.modifiers.is_empty() => {
+                    if std::mem::take(&mut self.panel.key_prefix) == Some('g') {
+                        diff.y = 0;
+                    } else {
+                        self.panel.key_prefix = Some('g');
+                    }
+                }
                 K::Char('G') => diff.y = diff.lines.len().saturating_sub(1),
                 _ => (),
             }
@@ -343,6 +429,12 @@ impl Comparison {
         }
         if matches!(event, Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Release) {
             return (false, Action::None);
+        }
+        if !matches!(
+            event,
+            Event::Key(key) if key.code == K::Char('g') && key.modifiers.is_empty()
+        ) {
+            self.panel.cancel_key_sequence();
         }
         if let Event::Mouse(mouse) = event {
             if mouse.kind == M::Down(MouseButton::Left) {
@@ -390,7 +482,7 @@ impl Comparison {
             return (false, Action::None);
         }
         if self.panel.focus == Pane::Info {
-            return self.diff_event(event);
+            return self.diff_event(event, context);
         }
         match event {
             Event::Key(key)
@@ -402,7 +494,14 @@ impl Comparison {
                     K::Esc => return (true, Action::None),
                     K::Char('j') | K::Down => self.panel.file_move(1),
                     K::Char('k') | K::Up => self.panel.file_move(-1),
-                    K::Char('g') | K::Home => self.panel.file_move(-1_000_000),
+                    K::Char('g') if key.modifiers.is_empty() => {
+                        if std::mem::take(&mut self.panel.key_prefix) == Some('g') {
+                            self.panel.file_move(-1_000_000);
+                        } else {
+                            self.panel.key_prefix = Some('g');
+                        }
+                    }
+                    K::Home => self.panel.file_move(-1_000_000),
                     K::Char('G') | K::End => self.panel.file_move(1_000_000),
                     K::PageDown => self.panel.file_move(12),
                     K::PageUp => self.panel.file_move(-12),
@@ -537,9 +636,23 @@ impl Comparison {
             panes.active && self.panel.focus == Pane::Files,
         );
         self.panel.draw_files(frame, files, context);
-        let diff = pane_frame(frame, diff, panes.active && self.panel.focus == Pane::Info);
+        let mut diff = pane_frame(frame, diff, panes.active && self.panel.focus == Pane::Info);
         if let Some(view) = self.panel.diff.as_mut() {
             if let Some(comparison) = view.comparison.as_mut() {
+                if let Some(explanation) = view.lines.first() {
+                    let height = cells(explanation)
+                        .div_ceil(diff.width.max(1))
+                        .min(3)
+                        .min(diff.height);
+                    frame.render_widget(
+                        Paragraph::new(explanation.as_str())
+                            .style(fg(GOLD))
+                            .wrap(ratatui::widgets::Wrap { trim: false }),
+                        Rect::new(diff.x, diff.y, diff.width, height),
+                    );
+                    diff.y += height;
+                    diff.height -= height;
+                }
                 comparison.draw_inline(frame, diff, self.panel.icons);
             } else {
                 let mut layout = TextLayout::default();
@@ -579,7 +692,7 @@ impl Comparison {
                     ("/", "Find file or directory"),
                     ("n", "Next matching file"),
                     ("N", "Previous matching file"),
-                    ("g", "Select first item"),
+                    ("gg", "Select first item"),
                     ("G", "Select last item"),
                     ("PgDn", "Page down"),
                     ("PgUp", "Page up"),
@@ -599,10 +712,13 @@ impl Comparison {
                     ("]", "Focus next revision"),
                     ("n", "Next change"),
                     ("p", "Previous change"),
+                    ("L", "Apply current commit hunk to the working file"),
                     ("/", "Find text in the focused revision"),
                     ("N", "Previous search match"),
                     ("j", "Scroll revisions down"),
                     ("k", "Scroll revisions up"),
+                    ("gg", "Go to diff start"),
+                    ("G", "Go to diff end"),
                     ("h", "Scroll focused revision left"),
                     ("l", "Scroll focused revision right"),
                     ("f", "Fold or unfold unchanged regions"),
@@ -615,7 +731,7 @@ impl Comparison {
         HelpContent::new(
             current,
             vec![HelpSection::new(
-                "Workspace Comparison (read-only)",
+                "Workspace Comparison",
                 &[
                     ("Tab", "Focus next comparison pane"),
                     ("Shift-Tab", "Focus previous comparison pane"),
@@ -652,6 +768,20 @@ impl LogPanel {
 
     pub(crate) fn comparing_workspace(&self) -> bool {
         self.workspace_comparison.is_some()
+    }
+
+    pub(crate) fn workspace_apply_available(&self) -> bool {
+        self.workspace_comparison
+            .as_ref()
+            .is_some_and(|comparison| {
+                comparison.panel.focus == Pane::Info
+                    && comparison
+                        .panel
+                        .diff
+                        .as_ref()
+                        .and_then(|diff| diff.comparison.as_ref())
+                        .is_some_and(|view| view.local_merge() && view.selected_change().is_some())
+            })
     }
 }
 

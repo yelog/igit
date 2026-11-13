@@ -21,6 +21,8 @@ pub(super) struct Options {
     pub(super) config_path: Option<PathBuf>,
     pub(super) check_config: bool,
     pub(super) print_config: bool,
+    diff: bool,
+    line: Option<usize>,
     tab: Tab,
     path: Option<PathBuf>,
 }
@@ -40,6 +42,8 @@ pub(super) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command>
         config_path: None,
         check_config: false,
         print_config: false,
+        diff: false,
+        line: None,
         tab: Tab::Commit,
         path: None,
     };
@@ -107,10 +111,26 @@ pub(super) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command>
                 options.print_config = true;
                 continue;
             }
+            if argument == "--line" {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("Missing --line number"))?;
+                options.line = Some(parse_line(&value.to_string_lossy())?);
+                continue;
+            }
+            if let Some(value) = argument.to_str().and_then(|s| s.strip_prefix("--line=")) {
+                options.line = Some(parse_line(value)?);
+                continue;
+            }
             if argument.to_string_lossy().starts_with('-') {
                 bail!("Unknown option: {}\n{HELP}", argument.to_string_lossy());
             }
             if options.path.is_none() && !panel_seen {
+                if argument == "diff" {
+                    options.diff = true;
+                    panel_seen = true;
+                    continue;
+                }
                 if let Some(tab) = parse_tab(&argument) {
                     options.tab = tab;
                     panel_seen = true;
@@ -129,10 +149,32 @@ pub(super) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command>
         }
         options.path = Some(PathBuf::from(argument));
     }
+    if options.diff && options.path.is_none() {
+        bail!("File Diff requires a file: igit diff [--line N] -- <file>");
+    }
+    if options.line.is_some() && !options.diff {
+        bail!("--line is supported only by igit diff");
+    }
     Ok(Command::Open(options))
 }
 
 impl Options {
+    pub(super) fn diff_target(&self, cwd: &Path) -> Option<(PathBuf, usize)> {
+        if !self.diff {
+            return None;
+        }
+        self.path.as_ref().map(|path| {
+            (
+                if path.is_absolute() {
+                    path.clone()
+                } else {
+                    cwd.join(path)
+                },
+                self.line.unwrap_or(1),
+            )
+        })
+    }
+
     pub(super) fn launch(&self, cwd: &Path) -> Result<Launch> {
         let path = self.path.as_ref().map_or_else(
             || cwd.to_path_buf(),
@@ -144,7 +186,10 @@ impl Options {
                 }
             },
         );
-        if self.tab == Tab::Log && self.path.is_some() && !path.is_dir() {
+        if self.diff && path.is_dir() {
+            bail!("File Diff requires a file path");
+        }
+        if (self.tab == Tab::Log || self.diff) && self.path.is_some() && !path.is_dir() {
             // A tracked file and even its containing directories may have been deleted.
             // Discovery needs an existing directory; Log resolves the owning worktree.
             let workspace = path
@@ -157,7 +202,7 @@ impl Options {
             Ok(Launch {
                 workspace,
                 tab: self.tab,
-                file_history: Some(path),
+                file_history: (!self.diff).then_some(path),
             })
         } else {
             Ok(Launch {
@@ -167,6 +212,16 @@ impl Options {
             })
         }
     }
+}
+
+fn parse_line(value: &str) -> Result<usize> {
+    value
+        .parse::<usize>()
+        .ok()
+        .filter(|&line| line > 0)
+        .ok_or_else(|| {
+            anyhow::anyhow!("Invalid --line number '{value}': expected a positive integer")
+        })
 }
 
 fn parse_tab(argument: &std::ffi::OsStr) -> Option<Tab> {
@@ -298,6 +353,45 @@ mod tests {
             .unwrap();
         assert_eq!(deleted.workspace, cwd.path());
         assert_eq!(deleted.file_history, Some(file));
+    }
+
+    #[test]
+    fn file_diff_keeps_literal_paths_and_positive_one_based_lines() {
+        let cwd = tempfile::tempdir().unwrap();
+        for arguments in [
+            vec!["diff", "--line", "85", "--", "--文件 name.rs"],
+            vec!["--line=85", "diff", "--", "--文件 name.rs"],
+        ] {
+            let parsed = options(&arguments);
+            assert_eq!(
+                parsed.diff_target(cwd.path()),
+                Some((cwd.path().join("--文件 name.rs"), 85))
+            );
+            let launch = parsed.launch(cwd.path()).unwrap();
+            assert_eq!(launch.workspace, cwd.path());
+            assert!(launch.file_history.is_none());
+        }
+        assert_eq!(
+            options(&["diff", "file"]).diff_target(cwd.path()),
+            Some((cwd.path().join("file"), 1))
+        );
+        for arguments in [
+            vec!["diff"],
+            vec!["diff", "--line", "0", "file"],
+            vec!["diff", "--line=-1", "file"],
+            vec!["diff", "--line=text", "file"],
+            vec!["diff", "--line", "", "file"],
+            vec!["diff", "--line"],
+            vec!["log", "--line", "2", "file"],
+            vec!["--line", "1"],
+        ] {
+            assert!(
+                parse(arguments.iter().map(OsString::from)).is_err(),
+                "{arguments:?}"
+            );
+        }
+        assert!(options(&["diff", "."]).launch(cwd.path()).is_err());
+        assert_eq!(options(&["--", "diff"]).path, Some("diff".into()));
     }
 
     #[test]

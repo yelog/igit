@@ -104,7 +104,13 @@ pub(super) fn files(repo: &Path, oid: &str) -> Result<Vec<model::File>> {
     Ok(files.into_values().collect())
 }
 
-pub(super) fn diff(repo: &Path, oid: &str, file: &model::File) -> Result<DiffView> {
+pub(super) fn diff(
+    repository: &Repo,
+    root: usize,
+    oid: &str,
+    file: &model::File,
+) -> Result<DiffView> {
+    let repo = &repository.path;
     let path = model::path_from_bytes(&file.raw)?;
     let name = model::plain(&file.raw);
     let sources = (|| -> Result<_> {
@@ -132,12 +138,24 @@ pub(super) fn diff(repo: &Path, oid: &str, file: &model::File) -> Result<DiffVie
     };
     match sources {
         Ok(sources) => {
-            let annotations = sources.each_ref().map(|source| source.description.clone());
+            let local = file_history::LocalCompare::prepare_working_tree(
+                root, repository, oid, path, &sources,
+            )
+            .and_then(|local| local.diff());
+            let error = match local {
+                Ok(local) => return Ok(local),
+                Err(error) => error,
+            };
+            let mut annotations = sources.each_ref().map(|source| source.description.clone());
+            let explanation = format!("Read-only: {error:#}");
+            annotations[1].push_str(&format!(" · {explanation}"));
+            diff.lines.push(explanation);
             diff.comparison = Some(crate::merge::RevisionDiff::working_tree(
                 name,
                 oid.to_owned(),
                 sources.map(|source| source.text),
                 annotations,
+                false,
             ));
         }
         Err(error) => {

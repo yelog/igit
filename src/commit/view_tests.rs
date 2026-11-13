@@ -578,6 +578,30 @@ fn narrow_preview_wraps_the_actual_path_and_never_checks_a_browsed_file() {
 }
 
 #[test]
+fn commit_tree_navigation_uses_gg_for_first_and_uppercase_g_for_last() {
+    let (_dir, c) = fixture();
+    let mut p = CommitPanel::default();
+    p.refresh(&c).unwrap();
+    assert!(p.view.len() > 2);
+    p.cursor = 2;
+    let before = p.cursor;
+
+    key(&mut p, &c, K::Char('g'));
+    assert_eq!(p.cursor, before);
+    assert_eq!(p.key_sequence(), Some(KeySequence::FirstItem));
+    key(&mut p, &c, K::Char('g'));
+    assert_eq!(p.cursor, 0);
+    assert!(p.key_sequence().is_none());
+
+    key(&mut p, &c, K::Char('G'));
+    assert_eq!(p.cursor, p.view.len() - 1);
+    key(&mut p, &c, K::Home);
+    assert_eq!(p.cursor, 0);
+    key(&mut p, &c, K::End);
+    assert_eq!(p.cursor, p.view.len() - 1);
+}
+
+#[test]
 fn flat_layout_and_mouse_preview_resolve_identical_filenames_to_the_right_patch() {
     let (_d, c) = fixture();
     fs::write(c.repos[0].path.join("notes.txt"), "private draft").unwrap();

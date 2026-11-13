@@ -4,6 +4,7 @@ mod authors;
 mod branches;
 pub(crate) mod compare;
 mod display;
+pub(crate) mod file_diff;
 mod file_history;
 mod filters;
 mod input;
@@ -880,10 +881,17 @@ impl Panel for LogPanel {
         if let Some(comparison) = &mut self.workspace_comparison {
             let (close, action) = comparison.event(e, c, &mut self.panes);
             if close {
+                let changed = comparison.changed();
                 self.workspace_comparison = None;
                 self.panes.begin();
                 self.panes.cancel_drag();
                 self.hits.clear();
+                if changed {
+                    return Action::Refresh(
+                        NoticeLevel::Info,
+                        "Applied commit hunks to the working tree".into(),
+                    );
+                }
             }
             return action;
         }
@@ -907,7 +915,12 @@ impl Panel for LogPanel {
                 return Action::None;
             }
             let event = merge.event(e);
-            self.cancel_key_sequence();
+            if !matches!(
+                e,
+                Event::Key(k) if k.code == K::Char('g') && k.modifiers.is_empty()
+            ) {
+                self.cancel_key_sequence();
+            }
             return match event {
                 RevisionEvent::None => Action::None,
                 RevisionEvent::Close => {
@@ -1100,7 +1113,17 @@ impl Panel for LogPanel {
                 self.diff_file(c, if key == K::Char('[') { -1 } else { 1 })?;
                 return Ok(());
             }
-            if let Some(d) = &mut self.diff {
+            if self.diff.is_some() {
+                if key == K::Char('g') && k.modifiers.is_empty() {
+                    if std::mem::take(&mut self.key_prefix) == Some('g') {
+                        self.diff.as_mut().unwrap().y = 0;
+                    } else {
+                        self.key_prefix = Some('g');
+                    }
+                    return Ok(());
+                }
+                self.key_prefix = None;
+                let d = self.diff.as_mut().unwrap();
                 match key {
                     K::Esc | K::Char('q') | K::Enter => self.diff = None,
                     K::Char('j') | K::Down => d.y = (d.y + 1).min(d.lines.len().saturating_sub(1)),
@@ -1109,7 +1132,6 @@ impl Panel for LogPanel {
                     K::Char('l') | K::Right => d.x = d.x.saturating_add(4),
                     K::PageDown => d.y = (d.y + 12).min(d.lines.len().saturating_sub(1)),
                     K::PageUp => d.y = d.y.saturating_sub(12),
-                    K::Char('g') => d.y = 0,
                     K::Char('G') => d.y = d.lines.len().saturating_sub(1),
                     _ => {}
                 }
@@ -1176,6 +1198,9 @@ impl Panel for LogPanel {
                 }
             }
             if self.filter_key(k, c)? {
+                return Ok(());
+            }
+            if self.focus != Pane::Graph && self.first_item_key(k) {
                 return Ok(());
             }
             if let Some(a) = self.graph_key(k, c)? {
@@ -1253,7 +1278,6 @@ impl Panel for LogPanel {
                 K::Char('k') | K::Up => self.mv(-1),
                 K::PageDown => self.mv(12),
                 K::PageUp => self.mv(-12),
-                K::Char('g') => self.mv(-1_000_000),
                 K::Char('G') => self.mv(1_000_000),
                 K::Tab | K::F(6) => self.cycle_focus(if k.modifiers.contains(Mods::SHIFT) {
                     -1
@@ -1504,5 +1528,48 @@ mod tests {
         assert!(panel.visible.is_empty());
         panel.event(&key(K::Char('x')), &c);
         assert_eq!(panel.visible.len(), 1);
+    }
+
+    #[test]
+    fn independent_diff_keeps_gg_pending_until_completion_and_cancels_on_other_keys() {
+        use crossterm::event::KeyEvent;
+
+        let d = init();
+        let body = (0..80)
+            .map(|line| format!("line {line:02}\n"))
+            .collect::<String>();
+        commit(d.path(), "file", &body);
+        commit(d.path(), "file", &format!("{body}tail\n"));
+        let c = Context::discover(d.path()).unwrap();
+        let mut panel = LogPanel::default();
+        panel.refresh(&c).unwrap();
+        finish_preview(&mut panel, &c);
+        panel.focus = Pane::Graph;
+        panel.open_diff(&c).unwrap();
+        assert!(panel
+            .diff
+            .as_ref()
+            .and_then(|diff| diff.comparison.as_ref())
+            .is_some());
+        let key = |k| Event::Key(KeyEvent::new(k, Mods::NONE));
+        fn comparison(panel: &LogPanel) -> &crate::merge::RevisionDiff {
+            panel.diff.as_ref().unwrap().comparison.as_ref().unwrap()
+        }
+
+        panel.event(&key(K::Char('g')), &c);
+        assert_eq!(
+            comparison(&panel).key_sequence(),
+            Some(crate::ui::key_sequence::KeySequence::FirstItem)
+        );
+        panel.event(&key(K::Char('g')), &c);
+        assert!(comparison(&panel).key_sequence().is_none());
+
+        panel.event(&key(K::Char('g')), &c);
+        assert_eq!(
+            comparison(&panel).key_sequence(),
+            Some(crate::ui::key_sequence::KeySequence::FirstItem)
+        );
+        panel.event(&key(K::Char('j')), &c);
+        assert!(comparison(&panel).key_sequence().is_none());
     }
 }

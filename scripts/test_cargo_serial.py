@@ -69,6 +69,67 @@ sys.exit(int(os.environ.get('FAKE_EXIT', '0')))
         self.assertEqual(self.start("check", FAKE_EXIT="7").wait(timeout=10), 7)
         self.assertEqual(self.start("build").wait(timeout=10), 0)
 
+    def test_application_builds_include_both_commands(self):
+        cases = [
+            (("build", "--locked", "--bin", "igit"),
+             ("build", "--locked", "--bin", "igit", "--bin", "ig")),
+            (("build", "--release", "--bin", "ig"),
+             ("build", "--release", "--bin", "ig", "--bin", "igit")),
+            (("build", "--bin=igit"),
+             ("build", "--bin=igit", "--bin", "ig")),
+            (("build", "--bin=ig"),
+             ("build", "--bin=ig", "--bin", "igit")),
+            (("build", "--bin", "ig?t"),
+             ("build", "--bin", "ig?t", "--bin", "ig")),
+            (("build", "--bin", "i?"),
+             ("build", "--bin", "i?", "--bin", "igit")),
+            (("build", "--bin", "igit", "--"),
+             ("build", "--bin", "igit", "--bin", "ig", "--")),
+        ]
+        for args, expected in cases:
+            with self.subTest(args=args):
+                self.assertEqual(self.start(*args).wait(timeout=5), 0)
+                rows = self.read_events()
+                self.assertEqual(rows[-2]["args"], list(expected))
+                self.assertEqual(rows[-1]["kind"], "end")
+        self.assertEqual(len(self.read_events()), len(cases) * 2)
+
+    def test_complete_and_focused_builds_keep_their_selectors(self):
+        cases = [
+            ("build", "--locked"),
+            ("build", "--bins"),
+            ("build", "--all-targets"),
+            ("build", "--bin", "ig", "--bin=igit"),
+            ("build", "--bin", "ig*"),
+            ("build", "--bins", "--bin", "igit"),
+            ("build", "--all-targets", "--bin=ig"),
+            ("build", "--lib"),
+            ("build", "--example", "example"),
+            ("build", "--lib", "--", "--bin=igit"),
+        ]
+        for args in cases:
+            with self.subTest(args=args):
+                self.assertEqual(self.start(*args).wait(timeout=5), 0)
+                self.assertEqual(self.read_events()[-2]["args"], list(args))
+
+    def test_other_commands_keep_single_binary_selection(self):
+        for command in ("run", "check", "test", "clippy", "install"):
+            args = (command, "--bin", "ig", "--", "--bin=igit")
+            with self.subTest(command=command):
+                self.assertEqual(self.start(*args).wait(timeout=5), 0)
+                self.assertEqual(self.read_events()[-2]["args"], list(args))
+
+    def test_paired_build_is_announced_and_failure_releases_lock(self):
+        result = subprocess.run(
+            [sys.executable, str(WRAPPER), "build", "--locked", "--bin", "igit"],
+            env=dict(self.env, FAKE_EXIT="7"), capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 7)
+        self.assertIn("Building both IGit commands", result.stdout)
+        self.assertIn("Running cargo build --locked --bin igit --bin ig", result.stdout)
+        self.assertEqual(self.start("check").wait(timeout=5), 0)
+        self.assertEqual([row["kind"] for row in self.read_events()],
+                         ["start", "end", "start", "end"])
+
     def test_run_preserves_terminal_session(self):
         self.assertEqual(self.start("run", "--bin", "ig").wait(timeout=5), 0)
         self.assertEqual(self.read_events()[0]["sid"], os.getsid(0))

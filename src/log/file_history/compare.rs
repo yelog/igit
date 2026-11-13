@@ -5,12 +5,45 @@ use crate::{core::revision, merge::RevisionDiff};
 use anyhow::{ensure, Context as _, Result};
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Component, PathBuf},
 };
 use tempfile::NamedTempFile;
 
 const LIMIT: usize = revision::LIMIT;
+
+#[derive(Clone, PartialEq, Eq)]
+struct RepositoryIdentity {
+    canonical: PathBuf,
+    created: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    file: [u64; 2],
+}
+
+impl RepositoryIdentity {
+    fn read(repo: &Path) -> Result<Self> {
+        let metadata = fs::symlink_metadata(repo).context("Cannot inspect repository root")?;
+        ensure!(
+            !metadata.file_type().is_symlink(),
+            "Compare with Local does not write through symlink repository roots"
+        );
+        ensure!(
+            metadata.is_dir(),
+            "Comparison repository root is unavailable"
+        );
+        #[cfg(unix)]
+        let file = {
+            use std::os::unix::fs::MetadataExt;
+            [metadata.dev(), metadata.ino()]
+        };
+        Ok(Self {
+            canonical: repo.canonicalize()?,
+            created: metadata.created().ok(),
+            #[cfg(unix)]
+            file,
+        })
+    }
+}
 
 #[derive(Clone, Debug)]
 enum Snapshot {
@@ -41,7 +74,12 @@ impl Snapshot {
             metadata.len() <= LIMIT as u64,
             "Working file is larger than 512 KiB"
         );
-        let bytes = fs::read(&file).with_context(|| format!("read {}", file.display()))?;
+        let mut bytes = Vec::new();
+        fs::File::open(&file)?
+            .take((LIMIT + 1) as u64)
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("read {}", file.display()))?;
+        ensure!(bytes.len() <= LIMIT, "Working file is larger than 512 KiB");
         Ok(Self::File {
             bytes,
             permissions: metadata.permissions(),
@@ -75,6 +113,23 @@ impl Snapshot {
             "LF"
         };
         format!("Working tree · {ending}")
+    }
+
+    fn workspace_note(&self) -> String {
+        let Self::File { permissions, .. } = self else {
+            return "Absent from working tree".into();
+        };
+        #[cfg(unix)]
+        let executable = mode(permissions) & 0o100 != 0;
+        #[cfg(not(unix))]
+        let executable = {
+            let _ = permissions;
+            false
+        };
+        let mode = if executable { "100755" } else { "100644" };
+        let note = self.note();
+        let ending = note.strip_prefix("Working tree · ").unwrap_or(&note);
+        format!("{mode} · {ending}")
     }
 
     fn same(&self, other: &Self) -> bool {
@@ -157,6 +212,7 @@ fn match_line_endings(mut text: String, reference: &str) -> Result<String> {
 }
 
 fn safe_file(repo: &Path, path: &Path, allow_missing_parent: bool) -> Result<PathBuf> {
+    RepositoryIdentity::read(repo)?;
     let parts: Vec<_> = path.components().collect();
     ensure!(
         !parts.is_empty()
@@ -208,6 +264,7 @@ fn safe_file(repo: &Path, path: &Path, allow_missing_parent: bool) -> Result<Pat
 fn conversion_state(repo: &Path, path: &Path) -> Result<Vec<u8>> {
     let output = crate::core::command(repo)
         .args([
+            "--literal-pathspecs",
             "check-attr",
             "-z",
             "filter",
@@ -262,6 +319,7 @@ pub(crate) struct LocalCompare {
     root: usize,
     repo: PathBuf,
     repo_name: String,
+    repository_identity: RepositoryIdentity,
     path: PathBuf,
     revision_id: String,
     revision_text: String,
@@ -270,9 +328,37 @@ pub(crate) struct LocalCompare {
     original: Snapshot,
     conversion_state: Vec<u8>,
     changed: bool,
+    working_tree: bool,
 }
 
 impl LocalCompare {
+    pub(in crate::log) fn prepare_head(c: &Context, file: &Path) -> Result<Self> {
+        let target = Target::resolve(c, file)?;
+        ensure!(
+            c.scope.contains(&target.root),
+            "The file repository is outside the current scope"
+        );
+        let repo = &c.repos[target.root];
+        let head = crate::core::git(&repo.path, &["rev-parse", "--verify", "HEAD^{commit}"])
+            .context("File Diff requires an existing HEAD commit")?;
+        Self::prepare_file(target.root, repo, &head, &target.path, &target.path)
+    }
+
+    pub(in crate::log) fn ensure_head(&self) -> Result<()> {
+        self.ensure_repository()?;
+        ensure!(
+            crate::core::git(&self.repo, &["rev-parse", "--verify", "HEAD^{commit}"])?
+                == self.revision_id,
+            "HEAD changed since File Diff opened; reopen the comparison"
+        );
+        ensure!(
+            self.conversion_state == conversion_state(&self.repo, &self.path)?,
+            "Git attributes/config changed; reopen the comparison"
+        );
+        safe_file(&self.repo, &self.path, false)?;
+        Ok(())
+    }
+
     pub(super) fn prepare(c: &Context, rev: &model::Rev, target: &Target) -> Result<Self> {
         ensure!(
             rev.root == target.root && c.scope.contains(&target.root),
@@ -288,46 +374,73 @@ impl LocalCompare {
             .map(|file| model::path_from_bytes(&file.raw))
             .transpose()?
             .map_or_else(|| target.path.clone(), Path::to_path_buf);
-        let revision = revision::regular_file(&repo.path, &rev.oid, &revision_path)?;
+        Self::prepare_file(target.root, repo, &rev.oid, &revision_path, &target.path)
+    }
+
+    fn prepare_file(
+        root: usize,
+        repo: &crate::core::Repo,
+        oid: &str,
+        revision_path: &Path,
+        path: &Path,
+    ) -> Result<Self> {
+        let repository_identity = RepositoryIdentity::read(&repo.path)?;
+        let revision = revision::regular_file(&repo.path, oid, revision_path)?;
         let (revision_text, revision_note, revision_present) = revision.map_or_else(
             || (String::new(), "Absent in this revision".into(), false),
             |source| (source.text, source.description, true),
         );
-        let conversion_state = conversion_state(&repo.path, &target.path)?;
-        let original = Snapshot::read(&repo.path, &target.path)?;
+        let conversion_state = conversion_state(&repo.path, path)?;
+        let original = Snapshot::read(&repo.path, path)?;
         original.text()?;
-        Ok(Self {
-            root: target.root,
+        let local = Self {
+            root,
             repo: repo.path.clone(),
             repo_name: repo.name.clone(),
-            path: target.path.clone(),
-            revision_id: rev.oid.clone(),
+            repository_identity,
+            path: path.to_path_buf(),
+            revision_id: oid.to_owned(),
             revision_text,
             revision_note,
             revision_present,
             original,
             conversion_state,
             changed: false,
-        })
+            working_tree: false,
+        };
+        local.ensure_repository()?;
+        Ok(local)
     }
 
-    pub(super) fn diff(&self) -> Result<DiffView> {
+    pub(in crate::log) fn prepare_working_tree(
+        root: usize,
+        repo: &crate::core::Repo,
+        oid: &str,
+        path: &Path,
+        sources: &[revision::Source; 2],
+    ) -> Result<Self> {
+        let mut local = Self::prepare_file(root, repo, oid, path, path)?;
+        ensure!(
+            local.revision_text == sources[0].text && local.original.text()? == sources[1].text,
+            "File changed while loading the comparison; press F5 to refresh"
+        );
+        safe_file(&repo.path, path, false)?;
+        local.working_tree = true;
+        Ok(local)
+    }
+
+    pub(in crate::log) fn diff(&self) -> Result<DiffView> {
         let local_text = self.original.text()?;
-        let revision_text = match_line_endings(self.revision_text.clone(), &local_text)?;
-        let name = format!(
-            "{} · {}",
-            self.repo_name,
+        let comparison = self.comparison(&local_text)?;
+        let name = if self.working_tree {
             model::plain(self.path.as_os_str().as_encoded_bytes())
-        );
-        let comparison = RevisionDiff::local(
-            name.clone(),
-            self.revision_id.clone(),
-            revision_text,
-            local_text,
-            self.revision_note.clone(),
-            self.original.note(),
-            self.revision_present,
-        );
+        } else {
+            format!(
+                "{} · {}",
+                self.repo_name,
+                model::plain(self.path.as_os_str().as_encoded_bytes())
+            )
+        };
         Ok(DiffView {
             name,
             comparison: Some(comparison),
@@ -336,7 +449,54 @@ impl LocalCompare {
         })
     }
 
-    pub(super) fn refresh(&self) -> Result<Self> {
+    pub(in crate::log) fn comparison(&self, local_text: &str) -> Result<RevisionDiff> {
+        let revision_text = match_line_endings(self.revision_text.clone(), local_text)?;
+        let path = model::plain(self.path.as_os_str().as_encoded_bytes());
+        let name = if self.working_tree {
+            path
+        } else {
+            format!("{} · {path}", self.repo_name)
+        };
+        let comparison = if self.working_tree {
+            RevisionDiff::working_tree(
+                name.clone(),
+                self.revision_id.clone(),
+                [revision_text, local_text.to_owned()],
+                [self.revision_note.clone(), self.original.workspace_note()],
+                true,
+            )
+        } else {
+            RevisionDiff::local(
+                name.clone(),
+                self.revision_id.clone(),
+                revision_text,
+                local_text.to_owned(),
+                self.revision_note.clone(),
+                self.original.note(),
+                self.revision_present,
+            )
+        };
+        Ok(comparison)
+    }
+
+    pub(in crate::log) fn head_comparison(
+        &self,
+        buffer_text: Option<&str>,
+    ) -> Result<RevisionDiff> {
+        let mut comparison = match buffer_text {
+            Some(text) => self.comparison(text)?,
+            None => self.comparison(&self.original.text()?)?,
+        };
+        comparison.label_head(buffer_text.is_some());
+        Ok(comparison)
+    }
+
+    pub(in crate::log) fn text(&self) -> Result<String> {
+        self.original.text()
+    }
+
+    pub(in crate::log) fn refresh(&self) -> Result<Self> {
+        self.ensure_repository()?;
         let original = Snapshot::read(&self.repo, &self.path)?;
         original.text()?;
         Ok(Self {
@@ -357,24 +517,33 @@ impl LocalCompare {
         self.revision_present
     }
 
+    fn ensure_repository(&self) -> Result<()> {
+        ensure!(
+            self.repository_identity == RepositoryIdentity::read(&self.repo)?,
+            "Repository root changed since Compare with Local opened; reopen the comparison"
+        );
+        Ok(())
+    }
+
     pub(super) fn ensure_current(&self, c: &Context) -> Result<()> {
         ensure!(
             c.scope.contains(&self.root),
-            "The file history repository is outside the current scope"
+            "The comparison repository is outside the current scope"
         );
         let repo = c
             .repos
             .get(self.root)
-            .context("File history repository is unavailable")?;
+            .context("Comparison repository is unavailable")?;
         ensure!(
             repo.path == self.repo,
             "The repository changed since Compare with Local opened"
         );
+        self.ensure_repository()?;
         safe_file(&self.repo, &self.path, false)?;
         Ok(())
     }
 
-    pub(super) fn ensure_matches(
+    pub(in crate::log) fn ensure_matches(
         &self,
         c: &Context,
         rev: &model::Rev,
@@ -392,7 +561,8 @@ impl LocalCompare {
         Ok(())
     }
 
-    pub(super) fn write(&self, text: &str) -> Result<()> {
+    pub(in crate::log) fn write(&self, text: &str) -> Result<()> {
+        self.ensure_repository()?;
         ensure!(
             self.conversion_state == conversion_state(&self.repo, &self.path)?,
             "Git attributes/config changed; reopen Compare with Local"
@@ -413,6 +583,7 @@ impl LocalCompare {
             Snapshot::Missing => {
                 set_new_permissions(temporary.as_file())?;
                 temporary.as_file().sync_all()?;
+                self.ensure_repository()?;
                 safe_file(&self.repo, &self.path, false)?;
                 ensure!(
                     self.original.same(&Snapshot::read(&self.repo, &self.path)?),
@@ -429,6 +600,7 @@ impl LocalCompare {
             Snapshot::File { permissions, .. } => {
                 temporary.as_file().set_permissions(permissions.clone())?;
                 temporary.as_file().sync_all()?;
+                self.ensure_repository()?;
                 safe_file(&self.repo, &self.path, false)?;
                 ensure!(
                     self.original.same(&Snapshot::read(&self.repo, &self.path)?),

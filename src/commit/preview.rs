@@ -142,7 +142,7 @@ impl CommitPanel {
             && matches!(event, Event::Key(k) if
                 ((k.modifiers - Mod::SHIFT).is_empty()
                     && matches!(k.code,
-                        K::Char('n' | 'p' | 'f' | 'z' | 'j' | 'k' | 'h' | 'l' | 'g' | 'G' | 'y' | '[' | ']' | ' ')
+                        K::Char('n' | 'p' | 'f' | 'z' | 'j' | 'k' | 'h' | 'l' | 'y' | '[' | ']' | ' ')
                         | K::Enter | K::Esc | K::Up | K::Down | K::Left | K::Right
                         | K::PageUp | K::PageDown | K::Home | K::End))
                 || (k.modifiers == Mod::CONTROL
