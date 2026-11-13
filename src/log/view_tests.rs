@@ -1230,9 +1230,10 @@ fn paths_root_checkboxes_filter_the_log_without_closing_or_changing_global_scope
     assert_eq!(c.scope, scope);
 
     filter_key(&mut p, 'p', &c);
-    p.event(&Event::Paste("file [x].txt".into()), &c);
+    p.event(&Event::Paste("api/file [x].txt".into()), &c);
     key(&mut p, K::Enter, Mods::NONE, &c);
     assert_eq!(subjects(&p), ["api change"]);
+    assert!(p.filter.roots.is_none());
     key(&mut p, K::Char('t'), Mods::CONTROL, &c);
     assert_eq!(p.visible.len(), 6);
     key(&mut p, K::Char('['), Mods::NONE, &c);

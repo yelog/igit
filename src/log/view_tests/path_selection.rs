@@ -68,6 +68,166 @@ fn open(p: &mut LogPanel, c: &Context, tree: bool) {
     key(p, K::Enter, Mods::NONE, c);
 }
 
+#[test]
+fn paths_menu_unchecks_roots_and_switches_recent_paths() {
+    let (_d, c, mut p) = workspace();
+    let mut t = Terminal::new(TestBackend::new(100, 28)).unwrap();
+    open(&mut p, &c, true);
+    tree_click(&mut p, &mut t, &c, "api (", TreeHit::Fold);
+    tree_click(&mut p, &mut t, &c, "D lib", TreeHit::Check);
+    key(&mut p, K::Enter, Mods::NONE, &c);
+    assert_eq!(p.filter.paths.text(&c).unwrap(), "api/lib");
+    assert!(p.filter.roots.is_none());
+
+    open(&mut p, &c, false);
+    key(&mut p, K::Char('u'), Mods::CONTROL, &c);
+    p.event(&Event::Paste("web/docs".into()), &c);
+    key(&mut p, K::Char('s'), Mods::CONTROL, &c);
+    assert_eq!(p.filter.paths.text(&c).unwrap(), "web/docs");
+
+    filter_key(&mut p, 'p', &c);
+    render(&mut p, &mut t, &c);
+    let menu = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Surface)));
+    let menu_rows: Vec<_> = (menu.y..menu.bottom())
+        .map(|y| row_text(&t, Rect::new(menu.x, y, menu.width, 1)))
+        .collect();
+    assert!(menu_rows.iter().any(|row| row.contains("Recent")));
+    let header = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::AllRoots)));
+    assert!(row_text(&t, header).contains("Roots  0/2"));
+    for (choice, name, checked) in [(2, "api", "[ ]"), (3, "web", "[ ]")] {
+        let row = target(
+            &p,
+            |h| matches!(h, Hit::Dropdown(DropdownHit::Choice(i)) if *i == choice),
+        );
+        assert!(row_text(&t, row).contains(&format!("{checked} {name}")));
+    }
+    let newest = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Choice(4))));
+    assert!(row_text(&t, newest).contains("[x] web/docs"));
+    let older = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Choice(5))));
+    assert!(row_text(&t, older).contains("[ ] api/lib"));
+
+    click_at(&mut p, older, &c);
+    assert!(p.editing());
+    assert_eq!(p.filter.paths.text(&c).unwrap(), "api/lib");
+    assert!(p.filter.roots.is_none());
+    render(&mut p, &mut t, &c);
+    let newest = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Choice(4))));
+    assert!(row_text(&t, newest).contains("[x] api/lib"));
+    let older = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Choice(5))));
+    assert!(row_text(&t, older).contains("[ ] web/docs"));
+
+    key(&mut p, K::Down, Mods::NONE, &c);
+    key(&mut p, K::Enter, Mods::NONE, &c);
+    assert!(p.editing());
+    assert_eq!(p.filter.paths.text(&c).unwrap(), "web/docs");
+    render(&mut p, &mut t, &c);
+    let newest = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Choice(4))));
+    assert!(row_text(&t, newest).contains("[x] web/docs"));
+    let older = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Choice(5))));
+    assert!(row_text(&t, older).contains("[ ] api/lib"));
+
+    let api = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Choice(2))));
+    click_at(&mut p, api, &c);
+    assert!(p.editing());
+    assert!(p.filter.paths.is_empty());
+    assert_eq!(p.filter.roots.as_ref().unwrap(), &[0].into());
+    assert!(subjects(&p)
+        .iter()
+        .all(|subject| subject.starts_with("api ")));
+}
+
+#[test]
+fn path_recent_history_keeps_ten_distinct_entries_and_moves_reuse_to_front() {
+    let (_d, c, mut p) = workspace();
+    let paths: Vec<_> = (0..12)
+        .map(|index| model::PathFilter::parse(&format!("docs/{index}"), &c).unwrap())
+        .collect();
+    for path in &paths {
+        p.remember_paths(path);
+    }
+    assert_eq!(p.path_recents.len(), 10);
+    assert_eq!(p.path_recents.first(), Some(&paths[11]));
+    assert_eq!(p.path_recents.last(), Some(&paths[2]));
+
+    p.remember_paths(&paths[5]);
+    assert_eq!(p.path_recents.len(), 10);
+    assert_eq!(p.path_recents.first(), Some(&paths[5]));
+    assert_eq!(
+        p.path_recents
+            .iter()
+            .filter(|recent| **recent == paths[5])
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn paths_recent_labels_fill_the_available_width_before_summarizing() {
+    let (_d, c, _) = workspace();
+    let paths = model::PathFilter::parse("mes\nmes-isg\nmes-mbg", &c).unwrap();
+    for (width, expected) in [
+        (34, "mes, mes-isg, mes-mbg"),
+        (16, "mes, mes-isg + 1"),
+        (15, "mes, mes-isg"),
+        (11, "mes + 2"),
+        (6, "mes"),
+    ] {
+        assert_eq!(paths.recent_label(&c, width), expected, "width {width}");
+    }
+    assert_eq!(paths.label(&c), "mes + 2");
+}
+
+#[test]
+fn paths_recent_row_uses_its_available_width() {
+    let (_d, c, mut p) = workspace();
+    p.remember_paths(&model::PathFilter::parse("mes\nmes-isg\nmes-mbg", &c).unwrap());
+    let mut t = Terminal::new(TestBackend::new(100, 28)).unwrap();
+    filter_key(&mut p, 'p', &c);
+    render(&mut p, &mut t, &c);
+    let newest = target(&p, |h| matches!(h, Hit::Dropdown(DropdownHit::Choice(4))));
+    let text = row_text(&t, newest);
+    assert!(text.contains("mes, mes-isg, mes-mbg"), "{text:?}");
+    assert!(!text.contains("+ 2"), "{text:?}");
+}
+
+#[test]
+fn paths_toolbar_summarizes_multiple_paths_from_the_first_path() {
+    let (_d, c, mut p) = workspace();
+    p.filter.paths = model::PathFilter::parse("api/lib\nweb/docs\nweb/lib", &c).unwrap();
+    let mut t = Terminal::new(TestBackend::new(180, 40)).unwrap();
+    render(&mut p, &mut t, &c);
+    let field = target(&p, |h| matches!(h, Hit::Filter(Field::Path)));
+    let text = row_text(&t, field);
+    assert!(text.contains("Paths: api/lib + 2"), "{text:?}");
+    assert!(!text.contains("3 paths"), "{text:?}");
+}
+
+#[test]
+fn paths_menu_keeps_recent_entries_reachable_on_a_short_screen() {
+    let d = init();
+    let c = Context::discover(d.path()).unwrap();
+    let mut p = LogPanel {
+        icons: IconMode::Ascii,
+        ..Default::default()
+    };
+    p.refresh(&c).unwrap();
+    for index in 0..10 {
+        let paths = model::PathFilter::parse(&format!("docs/{index}"), &c).unwrap();
+        p.remember_paths(&paths);
+    }
+    let mut t = Terminal::new(TestBackend::new(48, 12)).unwrap();
+    filter_key(&mut p, 'p', &c);
+    key(&mut p, K::Up, Mods::NONE, &c);
+    render(&mut p, &mut t, &c);
+    let last = p.choice_count() - 1;
+    assert_eq!(p.choice, Some(last));
+    let row = target(
+        &p,
+        |h| matches!(h, Hit::Dropdown(DropdownHit::Choice(i)) if *i == last),
+    );
+    assert!(row_text(&t, row).contains("docs/0"));
+}
+
 fn ref_workspace() -> (tempfile::TempDir, Context, LogPanel) {
     let (d, c, mut p) = workspace();
     for repo in &c.repos {

@@ -3,6 +3,7 @@ mod tree;
 
 use super::input::TextInput;
 use super::*;
+use crate::ui::idea::checkbox;
 use crossterm::event::KeyEvent;
 use model::PathFilter;
 use std::collections::BTreeSet;
@@ -10,6 +11,7 @@ use tree::PathTree;
 pub(super) use tree::TreeHit;
 
 pub(super) const COMMANDS: [&str; 2] = ["Select...", "Select in Tree..."];
+const RECENT_LIMIT: usize = 10;
 
 pub(super) enum Dialog {
     Text(TextInput),
@@ -28,6 +30,10 @@ impl Dialog {
 impl Filter {
     pub(super) fn includes_root(&self, id: usize) -> bool {
         self.roots.as_ref().is_none_or(|roots| roots.contains(&id))
+    }
+
+    fn menu_includes_root(&self, id: usize) -> bool {
+        self.paths.is_empty() && self.includes_root(id)
     }
 
     pub(super) fn paths_label(&self, c: &Context) -> String {
@@ -58,45 +64,108 @@ impl LogPanel {
 
     pub(super) fn choice_count(&self) -> usize {
         if self.editing_paths() {
-            COMMANDS.len() + self.path_options.len()
+            COMMANDS.len() + self.path_options.len() + self.path_recents.len()
         } else {
             self.suggestions.len()
         }
+    }
+
+    fn recent_choice_start(&self) -> usize {
+        COMMANDS.len() + self.path_options.len()
+    }
+
+    pub(super) fn is_recent_choice(&self, index: usize) -> bool {
+        index >= self.recent_choice_start() && index < self.choice_count()
+    }
+
+    fn path_menu_visual(&self, choice: usize) -> usize {
+        let mut visual = choice + usize::from(choice >= COMMANDS.len());
+        if self.is_recent_choice(choice) {
+            visual += 1 + usize::from(self.path_options.is_empty());
+        }
+        visual
+    }
+
+    pub(super) fn remember_paths(&mut self, paths: &PathFilter) {
+        if paths.is_empty() {
+            return;
+        }
+        self.path_recents.retain(|recent| recent != paths);
+        self.path_recents.insert(0, paths.clone());
+        self.path_recents.truncate(RECENT_LIMIT);
     }
 
     pub(super) fn path_choice(&mut self, index: usize, c: &Context) -> Result<()> {
         match index {
             0 => self.path_dialog = Some(Dialog::Text(TextInput::new(self.filter.paths.text(c)?))),
             1 => self.path_dialog = Some(Dialog::Tree(PathTree::new(&self.filter, c))),
-            _ => {
-                let Some(&id) = self
-                    .path_options
-                    .get(index - COMMANDS.len())
-                    .filter(|id| c.scope.contains(id))
-                else {
-                    return Ok(());
-                };
-                let mut roots = self.filter.roots.take().unwrap_or_else(|| c.scope.clone());
-                if !roots.remove(&id) {
-                    roots.insert(id);
-                }
-                self.filter.set_roots(roots, c);
-                self.choice = Some(index);
-                return self.refilter_roots(c);
-            }
+            _ if index < self.recent_choice_start() => self.toggle_root(index, c)?,
+            _ => self.use_recent_paths(index, c)?,
         }
         Ok(())
+    }
+
+    fn toggle_root(&mut self, index: usize, c: &Context) -> Result<()> {
+        let Some(&id) = self
+            .path_options
+            .get(index - COMMANDS.len())
+            .filter(|id| c.scope.contains(id))
+        else {
+            return Ok(());
+        };
+        let path_mode = !self.filter.paths.is_empty();
+        let mut roots = if path_mode {
+            BTreeSet::new()
+        } else {
+            self.filter.roots.take().unwrap_or_else(|| c.scope.clone())
+        };
+        if !roots.remove(&id) {
+            roots.insert(id);
+        }
+        self.filter.set_roots(roots, c);
+        self.choice = Some(index);
+        if path_mode {
+            self.filter.paths = PathFilter::default();
+            return self.reload(c, true);
+        }
+        self.refilter_roots(c)
+    }
+
+    fn use_recent_paths(&mut self, index: usize, c: &Context) -> Result<()> {
+        let Some(paths) = self
+            .path_recents
+            .get(index - self.recent_choice_start())
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let roots_changed = self.filter.roots.take().is_some();
+        let paths_changed = self.filter.paths != paths;
+        self.filter.paths = paths.clone();
+        self.remember_paths(&paths);
+        self.choice = Some(self.recent_choice_start());
+        if paths_changed || roots_changed {
+            self.reload(c, true)
+        } else {
+            Ok(())
+        }
     }
 
     pub(super) fn toggle_listed_roots(&mut self, c: &Context) -> Result<()> {
         if self.path_options.is_empty() {
             return Ok(());
         }
-        let all = self
-            .path_options
-            .iter()
-            .all(|&id| self.filter.includes_root(id));
-        let mut roots = self.filter.roots.take().unwrap_or_else(|| c.scope.clone());
+        let path_mode = !self.filter.paths.is_empty();
+        let all = !path_mode
+            && self
+                .path_options
+                .iter()
+                .all(|&id| self.filter.menu_includes_root(id));
+        let mut roots = if path_mode {
+            BTreeSet::new()
+        } else {
+            self.filter.roots.take().unwrap_or_else(|| c.scope.clone())
+        };
         for &id in &self.path_options {
             if all {
                 roots.remove(&id);
@@ -106,6 +175,10 @@ impl LogPanel {
         }
         self.filter.set_roots(roots, c);
         self.choice = Some(self.choice.unwrap_or(COMMANDS.len()).max(COMMANDS.len()));
+        if path_mode {
+            self.filter.paths = PathFilter::default();
+            return self.reload(c, true);
+        }
         self.refilter_roots(c)
     }
 
@@ -117,7 +190,13 @@ impl LogPanel {
 
     fn finish_paths(&mut self, c: &Context, paths: PathFilter) -> Result<()> {
         self.discard_editor();
-        if self.filter.paths == paths {
+        let mut roots_changed = false;
+        if !paths.is_empty() {
+            roots_changed = self.filter.roots.is_some();
+            self.filter.roots = None;
+            self.remember_paths(&paths);
+        }
+        if self.filter.paths == paths && !roots_changed {
             return Ok(());
         }
         self.filter.paths = paths;
@@ -224,8 +303,10 @@ impl LogPanel {
                 let w = a.width.min(38);
                 let x = anchor.x.min(a.right() - w);
                 let y = anchor.bottom().min(a.bottom().saturating_sub(6)).max(a.y);
+                let recents = self.path_recents.len() + usize::from(!self.path_recents.is_empty());
                 let items = (self.path_options.len().max(1)
                     + 5
+                    + recents
                     + usize::from(!query.is_empty() || self.choice.is_none()))
                 .min(28) as u16;
                 (Rect::new(x, y, w, items.min(a.bottom() - y)), "Paths")
@@ -298,26 +379,39 @@ impl LogPanel {
 
     fn draw_path_menu(&mut self, f: &mut Frame, inner: Rect, c: &Context, query: &str) {
         let n = self.path_options.len();
+        let mark_width = cells(self.icons.check(true)).max(cells(self.icons.check(false)));
+        let recent_width = usize::from(inner.width.saturating_sub(mark_width + 1));
+        let recents: Vec<_> = self
+            .path_recents
+            .iter()
+            .map(|paths| {
+                (
+                    paths == &self.filter.paths,
+                    paths.recent_label(c, recent_width),
+                )
+            })
+            .collect();
         let selected = self
             .path_options
             .iter()
-            .filter(|&&id| self.filter.includes_root(id))
+            .filter(|&&id| self.filter.menu_includes_root(id))
             .count();
         let commands = COMMANDS.len();
         let row = |y| Rect::new(inner.x, y, inner.width, 1);
         let searching = !query.is_empty() || self.choice.is_none();
         let h = usize::from(inner.height) - usize::from(searching);
-        let len = commands + 1 + n.max(1);
-        let cursor = self.choice.unwrap_or(0);
-        let top = window(cursor + usize::from(cursor >= commands), h, len);
-        for (dy, i) in (top..(top + h).min(len)).enumerate() {
+        let recent_rows = recents.len() + usize::from(!recents.is_empty());
+        let len = commands + 1 + n.max(1) + recent_rows;
+        let top = window(self.path_menu_visual(self.choice.unwrap_or(0)), h, len);
+        let recent_header = commands + 1 + n.max(1);
+        for (dy, row_index) in (top..(top + h).min(len)).enumerate() {
             let r = row(inner.y + dy as u16);
-            let (line, hit) = if i < commands {
+            let (line, hit) = if row_index < commands {
                 (
-                    Line::raw(format!("  {}", COMMANDS[i])),
-                    DropdownHit::Choice(i),
+                    Line::raw(format!("  {}", COMMANDS[row_index])),
+                    DropdownHit::Choice(row_index),
                 )
-            } else if i == commands {
+            } else if row_index == commands {
                 let mark = if selected > 0 && selected < n {
                     self.icons.glyph(Icon::Partial)
                 } else {
@@ -327,8 +421,12 @@ impl LogPanel {
                     Line::styled(format!("{mark} Roots  {selected}/{n}   Ctrl-A"), fg(DIM)),
                     DropdownHit::AllRoots,
                 )
-            } else if let Some(&id) = self.path_options.get(i - commands - 1) {
-                let mark = self.icons.check(self.filter.includes_root(id));
+            } else if let Some(&id) = self
+                .path_options
+                .get(row_index - commands - 1)
+                .filter(|_| row_index < commands + 1 + n)
+            {
+                let mark = self.icons.check(self.filter.menu_includes_root(id));
                 (
                     Line::from(vec![
                         Span::styled(format!("{mark} "), fg(repo_tint(id))),
@@ -337,9 +435,9 @@ impl LogPanel {
                             usize::from(r.width.saturating_sub(cells(mark) + 1)),
                         )),
                     ]),
-                    DropdownHit::Choice(i - 1),
+                    DropdownHit::Choice(row_index - 1),
                 )
-            } else {
+            } else if n == 0 && row_index == commands + 1 {
                 (
                     Line::styled(
                         if query.is_empty() {
@@ -351,6 +449,26 @@ impl LogPanel {
                     ),
                     DropdownHit::Surface,
                 )
+            } else if row_index == recent_header {
+                (Line::styled("Recent", fg(DIM)), DropdownHit::Surface)
+            } else if let Some((index, (current, label))) = row_index
+                .checked_sub(recent_header + 1)
+                .and_then(|index| recents.get(index).map(|recent| (index, recent)))
+            {
+                let mark = self.icons.check(*current);
+                (
+                    Line::from(vec![
+                        checkbox(self.icons, *current),
+                        Span::raw(" "),
+                        Span::raw(clipped(
+                            label,
+                            usize::from(r.width.saturating_sub(cells(mark) + 1)),
+                        )),
+                    ]),
+                    DropdownHit::Choice(self.recent_choice_start() + index),
+                )
+            } else {
+                (Line::raw(""), DropdownHit::Surface)
             };
             let active = matches!(hit, DropdownHit::Choice(i) if self.choice == Some(i));
             f.render_widget(

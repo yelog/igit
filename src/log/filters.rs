@@ -253,7 +253,9 @@ impl LogPanel {
         }
         if let Some(i) = self.choice {
             if self.editing_paths() && i >= paths::COMMANDS.len() {
-                // The checkboxes apply immediately. Enter leaves the current selection intact.
+                if self.is_recent_choice(i) {
+                    return self.path_choice(i, c);
+                }
                 self.discard_editor();
                 return Ok(());
             }
@@ -345,7 +347,10 @@ impl LogPanel {
                     return self.path_choice(i, c);
                 }
             }
-            if k.code == K::Down && self.choice.is_none() && !self.path_options.is_empty() {
+            if k.code == K::Down
+                && self.choice.is_none()
+                && (!self.path_options.is_empty() || !self.path_recents.is_empty())
+            {
                 self.choice = Some(paths::COMMANDS.len());
                 return Ok(());
             }

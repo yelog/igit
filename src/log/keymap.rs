@@ -217,12 +217,12 @@ impl LogPanel {
                 None => Section::new(
                     "Log / Paths Filter",
                     &[
-                        ("/", "Find repo or path"),
+                        ("/", "Find repo or type a path"),
                         ("Down", "Select next item"),
                         ("Up", "Select previous item"),
-                        ("Enter", "Open picker or apply paths / checked repos"),
-                        ("Space", "Open picker or toggle repo checkbox"),
-                        ("Ctrl-a", "Toggle all listed repo checkboxes"),
+                        ("Enter", "Open picker, switch Recent, or finish"),
+                        ("Space", "Open picker, switch Recent, or toggle root"),
+                        ("Ctrl-a", "Toggle all listed roots"),
                         ("Ctrl-w", "Delete word before cursor"),
                         ("Ctrl-u", "Clear quick search"),
                         ("Esc", "Close Paths menu"),

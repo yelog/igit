@@ -1,9 +1,10 @@
-use crate::core::Context;
+use crate::{core::Context, ui::idea::clipped};
 use anyhow::{bail, ensure, Result};
 use std::{
     collections::BTreeSet,
     path::{Component, Path, PathBuf},
 };
+use unicode_width::UnicodeWidthStr;
 
 /// An unqualified path applies in every root. A qualified empty path means that
 /// whole repository, including commits which did not change any files.
@@ -92,14 +93,51 @@ impl PathFilter {
     }
 
     pub fn label(&self, c: &Context) -> String {
+        let Some((root, path)) = self.0.first() else {
+            return String::new();
+        };
+        let line = Self::line(*root, path, c);
+        let line = super::plain(line.as_bytes());
         match self.0.len() {
-            0 => String::new(),
-            1 => {
-                let (root, path) = self.0.first().unwrap();
+            1 => line,
+            n => format!("{line} + {}", n - 1),
+        }
+    }
+
+    /// Fill the available cells with whole path labels, then append a remaining
+    /// count only when it fits. Clip the first label only when even it is too wide.
+    pub fn recent_label(&self, c: &Context, width: usize) -> String {
+        let labels: Vec<_> = self
+            .0
+            .iter()
+            .map(|(root, path)| {
                 let line = Self::line(*root, path, c);
                 super::plain(line.as_bytes())
+            })
+            .collect();
+        let Some(first) = labels.first() else {
+            return String::new();
+        };
+        const SEPARATOR: &str = ", ";
+        let mut used = 0;
+        let mut shown = 0;
+        for label in &labels {
+            let next = used + label.width() + if shown == 0 { 0 } else { SEPARATOR.width() };
+            if next > width {
+                break;
             }
-            n => format!("{n} paths"),
+            used = next;
+            shown += 1;
         }
+        if shown == 0 {
+            return clipped(first, width);
+        }
+        let mut text = labels[..shown].join(SEPARATOR);
+        let hidden = labels.len() - shown;
+        let overflow = format!(" + {hidden}");
+        if hidden > 0 && used + overflow.width() <= width {
+            text.push_str(&overflow);
+        }
+        text
     }
 }
