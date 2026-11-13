@@ -44,6 +44,7 @@ pub(crate) const PUSH_REVIEW_TOKEN: &str = "branch:push";
 pub(crate) struct CheckoutDone {
     pub(crate) root: usize,
     pub(crate) path: PathBuf,
+    pub(crate) worktree: String,
     pub(crate) reference: String,
     pub(crate) branch: String,
     pub(crate) head: String,

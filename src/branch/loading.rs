@@ -65,7 +65,7 @@ impl BranchPanel {
         else {
             return false;
         };
-        let worktree = repo.path.to_string_lossy().into_owned();
+        let worktree = done.worktree.clone();
         let Ok(snapshot) = &mut repo.state else {
             return false;
         };

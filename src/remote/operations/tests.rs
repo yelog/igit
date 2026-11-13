@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::{command, git, git_bytes, revpath};
+use crate::core::{command, git, git_bytes, git_path, revpath};
 use std::fs;
 
 fn run(repo: &Path, args: &[&str]) -> String {
@@ -149,7 +149,7 @@ fn submodule_identity_uses_the_submodule_git_directory_config() {
             "protocol.file.allow=always",
             "submodule",
             "add",
-            api.to_str().unwrap(),
+            git_path(&api).to_str().unwrap(),
             "module",
         ],
     );

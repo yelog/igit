@@ -1,6 +1,6 @@
 //! Reviewed remote configuration changes for one repository in Roots.
 use super::model::{self, ConfigEntry, ConfigSnapshot, Remote};
-use crate::core::{command, revpath, Context, Repo};
+use crate::core::{command, git_path, revpath, Context, Repo};
 use anyhow::{bail, ensure, Context as _, Result};
 use std::{
     collections::BTreeSet,
@@ -785,7 +785,7 @@ fn set_values(
         }
         let output = command(repo)
             .args(["config", "--file"])
-            .arg(config)
+            .arg(git_path(config))
             .args(["--unset-all", "--", key])
             .output()
             .context("Cannot start Git")?;
@@ -797,7 +797,7 @@ fn set_values(
 
     let output = command(repo)
         .args(["config", "--file"])
-        .arg(config)
+        .arg(git_path(config))
         .args(["--replace-all", "--", key, &values[0]])
         .output()
         .context("Cannot start Git")?;
@@ -807,7 +807,7 @@ fn set_values(
     for value in &values[1..] {
         let output = command(repo)
             .args(["config", "--file"])
-            .arg(config)
+            .arg(git_path(config))
             .args(["--add", "--", key, value])
             .output()
             .context("Cannot start Git")?;

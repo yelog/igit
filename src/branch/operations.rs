@@ -206,6 +206,7 @@ impl Review {
             "Git left HEAD on {actual}, expected {reference}"
         );
         let head = git(&self.path, &["rev-parse", "--verify", "HEAD"])?;
+        let worktree = git(&self.path, &["rev-parse", "--show-toplevel"])?;
         let last_used = super::recent::read(
             &self.path,
             self.snapshot
@@ -217,6 +218,7 @@ impl Review {
         Ok(super::CheckoutDone {
             root: self.root,
             path: self.path.clone(),
+            worktree,
             reference,
             branch: name,
             head,

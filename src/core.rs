@@ -40,7 +40,7 @@ pub struct Context {
 pub fn command(path: &Path) -> Command {
     let mut c = Command::new("git");
     c.arg("-C")
-        .arg(path)
+        .arg(git_path(path))
         .args(["--no-pager", "-c", "color.ui=false"])
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
@@ -57,6 +57,33 @@ pub fn command(path: &Path) -> Command {
         .env("LC_ALL", "C")
         .stdin(Stdio::null());
     c
+}
+
+pub(crate) fn git_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+
+        let mut components = path.components();
+        if let Some(Component::Prefix(prefix)) = components.next() {
+            match prefix.kind() {
+                Prefix::VerbatimDisk(drive) => {
+                    let mut normalized = PathBuf::from(format!("{}:\\", char::from(drive)));
+                    normalized.extend(components);
+                    return normalized;
+                }
+                Prefix::VerbatimUNC(server, share) => {
+                    let mut normalized = PathBuf::from(r"\\");
+                    normalized.push(server);
+                    normalized.push(share);
+                    normalized.extend(components);
+                    return normalized;
+                }
+                _ => {}
+            }
+        }
+    }
+    path.to_path_buf()
 }
 pub fn git_bytes(path: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let o = command(path)
