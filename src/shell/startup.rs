@@ -80,6 +80,7 @@ fn load_workspace(
     // Enter through the regular activation path so each panel starts its own reads.
     // In particular, entering Log starts a separate worker and never waits for history.
     app.go(launch.tab);
+    app.enable_background_loading();
     Ok(app)
 }
 
@@ -245,6 +246,7 @@ impl Shell {
         if !matches!(self.log_load, LogLoad::Dormant) {
             return;
         }
+        self.refresh_state.clear(Log);
         let (sender, receiver) = mpsc::channel();
         let mut log = std::mem::take(&mut self.log);
         self.log.icons = self.icons;

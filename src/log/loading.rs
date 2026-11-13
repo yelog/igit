@@ -161,6 +161,7 @@ pub(super) struct Loading {
     project: Option<History>,
     pub(super) selected: Selected,
     stale: bool,
+    loading_more: bool,
     error: Option<String>,
 }
 
@@ -185,6 +186,7 @@ impl LogPanel {
         self.history_load.task.cancel();
         self.history_load.project = None;
         self.history_load.stale = true;
+        self.history_load.loading_more = false;
         self.history_load.error = None;
     }
 
@@ -202,14 +204,15 @@ impl LogPanel {
 
     pub(super) fn history_status(&self) -> Option<&str> {
         if self.history_load.stale() {
-            self.history_load
-                .error
-                .as_deref()
-                .or(Some(if self.hist.revs.is_empty() {
-                    "Loading history…"
-                } else {
-                    "Refreshing history… · cached commits"
-                }))
+            if let Some(error) = self.history_load.error.as_deref() {
+                Some(error)
+            } else if self.hist.revs.is_empty() {
+                Some("Loading history…")
+            } else if self.history_load.loading_more {
+                Some("Loading older commits… · cached commits")
+            } else {
+                Some("Refreshing history… · cached commits")
+            }
         } else {
             None
         }
@@ -235,19 +238,29 @@ impl LogPanel {
     }
 
     pub(super) fn reload_history(&mut self, c: &Context, selected: Selected) -> Result<()> {
+        self.reload_history_with_state(c, selected, false)
+    }
+
+    fn reload_history_with_state(
+        &mut self,
+        c: &Context,
+        selected: Selected,
+        loading_more: bool,
+    ) -> Result<()> {
         if self.history_load.enabled {
-            self.queue_history(c, selected);
+            self.queue_history(c, selected, loading_more);
             return Ok(());
         }
         self.hist = model::load(c, &self.filter, self.limit);
         self.read_presentation(c);
         self.history_load.scope = Some(Scope::new(c));
         self.history_load.request = Some(Request::new(self));
+        self.history_load.loading_more = false;
         self.rebuild_refs(c);
         self.rebuild_visible(selected)
     }
 
-    fn queue_history(&mut self, c: &Context, mut selected: Selected) {
+    fn queue_history(&mut self, c: &Context, mut selected: Selected, loading_more: bool) {
         if self
             .history_load
             .scope
@@ -268,6 +281,7 @@ impl LogPanel {
         self.history_load.request = Some(Request::new(self));
         self.history_load.selected = selected;
         self.history_load.stale = true;
+        self.history_load.loading_more = loading_more;
         self.history_load.error = None;
         self.history_load.project = None;
         self.history_load.task.request();
@@ -277,6 +291,48 @@ impl LogPanel {
         self.last = None;
         self.hits.clear();
         self.refresh_history_preview();
+    }
+
+    fn has_more_commits(&self) -> bool {
+        self.hist
+            .more
+            .iter()
+            .any(|&root| self.filter.includes_root(root))
+    }
+
+    pub(super) fn load_more(&mut self, c: &Context) -> Result<()> {
+        if !self.has_more_commits() || self.history_load.stale() || self.history_load.task.pending()
+        {
+            return Ok(());
+        }
+        let selected = self.history_selection();
+        self.limit = self.limit.saturating_mul(2);
+        self.reload_history_with_state(c, selected, true)
+    }
+
+    /// Load the next history window when the commit cursor approaches the end of
+    /// the current page. Git history has no cheap stable cursor, so grow the
+    /// window geometrically and keep all Git work on the existing worker.
+    pub(crate) fn poll_more(&mut self, c: &Context) -> Result<bool> {
+        if self.graph_height == 0
+            || self.visible.is_empty()
+            || self.history_load.stale()
+            || self.history_load.task.pending()
+            || !self.refresh_allowed()
+            || !self.has_more_commits()
+        {
+            return Ok(false);
+        }
+        let last = self.visible.len() - 1;
+        let near_end = last.saturating_sub(self.cursor) <= LOAD_MORE_DISTANCE;
+        // Avoid auto-loading a short filtered projection until the user actually
+        // navigates to its last row.
+        let can_scroll_to_end = self.cursor == last || self.visible.len() > self.graph_height;
+        if !near_end || !can_scroll_to_end {
+            return Ok(false);
+        }
+        self.load_more(c)?;
+        Ok(true)
     }
 
     pub(super) fn check_history_context(&mut self, c: &Context) -> bool {
@@ -292,7 +348,7 @@ impl LogPanel {
                     .as_ref()
                     .is_some_and(|r| !r.matches(self)))
         {
-            self.queue_history(c, self.history_selection());
+            self.queue_history(c, self.history_selection(), false);
             true
         } else {
             false
@@ -345,6 +401,7 @@ impl LogPanel {
                         self.visible = loaded.visible;
                         self.graph = loaded.graph;
                         self.history_load.stale = false;
+                        self.history_load.loading_more = false;
                         self.history_load.error = None;
                         let selected = self.history_load.selected.take();
                         self.restore_history_cursor(selected);

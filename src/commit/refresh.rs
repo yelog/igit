@@ -11,13 +11,20 @@ type Status = Result<Vec<Change>, String>;
 #[derive(Default)]
 pub(super) struct Refresh {
     generation: u64,
-    pending: Option<(u64, mpsc::Receiver<Snapshot>)>,
+    pending: Option<Pending>,
+    deferred: BTreeSet<usize>,
     next: Option<Instant>,
     error: String,
     errors: BTreeMap<usize, String>,
     watch: Option<watch::Watch>,
     requested: bool,
     expedite: bool,
+}
+
+struct Pending {
+    generation: u64,
+    roots: BTreeSet<usize>,
+    receiver: mpsc::Receiver<Snapshot>,
 }
 
 struct Snapshot {
@@ -84,12 +91,17 @@ impl CommitPanel {
     pub(crate) fn request_refresh(&mut self) {
         self.invalidate_ai_check();
         self.refresh.generation = self.refresh.generation.wrapping_add(1);
+        self.refresh.deferred.clear();
         self.refresh.requested = true;
     }
 
     /// Tab/focus changes release queued events, without rescanning unchanged roots.
     pub(crate) fn resume_refresh(&mut self) {
         self.refresh.expedite = true;
+    }
+
+    pub(crate) fn refresh_pending(&self) -> bool {
+        self.refresh.requested || self.refresh.pending.is_some()
     }
 
     pub(super) fn refresh_files(&mut self, c: &Context) -> Result<()> {
@@ -126,8 +138,18 @@ impl CommitPanel {
         c: &Context,
         mut statuses: BTreeMap<usize, Status>,
     ) {
+        let refreshed = statuses
+            .iter()
+            .filter_map(|(&root, status)| status.is_ok().then_some(root))
+            .collect::<BTreeSet<_>>();
+        let scanned = statuses.keys().copied().collect::<BTreeSet<_>>();
         // An older read must not put just-added paths back into Unversioned Files.
         self.refresh.generation = self.refresh.generation.wrapping_add(1);
+        if let Some(pending) = self.refresh.pending.take() {
+            self.refresh
+                .deferred
+                .extend(pending.roots.difference(&refreshed).copied());
+        }
         if !self.options.ignored {
             for changes in statuses
                 .values_mut()
@@ -137,10 +159,14 @@ impl CommitPanel {
             }
         }
         self.apply_statuses(c, statuses);
+        if self.diff_root.is_some_and(|root| scanned.contains(&root)) {
+            self.invalidate_preview();
+        }
     }
 
     fn apply_statuses(&mut self, c: &Context, mut statuses: BTreeMap<usize, Status>) -> bool {
         self.invalidate_ai_check();
+        let scope_changed = self.rendered_scope != c.scope;
         let old_target = self
             .active()
             .map(|r| (r.id.clone(), r.file().map(|i| self.files[i].clone())));
@@ -186,14 +212,16 @@ impl CommitPanel {
             self.changes_search.invalidate();
         }
         self.files = files;
-        self.sync(c);
+        if changed || scope_changed {
+            self.sync(c);
+        }
         let target = self
             .active()
             .map(|r| (r.id.clone(), r.file().map(|i| self.files[i].clone())));
         if target != old_target {
             self.invalidate_preview();
         }
-        changed
+        changed || scope_changed
     }
 
     pub(crate) fn poll_refresh(&mut self, c: &mut Context) -> Result<bool> {
@@ -214,27 +242,31 @@ impl CommitPanel {
             return Ok(false);
         }
         let mut changed = false;
-        if let Some((generation, receiver)) = &self.refresh.pending {
-            match receiver.try_recv() {
+        if let Some(pending) = &self.refresh.pending {
+            match pending.receiver.try_recv() {
                 Ok(snapshot) => {
-                    let current = *generation == self.refresh.generation;
+                    let current = pending.generation == self.refresh.generation;
                     self.refresh.pending = None;
                     if current {
+                        let Snapshot {
+                            statuses,
+                            branches,
+                            preview,
+                        } = snapshot;
+                        let scanned = statuses.keys().copied().collect::<BTreeSet<_>>();
                         // Slow scans also get an idle interval. A complete scope
                         // scan already reconciles any notifications that were missed.
-                        if c.scope
-                            .iter()
-                            .all(|root| snapshot.statuses.contains_key(root))
-                        {
+                        if c.scope.iter().all(|root| statuses.contains_key(root)) {
                             self.refresh.next = Some(Instant::now() + FALLBACK);
                         }
-                        for (root, branch) in snapshot.branches {
+                        for (root, branch) in branches {
                             let repo = &mut c.repos[root];
                             changed |= repo.branch != branch;
                             repo.branch = branch;
                         }
-                        changed |= self.apply_statuses(c, snapshot.statuses);
-                        if let Some((key, change, loaded)) = snapshot.preview {
+                        changed |= self.apply_statuses(c, statuses);
+                        let mut preview_applied = false;
+                        if let Some((key, change, loaded)) = preview {
                             if self.preview_open
                                 && self.active().is_some_and(|r| {
                                     r.id == key
@@ -242,7 +274,14 @@ impl CommitPanel {
                                 })
                             {
                                 changed |= self.set_preview(key, loaded);
+                                preview_applied = true;
                             }
+                        }
+                        if !preview_applied
+                            && self.diff_root.is_some_and(|root| scanned.contains(&root))
+                        {
+                            self.invalidate_preview();
+                            changed = true;
                         }
                     }
                 }
@@ -270,9 +309,10 @@ impl CommitPanel {
                     watch.take(&scope, now, full || fallback || self.refresh.expedite)
                 });
             if full || fallback {
-                roots = scope;
+                roots.extend(scope.iter().copied());
                 self.refresh.next = Some(now + FALLBACK);
             }
+            roots.extend(self.refresh.take_deferred(&scope, full));
             self.refresh.requested = false;
             self.refresh.expedite = false;
             if roots.is_empty() {
@@ -290,11 +330,16 @@ impl CommitPanel {
                 });
             let ctx = c.clone();
             let ignored = self.options.ignored;
+            let scan_roots = roots.clone();
             let (send, receive) = mpsc::channel();
             thread::spawn(move || {
                 let _ = send.send(Snapshot::read(ctx, ignored, target, roots));
             });
-            self.refresh.pending = Some((self.refresh.generation, receive));
+            self.refresh.pending = Some(Pending {
+                generation: self.refresh.generation,
+                roots: scan_roots,
+                receiver: receive,
+            });
         }
         self.refresh.report_error()?;
         Ok(changed)
@@ -302,6 +347,19 @@ impl CommitPanel {
 }
 
 impl Refresh {
+    fn take_deferred(&mut self, scope: &BTreeSet<usize>, all: bool) -> BTreeSet<usize> {
+        if all {
+            return std::mem::take(&mut self.deferred);
+        }
+        let due = self
+            .deferred
+            .intersection(scope)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        self.deferred.retain(|root| !due.contains(root));
+        due
+    }
+
     fn report_error(&mut self) -> Result<()> {
         let mut errors = self.errors.values().cloned().collect::<Vec<_>>();
         if let Some(watch) = &self.watch {

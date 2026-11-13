@@ -6,7 +6,7 @@ mod syntax;
 pub(crate) use revision::{RevisionDiff, RevisionEvent};
 
 use super::*;
-use crate::ui::idea::{clipped, clipped_path};
+use crate::ui::idea::{clipped, clipped_path, RED};
 use crossterm::event::MouseEvent;
 use highlight::{side_tint, HighlightCache};
 use ratatui::{
@@ -266,6 +266,10 @@ impl EditorView {
 
     pub fn cancel_scroll_drag(&mut self) {
         self.drag = None;
+    }
+
+    pub fn dragging(&self) -> bool {
+        self.drag.is_some()
     }
 
     fn apply_scroll(&mut self, axis: Scroll, offset: usize, scroll: &mut usize, follow: &mut bool) {
@@ -662,8 +666,14 @@ impl MergePanel {
             }
             return;
         }
-        let allowed = ctx.scope.contains(&self.doc.as_ref().unwrap().file.root);
+        let allowed = ctx.scope.contains(&self.doc.as_ref().unwrap().file.root) && !self.doc_stale;
         let editing = self.edit.is_some();
+        let stale = self.doc_stale;
+        let notice = if stale {
+            " Sources changed · reopen before applying"
+        } else {
+            notice
+        };
         let has_notice = !notice.is_empty() && area.height >= 9;
         let ascii = self.icons == IconMode::Ascii;
         fill(f, area, EDITOR_BG);
@@ -773,11 +783,12 @@ impl MergePanel {
         self.scroll = self.scroll.min(self.rows_total.saturating_sub(height));
 
         if has_notice {
+            let tint = if stale { RED } else { ACCENT };
             put(
                 f,
                 status,
                 clipped(notice, status.width as usize),
-                style(ACCENT).bg(CHROME),
+                style(tint).bg(CHROME),
             );
         }
         // Toolbar and footer only update hit targets. Keep the borrowed texts

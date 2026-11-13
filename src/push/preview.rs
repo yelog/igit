@@ -17,8 +17,15 @@ pub(super) struct Request {
 }
 
 pub(super) enum Loaded {
-    Files { files: Vec<Change>, summary: String },
-    Diff(FileDiff),
+    Files {
+        files: Vec<Change>,
+        summary: String,
+        failed: bool,
+    },
+    Diff {
+        content: FileDiff,
+        failed: bool,
+    },
 }
 
 pub(super) enum FileDiff {
@@ -28,10 +35,16 @@ pub(super) enum FileDiff {
 
 pub(super) fn read(request: Request) -> Loaded {
     if let Some(file) = &request.file {
-        return Loaded::Diff(
-            file_diff(&request.path, &request.entry, request.commit.as_ref(), file)
-                .unwrap_or_else(|e| FileDiff::Patch(format!("Unable to load diff: {e:#}"))),
-        );
+        let (content, failed) =
+            file_diff(&request.path, &request.entry, request.commit.as_ref(), file).unwrap_or_else(
+                |error| {
+                    (
+                        FileDiff::Patch(format!("Unable to load diff: {error:#}")),
+                        true,
+                    )
+                },
+            );
+        return Loaded::Diff { content, failed };
     }
     let p = &request.path;
     let e = &request.entry;
@@ -97,6 +110,7 @@ pub(super) fn read(request: Request) -> Loaded {
         )
     };
     let desc = with_result(&desc, request.result.as_ref());
+    let failed = files.is_err();
     let (files, summary) = match files {
         Ok(files) => (files, desc),
         Err(error) => (
@@ -104,7 +118,11 @@ pub(super) fn read(request: Request) -> Loaded {
             format!("Unable to load changed files: {error}\n\n{desc}"),
         ),
     };
-    Loaded::Files { files, summary }
+    Loaded::Files {
+        files,
+        summary,
+        failed,
+    }
 }
 
 fn repository_base(p: &Path, entry: &Entry) -> Result<Option<String>> {
@@ -193,7 +211,7 @@ fn with_result(desc: &str, result: Option<&Result<PushOutcome, String>>) -> Stri
     }
 }
 
-fn file_diff(p: &Path, x: &Entry, commit: Option<&Out>, file: &Change) -> Result<FileDiff> {
+fn file_diff(p: &Path, x: &Entry, commit: Option<&Out>, file: &Change) -> Result<(FileDiff, bool)> {
     let selected_commit = commit.map(|commit| &commit.id).or(file.commit.as_ref());
     let (before, after, empty_note) = if let Some(oid) = selected_commit {
         let parents = git(
@@ -240,19 +258,22 @@ fn file_diff(p: &Path, x: &Entry, commit: Option<&Out>, file: &Change) -> Result
     match sources {
         Ok(sources) => {
             let [old, new] = sources;
-            Ok(FileDiff::Split(Box::new(RevisionDiff::two_way(
-                label(&file.path),
-                [before.unwrap_or_else(|| "Empty tree".into()), after.clone()],
-                [old.text, new.text],
-                [old.description, new.description],
-            ))))
+            Ok((
+                FileDiff::Split(Box::new(RevisionDiff::two_way(
+                    label(&file.path),
+                    [before.unwrap_or_else(|| "Empty tree".into()), after.clone()],
+                    [old.text, new.text],
+                    [old.description, new.description],
+                ))),
+                false,
+            ))
         }
         Err(error) => {
             let body = match patch(p, before.as_deref(), after, file) {
                 Ok(body) => format!("{error}\n\n{body}"),
                 Err(patch_error) => format!("{error}\n\nUnable to load Git patch: {patch_error}"),
             };
-            Ok(FileDiff::Patch(body))
+            Ok((FileDiff::Patch(body), true))
         }
     }
 }
@@ -310,6 +331,7 @@ impl PushPanel {
         self.cancel_key_sequence();
         self.preview_load.cancel();
         self.preview_request = None;
+        self.preview_failed = false;
         self.diff = None;
         self.detail_selection.reset();
         self.preview = Preview::default();
@@ -326,5 +348,49 @@ impl PushPanel {
             self.preview_request = Some(request);
             self.preview_load.request();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_marks_files_and_diff_errors_as_failed() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("missing");
+        let entry = Entry {
+            idx: 0,
+            source: "main".into(),
+            head: "0".repeat(40),
+            n: 1,
+            ..Default::default()
+        };
+        let files = read(Request {
+            path: path.clone(),
+            entry: entry.clone(),
+            commit: None,
+            file: None,
+            icons: IconMode::default(),
+            result: None,
+            set_upstream: false,
+        });
+        assert!(matches!(files, Loaded::Files { failed: true, .. }));
+
+        let diff = read(Request {
+            path,
+            entry,
+            commit: None,
+            file: Some(Change {
+                path: "a".into(),
+                previous: None,
+                status: b'M',
+                commit: None,
+            }),
+            icons: IconMode::default(),
+            result: None,
+            set_upstream: false,
+        });
+        assert!(matches!(diff, Loaded::Diff { failed: true, .. }));
     }
 }

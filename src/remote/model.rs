@@ -141,20 +141,24 @@ fn detail(output: &Output) -> String {
     }
 }
 
+pub(super) fn load_repository(root: usize, path: &Path) -> Repository {
+    let (remotes, error) = match read(path) {
+        Ok(remotes) => (remotes, None),
+        Err(error) => (vec![], Some(label(&format!("{error:#}")))),
+    };
+    Repository {
+        root,
+        remotes,
+        error,
+    }
+}
+
 pub(super) fn load(c: &Context) -> Vec<Repository> {
     c.scope
         .iter()
         .filter_map(|&root| {
             let repo = c.repos.get(root)?;
-            let (remotes, error) = match read(&repo.path) {
-                Ok(remotes) => (remotes, None),
-                Err(error) => (vec![], Some(label(&format!("{error:#}")))),
-            };
-            Some(Repository {
-                root,
-                remotes,
-                error,
-            })
+            Some(load_repository(root, &repo.path))
         })
         .collect()
 }

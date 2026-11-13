@@ -117,6 +117,10 @@ pub(super) struct Review {
 }
 
 impl Review {
+    pub(super) fn root(&self) -> usize {
+        self.root
+    }
+
     pub(super) fn prepare(c: &Context, root: usize, operation: Operation) -> Result<Self> {
         ensure!(c.scope.contains(&root), "Repository is outside Roots");
         let repo = c.repos.get(root).context("Repository is unavailable")?;

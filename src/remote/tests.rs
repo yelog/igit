@@ -4,7 +4,7 @@ use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::{backend::TestBackend, Terminal};
 use std::fs;
 
-fn fixture() -> (tempfile::TempDir, Context, RemotePanel) {
+pub(super) fn fixture() -> (tempfile::TempDir, Context, RemotePanel) {
     let temp = tempfile::tempdir().unwrap();
     for name in ["api", "web", "empty"] {
         let path = temp.path().join(name);

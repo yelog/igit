@@ -2,6 +2,7 @@
 mod engine;
 mod keymap;
 mod list;
+mod loading;
 mod recovery;
 mod view;
 use self::engine::*;
@@ -134,7 +135,9 @@ pub struct MergePanel {
     pub(crate) icons: IconMode,
     pub(crate) panes: PaneLayout,
     list: ConflictList,
+    loading: loading::Loading,
     doc: Option<Document>,
+    doc_stale: bool,
     idx: usize,
     side: usize,
     scroll: usize,
@@ -287,6 +290,7 @@ impl MergePanel {
         self.idx = d.chunks.iter().position(|b| !b.done()).unwrap_or(0);
         self.list.select_file(&d.file);
         self.doc = Some(d);
+        self.doc_stale = false;
         self.side = 1;
         self.follow = true;
         self.scroll = 0;
@@ -600,6 +604,12 @@ impl MergePanel {
                         "Repository is outside Roots scope".into(),
                     );
                 }
+                if self.doc_stale {
+                    return Action::Notice(
+                        NoticeLevel::Warning,
+                        "Sources changed; reopen the conflict before applying".into(),
+                    );
+                }
                 if d.pending() > 0 {
                     return Action::Notice(
                         NoticeLevel::Warning,
@@ -637,6 +647,7 @@ impl MergePanel {
         self.finish_edit(false);
         self.stash();
         self.doc = None;
+        self.doc_stale = false;
         self.hist.clear();
         self.view.reset_document();
     }
@@ -650,19 +661,15 @@ impl Panel for MergePanel {
 
     fn refresh(&mut self, c: &Context) -> Result<()> {
         self.cancel_key_sequence();
-        let refreshed = self.list.refresh(c);
-        // Keep the draft if Roots changes or the file is resolved externally,
-        // but return to the list so any remaining work is reachable.
-        if self.doc.as_ref().is_some_and(|doc| {
-            !self
-                .list
-                .files_in(doc.file.root)
-                .any(|file| file.path == doc.file.path)
-        }) {
-            self.close_document();
-        }
         self.plan = None;
         self.recovery_plan = None;
+        if self.loading.enabled() {
+            self.queue_refresh(c);
+            return Ok(());
+        }
+        let refreshed = self.list.refresh(c);
+        self.note_loaded_scope(c);
+        self.update_document_staleness(c);
         refreshed
     }
     fn help(&self) -> &'static str {
@@ -710,6 +717,7 @@ impl Panel for MergePanel {
                     self.drafts.retain(|(id, _), _| *id != root);
                     if self.doc.as_ref().is_some_and(|d| d.file.root == root) {
                         self.doc = None;
+                        self.doc_stale = false;
                         self.hist.clear();
                         self.view.reset_document();
                     }
@@ -727,6 +735,12 @@ impl Panel for MergePanel {
                 };
                 if !c.scope.contains(&d.file.root) {
                     return Action::Notice(NoticeLevel::Warning, "Repository out of scope".into());
+                }
+                if self.doc_stale {
+                    return Action::Notice(
+                        NoticeLevel::Warning,
+                        "Sources changed; reopen the conflict before applying".into(),
+                    );
                 }
                 match d.apply() {
                     Ok(()) => {
@@ -750,6 +764,7 @@ impl Panel for MergePanel {
                             .min_by_key(|f| (&f.path < path, &f.path))
                             .cloned();
                         self.doc = None;
+                        self.doc_stale = false;
                         self.hist.clear();
                         self.view.reset_document();
                         if let Some(next) = next {

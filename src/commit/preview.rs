@@ -58,10 +58,15 @@ impl CommitPanel {
     }
 
     pub(super) fn set_preview(&mut self, key: String, loaded: Loaded) -> bool {
+        let root = self
+            .active()
+            .and_then(Row::file)
+            .map(|i| self.files[i].root);
         if self.diff_key == key
             && self.diff_text == loaded.patch
             && self.diff_sources == loaded.pair
         {
+            self.diff_root = root;
             return false;
         }
         if let Some(view) = &self.diff_comparison {
@@ -74,6 +79,7 @@ impl CommitPanel {
             self.diff_left = 0;
         }
         self.diff_key = key;
+        self.diff_root = root;
         self.diff_text = loaded.patch;
         self.diff_comparison = loaded.pair.as_ref().map(|pair| {
             let name = self
@@ -125,6 +131,7 @@ impl CommitPanel {
             self.diff_search.inherit_query(view.search_prompt());
         }
         self.diff_key.clear();
+        self.diff_root = None;
         self.diff_sources = None;
         self.diff_comparison = None;
         self.clear_preview_selection();

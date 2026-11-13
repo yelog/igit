@@ -92,20 +92,24 @@ pub(super) fn entries(path: &std::path::Path) -> Result<Vec<Entry>> {
     Ok(entries)
 }
 
+pub(super) fn load_repository(root: usize, path: &std::path::Path) -> Repository {
+    let (entries, error) = match entries(path) {
+        Ok(entries) => (entries, None),
+        Err(error) => (vec![], Some(format!("{error:#}"))),
+    };
+    Repository {
+        root,
+        entries,
+        error,
+    }
+}
+
 pub(super) fn load(c: &Context) -> Vec<Repository> {
     c.scope
         .iter()
         .filter_map(|&root| {
             let repo = c.repos.get(root)?;
-            let (entries, error) = match entries(&repo.path) {
-                Ok(entries) => (entries, None),
-                Err(error) => (vec![], Some(format!("{error:#}"))),
-            };
-            Some(Repository {
-                root,
-                entries,
-                error,
-            })
+            Some(load_repository(root, &repo.path))
         })
         .collect()
 }

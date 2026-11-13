@@ -1,4 +1,5 @@
 mod editor;
+mod loading;
 mod model;
 mod operations;
 mod view;
@@ -84,6 +85,7 @@ pub struct RemotePanel {
     review: Option<Review>,
     next_selection: Option<(usize, Option<String>)>,
     writes_blocked: bool,
+    loading: loading::Loading,
     pub(crate) icons: IconMode,
     pub(crate) panes: PaneLayout,
 }
@@ -101,14 +103,6 @@ impl RemotePanel {
         ))
     }
 
-    fn identity(&self) -> Option<(usize, Option<String>)> {
-        let row = *self.rows.get(self.cursor)?;
-        Some((
-            row.root(),
-            self.selection().map(|(_, remote)| remote.name.clone()),
-        ))
-    }
-
     fn rebuild(&mut self) {
         self.rows.clear();
         self.hits.clear();
@@ -118,7 +112,7 @@ impl RemotePanel {
             if self.folded.contains(&repo.root) {
                 continue;
             }
-            if repo.remotes.is_empty() {
+            if repo.remotes.is_empty() || repo.error.is_some() {
                 self.rows.push(Row::Message(repo.root));
             }
             for (remote, entry) in repo.remotes.iter().enumerate() {
@@ -204,6 +198,9 @@ impl RemotePanel {
         if !c.scope.contains(&root) {
             return Action::Notice(NoticeLevel::Warning, "Repository is outside Roots".into());
         }
+        if let Some((level, message)) = self.write_block(c, root) {
+            return Action::Notice(level, message.into());
+        }
         let source = if add {
             None
         } else if let Some((_, remote)) = self.selection() {
@@ -229,6 +226,9 @@ impl RemotePanel {
                 NoticeLevel::Warning,
                 "Wait for the Git operation to finish".into(),
             ));
+        }
+        if let Some((level, message)) = self.write_block(c, root) {
+            return Ok(Action::Notice(level, message.into()));
         }
         self.review = None;
         let review = Review::prepare(c, root, operation)?;
@@ -428,13 +428,7 @@ impl RemotePanel {
 
 impl Panel for RemotePanel {
     fn refresh(&mut self, c: &Context) -> Result<()> {
-        let keep = self.next_selection.take().or_else(|| self.identity());
-        self.repos = model::load(c);
-        self.rebuild();
-        if let Some((root, name)) = keep {
-            self.restore(root, name.as_deref());
-        }
-        Ok(())
+        self.refresh_loading(c)
     }
 
     fn draw(&mut self, f: &mut Frame, area: Rect, c: &Context) {
@@ -453,6 +447,12 @@ impl Panel for RemotePanel {
     fn confirm(&mut self, token: &str, c: &Context) -> Action {
         if token != REVIEW_TOKEN || self.writes_blocked {
             return Action::None;
+        }
+        if let Some(root) = self.review.as_ref().map(Review::root) {
+            if let Some((level, message)) = self.write_block(c, root) {
+                self.review = None;
+                return Action::Notice(level, message.into());
+            }
         }
         let Some(review) = self.review.take() else {
             return Action::None;

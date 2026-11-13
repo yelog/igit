@@ -161,6 +161,53 @@ fn unchanged_scan_keeps_preview_selection_scroll_and_checkbox_undo() {
 }
 
 #[test]
+fn hidden_preview_reloads_same_status_content_after_a_scan() {
+    let (_dir, mut c, mut p) = fixture();
+    let path = c.repos[0].path.join("working.txt");
+    select(&mut p, "working.txt");
+    draw(&mut p, &c);
+    assert_eq!(after(&p), "working v1\n");
+    p.launch(Hit::TogglePreview, &c);
+    assert!(!p.preview_open);
+    fs::write(&path, "working v2\n").unwrap();
+    scan(&mut p, &mut c);
+    assert!(!p.preview_open);
+    p.launch(Hit::TogglePreview, &c);
+    draw(&mut p, &c);
+    assert_eq!(after(&p), "working v2\n");
+}
+
+#[test]
+fn preview_hidden_during_a_scan_does_not_keep_the_in_flight_snapshot() {
+    let (_dir, mut c, mut p) = fixture();
+    let path = c.repos[0].path.join("working.txt");
+    select(&mut p, "working.txt");
+    draw(&mut p, &c);
+    assert_eq!(after(&p), "working v1\n");
+    let key = p.active().unwrap().id.clone();
+    let stale = Snapshot::read(
+        c.clone(),
+        false,
+        Some((key, 0, "working.txt".into())),
+        [0].into(),
+    );
+    let (send, receive) = mpsc::channel();
+    p.refresh.pending = Some(Pending {
+        generation: p.refresh.generation,
+        roots: [0].into(),
+        receiver: receive,
+    });
+    p.launch(Hit::TogglePreview, &c);
+    assert!(!p.preview_open);
+    fs::write(&path, "working v2\n").unwrap();
+    send.send(stale).ok().unwrap();
+    p.poll_refresh(&mut c).unwrap();
+    p.launch(Hit::TogglePreview, &c);
+    draw(&mut p, &c);
+    assert_eq!(after(&p), "working v2\n");
+}
+
+#[test]
 fn refresh_keeps_shared_draft_when_one_repository_becomes_clean() {
     let (dir, mut c, mut p) = fixture();
     let second = dir.path().join("second");
@@ -200,7 +247,11 @@ fn late_scan_cannot_replace_an_explicit_refresh_or_ignored_option_change() {
     let (_dir, mut c, mut p) = fixture();
     let stale = Snapshot::read(c.clone(), false, None, [0].into());
     let (send, receive) = mpsc::channel();
-    p.refresh.pending = Some((p.refresh.generation, receive));
+    p.refresh.pending = Some(Pending {
+        generation: p.refresh.generation,
+        roots: [0].into(),
+        receiver: receive,
+    });
     fs::write(c.repos[0].path.join("new.txt"), "new\n").unwrap();
     p.refresh(&c).unwrap();
     send.send(stale).ok().unwrap();
@@ -213,7 +264,11 @@ fn late_scan_cannot_replace_an_explicit_refresh_or_ignored_option_change() {
     fs::write(c.repos[0].path.join("ignored.txt"), "ignored\n").unwrap();
     let stale = Snapshot::read(c.clone(), false, None, [0].into());
     let (send, receive) = mpsc::channel();
-    p.refresh.pending = Some((p.refresh.generation, receive));
+    p.refresh.pending = Some(Pending {
+        generation: p.refresh.generation,
+        roots: [0].into(),
+        receiver: receive,
+    });
     p.toggle_view_item(display::Item::Ignored, &c).unwrap();
     send.send(stale).ok().unwrap();
     p.poll_refresh(&mut c).unwrap();
@@ -221,6 +276,74 @@ fn late_scan_cannot_replace_an_explicit_refresh_or_ignored_option_change() {
     // Drain the replacement scan before the disposable repository is removed.
     scan(&mut p, &mut c);
     assert!(p.files.iter().any(|f| f.change.ignored()));
+}
+
+#[test]
+fn add_completion_requeues_pending_repositories_it_did_not_refresh() {
+    let (dir, mut c, mut p) = fixture();
+    let second = dir.path().join("second");
+    fs::create_dir(&second).unwrap();
+    git(&second, &["init", "-q", "-b", "main"]).unwrap();
+    fs::write(second.join("file.txt"), "second\n").unwrap();
+    git(&second, &["add", "."]).unwrap();
+    c.repos.push(crate::core::Repo {
+        path: second,
+        name: "second".into(),
+        ..c.repos[0].clone()
+    });
+    c.scope.insert(1);
+    p.refresh(&c).unwrap();
+    p.refresh.watch = None;
+    let status = backend::status(&c.repos[0].path).map_err(|error| error.to_string());
+    let (_send, receive) = mpsc::channel();
+    p.refresh.pending = Some(Pending {
+        generation: p.refresh.generation,
+        roots: [0, 1].into(),
+        receiver: receive,
+    });
+    p.apply_add_statuses(&c, [(0, status)].into());
+    assert!(p.refresh.pending.is_none());
+    assert_eq!(p.refresh.deferred, [1].into());
+    assert_eq!(next_scan(&mut p, &mut c), [1].into());
+}
+
+#[test]
+fn unchanged_scan_keeps_the_row_projection_but_roots_changes_rebuild_it() {
+    let (_dir, mut c, mut p) = fixture();
+    let roots = (0..c.repos.len()).collect();
+    let view = p.view.as_ptr();
+    assert!(!p.apply_statuses(&c, statuses(&c, false, &roots)));
+    assert_eq!(p.view.as_ptr(), view);
+    let file = p
+        .view
+        .iter()
+        .find(|row| matches!(row.kind, Kind::File(_)))
+        .unwrap()
+        .id
+        .clone();
+    c.scope.clear();
+    assert!(p.apply_statuses(&c, statuses(&c, false, &roots)));
+    assert!(p.view.iter().all(|row| row.id != file));
+    assert!(p.view.iter().all(|row| row.files.is_empty()));
+}
+
+#[test]
+fn refresh_pending_tracks_only_explicit_requests_and_active_workers() {
+    let (_dir, _c, mut p) = fixture();
+    assert!(!p.refresh_pending());
+    p.refresh.next = Some(Instant::now() + FALLBACK);
+    p.refresh.deferred.insert(0);
+    assert!(!p.refresh_pending());
+    p.request_refresh();
+    assert!(p.refresh_pending());
+    p.refresh.requested = false;
+    let (_send, receive) = mpsc::channel();
+    p.refresh.pending = Some(Pending {
+        generation: p.refresh.generation,
+        roots: [0].into(),
+        receiver: receive,
+    });
+    assert!(p.refresh_pending());
 }
 
 #[test]
@@ -236,10 +359,48 @@ fn refresh_keeps_last_successful_files_and_reports_a_repeated_error_once() {
         })
         .ok()
         .unwrap();
-        p.refresh.pending = Some((p.refresh.generation, receive));
+        p.refresh.pending = Some(Pending {
+            generation: p.refresh.generation,
+            roots: [0].into(),
+            receiver: receive,
+        });
         assert_eq!(p.poll_refresh(&mut c).is_err(), report);
         assert!(p.files == files);
     }
+}
+
+#[test]
+fn invalid_saved_state_does_not_block_the_first_scan_and_is_preserved_before_save() {
+    let (_dir, c, _) = fixture();
+    fs::create_dir_all(&c.state_dir).unwrap();
+    let path = c.state_dir.join("commit.json");
+    let original = b"{\"message\":".to_vec();
+    fs::write(&path, &original).unwrap();
+    let mut p = CommitPanel::default();
+    let error = p.refresh(&c).unwrap_err();
+    assert!(error.to_string().contains("Saved Commit state"));
+    assert!(p.loaded && p.refresh.watch.is_some());
+    assert!(!p.files.is_empty());
+    assert_eq!(fs::read(&path).unwrap(), original);
+    p.saved.message = Some("recovered draft".into());
+    p.save(&c).unwrap();
+    let backup = c.state_dir.join("commit.json.invalid");
+    assert_eq!(fs::read(backup).unwrap(), original);
+    let mut reopened = CommitPanel::default();
+    reopened.refresh(&c).unwrap();
+    assert_eq!(reopened.saved.message.as_deref(), Some("recovered draft"));
+}
+
+#[test]
+fn unreadable_saved_state_does_not_block_the_first_scan() {
+    let (_dir, c, _) = fixture();
+    fs::create_dir_all(&c.state_dir).unwrap();
+    fs::create_dir(c.state_dir.join("commit.json")).unwrap();
+    let mut p = CommitPanel::default();
+    let error = p.refresh(&c).unwrap_err();
+    assert!(error.to_string().contains("Saved Commit state"));
+    assert!(p.loaded && p.refresh.watch.is_some());
+    assert!(!p.files.is_empty());
 }
 
 fn settle(p: &mut CommitPanel, c: &mut Context) {
@@ -256,12 +417,19 @@ fn settle(p: &mut CommitPanel, c: &mut Context) {
 fn next_scan(p: &mut CommitPanel, c: &mut Context) -> BTreeSet<usize> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if let Some((generation, receiver)) = p.refresh.pending.take() {
-            let snapshot = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        if let Some(pending) = p.refresh.pending.take() {
+            let snapshot = pending
+                .receiver
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
             let roots = snapshot.statuses.keys().copied().collect();
             let (send, receive) = mpsc::channel();
             send.send(snapshot).ok().unwrap();
-            p.refresh.pending = Some((generation, receive));
+            p.refresh.pending = Some(Pending {
+                generation: pending.generation,
+                roots: pending.roots,
+                receiver: receive,
+            });
             p.poll_refresh(c).unwrap();
             return roots;
         }
@@ -365,7 +533,11 @@ fn native_events_during_a_scan_are_not_lost_and_fallback_covers_missing_notifica
     settle(&mut p, &mut c);
     let stale = Snapshot::read(c.clone(), false, None, [0].into());
     let (send, receive) = mpsc::channel();
-    p.refresh.pending = Some((p.refresh.generation, receive));
+    p.refresh.pending = Some(Pending {
+        generation: p.refresh.generation,
+        roots: [0].into(),
+        receiver: receive,
+    });
     fs::write(c.repos[0].path.join("during.txt"), "during scan\n").unwrap();
     // The worker is still busy when the filesystem delivers this event.
     thread::sleep(Duration::from_millis(400));

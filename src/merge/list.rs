@@ -19,7 +19,11 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
-use std::{collections::BTreeMap, path::Path, time::Instant};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    time::Instant,
+};
 use unicode_width::UnicodeWidthStr;
 
 #[cfg(test)]
@@ -60,8 +64,35 @@ impl Entry {
     }
 }
 
+pub(super) struct RepoRows {
+    files: Vec<Conflict>,
+    ready: bool,
+    sources: Option<Sources>,
+}
+
+pub(super) struct RepoSnapshot {
+    pub(super) root: usize,
+    pub(super) rows: Result<RepoRows, String>,
+}
+
+pub(super) fn read_repository(root: usize, repo: &Repo) -> RepoSnapshot {
+    let rows = (|| -> Result<RepoRows> {
+        let files = conflicts(root, &repo.path)?;
+        let op = operation(&repo.path)?;
+        let ready = files.is_empty() && op.is_some();
+        let sources = (!files.is_empty() || op.is_some()).then(|| Sources::new(repo, op.as_ref()));
+        Ok(RepoRows {
+            files,
+            ready,
+            sources,
+        })
+    })()
+    .map_err(|error| format!("{}: {error:#}", repo.name));
+    RepoSnapshot { root, rows }
+}
+
 struct Sources {
-    operation: Option<&'static str>,
+    operation: Option<Operation>,
     can_skip: bool,
     current: String,
     incoming: String,
@@ -70,7 +101,7 @@ struct Sources {
 impl Sources {
     fn new(repo: &Repo, op: Option<&Operation>) -> Self {
         let short = |id: &str| id.chars().take(8).collect::<String>();
-        let operation = op.map(|op| op.name);
+        let operation = op.cloned();
         let current = match op {
             Some(op) if op.name == "rebase" && !op.head.is_empty() => short(&op.head),
             _ => repo.branch.clone(),
@@ -94,7 +125,7 @@ impl Sources {
     }
 
     fn column(&self, side: FileSide) -> (&'static str, &str) {
-        match (self.operation, side) {
+        match (self.operation_name(), side) {
             (Some("merge"), FileSide::Current) => ("Yours", &self.current),
             (Some("merge"), FileSide::Incoming) => ("Theirs", &self.incoming),
             (Some("rebase"), FileSide::Current) => ("Rebased", &self.current),
@@ -105,9 +136,17 @@ impl Sources {
             (_, FileSide::Incoming) => ("Incoming", ""),
         }
     }
+
+    fn operation_name(&self) -> Option<&'static str> {
+        self.operation.as_ref().map(|op| op.name)
+    }
+
+    fn matches(&self, operation: &Option<Operation>) -> bool {
+        self.operation.as_ref() == operation.as_ref()
+    }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Row {
     Unresolved,
     Ready,
@@ -123,69 +162,126 @@ pub(super) struct ConflictList {
     folded: bool,
     full_paths: bool,
     last_click: Option<(usize, Instant)>,
+    error: Option<String>,
+    failed_roots: BTreeSet<usize>,
 }
 
 impl ConflictList {
     pub(super) fn refresh(&mut self, ctx: &Context) -> Result<()> {
+        let snapshots = ctx
+            .scope
+            .iter()
+            .filter_map(|&root| ctx.repos.get(root).map(|repo| read_repository(root, repo)))
+            .collect();
+        self.install(snapshots);
+        if let Some(error) = &self.error {
+            anyhow::bail!("{error}");
+        }
+        Ok(())
+    }
+
+    pub(super) fn install(&mut self, snapshots: Vec<RepoSnapshot>) -> Vec<String> {
+        let selected = self
+            .selected()
+            .map(|entry| (entry.root(), entry.path().map(Path::to_path_buf)));
+        let selected_index = self.selected_index();
+        let focused_unresolved = self.focus == Some(Row::Unresolved);
+        let mut old_files = BTreeMap::<usize, (Vec<Entry>, bool)>::new();
+        for entry in std::mem::take(&mut self.items) {
+            let root = entry.root();
+            let rows = old_files.entry(root).or_default();
+            match entry {
+                Entry::File(_) => rows.0.push(entry),
+                Entry::Ready(_) => rows.1 = true,
+            }
+        }
+        let mut old_sources = std::mem::take(&mut self.sources);
+        let mut sources = BTreeMap::new();
         let mut files = Vec::new();
         let mut ready = Vec::new();
-        let mut sources = BTreeMap::new();
         let mut errors = Vec::new();
-        for &root in &ctx.scope {
-            let Some(repo) = ctx.repos.get(root) else {
-                continue;
-            };
-            let conflicts = match conflicts(root, &repo.path) {
-                Ok(conflicts) => conflicts,
+        let mut failed_roots = BTreeSet::new();
+        for snapshot in snapshots {
+            let root = snapshot.root;
+            match snapshot.rows {
+                Ok(rows) => {
+                    old_files.remove(&root);
+                    old_sources.remove(&root);
+                    files.extend(rows.files.into_iter().map(Entry::File));
+                    if rows.ready {
+                        ready.push(Entry::Ready(root));
+                    }
+                    if let Some(source) = rows.sources {
+                        sources.insert(root, source);
+                    }
+                }
                 Err(error) => {
-                    errors.push(format!("{}: {error}", repo.name));
-                    continue;
+                    failed_roots.insert(root);
+                    errors.push(error);
+                    if let Some((rows, is_ready)) = old_files.remove(&root) {
+                        files.extend(rows);
+                        if is_ready {
+                            ready.push(Entry::Ready(root));
+                        }
+                    }
+                    if let Some(source) = old_sources.remove(&root) {
+                        sources.insert(root, source);
+                    }
                 }
-            };
-            let op = match operation(&repo.path) {
-                Ok(op) => op,
-                Err(error) => {
-                    errors.push(format!("{}: {error}", repo.name));
-                    None
-                }
-            };
-            if conflicts.is_empty() {
-                if op.is_none() {
-                    continue;
-                }
-                ready.push(Entry::Ready(root));
             }
-            files.extend(conflicts.into_iter().map(Entry::File));
-            sources.insert(root, Sources::new(repo, op.as_ref()));
         }
         files.extend(ready);
-        let index = self
-            .selected()
-            .and_then(|old| {
+        let index = selected
+            .and_then(|(root, path)| {
                 files
                     .iter()
-                    .position(|entry| entry.root() == old.root() && entry.path() == old.path())
-                    .or_else(|| files.iter().position(|entry| entry.root() == old.root()))
+                    .position(|entry| entry.root() == root && path.as_deref() == entry.path())
+                    .or_else(|| files.iter().position(|entry| entry.root() == root))
             })
             .unwrap_or_else(|| {
-                self.selected_index()
+                selected_index
                     .unwrap_or(0)
                     .min(files.len().saturating_sub(1))
             });
         self.focus = match files.get(index) {
-            Some(Entry::File(_)) if self.folded || self.focus == Some(Row::Unresolved) => {
-                Some(Row::Unresolved)
-            }
+            Some(Entry::File(_)) if self.folded || focused_unresolved => Some(Row::Unresolved),
             Some(_) => Some(Row::Item(index)),
             None => None,
         };
         self.items = files;
         self.sources = sources;
+        self.failed_roots = failed_roots;
+        self.error = (!errors.is_empty()).then(|| errors.join("; "));
         self.reset_click();
-        if !errors.is_empty() {
-            anyhow::bail!("{}", errors.join("; "))
-        }
-        Ok(())
+        errors
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.items.clear();
+        self.sources.clear();
+        self.focus = None;
+        self.scroll = 0;
+        self.error = None;
+        self.failed_roots.clear();
+        self.reset_click();
+    }
+
+    pub(super) fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    pub(super) fn repo_failed(&self, root: usize) -> bool {
+        self.failed_roots.contains(&root)
+    }
+
+    pub(super) fn source_matches(&self, file: &Conflict, operation: &Option<Operation>) -> bool {
+        self.sources
+            .get(&file.root)
+            .is_some_and(|source| source.matches(operation))
+            && self
+                .items
+                .iter()
+                .any(|entry| matches!(entry, Entry::File(current) if current == file))
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -490,12 +586,35 @@ impl MergePanel {
             side_cell(f, *cell, label, MUTED);
         }
 
-        let count = usize::from(body.height.saturating_sub(1));
-        if self.list.is_empty() && count > 0 {
+        let error = self.list.error().map(str::to_owned);
+        let error_height: u16 = if error.is_some() && body.height > 1 {
+            1
+        } else {
+            0
+        };
+        let count = usize::from(body.height.saturating_sub(1 + error_height));
+        let first_y = body.y + 1 + error_height;
+        if error_height > 0 {
+            let error = error.as_deref().unwrap_or_default();
             put(
                 f,
                 rect(body.x, body.y + 1, body.width, 1),
-                " No conflicts in Roots",
+                clipped(
+                    &format!(" Refresh failed: {error}"),
+                    usize::from(body.width),
+                ),
+                style(RED),
+            );
+        }
+        if self.list.is_empty() && count > 0 {
+            put(
+                f,
+                rect(body.x, first_y, body.width, 1),
+                if error.is_some() {
+                    " No conflict rows available"
+                } else {
+                    " No conflicts in Roots"
+                },
                 style(MUTED),
             );
             return;
@@ -512,7 +631,7 @@ impl MergePanel {
             self.list.scroll = selected + 1 - count;
         }
         for (y, row) in rows.skip(self.list.scroll).take(count).enumerate() {
-            let y = body.y + y as u16 + 1;
+            let y = first_y + y as u16;
             let line = rect(body.x, y, body.width, 1);
             let selected = Some(row) == focus;
             let bg = if selected {
@@ -584,7 +703,9 @@ impl MergePanel {
                         }
                         Entry::Ready(root) => {
                             let name = &c.repos[*root].name;
-                            let op = self.list.sources[root].operation.unwrap_or("operation");
+                            let op = self.list.sources[root]
+                                .operation_name()
+                                .unwrap_or("operation");
                             put(f, line, format!("   {name}  ·  {op}"), style(FG));
                         }
                     }
@@ -638,7 +759,7 @@ impl MergePanel {
             .list
             .selected_root()
             .and_then(|root| self.list.sources.get(&root));
-        let abort = sources.is_some_and(|s| s.operation.is_some());
+        let abort = sources.is_some_and(|s| s.operation_name().is_some());
         let skip = sources.is_some_and(|s| s.can_skip);
         let operations = rect(bar.x, bar.y, bar.width, u16::from(bar.height > 0));
         let compact = bar.width < 64;

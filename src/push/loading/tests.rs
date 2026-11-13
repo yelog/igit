@@ -252,6 +252,7 @@ fn unchanged_refresh_retains_focused_revision_and_checks() {
     let checked = panel.checked.clone();
     panel.refresh(&c).unwrap();
     panel.finish_loading(&c);
+    assert!(!panel.preview_failed);
     assert!(
         matches!(panel.event(&event(KeyCode::Char('y')), &c), Action::Copy { text, .. } if text == "base")
     );
@@ -269,6 +270,7 @@ fn stale_file_and_patch_reads_cannot_replace_the_latest_selection() {
     send.send(preview::Loaded::Files {
         files: vec![],
         summary: "obsolete files".into(),
+        failed: false,
     })
     .ok()
     .unwrap();
@@ -287,15 +289,89 @@ fn stale_file_and_patch_reads_cannot_replace_the_latest_selection() {
     let send = panel.preview_load.hold();
     let escape = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     panel.event(&escape, &c); // Close while the worker is still reading.
-    send.send(preview::Loaded::Diff(preview::FileDiff::Patch(
-        "obsolete diff".into(),
-    )))
+    send.send(preview::Loaded::Diff {
+        content: preview::FileDiff::Patch("obsolete diff".into()),
+        failed: false,
+    })
     .ok()
     .unwrap();
     panel.finish_loading(&c);
     assert_eq!(panel.preview.body, panel.preview.summary);
     assert!(panel.diff.is_none());
     assert_eq!(panel.preview.tree.cursor, row);
+}
+
+#[test]
+fn wrapped_file_preview_failure_retries_on_explicit_refresh() {
+    let (_dir, c, mut panel) = fixture();
+    panel.preview_load.request();
+    let send = panel.preview_load.hold();
+    send.send(preview::Loaded::Files {
+        files: vec![],
+        summary: "Unable to load changed files: transient".into(),
+        failed: true,
+    })
+    .unwrap();
+
+    assert!(panel.poll_loading(&c).unwrap());
+    assert!(panel.preview_failed);
+    assert!(panel.preview.body.contains("transient"));
+
+    panel.refresh(&c).unwrap();
+    panel.finish_loading(&c);
+    assert!(!panel.preview_failed);
+    assert!(!panel.preview.files.is_empty());
+    assert!(!panel.preview.body.contains("transient"));
+}
+
+#[test]
+fn preview_loader_disconnect_retries_on_explicit_refresh() {
+    let (_dir, c, mut panel) = fixture();
+    panel.preview_load.request();
+    drop(panel.preview_load.hold());
+
+    assert!(panel.poll_loading(&c).is_err());
+    assert!(panel.preview_failed);
+
+    panel.refresh(&c).unwrap();
+    panel.finish_loading(&c);
+    assert!(!panel.preview_failed);
+    assert!(!panel.preview.files.is_empty());
+}
+
+#[test]
+fn failed_file_diff_retries_on_explicit_refresh() {
+    let (_dir, c, mut panel) = fixture();
+    let row = panel
+        .preview
+        .tree
+        .visible
+        .iter()
+        .position(|&n| matches!(panel.preview.tree.nodes[n].kind, Kind::File(_)))
+        .unwrap();
+    panel.activate_file(row, false, &c);
+    panel.finish_loading(&c);
+
+    panel.preview_load.request();
+    let send = panel.preview_load.hold();
+    send.send(preview::Loaded::Diff {
+        content: preview::FileDiff::Patch("Unable to load diff: transient".into()),
+        failed: true,
+    })
+    .unwrap();
+    assert!(panel.poll_loading(&c).unwrap());
+    assert!(panel.preview_failed);
+
+    panel.refresh(&c).unwrap();
+    panel.finish_loading(&c);
+    assert!(!panel.preview_failed);
+    match &panel.diff.as_ref().unwrap().content {
+        Some(preview::FileDiff::Split(_)) => {}
+        Some(preview::FileDiff::Patch(text)) => {
+            assert!(!text.starts_with("Unable to load diff:"));
+        }
+        None => panic!("diff was not reloaded"),
+    }
 }
 
 #[test]

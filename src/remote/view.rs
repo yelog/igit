@@ -110,8 +110,9 @@ impl RemotePanel {
                         Icon::Repo
                     });
                     let name = model::label(&repository.name);
+                    let error = if repo.error.is_some() { "  Error" } else { "" };
                     let label = format!(
-                        "{arrow} {icon} {name}  ({} remote{})",
+                        "{arrow} {icon} {name}  ({} remote{}){error}",
                         repo.remotes.len(),
                         if repo.remotes.len() == 1 { "" } else { "s" }
                     );
@@ -129,7 +130,7 @@ impl RemotePanel {
                     let label = repo
                         .error
                         .as_deref()
-                        .map(model::label)
+                        .map(|error| format!("Error: {}", model::label(error)))
                         .unwrap_or_else(|| "No remotes · use Add".into());
                     f.render_widget(
                         Paragraph::new(clipped(&format!("    {label}"), usize::from(rect.width)))

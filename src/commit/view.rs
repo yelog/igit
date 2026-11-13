@@ -117,16 +117,18 @@ impl CommitPanel {
             }
             _ => None,
         };
-        let label = if let Some(index) =
-            shortcut.and_then(|key| txt.find(|ch: char| ch.to_ascii_lowercase() == key))
-        {
+        let label = if let Some((index, ch)) = shortcut.and_then(|key| {
+            txt.char_indices()
+                .find(|(_, ch)| ch.to_ascii_lowercase() == key)
+        }) {
+            let end = index + ch.len_utf8();
             Line::from(vec![
                 Span::raw(format!(" {}", &txt[..index])),
                 Span::styled(
-                    txt[index..index + 1].to_string(),
+                    ch.to_ascii_lowercase().to_string(),
                     fg(GOLD).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                 ),
-                Span::raw(format!("{} ", &txt[index + 1..])),
+                Span::raw(format!("{} ", &txt[end..])),
             ])
         } else {
             Line::raw(format!(" {txt} "))

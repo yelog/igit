@@ -11,14 +11,16 @@ pub(super) const NAV_SETTLE: Duration = Duration::from_millis(60);
 
 struct Job {
     generation: u64,
+    identity: (usize, String),
     reply: Receiver<Result<Snapshot>>,
 }
 
 #[derive(Default)]
 pub(super) struct Preview {
     generation: u64,
-    due: Option<Instant>,
+    due: Option<(Instant, (usize, String))>,
     running: Option<Job>,
+    loaded: Option<(usize, String)>,
     error: Option<String>,
 }
 
@@ -39,8 +41,24 @@ impl Preview {
 
 impl StashPanel {
     pub(super) fn request_preview(&mut self, delay: Duration) {
+        let identity = self.identity();
+        if identity.is_some()
+            && (self.preview.loaded == identity
+                || self
+                    .preview
+                    .due
+                    .as_ref()
+                    .is_some_and(|(_, target)| Some(target) == identity.as_ref())
+                || self.preview.running.as_ref().is_some_and(|job| {
+                    job.generation == self.preview.generation
+                        && Some(&job.identity) == identity.as_ref()
+                }))
+        {
+            return;
+        }
         self.preview.generation += 1;
-        self.preview.due = self.selection().map(|_| Instant::now() + delay);
+        self.preview.due = identity.map(|identity| (Instant::now() + delay, identity));
+        self.preview.loaded = None;
         self.preview.error = None;
         self.files.clear();
     }
@@ -51,8 +69,14 @@ impl StashPanel {
         } else {
             self.preview
                 .due
-                .map(|at| at.saturating_duration_since(Instant::now()))
+                .as_ref()
+                .map(|(at, _)| at.saturating_duration_since(Instant::now()))
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn preview_state(&self) -> (u64, Option<(usize, String)>) {
+        (self.preview.generation, self.preview.loaded.clone())
     }
 
     pub(crate) fn poll_preview(&mut self, c: &Context) -> bool {
@@ -68,9 +92,13 @@ impl StashPanel {
             if let Some(result) = result {
                 if job.generation == self.preview.generation {
                     match result {
-                        Ok(snapshot) => self.files.set(snapshot),
+                        Ok(snapshot) => {
+                            self.files.set(snapshot);
+                            self.preview.loaded = Some(job.identity.clone());
+                        }
                         Err(error) => {
-                            self.preview.error = Some(format!("Could not load stash: {error:#}"))
+                            self.preview.loaded = None;
+                            self.preview.error = Some(format!("Could not load stash: {error:#}"));
                         }
                     }
                     redraw = true;
@@ -78,20 +106,24 @@ impl StashPanel {
                 self.preview.running = None;
             }
         }
-        if self.preview.running.is_none() && self.preview.due.is_some_and(|at| at <= Instant::now())
-        {
-            self.preview.due = None;
-            if let Some((root, oid)) = self.identity() {
-                let path = c.repos[root].path.clone();
-                let (send, reply) = mpsc::channel();
-                thread::spawn(move || {
-                    let _ = send.send(Snapshot::stash(&path, root, &oid));
-                });
-                self.preview.running = Some(Job {
-                    generation: self.preview.generation,
-                    reply,
-                });
-            }
+        let due = self
+            .preview
+            .running
+            .is_none()
+            .then(|| self.preview.due.take_if(|(at, _)| *at <= Instant::now()))
+            .flatten();
+        if let Some((_, (root, oid))) = due {
+            let path = c.repos[root].path.clone();
+            let identity = (root, oid.clone());
+            let (send, reply) = mpsc::channel();
+            thread::spawn(move || {
+                let _ = send.send(Snapshot::stash(&path, root, &oid));
+            });
+            self.preview.running = Some(Job {
+                generation: self.preview.generation,
+                identity,
+                reply,
+            });
         }
         redraw
     }
@@ -109,6 +141,7 @@ mod tests {
         let (send, reply) = mpsc::channel();
         panel.preview.running = Some(Job {
             generation: panel.preview.generation,
+            identity: (root, oid.clone()),
             reply,
         });
         panel.preview.due = None;
@@ -122,6 +155,7 @@ mod tests {
         let (send, reply) = mpsc::channel();
         panel.preview.running = Some(Job {
             generation: panel.preview.generation,
+            identity: (root, oid),
             reply,
         });
         panel.refresh(&c).unwrap();

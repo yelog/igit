@@ -289,7 +289,7 @@ commands! {
         "amend" => "M", COMMIT;
         "commit" => "c", MESSAGE;
         "commit-and-push" => "a", MESSAGE;
-        "generate-message" => "A", MESSAGE;
+        "generate-message" => "g", MESSAGE;
         "ai-draft" => "A", COMMIT;
         "ai-settings" => "S", COMMIT;
         "review" => "c", CHANGES | PREVIEW;

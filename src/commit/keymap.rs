@@ -275,7 +275,7 @@ impl CommitPanel {
                     ("[", "Previous repository in Changes"),
                     ("]", "Next repository in Changes"),
                     ("M", "Toggle Amend for highlighted repository"),
-                    ("A", "Generate and fill shared commit message"),
+                    ("g", "Generate and fill shared commit message"),
                     ("S", "Edit AI endpoint, model and prompt"),
                 ],
             ),

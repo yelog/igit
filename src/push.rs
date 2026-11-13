@@ -47,7 +47,7 @@ use ratatui::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver},
+    sync::mpsc::{self, Receiver, TryRecvError},
     time::Instant,
 };
 
@@ -168,6 +168,7 @@ pub struct PushPanel {
     load_error: Option<String>,
     preview_load: Load<preview::Loaded>,
     preview_request: Option<preview::Request>,
+    preview_failed: bool,
     checked: BTreeSet<usize>,
     expanded: BTreeSet<usize>,
     targets: BTreeMap<usize, Target>,
@@ -191,6 +192,7 @@ pub struct PushPanel {
     hits: Vec<(Rect, Hit)>,
     results: BTreeMap<usize, Result<PushOutcome, String>>,
     inflight: Option<Receiver<Report>>,
+    inflight_items: BTreeSet<usize>,
     activities: BTreeMap<usize, PushActivity>,
     busy: String,
     review: Vec<Job>,
@@ -659,6 +661,13 @@ impl PushPanel {
     pub(crate) fn busy(&self) -> bool {
         self.inflight.is_some()
     }
+    pub(crate) fn refresh_allowed(&self) -> bool {
+        !self.editing()
+            && self.selected_text().is_none()
+            && self.key_sequence().is_none()
+            && !self.panes.dragging()
+            && !self.detail_selection.mouse_active()
+    }
     #[cfg(test)]
     pub(crate) fn animation_running(&self) -> bool {
         !self.activities.is_empty()
@@ -978,6 +987,15 @@ impl PushPanel {
             .map(|e| (e.idx, c.repos[e.idx].path.clone(), e.t.remote.clone()))
             .collect();
         let parents: Vec<_> = c.repos.iter().map(|r| r.parent).collect();
+        let inflight_items: BTreeSet<_> = if fetch {
+            items
+                .iter()
+                .filter(|(_, _, remote)| !remote.is_empty())
+                .map(|(idx, _, _)| *idx)
+                .collect()
+        } else {
+            js.iter().map(|job| job.idx).collect()
+        };
         self.last_fetch = fetch;
         self.activities.clear();
         self.busy = if fetch {
@@ -987,6 +1005,7 @@ impl PushPanel {
         }
         .into();
         self.inflight = Some(rx);
+        self.inflight_items = inflight_items;
         if fetch {
             self.results.clear()
         } else {
@@ -1062,13 +1081,27 @@ impl PushPanel {
     }
     pub(crate) fn poll(&mut self, c: &Context) -> Option<(NoticeLevel, String)> {
         let mut finished = false;
-        let messages = {
+        let (messages, disconnected) = {
             let rx = self.inflight.as_ref()?;
             let mut messages = Vec::new();
-            while let Ok(message) = rx.try_recv() {
-                messages.push(message);
+            let mut disconnected = false;
+            while !finished {
+                match rx.try_recv() {
+                    Ok(Report::Done) => {
+                        finished = true;
+                        messages.push(Report::Done);
+                    }
+                    Ok(message) => {
+                        messages.push(message);
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
             }
-            messages
+            (messages, disconnected)
         };
         for m in messages {
             match m {
@@ -1090,6 +1123,7 @@ impl PushPanel {
                 }
                 Report::Row(i, r) => {
                     self.activities.remove(&i);
+                    self.inflight_items.remove(&i);
                     if r.is_ok() && !self.last_fetch {
                         self.tracking_choices.remove(&i);
                     }
@@ -1110,10 +1144,22 @@ impl PushPanel {
                 }
             }
         }
-        if !finished {
+        if !finished && !disconnected {
             return None;
         }
+        if disconnected {
+            let unknown = concat!(
+                "Result unknown: worker stopped before reporting. ",
+                "Verify the repository before retrying."
+            );
+            for idx in self.inflight_items.clone() {
+                self.results
+                    .entry(idx)
+                    .or_insert_with(|| Err(unknown.into()));
+            }
+        }
         self.inflight = None;
+        self.inflight_items.clear();
         self.activities.clear();
         let n = self.results.values().filter(|r| r.is_err()).count();
         let upstream_failures = self
@@ -1121,7 +1167,9 @@ impl PushPanel {
             .values()
             .filter(|r| matches!(r, Ok(PushOutcome::UpstreamNotSet(_))))
             .count();
-        let level = if self.results.is_empty() {
+        let level = if disconnected && n == 0 {
+            NoticeLevel::Warning
+        } else if self.results.is_empty() {
             NoticeLevel::Info
         } else if n == self.results.len() {
             NoticeLevel::Error
@@ -1130,7 +1178,19 @@ impl PushPanel {
         } else {
             NoticeLevel::Success
         };
-        let mut msg = if upstream_failures > 0 {
+        let mut msg = if disconnected {
+            format!(
+                concat!(
+                    "Worker stopped before reporting completion{}. ",
+                    "Reported results were kept; verify unreported repositories before retrying."
+                ),
+                if n == 0 {
+                    String::new()
+                } else {
+                    format!(" · {n} failed")
+                }
+            )
+        } else if upstream_failures > 0 {
             if n == 0 {
                 format!("Pushed · {upstream_failures} upstream setup failed · d details")
             } else {
@@ -1222,6 +1282,7 @@ impl Panel for PushPanel {
     fn refresh(&mut self, c: &Context) -> Result<()> {
         self.cancel_key_sequence();
         let old = self.selected_identity();
+        let retry_preview = self.preview_failed;
         let scope_changed = self
             .load_scope
             .as_ref()
@@ -1238,6 +1299,8 @@ impl Panel for PushPanel {
                 .and_then(|identity| self.position_for_identity(identity))
                 .unwrap_or(0);
             self.inspect(c);
+        } else if retry_preview {
+            self.retry_failed_preview(c);
         }
         Ok(())
     }
@@ -1549,6 +1612,47 @@ mod tests {
         assert!(panel.poll(&context).is_some());
         assert!(!panel.animation_running());
         assert!(!panel.busy());
+    }
+
+    #[test]
+    fn disconnected_push_worker_clears_busy_and_preserves_reported_results() {
+        let directory = tempfile::tempdir().unwrap();
+        make(directory.path(), "app");
+        make(directory.path(), "tools");
+        let context = Context::discover(directory.path()).unwrap();
+        let mut panel = PushPanel::default();
+        panel.refresh(&context).unwrap();
+        panel.finish_loading(&context);
+        assert_eq!(panel.entries.len(), 2);
+        let (sender, receiver) = mpsc::channel();
+        panel.inflight = Some(receiver);
+        panel.inflight_items = BTreeSet::from([0, 1]);
+        panel.busy = "Pushing…".into();
+
+        sender
+            .send(Report::Row(0, Ok(PushOutcome::Complete)))
+            .unwrap();
+        sender.send(Report::Started(1)).unwrap();
+        drop(sender);
+
+        let (level, message) = panel.poll(&context).unwrap();
+        assert_eq!(level, NoticeLevel::Warning);
+        assert!(!panel.busy());
+        assert_eq!(panel.results[&0], Ok(PushOutcome::Complete));
+        assert!(matches!(
+            panel.results.get(&1),
+            Some(Err(error)) if error.contains("Result unknown")
+        ));
+        assert!(message.contains("verify unreported repositories"));
+        panel.finish_loading(&context);
+        assert!(matches!(
+            panel.review(&context, true),
+            Action::Confirm { .. }
+        ));
+        assert_eq!(
+            panel.review.iter().map(|job| job.idx).collect::<Vec<_>>(),
+            [1]
+        );
     }
 
     #[test]

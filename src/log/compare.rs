@@ -234,6 +234,9 @@ impl Comparison {
             }
             changed |= panel.poll_preview(&scoped)?;
         }
+        if self.status.is_none() {
+            changed |= self.panels[self.active].poll_more(&scoped)?;
+        }
         if self.initial_focus
             && self.status.is_none()
             && !self.panels.iter().any(LogPanel::history_pending)

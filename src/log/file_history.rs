@@ -460,7 +460,7 @@ impl LogPanel {
             );
         }
         for (icon, hit) in [(Icon::Refresh, Hit::Refresh), (Icon::Add, Hit::More)] {
-            if matches!(hit, Hit::More) && (self.hist.more.is_empty() || self.limit >= 3200) {
+            if matches!(hit, Hit::More) && self.hist.more.is_empty() {
                 continue;
             }
             let label = format!(" {} ", self.icons.glyph(icon));

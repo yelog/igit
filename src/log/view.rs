@@ -534,12 +534,11 @@ impl LogPanel {
             }
         }
         let mut ops = vec![(Icon::Refresh, Hit::Refresh, false)];
-        if (self.limit < 3200 || self.filter.comparison.is_some())
-            && self
-                .hist
-                .more
-                .iter()
-                .any(|&id| self.filter.includes_root(id))
+        if self
+            .hist
+            .more
+            .iter()
+            .any(|&id| self.filter.includes_root(id))
         {
             ops.insert(0, (Icon::Add, Hit::More, false));
         }

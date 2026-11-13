@@ -358,6 +358,22 @@ fn notification_space_prefix(owner: &BoundCommand, multi: &Sequence, single: &Se
         && single[0] == multi[0]
 }
 
+fn generate_message_shadows_notification(
+    message: &BoundCommand,
+    message_sequence: &Sequence,
+    notification: &BoundCommand,
+    notification_sequence: &Sequence,
+) -> bool {
+    message.command.group == "commit"
+        && message.command.name == "generate-message"
+        && message.command.contexts & keys::MESSAGE != 0
+        && notification.command.group == "global"
+        && notification.command.name == "notification-history"
+        && message_sequence.len() == 1
+        && notification_sequence.len() > 1
+        && notification_sequence[0] == message_sequence[0]
+}
+
 fn validate(commands: &[BoundCommand]) -> Result<()> {
     for (i, first) in commands.iter().enumerate() {
         for (j, sequence) in first.sequences.iter().enumerate() {
@@ -404,8 +420,14 @@ fn validate(commands: &[BoundCommand]) -> Result<()> {
                     let notification_space = !std::ptr::eq(first, second)
                         && (notification_space_prefix(first, sequence, other)
                             || notification_space_prefix(second, other, sequence));
+                    let notification_shadowed = !std::ptr::eq(first, second)
+                        && (generate_message_shadows_notification(first, sequence, second, other)
+                            || generate_message_shadows_notification(
+                                second, other, first, sequence,
+                            ));
                     if (sequence.starts_with(other) || other.starts_with(sequence))
                         && !notification_space
+                        && !notification_shadowed
                     {
                         bail!("Conflicting keybindings.{}.{} ({}) and keybindings.{}.{} ({}): duplicate or ambiguous prefix", first.command.group, first.command.name, keys::label(sequence), second.command.group, second.command.name, keys::label(other));
                     }
@@ -461,6 +483,7 @@ mod tests {
         assert!(config.mouse);
         assert_eq!(config.hint_delay, Duration::from_millis(200));
         assert_eq!(config.label("commit", "review"), "Ctrl-r");
+        assert_eq!(config.label("commit", "generate-message"), "g");
         assert_eq!(config.label("global", "quit"), "q");
         assert_eq!(config.label("global", "notification-history"), "g n");
         assert_eq!(config.label("log", "edit-message"), "F2");

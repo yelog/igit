@@ -13,7 +13,7 @@ struct Candidate {
 impl Candidate {
     fn press_only(&self, context: u32) -> bool {
         matches!(self.action.keys(), Some("Ctrl-w f" | "O"))
-            || context == keys::MESSAGE && matches!(self.action.keys(), Some("c" | "a" | "A"))
+            || context == keys::MESSAGE && matches!(self.action.keys(), Some("c" | "a" | "g" | "A"))
     }
 }
 

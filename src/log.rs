@@ -49,6 +49,8 @@ use view::*;
 
 pub(crate) const REVIEW_TOKEN: &str = "log-commit-action";
 pub(super) const LOCAL_APPLY_TOKEN_PREFIX: &str = "log-local-apply-all:";
+const HISTORY_PAGE: usize = 160;
+const LOAD_MORE_DISTANCE: usize = 24;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 enum Pane {
@@ -266,7 +268,7 @@ impl Default for LogPanel {
             info_selection: TextSelection::default(),
             info_click: None,
             last: None,
-            limit: 160,
+            limit: HISTORY_PAGE,
         }
     }
 }
@@ -397,6 +399,14 @@ impl LogPanel {
             })
             .unwrap_or(0);
     }
+    pub(crate) fn refresh_allowed(&self) -> bool {
+        !self.editing()
+            && self.selected_text().is_none()
+            && self.key_sequence().is_none()
+            && !self.panes.dragging()
+            && !self.info_selection.mouse_active()
+    }
+
     fn open_diff(&mut self, c: &Context) -> Result<()> {
         self.require_current_history(c)?;
         if self.filter.file_history.is_some() {
@@ -649,12 +659,7 @@ impl LogPanel {
             }
             Hit::Diff => self.open_diff(c)?,
             Hit::More => {
-                self.limit = if self.filter.comparison.is_some() {
-                    self.limit.saturating_add(160)
-                } else {
-                    self.limit.saturating_add(160).min(3200)
-                };
-                self.reload(c, true)?
+                self.load_more(c)?;
             }
             Hit::Parent(i) => {
                 if let Some(r) = self.rev() {

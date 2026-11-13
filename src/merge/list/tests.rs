@@ -94,6 +94,10 @@ fn click(panel: &mut MergePanel, ctx: &Context, hit: impl Fn(&Hit) -> bool) -> A
     )
 }
 
+fn finish_background(panel: &mut MergePanel, ctx: &Context) -> Option<String> {
+    panel.finish_loading(ctx)
+}
+
 #[test]
 fn conflict_list_shows_git_sides_and_keeps_controls_available_in_small_terminals() {
     let dir = tempfile::tempdir().unwrap();
@@ -320,4 +324,209 @@ fn conflict_list_prepares_drafts_only_in_the_highlighted_repository() {
         .collect();
     assert_eq!(preview, "current only\na\nb\nshared\nc\nd\nincoming only\n");
     assert_eq!(snapshot(), before);
+}
+
+#[test]
+fn background_refresh_retains_cursor_and_folds_for_the_same_roots() {
+    let dir = tempfile::tempdir().unwrap();
+    repo(dir.path());
+    let ctx = Context::discover(dir.path()).unwrap();
+    let mut panel = panel(&ctx);
+    panel.enable_background_loading();
+
+    key(&mut panel, &ctx, K::Char('j'));
+    let focus = panel.list.focus;
+    let selected = panel.list.selected_file().unwrap().path.clone();
+    panel.refresh(&ctx).unwrap();
+    assert!(panel.reads_pending());
+    assert_eq!(panel.list.focus, focus);
+    assert_eq!(panel.list.selected_file().unwrap().path, selected);
+    assert!(finish_background(&mut panel, &ctx).is_none());
+    assert_eq!(panel.list.focus, focus);
+    assert_eq!(panel.list.selected_file().unwrap().path, selected);
+
+    key(&mut panel, &ctx, K::Char(' '));
+    assert!(panel.list.folded);
+    assert_eq!(panel.list.focus, Some(Row::Unresolved));
+    panel.refresh(&ctx).unwrap();
+    assert!(finish_background(&mut panel, &ctx).is_none());
+    assert!(panel.list.folded);
+    assert_eq!(panel.list.focus, Some(Row::Unresolved));
+}
+
+#[test]
+fn background_scope_change_clears_old_rows_immediately() {
+    let dir = tempfile::tempdir().unwrap();
+    repo(dir.path());
+    let mut ctx = Context::discover(dir.path()).unwrap();
+    let mut panel = panel(&ctx);
+    panel.enable_background_loading();
+    assert!(!panel.list.is_empty());
+
+    ctx.scope.clear();
+    panel.refresh(&ctx).unwrap();
+    assert!(panel.list.is_empty());
+    assert!(!panel.has_pending_work());
+    assert!(finish_background(&mut panel, &ctx).is_none());
+}
+
+#[test]
+fn failed_repository_read_keeps_known_rows_and_reports_the_error() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["app", "lib"] {
+        repo(&dir.path().join(name));
+    }
+    let ctx = Context::discover(dir.path()).unwrap();
+    let mut panel = panel(&ctx);
+    panel.enable_background_loading();
+    let failed = ctx
+        .repos
+        .iter()
+        .position(|repo| repo.name == "app")
+        .unwrap();
+    let other = ctx
+        .repos
+        .iter()
+        .position(|repo| repo.name == "lib")
+        .unwrap();
+    assert_eq!(panel.list.files_in(failed).count(), 3);
+    assert_eq!(panel.list.files_in(other).count(), 3);
+
+    let offline = dir.path().join("app-offline");
+    fs::rename(&ctx.repos[failed].path, &offline).unwrap();
+    panel.refresh(&ctx).unwrap();
+    let error = finish_background(&mut panel, &ctx).expect("failed read is reported");
+    assert!(error.contains("app"), "{error}");
+    assert!(panel.list.repo_failed(failed));
+    assert!(!panel.list.repo_failed(other));
+    assert_eq!(panel.list.files_in(failed).count(), 3);
+    assert_eq!(panel.list.files_in(other).count(), 3);
+    assert!(panel.list.error().unwrap().contains("app"));
+    let text = screen(&render(&mut panel, &ctx, 120, 24));
+    assert!(
+        text.contains("Refresh failed") && text.contains("app"),
+        "{text}"
+    );
+    fs::rename(offline, &ctx.repos[failed].path).unwrap();
+}
+
+#[test]
+fn failed_repository_read_preserves_a_known_ready_row() {
+    let repo = Repo {
+        path: std::path::PathBuf::from("/igit-test/unavailable"),
+        name: "ready".into(),
+        branch: "main".into(),
+        parent: None,
+        submodule: false,
+    };
+    let operation = Operation {
+        name: "rebase",
+        head: "head".into(),
+        other: "other".into(),
+    };
+    let mut list = ConflictList::default();
+    list.install(vec![RepoSnapshot {
+        root: 0,
+        rows: Ok(RepoRows {
+            files: Vec::new(),
+            ready: true,
+            sources: Some(Sources::new(&repo, Some(&operation))),
+        }),
+    }]);
+    assert!(matches!(list.items.as_slice(), [Entry::Ready(0)]));
+    assert!(matches!(list.open(), Hit::Continue));
+
+    list.install(vec![RepoSnapshot {
+        root: 0,
+        rows: Err("ready: offline".into()),
+    }]);
+    assert!(matches!(list.items.as_slice(), [Entry::Ready(0)]));
+    assert!(list.repo_failed(0));
+    assert_eq!(list.error(), Some("ready: offline"));
+}
+
+#[test]
+fn source_identity_tracks_stages_and_operation() {
+    let repo = Repo {
+        path: std::path::PathBuf::from("/igit-test/source"),
+        name: "source".into(),
+        branch: "main".into(),
+        parent: None,
+        submodule: false,
+    };
+    let operation = Operation {
+        name: "rebase",
+        head: "head".into(),
+        other: "other".into(),
+    };
+    let changed_operation = Operation {
+        other: "changed".into(),
+        ..operation.clone()
+    };
+    let file = Conflict {
+        root: 0,
+        path: "file".into(),
+        stages: Stages::default(),
+    };
+    let mut list = ConflictList::default();
+    list.install(vec![RepoSnapshot {
+        root: 0,
+        rows: Ok(RepoRows {
+            files: vec![file.clone()],
+            ready: false,
+            sources: Some(Sources::new(&repo, Some(&operation))),
+        }),
+    }]);
+    assert!(list.source_matches(&file, &Some(operation.clone())));
+
+    let mut changed_stages = file.clone();
+    changed_stages.stages.0[0] = Some(("100644".into(), "base".into()));
+    assert!(!list.source_matches(&changed_stages, &Some(operation.clone())));
+    assert!(!list.source_matches(&file, &Some(changed_operation)));
+}
+
+#[test]
+fn changed_sources_keep_the_document_and_draft_and_show_a_stale_notice() {
+    let dir = tempfile::tempdir().unwrap();
+    repo(dir.path());
+    let ctx = Context::discover(dir.path()).unwrap();
+    let mut panel = panel(&ctx);
+    panel.enable_background_loading();
+
+    key(&mut panel, &ctx, K::Char('S'));
+    let draft = (0, std::path::PathBuf::from(FILE));
+    assert!(panel.drafts.contains_key(&draft));
+    key(&mut panel, &ctx, K::Enter);
+    assert_eq!(panel.doc.as_ref().unwrap().file.path, Path::new(FILE));
+
+    git(dir.path(), &["add", "--", FILE]).unwrap();
+    panel.refresh(&ctx).unwrap();
+    assert!(finish_background(&mut panel, &ctx).is_none());
+    assert_eq!(panel.doc.as_ref().unwrap().file.path, Path::new(FILE));
+    assert!(panel.doc_stale);
+    assert!(panel.drafts.contains_key(&draft));
+    let text = screen(&render(&mut panel, &ctx, 120, 24));
+    assert!(text.contains("Sources changed"), "{text}");
+    assert!(matches!(
+        key(&mut panel, &ctx, K::Char('A')),
+        Action::Notice(NoticeLevel::Warning, message) if message.contains("Sources changed")
+    ));
+}
+
+#[test]
+fn refresh_waits_for_editor_and_menus() {
+    let dir = tempfile::tempdir().unwrap();
+    repo(dir.path());
+    let ctx = Context::discover(dir.path()).unwrap();
+    let mut panel = panel(&ctx);
+    key(&mut panel, &ctx, K::Enter);
+    assert!(panel.refresh_allowed());
+    key(&mut panel, &ctx, K::Char('i'));
+    assert!(!panel.refresh_allowed());
+    key(&mut panel, &ctx, K::Esc);
+    assert!(panel.refresh_allowed());
+    key(&mut panel, &ctx, K::Char('v'));
+    assert!(!panel.refresh_allowed());
+    key(&mut panel, &ctx, K::Esc);
+    assert!(panel.refresh_allowed());
 }

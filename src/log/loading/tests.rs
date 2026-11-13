@@ -38,6 +38,19 @@ fn history(label: &str) -> History {
     hist
 }
 
+fn page(label: &str, count: usize) -> History {
+    let mut hist = History::default();
+    hist.revs = (0..count)
+        .map(|i| model::Rev {
+            root: 0,
+            oid: format!("{i:040x}"),
+            subject: format!("{label} {i}"),
+            ..Default::default()
+        })
+        .collect();
+    hist
+}
+
 fn panel(c: &Context) -> LogPanel {
     let mut p = LogPanel {
         hist: history("cached"),
@@ -436,6 +449,49 @@ fn a_cancelled_history_read_stops_before_querying_any_worktree() {
 }
 
 #[test]
+fn reaching_the_loaded_end_loads_the_next_geometrically_larger_page_without_a_cap() {
+    let c = context();
+    let mut p = panel(&c);
+    p.hist = page("older", 160);
+    p.hist.more.insert(0);
+    p.limit = 3200;
+    p.graph_height = 10;
+    p.rebuild_visible(None).unwrap();
+    p.cursor = p.visible.len() - 1;
+    let selected = p.history_selection();
+
+    assert!(!p.history_load.task.pending());
+    assert!(p.poll_more(&c).unwrap());
+    assert_eq!(p.limit, 6400);
+    assert!(p.history_load.task.needs_start());
+    assert_eq!(p.history_selection(), selected);
+    assert!(p
+        .history_status()
+        .unwrap()
+        .contains("Loading older commits"));
+    assert_eq!(p.visible.len(), 160);
+}
+
+#[test]
+fn automatic_paging_waits_until_the_cursor_approaches_the_loaded_end() {
+    let c = context();
+    let mut p = panel(&c);
+    p.hist = page("older", 160);
+    p.hist.more.insert(0);
+    p.graph_height = 10;
+    p.rebuild_visible(None).unwrap();
+
+    assert!(!p.poll_more(&c).unwrap());
+    assert_eq!(p.limit, 160);
+    assert!(!p.history_load.task.pending());
+
+    p.cursor = 160 - 1 - super::super::LOAD_MORE_DISTANCE;
+    assert!(p.poll_more(&c).unwrap());
+    assert_eq!(p.limit, 320);
+    assert!(p.history_load.task.needs_start());
+}
+
+#[test]
 fn every_reload_entry_queues_history_and_keeps_the_existing_page() {
     let c = context();
     for entry in [
@@ -484,7 +540,10 @@ fn every_reload_entry_queues_history_and_keeps_the_existing_page() {
                 p.views.push(ViewState::default());
                 p.switch_tab(1, &c).unwrap();
             }
-            "more" => p.click(Hit::More, &c).unwrap(),
+            "more" => {
+                p.hist.more.insert(0);
+                p.click(Hit::More, &c).unwrap();
+            }
             "reset" => p.click(Hit::Reset, &c).unwrap(),
             _ => unreachable!(),
         }

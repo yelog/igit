@@ -436,7 +436,7 @@ impl LogPanel {
                     ("[", "Switch to previous Log tab"),
                     ("]", "Switch to next Log tab"),
                     ("Ctrl-t", "New Log tab"),
-                    ("+", "Load more history"),
+                    ("+", "Load the next history window now"),
                 ],
             )],
         );
@@ -454,7 +454,7 @@ impl LogPanel {
                     ("x", "Clear filters in this comparison side"),
                     ("o", "Open Show / Highlight options"),
                     ("I", "Toggle inspector sidebar"),
-                    ("+", "Load more commits in this comparison side"),
+                    ("+", "Load the next window in this comparison side"),
                     ("F5", "Refresh both branches"),
                     ("Esc", "Close comparison and return to branches"),
                 ],

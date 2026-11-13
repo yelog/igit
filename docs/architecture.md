@@ -41,6 +41,11 @@ URL changes preserve other remote settings and custom fetch refspecs. External
 or unsupported configuration ownership is rejected rather than overwritten.
 Failures after a partial native operation report the partial result and trigger
 a refresh. HEAD, the real index, and working files are outside these operations.
+[remote/loading.rs](../src/remote/loading.rs) enables runtime background reads
+after startup. It keeps the last successful repository rows on read failure,
+clears rows immediately when Roots changes, installs only current generations,
+and exposes pending/error state to block configuration writes. An explicit
+refresh retries failed repositories.
 
 ## Native Installation and Software Updates
 
@@ -179,36 +184,55 @@ areas. Panels supply styled content from their reviewed plans;
 upstream choices, and update options. Shell retains confirmation focus, event
 routing, and execution authorization; the renderer performs no Git operations.
 
-All panels remain resident in the same Shell. Startup defers Log history until
-the first Log entry; that initial load runs on a worker while workspace navigation
-and quit remain available. Log panel actions wait until its data is ready. A
-workspace refresh drops any pending Log receiver, so a result from old Roots or
-refs cannot replace current data; a replacement starts only if Log is active.
-F5, applying Roots, and Git writes refresh Commit, already loaded Log, and the
-scoped conflict list. Shell derives Conflicts visibility from that list, which
-includes unmerged index entries and operations ready for Continue. If Conflicts
-disappears while active, Shell returns to the last Commit, Log, Branch, Stash, or Remote tab. Push refreshes
-on entry and during a workspace refresh while active, without waiting for Git on
-the terminal thread. Branch also queues reads on entry and refresh. Branch and
-Push use a shared loader with one active batch per reader and at most four
-repository reads in each batch. A new request supersedes the old generation;
-an old batch stops taking repositories and cannot publish results. Branch
-prepares tree rows and measures the upstream column in its worker. The terminal
-installs current results using the latest cursor and fold choices. It retains
-cached rows within the same Roots; a changed scope clears the old rows.
-Opening/rescanning from the
-Actions menu still synchronously rebuilds context and panels. Runtime Log
-refreshes, Git filters, tab reloads, optional presentation metadata, and graph
-preparation use [loading.rs](../src/log/loading.rs): one generation-based worker
-retains cached browsing and rejects obsolete scope/filter/tab results. Actions
-and new comparisons wait for current history. The initial synchronous Log read
-runs on the startup worker, then enables runtime background loading; direct
-Panel callers keep synchronous refresh semantics. Commit batches use
-[execution.rs](../src/commit/execution.rs), reporting repository progress and
-independent outcomes while the terminal remains responsive. Ctrl-X stops only
-repositories that have not started. Explicit patch opening, commit snapshot
-preparation, and Merge reads/writes remain synchronous. The panels use
-standard threads and `mpsc`, without a general asynchronous scheduler.
+All panels remain resident in the same Shell. Startup deliberately keeps its
+first Commit and Conflicts reads synchronous, then calls
+[enable_background_loading](../src/shell/refresh.rs) before entering the launch
+tab. Startup still defers Log history until the first Log entry; that initial
+load runs on a worker while workspace navigation and quit remain available.
+[refresh.rs](../src/shell/refresh.rs) records one dirty bit per main tab and
+processes it only when that panel has no blocking review/editor/selection/drag,
+the Git operation is idle, and no overlay or key sequence owns input. Queued
+work survives focus loss, overlays, and navigation; inactive tabs are refreshed
+when entered. A terminal focus return invalidates every runtime list and reloads
+an already loaded Log while preserving its browsing state.
+
+F5 and completed Git writes use the same invalidation path instead of scanning
+every panel on the terminal thread. Commit receives an explicit full scan; Log,
+Branch, Push, Stash, Remote, and Conflicts are queued. The background worker
+notifies "Refreshing workspace…" rather than claiming completion. A changed
+Roots generation discards pending results. A same-Roots refresh retains cached
+rows and applies the latest cursor, folds, drafts, and checks when their
+identities remain valid. Log, Branch, Push, Stash, Remote, and Merge also reject
+superseded requests through their generation/scope checks. Stash, Remote, and
+Merge preserve a failed repository's last successful rows, expose a local
+error, and block dependent writes until an explicit refresh succeeds. Merge
+keeps an open document and its draft, marks it stale when its stages or native
+operation change, and refuses Apply without changing the document's existing
+execution-time revalidation.
+
+Shell derives Conflicts visibility from the conflict list, which includes
+unmerged index entries and operations ready for Continue. It checks again after
+background installation; if Conflicts disappears while active, Shell returns
+to the last main tab. Push refreshes on entry and while active; Branch queues
+reads on entry and refresh. Branch, Push, Stash, Remote, and Merge use bounded
+repository readers, with one latest request per panel and at most four
+repository reads in a batch. A new request stops older work from publishing.
+Runtime Log filters, tab reloads, optional presentation metadata, and graph
+preparation use [loading.rs](../src/log/loading.rs) with the same generation
+semantics. Actions and new comparisons wait for current history. The initial
+synchronous Log read runs on the startup worker, then enables runtime
+background loading; direct Panel callers keep synchronous refresh semantics.
+Opening/rescanning from Actions still synchronously rebuilds context and
+panels, then restores the prior runtime background mode.
+
+Commit batches use [execution.rs](../src/commit/execution.rs), reporting
+repository progress and independent outcomes while the terminal remains
+responsive. Ctrl-X stops only repositories that have not started. Merge writes,
+commit snapshot preparation, and explicit patch opening remain synchronous.
+Read-only Git operations still have no general timeout or cancellation layer
+for a hung child process; a disconnected worker is handled separately from a
+worker that never returns. The panels use standard threads and `mpsc`, without
+a global asynchronous scheduler.
 
 [ui/selection.rs](../src/ui/selection.rs) provides shared text layout/selection for Log details/Diff, Commit message editing/preview, and Push Details / Diff. Each display line retains its original UTF-8 byte range. Cell hit testing, soft wrapping, scrolling, and highlighting share one projection; copy slices original text directly, while decorative rows have no source. Shared mouse handling returns `Action::Copy` on left-button release and collapses selection to its endpoint; the panel forwards the action to Shell. Clicks return no action; repeated releases do not copy again. Panels own selection lifetimes/focus. Log links reuse the same line layout and activate on release only without copying/dragging. `Panel::selected_text` exposes only valid selection in the current context, letting Shell send Ctrl-C to keyboard selection before quitting. Copy still uses `Action::Copy` → [ui/clipboard.rs](../src/ui/clipboard.rs); failures show reasons without logging text. The Commit editor keeps the post-copy caret endpoint and synchronizes source between consecutive events so input before redraw cannot misalign selection. Selection/viewport state stays in memory, outside draft files and Git plans. Shell tests capture copying through a thread-local receiver without modifying the system clipboard.
 
@@ -399,8 +423,13 @@ reads stash reflogs with NUL-separated immutable object IDs, selectors,
 timestamps, and subjects. [view.rs](../src/stash/view.rs) renders the compact
 rows and identifies the current selection above the file inspector. List reads
 run only on tab entry, explicit refresh, or terminal focus, leaving startup
-unaffected. [preview.rs](../src/stash/preview.rs) debounces selection for 60ms,
-runs one snapshot worker at a time, and rejects stale generations.
+unaffected. After startup enables runtime loading,
+[stash/loading.rs](../src/stash/loading.rs) keeps cached rows for the same Roots,
+clears them immediately on scope change, installs with the latest cursor/folds,
+and retains a failed repository's last successful entries while blocking
+stash writes. [preview.rs](../src/stash/preview.rs) debounces selection for
+60ms, reuses a successful snapshot for the same repository/object ID, runs one
+snapshot worker at a time, and rejects stale generations.
 [log/snapshot.rs](../src/log/snapshot.rs) is a file-only adapter over Log's
 inspector and historical comparison. It restricts input to file and Diff
 controls, without loading history or exposing Log filters. The first parent
@@ -595,7 +624,7 @@ Compare with Local flow with one-group apply and reviewed Apply All.
 
 Log holds cherry-pick selections by repository and immutable object ID. Review validates all sources against the same destination HEAD and passes the reviewed order to Git in one command. Git owns the pending queue and Conflicts handles continuation, skipping, and aborting.
 
-**Log: multiple commit graphs on one screen.** Each repository starts from local branches, remote-tracking branches, tags, and valid HEAD. `git log --date-order` produces a topologically valid sequence; sequences are then merged by their head timestamps. [Graph metadata](../src/log/model/graph/load.rs) reads full object IDs, parents, and branch/tag decorations once per history load, without loading all messages or authors. Its cached permanent ordering keeps fragment colors stable when older commits are outside the display page. [Graph topology](../src/log/model/graph.rs) matches real parents/children by repository ID + object ID. Each parent edge remains independent until its parent commit. [Layout](../src/log/model/graph/layout.rs) orders branch heads by Git reference priority, assigns DFS fragment indices, and sorts each row's node and passing edges using IDEA's endpoint comparator. Removing a node or folding a long edge changes the next row's positions; adjacent half-row segments share one boundary coordinate. The compact projection is prepared with history; the expanded projection is cached lazily. [Character rendering](../src/log/model/graph/render.rs) draws only the viewport with one horizontal origin, separating crossings from commit joins. [Colors](../src/log/model/graph/color.rs) use reference names and fragment indices, independently of screen columns. Text/hash filtering keeps the loaded topology's ordering/colors and includes only real edges with both endpoints visible. The default is 160 commits per repository, capped at 3,200. Text/hash filter changes do not reload all history; `regex-lite` matches in memory. Queries use full ref names across repositories and Git namespaces to distinguish identically named branches, remotes, and tags. Log tabs store only filters/selection; switching reuses the same panel and reloads visible data. Roots applies to all tabs.
+**Log: multiple commit graphs on one screen.** Each repository starts from local branches, remote-tracking branches, tags, and valid HEAD. `git log --date-order` produces a topologically valid sequence; sequences are then merged by their head timestamps. [Graph metadata](../src/log/model/graph/load.rs) reads full object IDs, parents, and branch/tag decorations once per history load, without loading all messages or authors. Its cached permanent ordering keeps fragment colors stable when older commits are outside the display page. [Graph topology](../src/log/model/graph.rs) matches real parents/children by repository ID + object ID. Each parent edge remains independent until its parent commit. [Layout](../src/log/model/graph/layout.rs) orders branch heads by Git reference priority, assigns DFS fragment indices, and sorts each row's node and passing edges using IDEA's endpoint comparator. Removing a node or folding a long edge changes the next row's positions; adjacent half-row segments share one boundary coordinate. The compact projection is prepared with history; the expanded projection is cached lazily. [Character rendering](../src/log/model/graph/render.rs) draws only the viewport with one horizontal origin, separating crossings from commit joins. [Colors](../src/log/model/graph/color.rs) use reference names and fragment indices, independently of screen columns. Text/hash filtering keeps the loaded topology's ordering/colors and includes only real edges with both endpoints visible. The first page is 160 commits per repository. When the cursor enters its final 24 rows, [loading.rs](../src/log/loading.rs) queues the next page on the existing generation-checked worker while cached rows remain usable. Page windows double (160, 320, 640, …) and have no total cap; `+` requests the next window immediately. Git has no stable resumable cursor for this combined multi-root ordering, so each request re-reads a longer prefix; geometric growth keeps cumulative work proportional to the final window. Selection remains keyed by repository ID and object ID. Rendering remains viewport-only. Text/hash filter changes do not reload all history; `regex-lite` matches in memory. Queries use full ref names across repositories and Git namespaces to distinguish identically named branches, remotes, and tags. Log tabs store only filters/selection; switching reuses the same panel and reloads visible data. Roots applies to all tabs.
 
 The [Branch menu](../src/log/branches.rs) builds candidates from loaded refs within the current tab's Roots, listing each full ref once across repositories. Hover, submenu scrolling, and search do not run Git. `branch-favorites.json` in workspace state stores only manual star preferences, atomically replaced through a temporary file without changing repository configuration. Each Log tab has its own [branch expression](../src/log/model/branch_filter.rs). Full refs resolve per repository before queries; history and reachability use identical starts/exclusions. Cherry comparison is enabled only for one unambiguous branch.
 
@@ -865,7 +894,7 @@ Shell to the existing resolver. Apply file and Continue repository keep their
 separate reviews; Continue never resumes an old Push job. After finishing,
 the user must initiate another Push with a fresh review.
 
-[The conflict list](../src/merge/list.rs) groups unresolved index entries separately from repositories ready for Continue. It caches operation and source labels on refresh, derives both status columns from stages, and keeps selection by repository and path. Its Accept controls fill an in-memory document from one side; Prepare Simple Drafts runs the same non-conflicting block rules for the selected repository and stores session drafts. Both use the existing file eligibility checks and leave all writes to the reviews below.
+[The conflict list](../src/merge/list.rs) groups unresolved index entries separately from repositories ready for Continue. It caches operation and source labels on refresh, derives both status columns from stages, and keeps selection by repository and path. [merge/loading.rs](../src/merge/loading.rs) reads Roots on a generation-checked background worker after startup, retains cached rows for the same Roots, and clears them immediately on scope change. A failed repository keeps its previous conflict/ready rows and source labels, adds a local refresh error, and waits for an explicit retry. An open document and draft stay in memory; changed conflict stages or native operation mark the document stale, display a warning, and block Apply until the user reopens it. Runtime installation waits for editors, menus, and drags. Its Accept controls fill an in-memory document from one side; Prepare Simple Drafts runs the same non-conflicting block rules for the selected repository and stores session drafts. Both use the existing file eligibility checks and leave all writes to the reviews below.
 
 **Merge: preview, staging, and Continue have separate boundaries.** Read index stages 1 (base), 2 (ours), and 3 (theirs). An ordinary text conflict can open when the working file matches Git's conflict output or exactly matches stage 1, the editor's starting result. A stage 1 match leaves the same decisions pending as a fresh conflict. Compute base-to-side line differences and assemble blocks in base coordinates. Blocks changed on only one side, or with identical results on both sides, can be accepted automatically. `Chunk::automatic_result` shares eligibility between the editor's Resolve Automatically button/count, its batch action, and prepared session drafts. It accepts pending non-conflicting blocks and combines disjoint single-line edits only when neither side has been decided; touching insertions remain manual. Left / All / Right stays limited to non-conflicting blocks. An automatic batch has one undo snapshot. Stages 2/3 are Git's sides, so rebase identifies the rebased HEAD and replayed commit. Each source's pending decision and the result bytes are held in the in-memory `Document`; undo and session drafts retain both.
 
@@ -893,7 +922,9 @@ then one worker prepares, stages, and reads statuses for those repositories.
 Phase/completion events are polled by Shell even while Help or another tab is
 active. No confirmation dialog opens, and duplicate jobs/conflicting writes
 cannot start. Add completion applies affected statuses directly rather than
-invoking Shell's synchronous full-workspace refresh. A generation change rejects
+invoking Shell's synchronous full-workspace refresh. If an in-flight scan
+covered repositories that Add did not refresh, their roots remain queued rather
+than being consumed by the superseded generation. A generation change rejects
 older Commit reads; checks, cursor identity, and message edits are retained.
 The [addition backend](../src/commit/backend/add.rs) reuses snapshot validation
 and [working-file fingerprints](../src/commit/backend/working.rs). Hash reads are
@@ -957,4 +988,4 @@ Batch commit/push means selecting multiple repositories in one operation; it doe
 | Shared update preference and selector | `python3 scripts/cargo_serial.py test --locked --lib core::strategy::`, then `ui::strategy::` and `shell::update::` through the same wrapper; verify atomic persistence, temporary Pull overrides, keyboard/mouse controls, and narrow Unicode/icon layouts. |
 | Three-way diff, Apply, or Continue | `cargo test --locked merge::`; verify real conflict stages, written bytes, staging, and refusal to overwrite external edits. |
 
-Run all checks with `cargo test --locked`. For interactive acceptance, follow [README](../README.md) with the [practice workspace script](../examples/demo-workspace.sh); do not test writes in everyday repositories. Before adding a button, identify its existing action and route keyboard/mouse through that same path. Before adding a Git write, define what review includes, what execution revalidates, and how partial success appears, then connect the panel. If synchronous calls become a bottleneck, use Push's background result channel as a reference. Carry workspace/request identity with results so slower old requests cannot replace current selection. This is extension guidance, not an existing global asynchronous mechanism.
+Run all checks with `cargo test --locked`. For interactive acceptance, follow [README](../README.md) with the [practice workspace script](../examples/demo-workspace.sh); do not test writes in everyday repositories. Before adding a button, identify its existing action and route keyboard/mouse through that same path. Before adding a Git write, define what review includes, what execution revalidates, and how partial success appears, then connect the panel. For a runtime read, use [core/loading.rs](../src/core/loading.rs) for generation/scope rejection and register the tab in [shell/refresh.rs](../src/shell/refresh.rs) so focus, F5, and writes share one deferred invalidation path. Keep writes blocked while a required list is pending or failed. Carry workspace/request identity with results so slower old requests cannot replace current selection. This is extension guidance, not a general asynchronous scheduler.

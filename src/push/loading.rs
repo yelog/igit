@@ -105,8 +105,18 @@ impl PushPanel {
         let selected = current
             .as_ref()
             .and_then(|(i, _)| self.entries.iter().find(|e| e.idx == *i));
-        // Identical snapshots keep the current file, folds, scroll and text selection.
+        // Identical successful snapshots keep the current file, folds, scroll and text selection.
         if reseed.is_some() || old != current || previous.as_ref() != selected {
+            self.inspect(c);
+        } else if self.preview_failed {
+            self.retry_failed_preview(c);
+        }
+    }
+
+    pub(super) fn retry_failed_preview(&mut self, c: &Context) {
+        if self.diff.is_some() {
+            self.retry_failed_diff(c);
+        } else {
             self.inspect(c);
         }
     }
@@ -151,7 +161,12 @@ impl PushPanel {
         if let Some(result) = self.preview_load.take_result() {
             self.preview_request = None;
             match result {
-                Ok(preview::Loaded::Files { files, summary }) => {
+                Ok(preview::Loaded::Files {
+                    files,
+                    summary,
+                    failed,
+                }) => {
+                    self.preview_failed = failed;
                     self.file_search.invalidate();
                     self.preview = Preview {
                         tree: FileTree::new(&files, self.grouping),
@@ -163,7 +178,8 @@ impl PushPanel {
                         self.update_details();
                     }
                 }
-                Ok(preview::Loaded::Diff(content)) => {
+                Ok(preview::Loaded::Diff { content, failed }) => {
+                    self.preview_failed = failed;
                     if let Some(diff) = &mut self.diff {
                         diff.content = Some(content);
                     }
@@ -191,6 +207,7 @@ impl PushPanel {
     }
 
     fn preview_error(&mut self, message: String) {
+        self.preview_failed = true;
         if let Some(diff) = &mut self.diff {
             diff.content = Some(preview::FileDiff::Patch(message));
         } else {

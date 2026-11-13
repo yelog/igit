@@ -4,6 +4,7 @@ mod editor;
 mod file_diff;
 mod kitty;
 mod panes;
+mod refresh;
 mod software_update;
 mod startup;
 mod update;
@@ -241,7 +242,7 @@ struct Shell {
     remote: RemotePanel,
     tab: Tab,
     main_tab: Tab,
-    remote_refs_changed: bool,
+    refresh_state: refresh::State,
     pop: Option<Popup>,
     notifications: notifications::Center,
     quit: bool,
@@ -298,7 +299,7 @@ impl Shell {
             remote: Default::default(),
             tab: Commit,
             main_tab: Commit,
-            remote_refs_changed: false,
+            refresh_state: refresh::State::default(),
             pop: None,
             notifications: Default::default(),
             quit: false,
@@ -494,6 +495,16 @@ impl Shell {
     }
     fn refresh(&mut self) {
         self.cancel_key_sequences();
+        if self.refresh_state.background {
+            if !self.ctx.repos.is_empty() {
+                self.commit.request_refresh();
+            }
+            for tab in [Log, Branch, Push, Stash, Remote, Conflicts] {
+                self.refresh_state.request(tab);
+            }
+            self.poll_refresh_requests();
+            return;
+        }
         self.branch_refs_changed();
         for &root in &self.ctx.scope {
             self.ctx.repos[root].refresh_branch();
@@ -514,21 +525,37 @@ impl Shell {
         }
     }
     fn refresh_remote(&mut self) {
+        if self.refresh_state.background {
+            self.refresh_state.request(Remote);
+            return;
+        }
         if let Err(error) = self.remote.refresh(&self.ctx) {
             self.notify(NoticeLevel::Error, "Remote", format!("{error:#}"));
         }
     }
     fn refresh_stash(&mut self) {
+        if self.refresh_state.background {
+            self.refresh_state.request(Stash);
+            return;
+        }
         if let Err(error) = self.stash.refresh(&self.ctx) {
             self.notify(NoticeLevel::Error, "Stash", format!("{error:#}"));
         }
     }
     fn refresh_branch(&mut self) {
+        if self.refresh_state.background {
+            self.refresh_state.request(Branch);
+            return;
+        }
         if let Err(error) = self.branch.refresh(&self.ctx) {
             self.notify(NoticeLevel::Error, "Branch", format!("{error:#}"));
         }
     }
     fn branch_refs_changed(&mut self) {
+        if self.refresh_state.background {
+            self.refresh_state.request(Branch);
+            return;
+        }
         if self.tab == Branch {
             self.refresh_branch();
         } else {
@@ -536,7 +563,13 @@ impl Shell {
         }
     }
     fn refresh_log(&mut self) {
-        self.remote_refs_changed = false;
+        if self.refresh_state.background {
+            self.refresh_state.request(Log);
+            return;
+        }
+        self.reload_log();
+    }
+    fn reload_log(&mut self) {
         if !self.log_load.ready() {
             // Dropping the receiver prevents an old scope/ref snapshot from being installed.
             self.log_load = startup::LogLoad::Dormant;
@@ -550,11 +583,19 @@ impl Shell {
         }
     }
     fn refresh_push(&mut self) {
+        if self.refresh_state.background {
+            self.refresh_state.request(Push);
+            return;
+        }
         if let Err(e) = self.push.refresh(&self.ctx) {
             self.notify(NoticeLevel::Error, "Push", format!("{e:#}"))
         }
     }
     fn refresh_conflicts(&mut self) {
+        if self.refresh_state.background {
+            self.refresh_state.request(Conflicts);
+            return;
+        }
         let result = self.merge.refresh(&self.ctx);
         if self.tab == Conflicts && !self.tab_available(Conflicts) {
             self.go(self.main_tab);
@@ -584,7 +625,7 @@ impl Shell {
         true
     }
     fn invalidate_log(&mut self) {
-        self.remote_refs_changed = true;
+        self.refresh_state.request(Log);
     }
     fn show_checkout_prompt(&mut self) -> bool {
         if self.tab != Branch
@@ -637,7 +678,11 @@ impl Shell {
         if tab == Conflicts {
             self.refresh_conflicts();
         }
-        if !self.tab_available(tab) {
+        if !self.tab_available(tab)
+            && !(tab == Conflicts
+                && self.refresh_state.background
+                && (self.refresh_state.pending(Conflicts) || self.merge.reads_pending()))
+        {
             self.notice("No conflicts or operations to continue in Roots".into());
             return;
         }
@@ -662,13 +707,21 @@ impl Shell {
             }
             Log => {
                 self.main_tab = tab;
-                self.load_log();
+                if self.refresh_state.background && self.log_load.ready() {
+                    self.refresh_state.request(Log);
+                } else {
+                    self.load_log();
+                }
             }
             Push => self.refresh_push(),
             Conflicts => (),
             Branch => {
                 self.main_tab = tab;
-                self.branch.enter(&self.ctx);
+                if self.refresh_state.background {
+                    self.refresh_state.request(Branch);
+                } else {
+                    self.branch.enter(&self.ctx);
+                }
             }
             Stash => {
                 self.main_tab = tab;
@@ -679,6 +732,7 @@ impl Shell {
                 self.refresh_remote();
             }
         }
+        self.poll_refresh_requests();
     }
     fn action(&mut self, a: Action) {
         self.action_from(self.tab.name(), a);
@@ -874,7 +928,9 @@ impl Shell {
         }
         match n {
             0 => {
-                self.ctx.repos.iter_mut().for_each(Repo::refresh_branch);
+                if !self.refresh_state.background {
+                    self.ctx.repos.iter_mut().for_each(Repo::refresh_branch);
+                }
                 self.pop = Some(Popup::Scope {
                     picked: self.ctx.scope.clone(),
                     row: 0,
@@ -886,11 +942,19 @@ impl Shell {
             4 => self.open_notifications(None),
             5 => {
                 self.refresh();
-                self.notify(
-                    NoticeLevel::Success,
-                    "Workspace",
-                    "Workspace refreshed".into(),
-                )
+                if self.refresh_state.background {
+                    self.notify(
+                        NoticeLevel::Info,
+                        "Workspace",
+                        "Refreshing workspace…".into(),
+                    )
+                } else {
+                    self.notify(
+                        NoticeLevel::Success,
+                        "Workspace",
+                        "Workspace refreshed".into(),
+                    )
+                }
             }
             _ => (),
         }
@@ -1257,7 +1321,13 @@ impl Shell {
             } => {
                 let n = self.ctx.repos.len();
                 if key == Some(KeyCode::F(5)) {
-                    self.ctx.repos.iter_mut().for_each(Repo::refresh_branch);
+                    if self.refresh_state.background {
+                        if n > 0 {
+                            self.commit.request_refresh();
+                        }
+                    } else {
+                        self.ctx.repos.iter_mut().for_each(Repo::refresh_branch);
+                    }
                 }
                 if down {
                     row = (row + 1).min(n.saturating_sub(1))
@@ -1334,15 +1404,18 @@ impl Shell {
                             let kitty = std::mem::take(&mut self.kitty);
                             let software_update = std::mem::take(&mut self.software_update);
                             let notifications = std::mem::take(&mut self.notifications);
-                            let background = self.commit.background_execution_enabled();
+                            let background = self.refresh_state.background;
+                            let commit_background = self.commit.background_execution_enabled();
                             let mut next = Self::unloaded(c, self.config.clone());
                             next.notifications = notifications;
                             next.log_load = startup::LogLoad::Ready;
                             next.refresh();
                             *self = next;
-                            if background {
+                            if commit_background {
                                 self.commit.enable_background_execution();
-                                self.log.enable_background_loading();
+                            }
+                            if background {
+                                self.enable_background_loading();
                             }
                             self.kitty = kitty;
                             self.software_update = software_update;
@@ -1421,6 +1494,19 @@ impl Shell {
             .filter(|sequence| sequence.first() == Some(&first))
             .cloned()
             .collect()
+    }
+
+    fn message_generate_key(&self, key: KeyEvent) -> bool {
+        self.tab == Commit
+            && self.commit.focused_pane() == crate::ui::panes::PaneId::Message
+            && self.config.commands.iter().any(|command| {
+                command.command.group == "commit"
+                    && command.command.name == "generate-message"
+                    && command
+                        .sequences
+                        .iter()
+                        .any(|sequence| sequence.len() == 1 && sequence[0] == keys::normalize(key))
+            })
     }
 
     fn notification_starts_panel_sequence(&self, first: KeyEvent) -> bool {
@@ -1547,6 +1633,9 @@ impl Shell {
         if candidates.iter().any(|sequence| sequence.len() == 1) {
             self.open_notifications(None);
             return NotificationPrefixEvent::Handled;
+        }
+        if self.message_generate_key(*key) {
+            return NotificationPrefixEvent::Pass;
         }
         let now = Instant::now();
         let hint_delay = self.config.hint_delay;
@@ -1720,20 +1809,10 @@ impl Shell {
         }
         if matches!(ev, Event::FocusGained) {
             self.commit.resume_refresh();
-            if self.tab == Branch {
-                if self.pop.is_none() && !self.branch.editing() {
-                    self.refresh_branch();
-                }
-            } else if self.branch.reads_pending() {
-                // Re-entry after an external edit must not reuse a read from before focus returned.
-                self.branch.invalidate_reads(&self.ctx);
+            for tab in [Log, Branch, Push, Stash, Remote, Conflicts] {
+                self.refresh_state.request(tab);
             }
-            if self.tab == Stash && self.pop.is_none() && !self.stash.editing() {
-                self.refresh_stash();
-            }
-            if self.tab == Remote && self.pop.is_none() && !self.remote.editing() {
-                self.refresh_remote();
-            }
+            self.poll_refresh_requests();
         }
         if matches!(ev, Event::Resize(_, _) | Event::FocusLost | Event::Paste(_)) {
             self.cancel_key_sequences();
@@ -1889,6 +1968,8 @@ impl Shell {
     }
     fn poll(&mut self) -> bool {
         let mut change = self.notifications.expire(Instant::now());
+        change |= self.poll_refresh_requests();
+        change |= self.poll_list_refreshes();
         if let Some(result) = self.browser.poll() {
             let (level, message) = match result {
                 Ok(()) => (NoticeLevel::Success, "Opened commit in browser".into()),
@@ -1928,7 +2009,10 @@ impl Shell {
             change |= self.software_update.animate(Instant::now());
         }
         change |= self.stash.poll_preview(&self.ctx);
-        if self.tab == Commit && self.pop.is_none() {
+        if self.pop.is_none()
+            && (self.tab == Commit
+                || self.refresh_state.background && self.commit.refresh_pending())
+        {
             match self.commit.poll_refresh(&mut self.ctx) {
                 Ok(redraw) => change |= redraw,
                 Err(error) => {
@@ -1988,6 +2072,15 @@ impl Shell {
                 change = true;
             }
         }
+        if self.tab == Log && self.pop.is_none() {
+            match self.log.poll_more(&self.ctx) {
+                Ok(redraw) => change |= redraw,
+                Err(error) => {
+                    self.notify(NoticeLevel::Error, "Log", format!("{error:#}"));
+                    change = true;
+                }
+            }
+        }
         match self.log.poll_preview(&self.ctx) {
             Ok(redraw) => change |= redraw,
             Err(e) => {
@@ -2032,7 +2125,6 @@ impl Shell {
         }
         let seq = self.push.progress_seq;
         if let Some((level, message)) = self.push.poll(&self.ctx) {
-            self.remote_refs_changed = true;
             self.refresh();
             self.notify(level, "Push", message);
             change = true
@@ -2044,16 +2136,7 @@ impl Shell {
                 change = true;
             }
         }
-        // A fetch/push can finish after leaving Push. Reload moved refs
-        // without interrupting a Log editor, Diff, text selection or pending key.
-        if self.remote_refs_changed
-            && !self.log.editing()
-            && self.log.selected_text().is_none()
-            && self.log.key_sequence().is_none()
-        {
-            self.refresh_log();
-            change = true;
-        }
+        change |= self.poll_refresh_requests();
         change |= seq != self.push.progress_seq;
         let animation = self.push.tick_animation(Instant::now());
         change |= animation && self.tab == Push;
@@ -2079,6 +2162,10 @@ impl Shell {
         let now = Instant::now();
         let idle = if self.log_load.pending()
             || self.log.history_pending()
+            || self.refresh_state.background && self.commit.refresh_pending()
+            || self.merge.reads_pending()
+            || self.stash.reads_pending()
+            || self.remote.reads_pending()
             || self.commit.execution_running()
             || self.push.reads_pending()
             || matches!(&self.pop, Some(Popup::Update(dialog)) if dialog.reads_pending())
@@ -2706,6 +2793,8 @@ mod maximize_tests;
 mod notification_tests;
 #[cfg(test)]
 mod push_tests;
+#[cfg(test)]
+mod refresh_tests;
 #[cfg(test)]
 mod startup_tests;
 #[cfg(test)]

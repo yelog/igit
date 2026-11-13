@@ -210,15 +210,15 @@ in Changes and Preview. It focuses Message and starts editing.
 editor with Message focused. In Message, Left/Right selects an action and Enter
 (`keybindings.commit.open`) runs it. With Message focused outside editing,
 `keybindings.commit.commit` (`c`) commits, `keybindings.commit.commit-and-push`
-(`a`) commits and opens Push review. `keybindings.commit.generate-message` has
-no dedicated default binding, while `keybindings.commit.ai-draft` (`A`)
-generates a message. The C and a button letters are accented and underlined only
-while those default keys remain available in the focused Message pane.
-Remapping or disabling a key removes its mnemonic accent. Generate message has no
-default dedicated binding or accent; `generate-message` shows the fixed `A`
-accent only when explicitly bound to unmodified `A` in Message context. The existing
-`keybindings.commit.review-and-push` (`P`) still commits and opens Push for
-separate confirmation.
+(`a`) commits and opens Push review, and `keybindings.commit.generate-message`
+(`g`) generates a message. The lowercase c/a/g button letters are accented and
+underlined only while those default keys remain available in the focused
+Message pane. Remapping or disabling a key removes its mnemonic accent.
+`keybindings.commit.ai-draft` (`A`) remains an alternate generation shortcut
+but does not add a second button accent. Focusing Message gives its `g` action
+priority over `g n` Notification History; use Actions or leave Message before
+opening History. The existing `keybindings.commit.review-and-push` (`P`) still
+commits and opens Push for separate confirmation.
 
 `keybindings.commit.stage-hunks` defaults to `["Ctrl-g"]` in Changes/Preview.
 It opens the highlighted tracked file's Staged/Unstaged hunk view. That view's
@@ -326,7 +326,7 @@ current session and saves the workspace fallback; it does not rewrite the user
 settings file. On restart, `[ai]` takes precedence again. Timeouts, the credential
 variable, and input limits come from the user file or defaults.
 
-**Generate message** (`A`) immediately starts a background job for only the
+**Generate message** (`g`) immediately starts a background job for only the
 checked files in the current Roots. Private-index preparation, patch reads,
 HTTP requests, and final source checks run in the background.
 A staged file sends its index version; later unstaged edits and unchecked files
@@ -413,7 +413,8 @@ Enter for new URL lines, Ctrl-U to clear a field, Ctrl-S for review, and Esc
 to cancel. Those editor/review controls are fixed, like other text input.
 
 `global.notification-history` defaults to `g n` and opens session Notification
-History from any normal workspace panel. The leading `g` waits indefinitely.
+History from any normal workspace panel outside Commit's focused Message
+actions. The leading `g` waits indefinitely.
 Commit, Stash, Remote, and the Merge conflict list share that prefix for
 `first-item` (`g g`); `last-item` remains `G`. Log's Space filter prefix is
 unchanged: the first Space immediately shows b/u/d/p and the filter footer, and

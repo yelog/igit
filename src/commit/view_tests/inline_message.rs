@@ -236,10 +236,9 @@ fn message_action_shortcuts_highlight_only_in_focused_normal_mode() {
                         .filter(|cell| cell.modifier.contains(Modifier::UNDERLINED))
                         .collect();
                     let expected = focus == Focus::Message && !editing && active;
-                    let expected = expected && !matches!(action, MessageAction::Generate);
                     assert_eq!(highlighted.len(), usize::from(expected), "{w}x{h}");
                     if let Some(cell) = highlighted.first() {
-                        assert!(cell.symbol().eq_ignore_ascii_case(shortcut));
+                        assert_eq!(cell.symbol(), shortcut);
                         assert_eq!(cell.fg, crate::ui::idea::GOLD);
                         assert!(cell.modifier.contains(Modifier::BOLD));
                     }
@@ -292,13 +291,13 @@ fn message_action_shortcuts_hide_remapped_and_disabled_mnemonics() {
     p.focus_pane(PaneId::Message);
     let mut t = Terminal::new(TestBackend::new(120, 36)).unwrap();
     for (config, expected) in [
-        ("", 2),
-        ("[keybindings.commit]\ncommit=['F7']", 1),
+        ("", 3),
+        ("[keybindings.commit]\ncommit=['F7']", 2),
         (
             "[keybindings.commit]\ncommit=[]\ncommit-and-push=[]\ngenerate-message=[]",
             0,
         ),
-        ("[keybindings.commit]\ncommit=['F7', 'c']", 2),
+        ("[keybindings.commit]\ncommit=['F7', 'c']", 3),
     ] {
         p.configure_message_shortcuts(&crate::config::AppConfig::from_toml(config).unwrap());
         draw(&mut p, &mut t, &c);

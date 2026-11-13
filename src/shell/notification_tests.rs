@@ -61,6 +61,21 @@ fn g_n_opens_history_from_every_normal_workspace_panel() {
 }
 
 #[test]
+fn message_generate_g_takes_precedence_over_notification_prefix() {
+    let (_dir, mut app) = fixture();
+    app.go(Commit);
+    app.commit.focus_pane(crate::ui::panes::PaneId::Message);
+    app.dispatch(&key(KeyCode::Char('g')));
+    assert!(app.notification_prefix.is_none());
+    assert!(app.pop.is_none());
+    assert!(
+        app.notifications.latest_body().contains("ai."),
+        "{}",
+        app.notifications.latest_body()
+    );
+}
+
+#[test]
 fn g_n_does_not_override_review_dialog_input() {
     let (_dir, mut app) = fixture();
     open_review(&mut app);

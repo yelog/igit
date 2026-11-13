@@ -150,6 +150,10 @@ pub(super) struct Review {
 }
 
 impl Review {
+    pub(super) fn root(&self) -> usize {
+        self.root
+    }
+
     pub fn prepare(
         c: &Context,
         root: usize,

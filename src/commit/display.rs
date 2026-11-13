@@ -132,7 +132,7 @@ impl CommitPanel {
                 }
                 self.options.ignored = !self.options.ignored;
                 self.request_refresh();
-                self.diff_key.clear();
+                self.invalidate_preview();
                 self.sync(c);
             }
         }

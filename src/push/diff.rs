@@ -47,6 +47,7 @@ impl PushPanel {
     }
 
     fn request_diff(&mut self, c: &Context) {
+        self.preview_failed = false;
         let request = self
             .preview
             .tree
@@ -65,6 +66,17 @@ impl PushPanel {
         self.diff = None;
         self.preview_load.cancel();
         self.preview_request = None;
+        self.preview_failed = false;
+    }
+
+    pub(super) fn retry_failed_diff(&mut self, c: &Context) {
+        self.preview_load.cancel();
+        self.preview_request = None;
+        if let Some(diff) = &mut self.diff {
+            diff.content = None;
+        }
+        self.preview_failed = false;
+        self.request_diff(c);
     }
 
     pub(super) fn diff_event(&mut self, e: &Event, c: &Context) -> Action {

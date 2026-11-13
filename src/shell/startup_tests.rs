@@ -341,6 +341,7 @@ fn direct_panel_startup_uses_normal_activation_and_keeps_git_state() {
         let mut app = wait_workspace(&mut loading).unwrap();
         assert_eq!(app.tab, tab, "{name}");
         assert_eq!(app.main_tab, if tab == Push { Commit } else { tab });
+        assert!(app.refresh_state.background, "{name}");
         match tab {
             Log => {
                 assert!(app.log_load.pending());

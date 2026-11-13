@@ -1,4 +1,5 @@
 //! Repository-grouped stash browsing and reviewed operations.
+mod loading;
 mod model;
 mod operations;
 mod preview;
@@ -49,6 +50,7 @@ pub struct StashPanel {
     preview: preview::Preview,
     files: SnapshotPreview,
     review: Option<Review>,
+    loading: loading::Loading,
     pub(crate) icons: IconMode,
     pub(crate) panes: PaneLayout,
 }
@@ -70,6 +72,7 @@ impl Default for StashPanel {
             preview: Default::default(),
             files: Default::default(),
             review: None,
+            loading: Default::default(),
             icons: Default::default(),
             panes: Default::default(),
         }
@@ -107,7 +110,7 @@ impl StashPanel {
         rows.extend(
             self.repos
                 .iter()
-                .filter(|repo| repo.error.is_some())
+                .filter(|repo| repo.entries.is_empty() && repo.error.is_some())
                 .map(|repo| Row::Repository(repo.root)),
         );
         if self.repos.iter().any(Repository::is_empty) {
@@ -253,6 +256,9 @@ impl StashPanel {
                 "Select a stash entry first".into(),
             ));
         };
+        if let Some((level, message)) = self.write_block(c, root) {
+            return Ok(Action::Notice(level, message.into()));
+        }
         let entries = &self.repository(root).unwrap().entries;
         let review = Review::prepare(c, root, source, entries, operation)?;
         let action = Action::Confirm {
@@ -454,29 +460,7 @@ impl Panel for StashPanel {
     }
 
     fn refresh(&mut self, c: &Context) -> Result<()> {
-        let keep = self.identity();
-        let previous = self.rows.get(self.cursor).copied();
-        self.repos = model::load(c);
-        self.stash_search.invalidate();
-        self.rebuild();
-        self.cursor = keep
-            .and_then(|(root, oid)| {
-                let entry = self
-                    .repository(root)?
-                    .entries
-                    .iter()
-                    .position(|entry| entry.oid == oid)?;
-                self.row_index(Row::Stash { root, entry })
-            })
-            .or_else(|| self.restore_cursor(previous?))
-            .or_else(|| {
-                self.rows
-                    .iter()
-                    .position(|row| matches!(row, Row::Stash { .. }))
-            })
-            .unwrap_or(0);
-        self.request_preview(Duration::ZERO);
-        Ok(())
+        self.refresh_loading(c)
     }
     fn draw(&mut self, f: &mut Frame, area: Rect, c: &Context) {
         self.draw_content(f, area, c);
@@ -488,6 +472,12 @@ impl Panel for StashPanel {
     fn confirm(&mut self, token: &str, c: &Context) -> Action {
         if token != REVIEW_TOKEN {
             return Action::None;
+        }
+        if let Some(root) = self.review.as_ref().map(Review::root) {
+            if let Some((level, message)) = self.write_block(c, root) {
+                self.review = None;
+                return Action::Notice(level, message.into());
+            }
         }
         let Some(review) = self.review.take() else {
             return Action::None;

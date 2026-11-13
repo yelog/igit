@@ -111,7 +111,7 @@ impl MessageAction {
         match self {
             Self::Commit => 'c',
             Self::CommitAndPush => 'a',
-            Self::Generate => 'A',
+            Self::Generate => 'g',
         }
     }
 
@@ -172,7 +172,7 @@ impl Hit {
             Self::Expand(true) => "Expand all  Z",
             Self::Expand(false) => "Collapse all  z",
             Self::Amend => "Amend the highlighted repository's last commit  M",
-            Self::MessageAction(MessageAction::Generate) => "Generate an AI commit message  A",
+            Self::MessageAction(MessageAction::Generate) => "Generate an AI commit message  g",
             Self::Settings => "AI settings  S",
             Self::StageHunks => "Stage or unstage individual hunks  Ctrl-G",
             _ => return None,
@@ -184,8 +184,10 @@ pub struct CommitPanel {
     pub(crate) icons: IconMode,
     pub(crate) panes: PaneLayout,
     saved: Saved,
+    state_recovery: bool,
     loaded: bool,
     files: Vec<File>,
+    rendered_scope: BTreeSet<usize>,
     checks: BTreeMap<String, bool>,
     fold: BTreeSet<String>,
     options: display::Options,
@@ -213,6 +215,7 @@ pub struct CommitPanel {
     edit_view: (Rect, u16, u16),
     edit_follow: bool,
     diff_key: String,
+    diff_root: Option<usize>,
     diff_text: String,
     diff_sources: Option<backend::preview::Comparison>,
     diff_comparison: Option<Box<crate::merge::RevisionDiff>>,
@@ -246,8 +249,10 @@ impl Default for CommitPanel {
             icons: Default::default(),
             panes: Default::default(),
             saved: Default::default(),
+            state_recovery: false,
             loaded: Default::default(),
             files: Default::default(),
+            rendered_scope: Default::default(),
             checks: Default::default(),
             fold: Default::default(),
             options: Default::default(),
@@ -262,7 +267,7 @@ impl Default for CommitPanel {
             offset: Default::default(),
             focus: Default::default(),
             message_action: Default::default(),
-            message_mnemonics: ['c', 'a'].into(),
+            message_mnemonics: ['c', 'a', 'g'].into(),
             edit: Default::default(),
             buf: Default::default(),
             caret: Default::default(),
@@ -275,6 +280,7 @@ impl Default for CommitPanel {
             edit_view: Default::default(),
             edit_follow: Default::default(),
             diff_key: Default::default(),
+            diff_root: Default::default(),
             diff_text: Default::default(),
             diff_sources: None,
             diff_comparison: None,
@@ -449,12 +455,96 @@ impl CommitPanel {
         Ok(())
     }
 
-    fn save(&self, c: &Context) -> Result<()> {
+    fn load_state(&mut self, c: &Context) -> Option<String> {
+        let path = c.state_dir.join("commit.json");
+        let error = match fs::read(&path) {
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(saved) => {
+                    self.saved = saved;
+                    None
+                }
+                Err(error) => {
+                    self.saved = Default::default();
+                    self.state_recovery = true;
+                    Some(format!(
+                        "Saved Commit state is invalid: {error}. The repository changes remain available; the original file will be preserved before the next save"
+                    ))
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                self.saved = Default::default();
+                self.state_recovery = true;
+                Some(format!(
+                    "Saved Commit state cannot be read: {error}. The repository changes remain available; the original file will be preserved before the next save"
+                ))
+            }
+        };
+        if self.saved.message.is_none() {
+            self.saved.message = Some(
+                (0..c.repos.len())
+                    .filter_map(|r| self.saved.drafts.get(&rid(c, r)))
+                    .find(|message| !message.trim().is_empty())
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+        }
+        self.ai_settings = self.ai_config.clone().unwrap_or_else(|| {
+            let mut settings = crate::config::AiConfig {
+                endpoint: self.saved.endpoint.clone(),
+                model: self.saved.model.clone(),
+                ..Default::default()
+            };
+            if !self.saved.prompt.is_empty() {
+                settings.prompt = self.saved.prompt.clone();
+            }
+            settings
+        });
+        error
+    }
+
+    fn preserve_state(path: &Path) -> Result<()> {
+        for index in 0.. {
+            let name = if index == 0 {
+                "commit.json.invalid".to_owned()
+            } else {
+                format!("commit.json.invalid.{index}")
+            };
+            let backup = path.with_file_name(name);
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&backup)
+            {
+                Ok(file) => {
+                    drop(file);
+                    if let Err(error) = fs::copy(path, &backup) {
+                        let _ = fs::remove_file(&backup);
+                        if error.kind() == std::io::ErrorKind::NotFound {
+                            return Ok(());
+                        }
+                        return Err(error.into());
+                    }
+                    return Ok(());
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        unreachable!()
+    }
+
+    fn save(&mut self, c: &Context) -> Result<()> {
         use std::io::Write;
         fs::create_dir_all(&c.state_dir)?;
+        let path = c.state_dir.join("commit.json");
+        if self.state_recovery {
+            Self::preserve_state(&path)?;
+        }
         let mut w = tempfile::NamedTempFile::new_in(&c.state_dir)?;
         w.write_all(&serde_json::to_vec_pretty(&self.saved)?)?;
-        w.persist(c.state_dir.join("commit.json"))?;
+        w.persist(&path)?;
+        self.state_recovery = false;
         Ok(())
     }
     fn sync(&mut self, c: &Context) {
@@ -472,6 +562,7 @@ impl CommitPanel {
                 .position(|r| !r.files.is_empty())
                 .unwrap_or(0),
         };
+        self.rendered_scope = c.scope.clone();
     }
     pub(crate) fn path_copy_target(&self, c: &Context) -> Option<crate::ui::path_copy::Target> {
         if self.focus != Focus::Tree || self.editing() {
@@ -737,7 +828,7 @@ impl CommitPanel {
                     Some(match action {
                         MessageAction::Commit => "Commit checked files  c",
                         MessageAction::CommitAndPush => "Commit, then open Push preview  a",
-                        MessageAction::Generate => "Generate an AI commit message  A",
+                        MessageAction::Generate => "Generate an AI commit message  g",
                     })
                 }
                 _ => hit.hint(),
@@ -889,34 +980,23 @@ impl Panel for CommitPanel {
             self.request_refresh();
             return Ok(());
         }
-        if !self.loaded {
-            let p = c.state_dir.join("commit.json");
-            if p.exists() {
-                self.saved = serde_json::from_slice(&fs::read(p)?)?
+        let state_error = if self.loaded {
+            None
+        } else {
+            let error = self.load_state(c);
+            self.loaded = true;
+            error
+        };
+        if let Err(error) = self.refresh_files(c) {
+            if let Some(state_error) = state_error {
+                bail!("{state_error}; {error:#}");
             }
-            if self.saved.message.is_none() {
-                self.saved.message = Some(
-                    (0..c.repos.len())
-                        .filter_map(|r| self.saved.drafts.get(&rid(c, r)))
-                        .find(|message| !message.trim().is_empty())
-                        .cloned()
-                        .unwrap_or_default(),
-                );
-            }
-            self.ai_settings = self.ai_config.clone().unwrap_or_else(|| {
-                let mut settings = crate::config::AiConfig {
-                    endpoint: self.saved.endpoint.clone(),
-                    model: self.saved.model.clone(),
-                    ..Default::default()
-                };
-                if !self.saved.prompt.is_empty() {
-                    settings.prompt = self.saved.prompt.clone();
-                }
-                settings
-            });
-            self.loaded = true
+            return Err(error);
         }
-        self.refresh_files(c)
+        if let Some(error) = state_error {
+            bail!("{error}");
+        }
+        Ok(())
     }
     fn draw(&mut self, f: &mut Frame, a: Rect, c: &Context) {
         self.draw_content(f, a, c);
@@ -1254,13 +1334,14 @@ impl Panel for CommitPanel {
                 }
             }
             Event::Key(k) => match k.code {
-                K::Char(shortcut @ ('c' | 'a'))
+                K::Char(shortcut @ ('c' | 'a' | 'g'))
                     if self.focus == Focus::Message && k.modifiers.is_empty() =>
                 {
                     if k.kind == KeyEventKind::Press {
                         let action = match shortcut {
                             'c' => MessageAction::Commit,
                             'a' => MessageAction::CommitAndPush,
+                            'g' => MessageAction::Generate,
                             _ => unreachable!(),
                         };
                         return self.launch(Hit::MessageAction(action), c);
