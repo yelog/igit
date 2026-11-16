@@ -834,6 +834,12 @@ that row animates, and its final result replaces the spinner. Per-repository
 outcomes distinguish updated and published, up-to-date, update conflict, and
 updated-but-push-failed. The last outcome keeps the updated local branch and
 reports that publication failed.
+When the batch completes, outgoing counts, commit rows, and Changed files
+refresh against each successful target's published commit, including any
+Merge/Rebase result. Published commits disappear; repository rows retain their
+result markers and checkbox/fold choices. If the highlighted commit disappears,
+selection returns to its repository row and clears obsolete file previews.
+Newer local commits and failed repositories' outgoing work remain visible.
 An update conflict preserves Git's native state and stops that repository's
 automatic flow. `C` and the clickable Conflicts control route to the existing
 resolver. Apply file and Continue repository retain separate reviews; neither

@@ -331,6 +331,14 @@ fn push_review_cancel_controls_preserve_git_state_and_enter_publishes() {
     let (directory, mut app) = push_fixture();
     let repo = app.ctx.repos[0].path.clone();
     let remote = directory.path().join("remote.git");
+    app.push.remember_fetch(crate::core::fetch::Observation {
+        path: repo.clone(),
+        remote: "origin".into(),
+        endpoint: remote.to_str().unwrap().into(),
+        branch: Some("main".into()),
+        tip: None,
+    });
+    app.push.finish_loading(&app.ctx);
     let before = snapshot(&repo);
     let index = std::fs::read(repo.join(".git/index")).unwrap();
     let refs = git(&remote, &["for-each-ref"]).unwrap();
@@ -383,4 +391,10 @@ fn push_review_cancel_controls_preserve_git_state_and_enter_publishes() {
     );
     assert_eq!(snapshot(&repo), before);
     assert_eq!(std::fs::read(repo.join(".git/index")).unwrap(), index);
+    app.push.finish_loading(&app.ctx);
+    let rendered = screen(&mut app, 120, 36);
+    assert!(rendered.contains("Pushed successfully"), "{rendered}");
+    assert!(rendered.contains("Changed files · 0"), "{rendered}");
+    assert!(rendered.contains("No changed files"), "{rendered}");
+    assert!(!rendered.contains("^1"), "{rendered}");
 }

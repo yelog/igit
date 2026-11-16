@@ -366,6 +366,14 @@ fn upstream_config_lock_failure_retains_published_result_and_is_never_retried() 
     panel.refresh(&c).unwrap();
     panel.finish_loading(&c);
     choose_tracking(&mut panel, &c, 0, "origin:reviewed");
+    panel.remember_fetch(fetch_backend::Observation {
+        path: c.repos[0].path.clone(),
+        remote: "origin".into(),
+        endpoint: url(&repo, "origin").unwrap(),
+        branch: Some("reviewed".into()),
+        tip: None,
+    });
+    panel.finish_loading(&c);
     assert!(matches!(panel.review(&c, false), Action::Confirm { .. }));
     let pushed = panel.review[0].head.clone();
     let before = fs::read(repo.join(".git/config")).unwrap();

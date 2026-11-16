@@ -66,13 +66,13 @@ fn observe(context: &Context, branch: &str, tip: Option<String>) -> fetch_backen
     }
 }
 
-fn finish_fetch(panel: &mut PushPanel, context: &Context) {
+fn finish_operation(panel: &mut PushPanel, context: &Context) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while panel.busy() {
         panel.poll(context);
         assert!(
             Instant::now() < deadline,
-            "Manual Push fetch did not finish"
+            "Push remote operation did not finish"
         );
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -248,6 +248,265 @@ fn relative_push_endpoints_match_the_workers_effective_endpoint() {
 }
 
 #[test]
+fn successful_push_replaces_a_cached_target_tip() {
+    let (directory, context, mut panel) = fixture();
+    let path = &context.repos[0].path;
+    let head = run(path, &["rev-parse", "HEAD"]);
+    let base = run(path, &["rev-parse", "HEAD~1"]);
+    fs::write(path.join("a"), "staged content\n").unwrap();
+    run(path, &["add", "a"]);
+    fs::write(path.join("a"), "working content\n").unwrap();
+    let index = fs::read(path.join(".git/index")).unwrap();
+    panel.remember_fetch(observe(&context, "main", Some(base)));
+    panel.finish_loading(&context);
+    panel.pos = 1;
+    panel.inspect(&context);
+    panel.finish_loading(&context);
+    assert_eq!(panel.entries[0].n, 1);
+    assert!(!panel.preview.files.is_empty());
+    let checked = panel.checked.clone();
+    let expanded = panel.expanded.clone();
+    assert!(matches!(
+        panel.review(&context, false),
+        Action::Confirm { .. }
+    ));
+    panel.start(&context, false);
+    panel.load.request();
+    let stale = panel.load.hold();
+    stale.send(panel.entries.clone()).unwrap();
+    finish_operation(&mut panel, &context);
+
+    assert_eq!(
+        run(&directory.path().join("app.git"), &["rev-parse", "main"]),
+        head
+    );
+    assert_eq!(panel.results[&0], Ok(PushOutcome::Complete));
+    assert_eq!(panel.entries[0].tracking.as_ref(), Some(&head));
+    assert_eq!((panel.entries[0].n, panel.entries[0].behind), (0, Some(0)));
+    assert!(panel.entries[0].logs.is_empty());
+    assert_eq!(panel.selected(), Some((0, None)));
+    assert!(panel.preview.files.is_empty());
+    assert_eq!(panel.checked, checked);
+    assert_eq!(panel.expanded, expanded);
+    assert!(panel.take_fetch_observations().is_empty());
+    assert_eq!(fs::read(path.join(".git/index")).unwrap(), index);
+    assert_eq!(fs::read(path.join("a")).unwrap(), b"working content\n");
+    assert_eq!(run(path, &["rev-parse", "HEAD"]), head);
+}
+
+#[test]
+fn successful_push_updates_only_its_effective_endpoint_and_branch() {
+    for relative in [false, true] {
+        let (directory, context, mut panel) = fixture();
+        let path = &context.repos[0].path;
+        let head = run(path, &["rev-parse", "HEAD"]);
+        let base = run(path, &["rev-parse", "HEAD~1"]);
+        let push = endpoint(directory.path(), &context, "publish.git", &base);
+        use_endpoint(
+            &context,
+            &mut panel,
+            if relative {
+                Path::new("../publish.git")
+            } else {
+                &push
+            },
+        );
+        run(
+            path,
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/main:refs/remotes/origin/main",
+            ],
+        );
+        run(path, &["update-ref", "refs/remotes/origin/release", &base]);
+        let other = observe(&context, "other-branch", Some(base.clone()));
+        let other_key = (
+            other.path.clone(),
+            other.remote.clone(),
+            other.branch.clone().unwrap(),
+        );
+        let other_value = (other.endpoint.clone(), other.tip.clone());
+        panel.remember_fetch(other);
+        panel.remember_fetch(observe(&context, "release", Some(base.clone())));
+        panel.finish_loading(&context);
+        assert_eq!(panel.entries[0].n, 1);
+        assert!(matches!(
+            panel.review(&context, false),
+            Action::Confirm { .. }
+        ));
+        panel.start(&context, false);
+        finish_operation(&mut panel, &context);
+
+        assert_eq!(panel.results[&0], Ok(PushOutcome::Complete));
+        assert_eq!(panel.entries[0].tracking.as_ref(), Some(&head));
+        assert_eq!((panel.entries[0].n, panel.entries[0].behind), (0, Some(0)));
+        assert!(panel.entries[0].logs.is_empty());
+        assert_eq!(panel.fetched[&other_key], other_value);
+        assert_eq!(run(&push, &["rev-parse", "release"]), head);
+        assert_eq!(
+            run(&directory.path().join("app.git"), &["rev-parse", "main"]),
+            base
+        );
+        assert_eq!(
+            run(path, &["rev-parse", "refs/remotes/origin/release"]),
+            base
+        );
+        assert!(panel.take_fetch_observations().is_empty());
+    }
+}
+
+#[test]
+fn successful_first_push_replaces_an_observed_missing_target() {
+    let (directory, context, mut panel) = fixture();
+    let path = &context.repos[0].path;
+    let head = run(path, &["rev-parse", "HEAD"]);
+    panel.targets.insert(
+        0,
+        Target {
+            remote: "origin".into(),
+            dst: "release".into(),
+        },
+    );
+    panel.remember_fetch(observe(&context, "release", None));
+    panel.finish_loading(&context);
+    assert_eq!(panel.entries[0].n, 2);
+    assert!(matches!(
+        panel.review(&context, false),
+        Action::Confirm { .. }
+    ));
+    panel.start(&context, false);
+    finish_operation(&mut panel, &context);
+
+    assert_eq!(panel.results[&0], Ok(PushOutcome::Complete));
+    assert_eq!(panel.entries[0].tracking.as_ref(), Some(&head));
+    assert_eq!((panel.entries[0].n, panel.entries[0].behind), (0, Some(0)));
+    assert!(panel.preview.files.is_empty());
+    assert_eq!(
+        run(&directory.path().join("app.git"), &["rev-parse", "release"]),
+        head
+    );
+}
+
+#[test]
+fn integrated_push_refreshes_against_the_published_merge_or_rebase() {
+    for strategy in [Strategy::Merge, Strategy::Rebase] {
+        let (directory, context, mut panel) = fixture();
+        let path = &context.repos[0].path;
+        let original = run(path, &["rev-parse", "HEAD"]);
+        let base = run(path, &["rev-parse", "HEAD~1"]);
+        let writer = directory.path().join("writer");
+        run(
+            directory.path(),
+            &[
+                "clone",
+                "-q",
+                directory.path().join("app.git").to_str().unwrap(),
+                writer.to_str().unwrap(),
+            ],
+        );
+        for (key, value) in [
+            ("user.name", "IGit test"),
+            ("user.email", "test@invalid"),
+            ("commit.gpgSign", "false"),
+            ("core.hooksPath", "/dev/null"),
+        ] {
+            run(&writer, &["config", key, value]);
+        }
+        run(&writer, &["commit", "--allow-empty", "-qm", "remote work"]);
+        run(&writer, &["push", "-q", "origin", "main"]);
+        panel.set_strategy(strategy);
+        panel.remember_fetch(observe(&context, "main", Some(base)));
+        panel.finish_loading(&context);
+        assert!(matches!(
+            panel.review(&context, false),
+            Action::Confirm { .. }
+        ));
+        panel.start(&context, false);
+        finish_operation(&mut panel, &context);
+
+        let published = run(&directory.path().join("app.git"), &["rev-parse", "main"]);
+        assert_ne!(published, original);
+        assert_eq!(run(path, &["rev-parse", "HEAD"]), published);
+        assert_eq!(panel.results[&0], Ok(PushOutcome::Updated(strategy)));
+        assert_eq!(panel.entries[0].tracking.as_ref(), Some(&published));
+        assert_eq!((panel.entries[0].n, panel.entries[0].behind), (0, Some(0)));
+        assert!(panel.entries[0].logs.is_empty());
+        assert!(panel.preview.files.is_empty());
+    }
+}
+
+#[test]
+fn an_up_to_date_result_replaces_a_cached_target_tip() {
+    let (directory, context, mut panel) = fixture();
+    let path = &context.repos[0].path;
+    let head = run(path, &["rev-parse", "HEAD"]);
+    let base = run(path, &["rev-parse", "HEAD~1"]);
+    panel.remember_fetch(observe(&context, "main", Some(base)));
+    panel.finish_loading(&context);
+    assert!(matches!(
+        panel.review(&context, false),
+        Action::Confirm { .. }
+    ));
+    run(path, &["push", "-q", "origin", "main"]);
+    panel.start(&context, false);
+    finish_operation(&mut panel, &context);
+
+    assert_eq!(panel.results[&0], Ok(PushOutcome::UpToDate));
+    assert_eq!(panel.entries[0].tracking.as_ref(), Some(&head));
+    assert_eq!((panel.entries[0].n, panel.entries[0].behind), (0, Some(0)));
+    assert!(panel.entries[0].logs.is_empty());
+    assert_eq!(
+        run(&directory.path().join("app.git"), &["rev-parse", "main"]),
+        head
+    );
+}
+
+#[test]
+fn commits_created_after_publication_remain_outgoing() {
+    let (directory, context, mut panel) = fixture();
+    let path = &context.repos[0].path;
+    let published = run(path, &["rev-parse", "HEAD"]);
+    let base = run(path, &["rev-parse", "HEAD~1"]);
+    panel.remember_fetch(observe(&context, "main", Some(base)));
+    panel.finish_loading(&context);
+    assert!(matches!(
+        panel.review(&context, false),
+        Action::Confirm { .. }
+    ));
+    panel.start(&context, false);
+    let reports = panel.inflight.take().unwrap();
+    let (sender, receiver) = mpsc::channel();
+    loop {
+        let report = reports.recv_timeout(Duration::from_secs(10)).unwrap();
+        let done = matches!(report, Report::Done);
+        sender.send(report).unwrap();
+        if done {
+            break;
+        }
+    }
+    panel.inflight = Some(receiver);
+    run(path, &["commit", "--allow-empty", "-qm", "later work"]);
+    let later = run(path, &["rev-parse", "HEAD"]);
+    finish_operation(&mut panel, &context);
+
+    assert_eq!(panel.results[&0], Ok(PushOutcome::Complete));
+    assert_eq!(panel.entries[0].tracking.as_ref(), Some(&published));
+    assert_eq!((panel.entries[0].n, panel.entries[0].behind), (1, Some(0)));
+    assert_eq!(
+        panel.entries[0].logs,
+        vec![Out {
+            id: later,
+            msg: "later work".into(),
+        }]
+    );
+    assert_eq!(
+        run(&directory.path().join("app.git"), &["rev-parse", "main"]),
+        published
+    );
+}
+
+#[test]
 fn manual_fetch_reads_only_the_push_endpoint_branch_and_emits_an_observation() {
     let (directory, context, mut panel) = fixture();
     let path = &context.repos[0].path;
@@ -273,7 +532,7 @@ fn manual_fetch_reads_only_the_push_endpoint_branch_and_emits_an_observation() {
         panel.start(&context, true),
         Action::Notice(NoticeLevel::Info, _)
     ));
-    finish_fetch(&mut panel, &context);
+    finish_operation(&mut panel, &context);
 
     assert_eq!(panel.results[&0], Ok(PushOutcome::Complete));
     assert_eq!(panel.entries[0].tracking.as_ref(), Some(&head));
@@ -305,7 +564,7 @@ fn a_failed_manual_fetch_does_not_publish_an_observation() {
     panel.refresh(&context).unwrap();
     panel.finish_loading(&context);
     panel.start(&context, true);
-    finish_fetch(&mut panel, &context);
+    finish_operation(&mut panel, &context);
     assert!(panel.results[&0].is_err());
     assert!(panel.take_fetch_observations().is_empty());
     assert!(panel.fetched.is_empty());

@@ -893,6 +893,11 @@ snapshot; Cancel, tab switching, and quit remain available. Refresh preserves
 checked repositories and the highlighted commit, and unchanged data retains the
 current file and Diff scroll.
 
+After a completed Push, the list refreshes against each successful target's
+published commit. Published commits disappear from outgoing history and Changed
+files; success markers remain on the repository rows. Any newer local commits
+and failed repositories' outgoing work remain available for the next review.
+
 **Update before Push:** Branch-style green `↗N` ahead and blue `↙N` behind
 counters compare the local branch with the selected `remote:branch`, which may
 differ from its configured upstream. ASCII mode uses `^N` / `vN`; zero counts

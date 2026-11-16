@@ -49,11 +49,11 @@ fn diverged_target_updates_then_pushes_with_each_strategy() {
         let (directory, context, planned, _, remote) = fixture(false);
         let repo = &context.repos[0].path;
         let mut phases = Vec::new();
-        assert_eq!(
-            execute(&planned, strategy, false, false, |phase| phases.push(phase)).unwrap(),
-            PushOutcome::Updated(strategy)
-        );
+        let publication =
+            execute(&planned, strategy, false, false, |phase| phases.push(phase)).unwrap();
+        assert_eq!(publication.outcome, PushOutcome::Updated(strategy));
         let head = g(repo, &["rev-parse", "HEAD"]);
+        assert_eq!(publication.head, head);
         assert_eq!(
             g(&directory.path().join("app.git"), &["rev-parse", "main"]),
             head
@@ -201,12 +201,12 @@ fn ahead_only_push_keeps_dirty_content_and_skips_integration() {
     let planned = job(&context.repos[0], &entry(0, &context.repos[0], None)).unwrap();
     fs::write(repo.join("a"), "uncommitted").unwrap();
     let mut phases = Vec::new();
-    assert_eq!(
-        execute(&planned, Strategy::Rebase, false, false, |phase| phases
-            .push(phase))
-        .unwrap(),
-        PushOutcome::Complete
-    );
+    let publication = execute(&planned, Strategy::Rebase, false, false, |phase| {
+        phases.push(phase)
+    })
+    .unwrap();
+    assert_eq!(publication.outcome, PushOutcome::Complete);
+    assert_eq!(publication.head, planned.head);
     assert_eq!(fs::read_to_string(repo.join("a")).unwrap(), "uncommitted");
     assert_eq!(g(&repo, &["rev-parse", "HEAD"]), planned.head);
     assert_eq!(phases, ["Fetching…", "Pushing…"]);
@@ -510,10 +510,9 @@ fn an_already_published_target_still_applies_the_reviewed_upstream_choice() {
     )
     .unwrap();
     planned.set_upstream = true;
-    assert_eq!(
-        execute(&planned, Strategy::Merge, false, false, |_| {}).unwrap(),
-        PushOutcome::Complete
-    );
+    let publication = execute(&planned, Strategy::Merge, false, false, |_| {}).unwrap();
+    assert_eq!(publication.outcome, PushOutcome::Complete);
+    assert_eq!(publication.head, planned.head);
     assert_eq!(
         g(&repo, &["config", "branch.main.merge"]),
         "refs/heads/reviewed"

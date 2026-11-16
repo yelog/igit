@@ -1,6 +1,12 @@
 use super::*;
 use crate::core::update::{integrate_reviewed, is_ancestor, ready};
 
+#[derive(Debug)]
+pub(super) struct Publication {
+    pub outcome: PushOutcome,
+    pub head: String,
+}
+
 fn fetch_target(job: &Job) -> Result<Option<String>> {
     let destination = format!("refs/heads/{}", job.t.dst);
     let Some(tip) = advertised_tip(&job.path, &job.url, &destination)? else {
@@ -45,7 +51,7 @@ pub(super) fn execute(
     tags: bool,
     nohooks: bool,
     mut progress: impl FnMut(&'static str),
-) -> Result<PushOutcome> {
+) -> Result<Publication> {
     job.revalidate()?;
     ready(&job.path)?;
     progress("Fetching…");
@@ -91,7 +97,10 @@ pub(super) fn execute(
         }
         updated.revalidate()?;
         if target == &updated.head && !updated.set_upstream {
-            return Ok(PushOutcome::UpToDate);
+            return Ok(Publication {
+                outcome: PushOutcome::UpToDate,
+                head: updated.head,
+            });
         }
     }
     progress("Pushing…");
@@ -102,10 +111,14 @@ pub(super) fn execute(
             anyhow::anyhow!("Push failed: {error}")
         }
     })?;
-    Ok(if integrated && outcome == PushOutcome::Complete {
+    let outcome = if integrated && outcome == PushOutcome::Complete {
         PushOutcome::Updated(strategy)
     } else {
         outcome
+    };
+    Ok(Publication {
+        outcome,
+        head: updated.head,
     })
 }
 

@@ -904,6 +904,17 @@ busy guard. Refresh can retry a failed reader. Explicit target validation and
 push-review job construction still run synchronously. Update and publication
 run on the background worker with source/URL/remote/submodule validation.
 
+Successful execution returns its exact published OID, including an integrated
+Merge/Rebase result or an already-current target. Before reporting the row
+result, the worker sends a publication observation for the captured repository,
+remote, destination branch, and normalized push endpoint. The panel replaces
+only that target's cached tip and invalidates older outgoing reads through the
+existing loader generation. The next snapshot removes published history and
+obsolete file previews while retaining newer local commits, failed targets,
+checkboxes, folds, and per-repository results. Publication observations do not
+advance Fetch freshness or manually rewrite another endpoint's tracking refs,
+and require no additional network request.
+
 **Push: one reviewed update and publication.** Each Job records the repository,
 source branch/HEAD, target remote/branch, effective configuration, push URL,
 and cached target tip. The review also fixes the Merge/Rebase strategy, hooks,

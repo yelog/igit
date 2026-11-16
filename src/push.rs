@@ -122,6 +122,7 @@ enum Report {
     Started(usize),
     Row(usize, Result<PushOutcome, String>),
     Fetched(fetch_backend::Observation),
+    Published(fetch_backend::Observation),
     Phase(usize, &'static str),
     Conflicts(usize),
     Done,
@@ -1185,6 +1186,19 @@ impl PushPanel {
                         let result = update::execute(job, strategy, tags, hooks, |phase| {
                             let _ = worker.send(Report::Phase(job.idx, phase));
                         })
+                        .map(|publication| {
+                            if let Some(endpoint) = absolute_endpoint(&job.path, job.url.clone()) {
+                                let _ =
+                                    worker.send(Report::Published(fetch_backend::Observation {
+                                        path: job.path.clone(),
+                                        remote: job.t.remote.clone(),
+                                        endpoint,
+                                        branch: Some(job.t.dst.clone()),
+                                        tip: Some(publication.head),
+                                    }));
+                            }
+                            publication.outcome
+                        })
                         .map_err(|error| error.to_string());
                         if result.is_err() && crate::core::update::conflicts(&job.path) {
                             let _ = worker.send(Report::Conflicts(job.idx));
@@ -1258,6 +1272,7 @@ impl PushPanel {
                     self.remember_fetch(observation.clone());
                     self.fetch_observations.push(observation);
                 }
+                Report::Published(observation) => self.remember_fetch(observation),
                 Report::Done => finished = true,
                 Report::Phase(i, phase) => {
                     if let Some(activity) = self.activities.get_mut(&i) {
@@ -2739,6 +2754,16 @@ mod tests {
         };
         p.refresh(&c).unwrap();
         p.finish_loading(&c);
+        for repo in &c.repos {
+            p.remember_fetch(fetch_backend::Observation {
+                path: repo.path.clone(),
+                remote: "origin".into(),
+                endpoint: url(&repo.path, "origin").unwrap(),
+                branch: Some("main".into()),
+                tip: Some(g(&repo.path, &["rev-parse", "HEAD~1"])),
+            });
+        }
+        p.finish_loading(&c);
         assert!(matches!(p.review(&c, false), Action::Confirm { .. }));
         g(
             &t.path().join("b.git"),
@@ -2764,6 +2789,9 @@ mod tests {
         wait(&mut p, &c);
         assert!(p.results[&0].is_ok());
         assert!(p.results[&1].is_err());
+        p.finish_loading(&c);
+        assert_eq!(p.entries.iter().find(|entry| entry.idx == 0).unwrap().n, 0);
+        assert_eq!(p.entries.iter().find(|entry| entry.idx == 1).unwrap().n, 2);
         assert_ne!(g(&t.path().join("b.git"), &["rev-parse", "main"]), reviewed);
         c.scope.remove(&1);
         p.refresh(&c).unwrap();
