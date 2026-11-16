@@ -583,7 +583,7 @@ branch row and use that row's repository:
 
 | Key | Branch action |
 | --- | --- |
-| `a` | Create a local branch at the focused branch's commit, keeping the current branch checked out. |
+| `a` | Create a local branch at the focused branch's commit, keeping the current branch checked out. A remote source prefills its branch name and establishes tracking. |
 | `d` | Delete the focused local branch with Git's safe deletion check. |
 | `Enter` | Switch to the local branch; for a remote branch, create a named tracking branch or switch to its matching local tracking branch. On groups, toggle expansion. |
 | `m` | Merge the focused local or remote branch into the current local branch. |
@@ -591,6 +591,13 @@ branch row and use that row's repository:
 | `c` | Compare a non-current local or remote branch with the current branch (read-only). |
 | `p` (`U` alias) | Review a fast-forward pull from the focused local branch’s configured upstream. |
 | `P` | Review a push of the focused local branch to its configured upstream. |
+
+Creating from `origin/develop` defaults to `develop`; `upstream/feature/topic`
+defaults to `feature/topic`. You can edit the local name, and the new branch
+still tracks the selected remote branch. The review names that upstream and
+the current checkout. Existing local names are rejected without overwriting
+or changing their upstream. Creating from a local branch starts with an empty
+name and does not inherit its upstream.
 
 Branch's `p` / `U` remains fast-forward-only, independently of the saved Pull/Push
 update strategy. A non-current branch advances without switching or changing

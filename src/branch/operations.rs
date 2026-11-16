@@ -128,15 +128,15 @@ impl Review {
                 "Local branch already exists: {name}"
             );
         }
+        if operation == Operation::Track || (operation == Operation::Create && source.remote) {
+            ensure!(
+                source.remote && snapshot.local_name(source).is_some(),
+                "Remote is not configured; fetch or refresh first"
+            );
+        }
         match operation {
             Operation::Delete => ensure!(!source.current, "Cannot delete the current branch"),
             Operation::Checkout => ensure!(!source.current, "Already on this branch"),
-            Operation::Track => {
-                ensure!(
-                    source.remote && snapshot.local_name(source).is_some(),
-                    "Remote is not configured; fetch or refresh first"
-                );
-            }
             Operation::Merge => {
                 ensure!(
                     snapshot.head.is_some() && snapshot.oid.is_some(),
@@ -155,7 +155,14 @@ impl Review {
         let head = snapshot.head_label();
         let detail = match operation {
             Operation::Pull | Operation::Push => sync.as_ref().unwrap().detail(source),
-            Operation::Create => format!("Create local branch: {name}\nFrom: {}\nStay on: {head}\nThe new branch has no upstream.", source.name),
+            Operation::Create => {
+                let upstream = if source.remote {
+                    format!("Track: {}", source.name)
+                } else {
+                    "The new branch has no upstream.".into()
+                };
+                format!("Create local branch: {name}\nFrom: {}\nStay on: {head}\n{upstream}", source.name)
+            }
             Operation::Delete => format!("Delete local branch: {}\nStay on: {head}\nGit's safe deletion check must pass. Remote branches are kept.", source.name),
             Operation::Checkout => format!("Switch from: {head}\nTo local branch: {}\nGit will refuse to overwrite local changes or ignored files.", source.name),
             Operation::Track => format!("Create and switch to: {name}\nTrack: {}\nCurrent branch: {head}\nGit will refuse to overwrite local changes or ignored files.", source.name),
@@ -298,7 +305,17 @@ impl Review {
         match self.operation {
             Operation::Pull | Operation::Push => unreachable!("sync operations return above"),
             Operation::Create => {
-                cmd.args(["branch", "--no-track", "--", &self.name, &self.source.oid]);
+                if self.source.remote {
+                    cmd.args([
+                        "branch",
+                        "--track",
+                        "--",
+                        &self.name,
+                        &self.source.reference,
+                    ]);
+                } else {
+                    cmd.args(["branch", "--no-track", "--", &self.name, &self.source.oid]);
+                }
             }
             Operation::Delete => {
                 cmd.args(["branch", "-d", "--", &self.source.name]);

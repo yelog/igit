@@ -443,7 +443,7 @@ impl BranchPanel {
         };
         let mut operation = operation;
         let mut name = String::new();
-        if operation == Operation::Checkout && source.remote {
+        if source.remote && matches!(operation, Operation::Create | Operation::Checkout) {
             let snapshot = self
                 .repos
                 .iter()
@@ -454,16 +454,18 @@ impl BranchPanel {
                 .local_name(&source)
                 .context("Remote is not configured; fetch or refresh first")?
                 .into();
-            // An existing matching tracking branch can be switched directly.
-            if let Some(local) = snapshot
-                .branches
-                .get(&format!("refs/heads/{name}"))
-                .filter(|b| b.upstream == source.reference)
-            {
-                source = local.clone();
-                name.clear();
-            } else {
-                operation = Operation::Track;
+            if operation == Operation::Checkout {
+                // An existing matching tracking branch can be switched directly.
+                if let Some(local) = snapshot
+                    .branches
+                    .get(&format!("refs/heads/{name}"))
+                    .filter(|b| b.upstream == source.reference)
+                {
+                    source = local.clone();
+                    name.clear();
+                } else {
+                    operation = Operation::Track;
+                }
             }
         }
         if operation == Operation::Rename {

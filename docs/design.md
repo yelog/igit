@@ -1062,7 +1062,14 @@ refresh instead of claiming success.
 Remote checkout asks for a local
 tracking name unless a matching local name already tracks that ref. Submitting
 the tracking name creates and switches to that branch. `a` asks for a new local name at the focused
-commit without switching; `r` renames a local branch; `d` requests safe local
+commit without switching. For a remote source, it prefills the branch name
+without the configured remote prefix, preserving nested names such as
+`feature/topic`. The local name remains editable, and creation explicitly
+tracks the selected remote even when the names differ. The review shows
+`Track: <remote>/<branch>` and the retained checkout. An existing local name
+keeps the editor open with an error; it is never overwritten or retargeted.
+Local-source creation starts empty and creates no upstream.
+`r` renames a local branch; `d` requests safe local
 deletion; `m` merges into the currently checked-out local branch. The name
 editor keeps Unicode input separate from global shortcuts and shows validation
 errors without losing the draft. Keyboard validation explains requests that do

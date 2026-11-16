@@ -612,7 +612,13 @@ keeps both the destination file and saved local version. Complete restoration
 drops only an unchanged exact stash entry. Changed files/index/refs/HEAD/Roots
 invalidate review. Protected ignored paths, nested repositories, submodules,
 and special index flags block unsafe saves or discards.
-Create, delete, merge, and rename open a single-repository review. Creation does not switch. Remote checkout creates a named local tracking
+Create, delete, merge, and rename open a single-repository review. Creation does
+not switch. From a remote branch, Create prefills the local name without the
+configured remote prefix, preserves nested names, and explicitly establishes
+tracking to the selected remote even if the local name is edited. The review
+identifies the upstream and retained checkout. Existing local names are rejected
+without overwriting branches or upstreams. Local-source creation starts with
+an empty name and creates no upstream. Remote checkout creates a named local tracking
 branch or switches to the same-name branch already tracking that remote ref.
 Delete/rename are local-only. Roots is available through Actions while `r` is
 used for rename. `p` and `P` review Pull and Push for one focused local branch

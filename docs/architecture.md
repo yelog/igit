@@ -616,8 +616,13 @@ review flow. Closing drops the readers and restores the resident Branch tree.
 confirmation dialog on a background worker; Enter returns immediately. Preparation checks Roots, worktree path, refs, HEAD, upstreams,
 worktree ownership and pending Git operations. The switch worker repeats a
 lightweight HEAD/source-ref check, runs Git off the terminal thread, and reads the
-actual symbolic HEAD back before reporting success. Create and merge use the reviewed
-immutable source OID. Local checkout uses `switch --no-guess`; remote checkout
+actual symbolic HEAD back before reporting success. Local-source creation and
+merge use the reviewed immutable source OID. Remote-source creation reuses
+`Snapshot::local_name` to prefill the editable local name, requires a configured
+remote, and reviews the selected upstream. After snapshot revalidation, one
+`branch --track` command against the full remote ref creates the branch and its
+upstream without switching. Explicit tracking overrides `branch.autoSetupMerge`;
+local-source creation keeps `--no-track`. Local checkout uses `switch --no-guess`; remote checkout
 uses explicit `--track -c`. Safe deletion is `branch -d`, rename is `branch -m`,
 and merges disable autostash. Checkout/merge protect ignored files and suppress
 recursive submodule updates. Git provides its normal locking and overwrite

@@ -6,6 +6,7 @@ use std::{fs, path::Path};
 use unicode_width::UnicodeWidthStr;
 
 mod compare;
+mod creation;
 mod navigation;
 mod presentation;
 mod smart_checkout;
