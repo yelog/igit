@@ -1,10 +1,12 @@
 mod cli;
 mod configuration;
 mod editor;
+mod fetch;
 mod file_diff;
 mod kitty;
 mod panes;
 mod refresh;
+mod rescan;
 mod software_update;
 mod startup;
 mod update;
@@ -129,6 +131,7 @@ const HELP: &str = "Usage: igit [OPTIONS] [DIRECTORY]  (alias: ig)
   --config PATH              use an explicit settings.toml
   --check-config             validate settings without opening the TUI
   --print-default-config     print the complete built-in TOML settings
+  --capabilities             print the native/editor capability JSON
   --list-roots [DIRECTORY]   print detected Git worktrees
   -h, --help                 show this help
   -V, --version              print version
@@ -243,6 +246,8 @@ struct Shell {
     tab: Tab,
     main_tab: Tab,
     refresh_state: refresh::State,
+    auto_fetch: fetch::State,
+    workspace_scan: rescan::State,
     pop: Option<Popup>,
     notifications: notifications::Center,
     quit: bool,
@@ -300,6 +305,8 @@ impl Shell {
             tab: Commit,
             main_tab: Commit,
             refresh_state: refresh::State::default(),
+            auto_fetch: fetch::State::default(),
+            workspace_scan: rescan::State::default(),
             pop: None,
             notifications: Default::default(),
             quit: false,
@@ -442,6 +449,9 @@ impl Shell {
         self.key_picker = KeySequencePicker::default();
     }
     fn panel_event(&mut self, ev: &Event) {
+        if self.defer_fetch_panel(ev) {
+            return;
+        }
         if self.commit.add_running()
             && self.tab == Push
             && !self.push.editing()
@@ -495,6 +505,12 @@ impl Shell {
     }
     fn refresh(&mut self) {
         self.cancel_key_sequences();
+        let _ = editor::invalidate_repositories(
+            self.ctx
+                .scope
+                .iter()
+                .map(|&root| self.ctx.repos[root].path.as_path()),
+        );
         if self.refresh_state.background {
             if !self.ctx.repos.is_empty() {
                 self.commit.request_refresh();
@@ -700,6 +716,9 @@ impl Shell {
         self.panel_event(&Event::FocusLost);
         self.layout_mut(self.tab).begin();
         self.tab = tab;
+        if matches!(tab, Push | Branch | Log) {
+            self.auto_fetch.request();
+        }
         match tab {
             Commit => {
                 self.main_tab = tab;
@@ -872,6 +891,11 @@ impl Shell {
         }
     }
     fn confirm(&mut self, owner: Tab, token: &str) {
+        if self.auto_fetch.running() {
+            self.auto_fetch.cancel();
+            self.auto_fetch.defer_confirmation(owner, token.to_owned());
+            return;
+        }
         self.push.block_writes(
             self.branch.syncing() || self.commit.execution_running() || self.commit.add_running(),
         );
@@ -892,6 +916,7 @@ impl Shell {
         self.action_from(owner.name(), a)
     }
     fn request_quit(&mut self) {
+        self.auto_fetch.cancel();
         self.cancel_key_sequences();
         if self.software_update.installing() {
             self.notice("Wait for the software update to finish before quitting".into());
@@ -901,9 +926,11 @@ impl Shell {
             self.notice("A Git operation is running. Wait for it to finish before quitting".into());
             return;
         }
+        self.workspace_scan = rescan::State::default();
         self.quit = true;
     }
     fn review_update(&mut self, kind: update::Kind) {
+        self.auto_fetch.cancel();
         self.cancel_key_sequences();
         self.cancel_drags();
         if self.git_busy() {
@@ -1140,6 +1167,9 @@ impl Shell {
         }
     }
     fn pop_event(&mut self, ev: &Event) {
+        if self.defer_fetch_popup(ev) {
+            return;
+        }
         if let Some(Popup::Notifications(history)) = self.pop.as_mut() {
             match self.notifications.history_event(ev, history) {
                 notifications::HistoryEvent::Handled => (),
@@ -1399,33 +1429,8 @@ impl Shell {
                         self.notice("Wait for current push/fetch".into());
                         return;
                     }
-                    match Context::discover(std::path::Path::new(&path)) {
-                        Ok(c) => {
-                            let kitty = std::mem::take(&mut self.kitty);
-                            let software_update = std::mem::take(&mut self.software_update);
-                            let notifications = std::mem::take(&mut self.notifications);
-                            let background = self.refresh_state.background;
-                            let commit_background = self.commit.background_execution_enabled();
-                            let mut next = Self::unloaded(c, self.config.clone());
-                            next.notifications = notifications;
-                            next.log_load = startup::LogLoad::Ready;
-                            next.refresh();
-                            *self = next;
-                            if commit_background {
-                                self.commit.enable_background_execution();
-                            }
-                            if background {
-                                self.enable_background_loading();
-                            }
-                            self.kitty = kitty;
-                            self.software_update = software_update;
-                            self.notify(
-                                NoticeLevel::Success,
-                                "Workspace",
-                                "Workspace opened".into(),
-                            );
-                            return;
-                        }
+                    match self.start_workspace_scan(PathBuf::from(&path)) {
+                        Ok(()) => return,
                         Err(e) => self.notify(NoticeLevel::Error, "Workspace", e.to_string()),
                     }
                 }
@@ -1740,6 +1745,28 @@ impl Shell {
     }
 
     fn dispatch(&mut self, ev: &Event) {
+        match ev {
+            Event::FocusGained => self.auto_fetch.focus(true),
+            Event::FocusLost => self.auto_fetch.focus(false),
+            _ => (),
+        }
+        if self.defer_fetch_dispatch(ev) {
+            return;
+        }
+        if self.workspace_scan.pending()
+            && matches!(ev, Event::Key(key)
+                if key.kind != KeyEventKind::Release
+                && key.code == KeyCode::Char('x')
+                && key.modifiers == KeyModifiers::CONTROL)
+        {
+            self.workspace_scan = rescan::State::default();
+            self.notify(
+                NoticeLevel::Info,
+                "Workspace",
+                "Workspace scan cancelled".into(),
+            );
+            return;
+        }
         // Keep the reviewed focus/input context stable while synchronizing Kitty.
         // Resize and focus notifications still run; the worker has a short deadline.
         if self.maximize_pending && matches!(ev, Event::Key(_) | Event::Mouse(_) | Event::Paste(_))
@@ -1968,6 +1995,7 @@ impl Shell {
     }
     fn poll(&mut self) -> bool {
         let mut change = self.notifications.expire(Instant::now());
+        change |= self.poll_workspace_scan();
         change |= self.poll_refresh_requests();
         change |= self.poll_list_refreshes();
         if let Some(result) = self.browser.poll() {
@@ -2048,7 +2076,11 @@ impl Shell {
                     ));
                 }
             }
-            if let Some((kind, level, summary)) = dialog.poll() {
+            let outcome = dialog.poll();
+            for observation in dialog.take_fetch_observations() {
+                self.auto_fetch.observe(observation, Instant::now());
+            }
+            if let Some((kind, level, summary)) = outcome {
                 if kind == update::Kind::Pull {
                     self.refresh();
                 } else {
@@ -2076,11 +2108,13 @@ impl Shell {
             }
             change = true;
         }
-        match self.log.poll_history(&self.ctx) {
-            Ok(redraw) => change |= redraw,
-            Err(error) => {
-                self.notify(NoticeLevel::Error, "Log", format!("{error:#}"));
-                change = true;
+        if self.view_install_allowed(Log) {
+            match self.log.poll_history(&self.ctx) {
+                Ok(redraw) => change |= redraw,
+                Err(error) => {
+                    self.notify(NoticeLevel::Error, "Log", format!("{error:#}"));
+                    change = true;
+                }
             }
         }
         if self.tab == Log && self.pop.is_none() {
@@ -2140,11 +2174,13 @@ impl Shell {
             self.notify(level, "Push", message);
             change = true
         }
-        match self.push.poll_loading(&self.ctx) {
-            Ok(redraw) => change |= redraw,
-            Err(error) => {
-                self.notify(NoticeLevel::Error, "Push", format!("{error:#}"));
-                change = true;
+        if self.view_install_allowed(Push) {
+            match self.push.poll_loading(&self.ctx) {
+                Ok(redraw) => change |= redraw,
+                Err(error) => {
+                    self.notify(NoticeLevel::Error, "Push", format!("{error:#}"));
+                    change = true;
+                }
             }
         }
         change |= self.poll_refresh_requests();
@@ -2157,7 +2193,7 @@ impl Shell {
             change = true
         }
         change |= self.tab == Commit && self.commit.ai_running();
-        if self.branch.reads_pending() {
+        if self.branch.reads_pending() && self.view_install_allowed(Branch) {
             match self.branch.poll_loading(&self.ctx) {
                 Ok(redraw) => change |= redraw && self.tab == Branch,
                 Err(error) => {
@@ -2166,12 +2202,14 @@ impl Shell {
                 }
             }
         }
+        change |= self.poll_auto_fetch();
         change
     }
     fn poll_timeout(&self) -> Duration {
         const IDLE: Duration = Duration::from_millis(150);
         let now = Instant::now();
-        let idle = if self.log_load.pending()
+        let idle = if self.workspace_scan.pending()
+            || self.log_load.pending()
             || self.log.history_pending()
             || self.refresh_state.background && self.commit.refresh_pending()
             || self.merge.reads_pending()
@@ -2220,6 +2258,7 @@ impl Shell {
             || self.push.busy()
             || self.commit.execution_running()
             || self.commit.add_running()
+            || self.workspace_update_running()
     }
     fn draw_popup(&mut self, f: &mut Frame, a: Rect) {
         if let Some(Popup::Notifications(history)) = self.pop.as_mut() {
@@ -2597,6 +2636,10 @@ pub fn run() -> Result<()> {
             println!("{HEADER}");
             return Ok(());
         }
+        cli::Command::Capabilities => {
+            println!("{}", editor::capabilities());
+            return Ok(());
+        }
         cli::Command::Open(options) => options,
     };
     if options.print_config {
@@ -2675,6 +2718,7 @@ pub fn run() -> Result<()> {
                 app.message_cursor(),
             )?;
             term.draw(|f| app.draw(f))?;
+            app.auto_fetch.activate(Instant::now());
             app.software_update
                 .schedule(&app.ctx.state_dir, &app.config.updates)
         } else {

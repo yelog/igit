@@ -188,7 +188,7 @@ fn preview_hidden_during_a_scan_does_not_keep_the_in_flight_snapshot() {
     let stale = Snapshot::read(
         c.clone(),
         false,
-        Some((key, 0, "working.txt".into())),
+        Some((key, 0, "working.txt".into(), None)),
         [0].into(),
     );
     let (send, receive) = mpsc::channel();
@@ -205,6 +205,123 @@ fn preview_hidden_during_a_scan_does_not_keep_the_in_flight_snapshot() {
     p.launch(Hit::TogglePreview, &c);
     draw(&mut p, &c);
     assert_eq!(after(&p), "working v2\n");
+}
+
+#[test]
+fn explicit_preview_sources_keep_index_worktree_and_refresh_separate() {
+    use backend::staging::Side;
+    use crossterm::event::{KeyEvent, MouseEvent};
+    let (_dir, mut c, mut p) = fixture();
+    select(&mut p, "mixed.txt");
+    let repo = c.repos[0].path.clone();
+    let index = fs::read(repo.join(".git/index")).unwrap();
+    let checks = p.checks.clone();
+    p.focus = Focus::Diff;
+    for (width, height) in [(44, 12), (80, 24), (120, 36)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        p.event(&Event::Key(KeyEvent::new(K::Char('W'), Mod::SHIFT)), &c);
+        terminal.draw(|f| p.draw(f, f.area(), &c)).unwrap();
+        assert_eq!(
+            p.diff_sources.as_ref().unwrap().sources[0].text,
+            "selected staged\n"
+        );
+        assert_eq!(after(&p), "selected working\n");
+        let hit = p
+            .hits
+            .iter()
+            .find(|(_, hit)| matches!(hit, Hit::PreviewSide(Side::Staged)))
+            .unwrap()
+            .0;
+        p.event(
+            &Event::Mouse(MouseEvent {
+                kind: M::Down(MouseButton::Left),
+                column: hit.x,
+                row: hit.y,
+                modifiers: Mod::NONE,
+            }),
+            &c,
+        );
+        terminal.draw(|f| p.draw(f, f.area(), &c)).unwrap();
+        assert_eq!(p.diff_sources.as_ref().unwrap().sources[0].text, "base\n");
+        assert_eq!(after(&p), "selected staged\n");
+    }
+    let key = p.active().unwrap().id.clone();
+    let stale = Snapshot::read(
+        c.clone(),
+        false,
+        Some((key, 0, "mixed.txt".into(), Some(Side::Staged))),
+        [0].into(),
+    );
+    p.launch(Hit::PreviewSide(Side::Unstaged), &c);
+    draw(&mut p, &c);
+    let (send, receive) = mpsc::channel();
+    p.refresh.pending = Some(Pending {
+        generation: p.refresh.generation,
+        roots: [0].into(),
+        receiver: receive,
+    });
+    send.send(stale).ok().unwrap();
+    p.poll_refresh(&mut c).unwrap();
+    draw(&mut p, &c);
+    assert_eq!(after(&p), "selected working\n");
+    fs::write(repo.join("mixed.txt"), "new working\n").unwrap();
+    scan(&mut p, &mut c);
+    draw(&mut p, &c);
+    assert_eq!(after(&p), "new working\n");
+    assert_eq!(p.preview_side, Some(Side::Unstaged));
+    assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index);
+    assert_eq!(p.checks, checks);
+}
+
+#[test]
+fn rescanned_commit_remaps_amend_by_repository_and_retains_live_selections_and_drafts() {
+    let (directory, previous_context, mut previous) = fixture();
+    select(&mut previous, "mixed.txt");
+    previous.saved.message = Some("Live draft after scan started".into());
+    previous.amend.insert(0);
+    previous.preview_side = Some(backend::staging::Side::Unstaged);
+    let selected = previous.active().unwrap().id.clone();
+    let index = git(&previous_context.repos[0].path, &["ls-files", "--stage"]).unwrap();
+    let added_path = directory.path().join("aaa");
+    fs::create_dir(&added_path).unwrap();
+    git(&added_path, &["init", "-q", "-b", "main"]).unwrap();
+    let added = Context::discover(&added_path).unwrap().repos.remove(0);
+    let mut current_context = previous_context.clone();
+    current_context.repos.insert(0, added);
+    current_context.scope = [1].into();
+    let mut current = CommitPanel::default();
+    current.refresh(&current_context).unwrap();
+    current.inherit_workspace(&previous, &previous_context, &current_context);
+    assert_eq!(current.saved.message, previous.saved.message);
+    assert_eq!(current.checks, previous.checks);
+    assert_eq!(current.amend, [1].into());
+    assert_eq!(current.active().unwrap().id, selected);
+    assert_eq!(current.preview_side, previous.preview_side);
+    assert_eq!(
+        git(&current_context.repos[1].path, &["ls-files", "--stage"]).unwrap(),
+        index
+    );
+    previous.cursor = previous
+        .view
+        .iter()
+        .position(|row| matches!(row.kind, Kind::Repo(0)))
+        .unwrap();
+    let repository = previous.active().unwrap().id.clone();
+    previous.fold.insert(repository.clone());
+    previous.fold.insert(format!(
+        "d:{}:{repository}",
+        keypart(Path::new("nested directory"))
+    ));
+    previous.sync(&previous_context);
+    current.inherit_workspace(&previous, &previous_context, &current_context);
+    assert!(matches!(current.active().unwrap().kind, Kind::Repo(1)));
+    let remapped = current.active().unwrap().id.clone();
+    assert!(current.fold.contains(&remapped));
+    assert!(!current.fold.contains(&repository));
+    assert!(current.fold.contains(&format!(
+        "d:{}:{remapped}",
+        keypart(Path::new("nested directory"))
+    )));
 }
 
 #[test]

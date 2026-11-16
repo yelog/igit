@@ -12,6 +12,7 @@ type Status = Result<Vec<Change>, String>;
 pub(super) struct Refresh {
     generation: u64,
     pending: Option<Pending>,
+    control: Option<crate::core::process::ReadControl>,
     deferred: BTreeSet<usize>,
     next: Option<Instant>,
     error: String,
@@ -30,7 +31,12 @@ struct Pending {
 struct Snapshot {
     statuses: BTreeMap<usize, Status>,
     branches: BTreeMap<usize, String>,
-    preview: Option<(String, Change, preview::Prepared)>,
+    preview: Option<(
+        String,
+        Change,
+        Option<backend::staging::Side>,
+        preview::Prepared,
+    )>,
 }
 
 fn statuses(c: &Context, ignored: bool, roots: &BTreeSet<usize>) -> BTreeMap<usize, Status> {
@@ -55,20 +61,20 @@ impl Snapshot {
     fn read(
         mut c: Context,
         ignored: bool,
-        target: Option<(String, usize, PathBuf)>,
+        target: Option<(String, usize, PathBuf, Option<backend::staging::Side>)>,
         roots: BTreeSet<usize>,
     ) -> Self {
         let statuses = statuses(&c, ignored, &roots);
-        let preview = target.and_then(|(key, root, path)| {
+        let preview = target.and_then(|(key, root, path, side)| {
             let change = statuses
                 .get(&root)?
                 .as_ref()
                 .ok()?
                 .iter()
                 .find(|f| f.path == path)?;
-            let loaded = preview::Loaded::read(&c.repos[root].path, change);
+            let loaded = preview::Loaded::read_side(&c.repos[root].path, change, side);
             let prepared = preview::Prepared::new(change.label(), loaded);
-            Some((key, change.clone(), prepared))
+            Some((key, change.clone(), side, prepared))
         });
         let branches = roots
             .into_iter()
@@ -92,6 +98,9 @@ impl CommitPanel {
     pub(crate) fn request_refresh(&mut self) {
         self.invalidate_ai_check();
         self.cancel_preview_read();
+        if let Some(control) = &self.refresh.control {
+            control.cancel();
+        }
         self.refresh.generation = self.refresh.generation.wrapping_add(1);
         self.refresh.deferred.clear();
         self.refresh.requested = true;
@@ -148,6 +157,9 @@ impl CommitPanel {
         // An older read must not put just-added paths back into Unversioned Files.
         self.refresh.generation = self.refresh.generation.wrapping_add(1);
         if let Some(pending) = self.refresh.pending.take() {
+            if let Some(control) = self.refresh.control.take() {
+                control.cancel();
+            }
             self.refresh
                 .deferred
                 .extend(pending.roots.difference(&refreshed).copied());
@@ -229,6 +241,19 @@ impl CommitPanel {
         changed || scope_changed
     }
 
+    pub(crate) fn fetch_allowed(&self) -> bool {
+        !self.editing()
+            && self.dragged.is_none()
+            && !self.panes.dragging()
+            && !self.diff_selection.mouse_active()
+            && !self.message_selection.mouse_active()
+            && self
+                .diff_comparison
+                .as_ref()
+                .is_none_or(|view| !view.mouse_active())
+            && self.selected_text().is_none()
+    }
+
     pub(crate) fn poll_refresh(&mut self, c: &mut Context) -> Result<bool> {
         if !self.loaded
             || self.execution_running()
@@ -252,6 +277,7 @@ impl CommitPanel {
                 Ok(snapshot) => {
                     let current = pending.generation == self.refresh.generation;
                     self.refresh.pending = None;
+                    self.refresh.control = None;
                     if current {
                         let Snapshot {
                             statuses,
@@ -271,8 +297,9 @@ impl CommitPanel {
                         }
                         changed |= self.apply_statuses(c, statuses);
                         let mut preview_applied = false;
-                        if let Some((key, change, loaded)) = preview {
+                        if let Some((key, change, side, loaded)) = preview {
                             if self.preview_open
+                                && self.preview_side == side
                                 && self.active().is_some_and(|r| {
                                     r.id == key
                                         && r.file().is_some_and(|i| self.files[i].change == change)
@@ -295,6 +322,7 @@ impl CommitPanel {
                 Err(mpsc::TryRecvError::Empty) => return Ok(false),
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.refresh.pending = None;
+                    self.refresh.control = None;
                     bail!("Changes refresh worker stopped");
                 }
             }
@@ -333,15 +361,26 @@ impl CommitPanel {
                 .flatten()
                 .and_then(|r| {
                     let f = &self.files[r.file()?];
-                    Some((r.id.clone(), f.root, f.change.path.clone()))
+                    Some((
+                        r.id.clone(),
+                        f.root,
+                        f.change.path.clone(),
+                        self.preview_side,
+                    ))
                 });
             let ctx = c.clone();
             let ignored = self.options.ignored;
             let scan_roots = roots.clone();
             let (send, receive) = mpsc::channel();
+            let control = crate::core::process::ReadControl::default();
+            let worker_control = control.clone();
             thread::spawn(move || {
-                let _ = send.send(Snapshot::read(ctx, ignored, target, roots));
+                let result = crate::core::process::with_read_control(&worker_control, || {
+                    Snapshot::read(ctx, ignored, target, roots)
+                });
+                let _ = send.send(result);
             });
+            self.refresh.control = Some(control);
             self.refresh.pending = Some(Pending {
                 generation: self.refresh.generation,
                 roots: scan_roots,
@@ -350,6 +389,14 @@ impl CommitPanel {
         }
         self.refresh.report_error()?;
         Ok(changed)
+    }
+}
+
+impl Drop for Refresh {
+    fn drop(&mut self) {
+        if let Some(control) = &self.control {
+            control.cancel();
+        }
     }
 }
 

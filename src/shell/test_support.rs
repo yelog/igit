@@ -59,6 +59,31 @@ pub(super) fn finish_commit(app: &mut Shell) {
     }
 }
 
+pub(super) fn finish_workspace_scan(app: &mut Shell) {
+    assert!(
+        app.workspace_scan.pending(),
+        "{}",
+        app.notifications.latest_body()
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.workspace_scan.pending() {
+        app.poll_workspace_scan();
+        assert!(
+            Instant::now() < deadline,
+            "workspace scan timed out: {}",
+            app.notifications.latest_body()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        app.notifications.history().next().is_some_and(|notice| {
+            notice.source == "Workspace" && notice.level == NoticeLevel::Success
+        }),
+        "workspace scan failed: {}",
+        app.notifications.latest_body()
+    );
+}
+
 /// Turn the disposable repository from `fixture` into a conflicted merge.
 pub(super) fn merge_conflict(repo: &Path) {
     let run = |args: &[&str]| git(repo, args).unwrap();

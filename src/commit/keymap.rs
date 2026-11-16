@@ -8,6 +8,16 @@ impl CommitPanel {
                 1,
                 Section::new("Commit / File Preview", PREVIEW_SCROLL_BINDINGS),
             );
+            content.sections.insert(
+                1,
+                Section::new(
+                    "Commit / Preview Source",
+                    &[
+                        ("I", "Inspect HEAD to Index"),
+                        ("W", "Inspect Index to Working tree"),
+                    ],
+                ),
+            );
         }
         if self.file_preview_visible() && self.focus == Focus::Diff {
             content.sections.insert(

@@ -1,67 +1,21 @@
 //! Bound subprocess IO and lifetime for one background AI job.
+use crate::core::process::{Registry, Running};
 use anyhow::{bail, Context as _, Result};
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
-    process::{Child, Command, Output, Stdio},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex, MutexGuard,
-    },
+    process::{Command, Output, Stdio},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
 
 const STDERR_LIMIT: usize = 64 * 1024;
-const REAP_TIMEOUT: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
 pub(super) struct Control {
     deadline: Instant,
-    shared: Arc<Shared>,
-}
-
-#[derive(Default)]
-struct Shared {
-    cancelled: AtomicBool,
-    active: Mutex<Vec<Arc<platform::Group>>>,
-}
-
-impl Shared {
-    fn active(&self) -> MutexGuard<'_, Vec<Arc<platform::Group>>> {
-        // A worker panic must not disable cancellation during application exit.
-        self.active
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-    }
-}
-
-struct Running {
-    child: Option<Child>,
-    group: Arc<platform::Group>,
-    shared: Arc<Shared>,
-}
-
-impl Running {
-    fn child(&mut self) -> &mut Child {
-        self.child.as_mut().expect("The running process is owned")
-    }
-}
-
-impl Drop for Running {
-    fn drop(&mut self) {
-        {
-            let mut active = self.shared.active();
-            // Kill descendants even if the direct child has already exited.
-            // Serialize termination and removal with cancel(), so it cannot
-            // retain a stale process-group ID after this guard is dropped.
-            self.group.terminate();
-            active.retain(|group| !Arc::ptr_eq(group, &self.group));
-        }
-        if let Some(child) = self.child.take() {
-            reap(child);
-        }
-    }
+    shared: Arc<Registry>,
 }
 
 impl Control {
@@ -73,16 +27,11 @@ impl Control {
     }
 
     pub fn cancel(&self) {
-        self.shared.cancelled.store(true, Ordering::Release);
-        // Application exit may stop the worker before its next poll. Signal all
-        // registered groups here; never wait for the job or its output on UI.
-        for group in self.shared.active().iter() {
-            group.terminate();
-        }
+        self.shared.cancel();
     }
 
     pub fn check(&self) -> Result<()> {
-        if self.shared.cancelled.load(Ordering::Acquire) {
+        if self.shared.cancelled() {
             bail!("AI generation cancelled because the selection or Roots changed");
         }
         if Instant::now() >= self.deadline {
@@ -141,308 +90,13 @@ impl Control {
 
     fn spawn(&self, mut command: Command) -> Result<Running> {
         self.check()?;
-        let process = {
-            // Admission and registration must be atomic with cancellation:
-            // cancel() cannot return while a spawned child is still invisible.
-            // Only OS spawn/setup runs under this lock, never polling or IO.
-            let mut active = self.shared.active();
-            self.check()?;
-            let (child, group) = platform::spawn(&mut command)
-                .context("Could not start or isolate the AI subprocess")?;
-            let process = Running {
-                child: Some(child),
-                group: Arc::new(group),
-                shared: Arc::clone(&self.shared),
-            };
-            active.push(Arc::clone(&process.group));
-            process
-        };
+        let process = self.shared.spawn(&mut command);
         self.check()?;
-        let activation = process.group.activate();
-        // Prefer cancellation/deadline errors if a Windows process was killed
-        // between registration and resuming its suspended primary thread.
+        let process = process.context("Could not start or isolate the AI subprocess")?;
+        let activation = process.activate();
         self.check()?;
         activation.context("Could not start the isolated AI subprocess")?;
         Ok(process)
-    }
-}
-
-fn reap(mut child: Child) {
-    let _ = child.kill();
-    let deadline = Instant::now() + REAP_TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) | Err(_) => return,
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(5)),
-            Ok(None) => break,
-        }
-    }
-    // A process blocked in the kernel must not stall cleanup indefinitely.
-    // Reap it later if the application remains open.
-    let _ = thread::Builder::new()
-        .name("igit-ai-reaper".into())
-        .spawn(move || {
-            let _ = child.wait();
-        });
-}
-
-#[cfg(unix)]
-mod platform {
-    use super::*;
-    use std::{io, os::unix::process::CommandExt};
-
-    pub(super) struct Group {
-        id: u32,
-        active: AtomicBool,
-    }
-
-    pub(super) fn spawn(command: &mut Command) -> io::Result<(Child, Group)> {
-        let child = command.process_group(0).spawn()?;
-        let group = Group {
-            id: child.id(),
-            active: AtomicBool::new(true),
-        };
-        Ok((child, group))
-    }
-
-    impl Group {
-        pub(super) fn activate(&self) -> io::Result<()> {
-            Ok(())
-        }
-
-        pub(super) fn terminate(&self) {
-            // Cancellation and guard cleanup may both reach this group. Once
-            // signalled, never target an ID that the OS could later reuse.
-            if !self.active.swap(false, Ordering::AcqRel) {
-                return;
-            }
-            // Every subprocess owns its process group, including Git filters.
-            // A negative PID targets that group; 9 is SIGKILL on supported Unix.
-            unsafe {
-                kill(-(self.id as i32), 9);
-            }
-        }
-    }
-
-    unsafe extern "C" {
-        fn kill(pid: i32, signal: i32) -> i32;
-    }
-}
-
-#[cfg(windows)]
-mod platform {
-    use super::*;
-    use std::{
-        ffi::c_void,
-        io,
-        mem::size_of,
-        os::windows::{
-            io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle},
-            process::CommandExt,
-        },
-        ptr,
-    };
-
-    const CREATE_SUSPENDED: u32 = 0x0000_0004;
-    const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x0000_2000;
-    const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: i32 = 9;
-    const TH32CS_SNAPTHREAD: u32 = 0x0000_0004;
-    const THREAD_SUSPEND_RESUME: u32 = 0x0000_0002;
-
-    // Only the Windows ABI needed here is declared locally; no extra runtime
-    // dependency or external taskkill process is required for cancellation.
-    #[repr(C)]
-    #[derive(Default)]
-    struct BasicLimits {
-        process_time: i64,
-        job_time: i64,
-        flags: u32,
-        minimum_working_set: usize,
-        maximum_working_set: usize,
-        active_processes: u32,
-        affinity: usize,
-        priority_class: u32,
-        scheduling_class: u32,
-    }
-
-    #[repr(C)]
-    #[derive(Default)]
-    struct IoCounters {
-        read_operations: u64,
-        write_operations: u64,
-        other_operations: u64,
-        read_bytes: u64,
-        write_bytes: u64,
-        other_bytes: u64,
-    }
-
-    #[repr(C)]
-    #[derive(Default)]
-    struct ExtendedLimits {
-        basic: BasicLimits,
-        io: IoCounters,
-        process_memory: usize,
-        job_memory: usize,
-        peak_process_memory: usize,
-        peak_job_memory: usize,
-    }
-
-    #[repr(C)]
-    struct ThreadEntry {
-        size: u32,
-        usage: u32,
-        thread_id: u32,
-        owner_id: u32,
-        base_priority: i32,
-        delta_priority: i32,
-        flags: u32,
-    }
-
-    pub(super) struct Group {
-        job: OwnedHandle,
-        primary_thread: OwnedHandle,
-    }
-
-    pub(super) fn spawn(command: &mut Command) -> io::Result<(Child, Group)> {
-        let job = owned(unsafe { CreateJobObjectW(ptr::null(), ptr::null()) })?;
-        let mut limits = ExtendedLimits::default();
-        limits.basic.flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        if unsafe {
-            SetInformationJobObject(
-                job.as_raw_handle(),
-                JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
-                (&limits as *const ExtendedLimits).cast(),
-                size_of::<ExtendedLimits>() as u32,
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-
-        // Assign before running any child code, so even an immediately spawned
-        // Git filter belongs to the job and cannot escape via a parent exit.
-        let child = command.creation_flags(CREATE_SUSPENDED).spawn()?;
-        let setup = (|| {
-            let assigned =
-                unsafe { AssignProcessToJobObject(job.as_raw_handle(), child.as_raw_handle()) };
-            if assigned == 0 {
-                return Err(io::Error::last_os_error());
-            }
-            primary_thread(child.id())
-        })();
-        match setup {
-            Ok(primary_thread) => Ok((
-                child,
-                Group {
-                    job,
-                    primary_thread,
-                },
-            )),
-            Err(error) => {
-                // This is still under the admission lock. Terminate now, then
-                // let a separate reaper wait without blocking UI cancellation.
-                unsafe {
-                    TerminateProcess(child.as_raw_handle(), 1);
-                }
-                let _ = thread::Builder::new()
-                    .name("igit-ai-reaper".into())
-                    .spawn(move || {
-                        let mut child = child;
-                        let _ = child.wait();
-                    });
-                Err(error)
-            }
-        }
-    }
-
-    fn owned(handle: RawHandle) -> io::Result<OwnedHandle> {
-        if handle.is_null() || handle as isize == -1 {
-            Err(io::Error::last_os_error())
-        } else {
-            // These APIs return a fresh, non-inheritable handle owned here.
-            Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
-        }
-    }
-
-    fn primary_thread(process_id: u32) -> io::Result<OwnedHandle> {
-        let snapshot = owned(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) })?;
-        let mut entry = ThreadEntry {
-            size: size_of::<ThreadEntry>() as u32,
-            usage: 0,
-            thread_id: 0,
-            owner_id: 0,
-            base_priority: 0,
-            delta_priority: 0,
-            flags: 0,
-        };
-        let mut found = unsafe { Thread32First(snapshot.as_raw_handle(), &mut entry) };
-        while found != 0 {
-            if entry.owner_id == process_id {
-                return owned(unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.thread_id) });
-            }
-            found = unsafe { Thread32Next(snapshot.as_raw_handle(), &mut entry) };
-        }
-        Err(io::Error::last_os_error())
-    }
-
-    impl Group {
-        pub(super) fn activate(&self) -> io::Result<()> {
-            if unsafe { ResumeThread(self.primary_thread.as_raw_handle()) } == u32::MAX {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        }
-
-        pub(super) fn terminate(&self) {
-            // The owned job stays valid through registry removal and cleanup,
-            // even after its original process has exited.
-            unsafe {
-                TerminateJobObject(self.job.as_raw_handle(), 1);
-            }
-        }
-    }
-
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> RawHandle;
-        fn SetInformationJobObject(
-            job: RawHandle,
-            class: i32,
-            information: *const c_void,
-            length: u32,
-        ) -> i32;
-        fn AssignProcessToJobObject(job: RawHandle, process: RawHandle) -> i32;
-        fn TerminateJobObject(job: RawHandle, exit_code: u32) -> i32;
-        fn TerminateProcess(process: RawHandle, exit_code: u32) -> i32;
-        fn CreateToolhelp32Snapshot(flags: u32, process_id: u32) -> RawHandle;
-        fn Thread32First(snapshot: RawHandle, entry: *mut ThreadEntry) -> i32;
-        fn Thread32Next(snapshot: RawHandle, entry: *mut ThreadEntry) -> i32;
-        fn OpenThread(access: u32, inherit: i32, thread_id: u32) -> RawHandle;
-        fn ResumeThread(thread: RawHandle) -> u32;
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-mod platform {
-    use super::*;
-    use std::io;
-
-    pub(super) struct Group;
-
-    pub(super) fn spawn(_: &mut Command) -> io::Result<(Child, Group)> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "AI subprocess isolation is unavailable on this platform",
-        ))
-    }
-
-    impl Group {
-        pub(super) fn activate(&self) -> io::Result<()> {
-            Ok(())
-        }
-
-        pub(super) fn terminate(&self) {}
     }
 }
 
@@ -469,7 +123,7 @@ mod tests {
         let mut command = crate::core::command(temp.path());
         command.args(["--version"]);
         assert!(control.run(command, None, 1024).unwrap().status.success());
-        assert!(control.shared.active().is_empty());
+        assert!(control.shared.is_empty());
     }
 
     #[test]
@@ -652,7 +306,7 @@ mod tests {
             control.cancel();
             drop(first_process);
             drop(second_process);
-            assert!(control.shared.active().is_empty());
+            assert!(control.shared.is_empty());
         }
 
         #[test]
@@ -671,7 +325,7 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("cancelled"));
-            assert!(control.shared.active().is_empty());
+            assert!(control.shared.is_empty());
         }
 
         #[test]
@@ -681,7 +335,7 @@ mod tests {
             let output = control.run(tree.command(true), None, 1024).unwrap();
             assert!(output.status.success());
             assert_stopped(&tree.wait_ids());
-            assert!(control.shared.active().is_empty());
+            assert!(control.shared.is_empty());
         }
 
         #[test]
@@ -699,7 +353,7 @@ mod tests {
             let error = control.run(command, None, 1).unwrap_err();
             assert!(error.to_string().contains("safety limit"));
             assert_stopped(&tree.wait_ids());
-            assert!(control.shared.active().is_empty());
+            assert!(control.shared.is_empty());
         }
 
         #[test]
@@ -713,7 +367,7 @@ mod tests {
             }));
             assert!(result.is_err());
             assert_stopped(&tree.wait_ids());
-            assert!(control.shared.active().is_empty());
+            assert!(control.shared.is_empty());
             control.check().unwrap();
         }
 
@@ -739,7 +393,7 @@ mod tests {
                     assert_stopped(&ids);
                 }
                 drop(process);
-                assert!(control.shared.active().is_empty());
+                assert!(control.shared.is_empty());
             }
         }
 

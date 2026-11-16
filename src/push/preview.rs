@@ -74,13 +74,12 @@ pub(super) fn read(request: Request) -> Loaded {
                     "--format=%s%n%n%b%n%h   %an <%ae>%n%ai",
                     &h.id,
                 ],
-            )
-            .unwrap_or_default(),
+            ),
         )
     } else {
         (
             outgoing_files(p, e),
-            format!(
+            Ok(format!(
                 "{} {} {}:{}\n\n{} outgoing commits · {} incoming commits.\n{}\n\nUpstream: {}\n{}\n\n{}\n\nFiles include all outgoing commits, counted once per path.\nChanges with no cumulative diff open their latest outgoing change.",
                 e.source,
                 request.icons.glyph(Icon::Right),
@@ -106,11 +105,12 @@ pub(super) fn read(request: Request) -> Loaded {
                 } else {
                     "Select a commit to inspect its files."
                 },
-            ),
+            )),
         )
     };
+    let failed = files.is_err() || desc.is_err();
+    let desc = desc.unwrap_or_else(|error| format!("Unable to load commit details: {error:#}"));
     let desc = with_result(&desc, request.result.as_ref());
-    let failed = files.is_err();
     let (files, summary) = match files {
         Ok(files) => (files, desc),
         Err(error) => (
@@ -129,9 +129,11 @@ fn repository_base(p: &Path, entry: &Entry) -> Result<Option<String>> {
     let Some(tracking) = &entry.tracking else {
         return Ok(None);
     };
-    let output = command(p)
-        .args(["merge-base", tracking, &entry.head])
-        .output()?;
+    let output = crate::core::read_output(
+        p,
+        "merge-base",
+        command(p).args(["merge-base", tracking, &entry.head]),
+    )?;
     if output.status.success() {
         Ok(Some(String::from_utf8(output.stdout)?.trim().into()))
     } else if output.status.code() == Some(1) {
@@ -354,6 +356,73 @@ impl PushPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::process::{with_read_control, ReadControl};
+
+    #[test]
+    fn repository_base_preserves_unrelated_history_and_reports_read_failures() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = crate::push::tests::make(directory.path(), "app");
+        let head = git(&path, &["rev-parse", "HEAD"]).unwrap();
+        let tree = git(&path, &["rev-parse", "HEAD^{tree}"]).unwrap();
+        let unrelated = git(&path, &["commit-tree", &tree, "-m", "Unrelated history"]).unwrap();
+        let mut entry = Entry {
+            head: head.clone(),
+            tracking: Some(unrelated),
+            ..Default::default()
+        };
+        assert_eq!(repository_base(&path, &entry).unwrap(), None);
+
+        entry.tracking = Some(head.clone());
+        assert_eq!(repository_base(&path, &entry).unwrap(), Some(head));
+
+        let control = ReadControl::default();
+        control.cancel();
+        let error = with_read_control(&control, || repository_base(&path, &entry)).unwrap_err();
+        assert!(error.to_string().contains("cancelled"), "{error:#}");
+
+        entry.tracking = Some("0".repeat(40));
+        assert!(repository_base(&path, &entry).is_err());
+    }
+
+    #[test]
+    fn cancelled_commit_preview_reports_both_file_and_description_failures() {
+        let directory = tempfile::tempdir().unwrap();
+        let control = ReadControl::default();
+        control.cancel();
+        let loaded = with_read_control(&control, || {
+            read(Request {
+                path: directory.path().to_path_buf(),
+                entry: Entry::default(),
+                commit: Some(Out {
+                    id: "0".repeat(40),
+                    ..Default::default()
+                }),
+                file: None,
+                icons: IconMode::default(),
+                result: None,
+                set_upstream: false,
+            })
+        });
+        let Loaded::Files {
+            files,
+            summary,
+            failed,
+        } = loaded
+        else {
+            panic!("Expected a commit file preview");
+        };
+        assert!(failed);
+        assert!(files.is_empty());
+        assert!(summary.contains("cancelled"), "{summary}");
+        assert!(
+            summary.contains("Unable to load changed files"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("Unable to load commit details"),
+            "{summary}"
+        );
+    }
 
     #[test]
     fn read_marks_files_and_diff_errors_as_failed() {

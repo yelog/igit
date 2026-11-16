@@ -12,6 +12,36 @@ Product-owned interface text, help, errors, examples, and documentation use Engl
 
 ## Requirements and Delivery Status
 
+**Automatic fetch (R1/R3/R4/R7/R8, 2026-11-16).** Enabled by default, automatic
+fetch starts two seconds after the first runtime workspace frame. The periodic
+interval is 300 seconds; focus return and entering Push, Branch, or Log request
+matching data older than 60 seconds. Startup discovery, file saves, local
+notifications, and F5 do not initiate network access themselves. Only current
+Roots participate, with upstream remote → `origin` → sole remote as the default.
+Configuration supports disabling, bounded timing, all remotes, and exclusions;
+`skipFetchAll` is respected. Submodules are independent Roots without recursion.
+
+At most two independent automatic jobs run with staggered starts. Worktrees
+sharing common Git storage are deduplicated or serialized. Foreground writes
+cancel background fetch and wait asynchronously for exit; review/editing,
+selection, and workspace replacement defer launches and view installation.
+Quit remains available. A safe ordinary fetch changes only remote-tracking
+refs and objects, preserving HEAD, index, working files, tags, and FETCH_HEAD.
+Unsafe refspecs, unsupported transports, and ambiguous endpoints are skipped.
+Timeouts and cancellation bound subprocess lifetime; credentials never prompt.
+
+Push freshness belongs to the actual selected push endpoint and branch,
+independently of ordinary fetch tracking. Manual success updates only its known
+scope. Failures retain last-good information, use bounded backoff, and suspend
+automatic authentication retries until successful manual fetch or configuration
+change. Quiet freshness labels replace success notifications. Pull integrates
+an immutable fetched OID, preserving its captured target even if another process
+changes a shared tracking ref. Push still fetches/revalidates during execution
+and preserves explicit-tip leases and submodule publication checks.
+Acceptance uses disposable local remotes, scope changes, linked worktrees,
+different fetch/push URLs, refspec rejection, cancellation, and mixed staged /
+unstaged files. Record actual test runs separately from these requirements.
+
 **Remote management (R1/R7/R8, 2026-11-11).** The Remote tab (`6`,
 `igit remote`) lists all configured remotes under every repository in Roots,
 including repositories with no remotes. A Name / URL table and toolbar provide
@@ -70,8 +100,9 @@ Apply All controls remain unchanged.
 **Update before Push (R1/R3/R4/R7/R8, 2026-11-10).** Push shows Branch-style
 green ahead / blue behind counts against its selected Push target, including
 custom remote/branch targets that differ from the configured upstream. Zero
-counts are omitted. Opening and browsing use cached local refs; Fetch refreshes
-them. The outgoing toolbar shows **Update strategy: Merge/Rebase** at its right
+counts are omitted. Opening and browsing display cached information immediately;
+the automatic scheduler and explicit Fetch refresh the actual selected target.
+The outgoing toolbar shows **Update strategy: Merge/Rebase** at its right
 edge. `s` or a click toggles and saves the application-wide default immediately,
 initially Merge, atomically in the global state's `update-strategy.json`.
 This is outside Git config and `settings.toml`. Pull inherits it, retains
@@ -196,16 +227,54 @@ their byte identity; unsupported names remain visible individually. Push target
 editing offers an explicit Set upstream after push choice, retaining published
 success if the subsequent local configuration update fails. Windows state
 resolution no longer depends on HOME, and bounded untracked previews announce
-truncation. Individual-line staging, advanced rebase editing, universal command
-cancellation, persistent merge drafts, and a workspace dashboard remain follow-up
-scope. Tests use disposable repositories and local remotes.
+truncation. The five workflow improvements below extend this baseline.
+Universal write cancellation, arbitrary rebase editing, and a workspace dashboard
+remain outside this delivery. Tests use disposable repositories and local remotes.
+
+**Precise staging and recoverable workflows (2026-11-16).**
+
+1. Commit exposes explicit HEAD→Index and Index→Working tree previews without
+   changing checked commit candidates. Tracked-text Stage/Unstage supports
+   keyboard and mouse line ranges inside a hunk, followed by an exact-patch
+   review. Missing final newline, adjacent replacements, existing staged
+   content and unrelated index entries retain their original meaning.
+2. Rollback persists reviewed per-path backups before writes. Its separate
+   restore review is available after restart, includes only current Roots, and
+   refuses paths changed since rollback or review. Merge documents save
+   decisions and results outside working files; reopening validates repository,
+   path, stages, HEAD and operation. The companion adds Undo Stage independently
+   of Unstage, restoring the previous index entry while retaining buffer edits.
+3. Known Git read commands have bounded output and a 30-second per-command
+   timeout. Newer background requests cancel obsolete active reads and their
+   descendants. Workspace Open/rescan is asynchronous and cancellable, keeps
+   the current workspace until success, retains same-workspace Roots by path,
+   and excludes newly discovered repositories until explicitly included.
+4. Log offers a separate editable plan for a 2–128-commit non-root linear range on the
+   current branch, with squash, fixup, reorder and edited squash messages.
+   Final review captures the whole range regardless of Log path filters;
+   execution revalidates branch, publication, index and configuration, creates
+   a visible recovery ref, and leaves native conflict Continue/Abort state.
+   Ranges known to be published from local remote-tracking refs, merges, dirty
+   tracked state and unsupported conversions are refused. No implicit fetch is
+   performed to determine publication.
+5. The Neovim companion reconciles ordinary TUI hide/exit and authenticated
+   repository invalidations. Clean loaded buffers check disk changes; dirty
+   buffers preserve unsaved text and report concurrent changes. Native
+   `--capabilities` and `:checkhealth igit` diagnose executable, version and
+   protocol compatibility before integrated actions.
+
+The [implementation plan](plans/2026-11-16-git-workflow-improvements.md) records
+the detailed scope, acceptance requirements and executed verification.
 
 **Edit working files (R1/R7/R8 extension).** `e` / `E` in Commit Changes edits
 the highlighted file independently of checked commit candidates. Standalone
 execution uses Git's configured editor and restores the TUI after exit/errors.
 The Neovim companion opens the file in its parent editor, retains existing
 unsaved buffers, hides floating windows after success and preserves the running
-Git session. Splits and tab sessions remain available. Deleted files and
+Git session. It reuses suitable editing windows and creates a split when the
+source is protected, including modified buffers with destructive `bufhidden`
+policies. Utility, preview, terminal, and buffer-locked windows are preserved.
+Splits and tab sessions remain available. Deleted files and
 containers require an existing file target; editing does not stage changes.
 Acceptance uses temporary repositories with mixed staged/unstaged content,
 unselected staged siblings, literal Unicode paths and a preserved index/HEAD.
@@ -356,7 +425,7 @@ The table records the 0.1.0 delivery baseline. Items marked partial or next step
 | R7 | Vim shortcuts | **Core tasks supported in all panels.** Browse, select, edit, review, and resolve conflicts with the keyboard. Pending key-sequence prefixes show continuation candidates that can be typed or selected. `?` / `F1` help focuses Search, prioritizes the current area's actions, and supports filtering, up/down selection, and Enter execution. F1 works during input/review and restores state when closed. Notification History has a configurable global shortcut plus search, navigation, copy, and clear confirmation. Keys are context-sensitive; text input retains letters. The goal is task access, not a complete Vim editor. |
 | R8 | Smooth mouse workflows | **Main operations supported.** Tabs, repository scope, rows/checkboxes, group dragging, merge gutters, and confirmation buttons are clickable. Log details/Diff, Commit message editor/preview, Push Details / Diff, and Notification History preview/detail support left-button drag selection, copy on release, and selection clearing, plus select-all and keyboard copying; see A13 and A19. Notification cards can be dismissed or opened into History, with hit areas that do not activate controls beneath them. New controls need a keyboard path and terminal-cell hit-area verification. |
 
-Commit rollback: `d` in Changes opens the full tree for the current Roots and prechecks only the highlighted file, directory, repository, or changelist. Other eligible rows can be checked before confirming. Parent checks and footer counts reflect selection, while the tree lists all visible changes. With repository grouping active, directory targets are repository-relative. Rollback restores checked tracked paths to HEAD, deletes checked untracked paths, and unstages additions with optional deletion of their local copies. Rollback is focused initially so Enter directly confirms the checked files; Esc cancels and there is no undo. Hidden roots, read-only rows, and unchecked paths are preserved. See [interaction design](design.md) and `python3 scripts/cargo_serial.py test --locked --lib discard`.
+Commit rollback: `d` in Changes opens the full tree for the current Roots and prechecks only the highlighted file, directory, repository, or changelist. Other eligible rows can be checked before confirming. Parent checks and footer counts reflect selection, while the tree lists all visible changes. With repository grouping active, directory targets are repository-relative. Rollback restores checked tracked paths to HEAD, deletes checked untracked paths, and unstages additions with optional deletion of their local copies. Rollback is focused initially so Enter directly confirms the checked files; Esc cancels. Reviewed per-path backups are saved before writes; `u` opens a separate restore review that preserves unrelated index entries and refuses external changes. Hidden roots, read-only rows, and unchecked paths are preserved. See [interaction design](design.md) and `python3 scripts/cargo_serial.py test --locked --lib discard`.
 
 Commit Add to Git: `a` or `Insert` in Changes immediately starts adding the highlighted untracked
 file or the untracked files under its group, directory, or repository, including
@@ -620,7 +689,7 @@ only panes within the active tab can be resized. Defaults remain unbound.
 | Click and operate precisely | Row names browse, arrows expand/collapse, and boxes check. Select one file, read Diff, filter repositories, and write a message. Repeat with the mouse and keyboard in separate practice workspaces; the same files must be committed. |
 | Long paths and different sizes | Repeat at recommended 120×36 and narrower 80×24. Preserve filenames, selection states, and reachable commit actions first. Truncated paths retain a way to view the full path. Matching icons alone must not require a dedicated font. |
 
-**P1 candidates:** After core information is readable, assess brief highlighting after accepting a diff block, contrast on low-color terminals, and optional motion. Splitting one file across groups, selecting unstaged lines, Shelf management and further branch operations are outside this delivery and require separate use cases/acceptance. IGit does not manage hosting services, automatically clone child repositories, provide atomic multi-repository commits, or let models resolve code conflicts automatically.
+**P1 candidates:** After core information is readable, assess brief highlighting after accepting a diff block, contrast on low-color terminals, and optional motion. Splitting one file across groups, Shelf management and further branch operations remain outside this delivery and require separate use cases/acceptance. IGit does not manage hosting services, automatically clone child repositories, provide atomic multi-repository commits, or let models resolve code conflicts automatically.
 
 ## Reproducible Acceptance
 

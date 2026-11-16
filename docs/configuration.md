@@ -44,6 +44,76 @@ igit --icons ascii --mouse off /path/to/workspace
 
 The complete reference is [`config/default.toml`](../config/default.toml).
 
+## Automatic fetch
+
+Automatic fetch is enabled by default and makes network requests for
+repositories currently included in Roots. It starts two seconds after the first
+workspace frame is ready and repeats every five minutes. Returning focus to
+IGit or entering Push, Branch, or Log requests an on-demand fetch when the last
+successful fetch is more than 60 seconds old.
+
+```toml
+[fetch]
+enabled = true
+interval_seconds = 300
+freshness_seconds = 60
+timeout_seconds = 120
+all_remotes = false
+excluded_remotes = []
+```
+
+By default, IGit chooses the checked-out branch's upstream remote, then
+`origin`, then the only configured remote. It skips ambiguous choices.
+Fetching all remotes requires an explicit `all_remotes = true`. Exclusions
+match remote names, including names with slashes or Unicode:
+
+```toml
+[fetch]
+all_remotes = true
+excluded_remotes = ["archive", "team/mirror"]
+```
+
+To exclude a remote in just one repository, use that repository's Git config:
+
+```sh
+git config --local remote.archive.skipFetchAll true
+```
+
+Both `excluded_remotes` and `remote.<name>.skipFetchAll` apply to automatic
+fetch. Repositories outside Roots are excluded. Fetching a parent repository
+does not recursively fetch its submodules; a submodule is eligible only when
+it is itself included in Roots.
+
+Each fetch has a 120-second timeout by default. Failures back off before
+retrying, and authentication failures pause automatic retries so background
+work does not repeatedly prompt for credentials. The UI shows the last
+successful fetch and identifies active fetching, cached data, failures,
+unknown freshness, and disabled automatic fetch. Ahead/behind counts remain
+cached until a successful fetch.
+Linked worktrees share remote-tracking refs, so fetching in one updates those
+refs for the others as well.
+
+The background backend uses standard SSH in batch mode with isolated SSH
+configuration. Host aliases, proxy settings, and identity files from SSH config
+are not loaded; explicit URL hosts/ports and agent/default identities remain
+available. Custom SSH commands, interactive credential helpers, remote helpers,
+and ordinary fetch into reftable storage are currently unsupported. Unsafe
+refspecs and ambiguous push URLs are skipped. Push's target-specific `f` shares
+this backend; workspace Fetch, Pull, and reviewed Push keep their native Git
+configuration.
+
+To disable automatic network fetch, add this override and restart IGit:
+
+```toml
+[fetch]
+enabled = false
+```
+
+Manual Fetch, Pull, and Push remain available with `enabled = false` and keep
+their existing review and scope rules. F5 and file watching refresh local
+information; they do not request a network fetch. These preferences follow the
+same read-only, startup-only loading rules as the rest of `settings.toml`.
+
 ## Update checks
 
 ```toml
@@ -191,6 +261,12 @@ binding; the action's mouse button remains available.
 | `ai.input_budget_bytes` | `160000` | Maximum serialized JSON request bytes, from `8192` to `2097152` |
 | `ai.max_requests` | `32` | Maximum HTTP requests per generation, including summaries, reductions, and final output; from `1` to `128` |
 | `ai.total_timeout_seconds` | `300` | Whole-job deadline including preparation and final checks, from `1` to `3600` seconds |
+| `fetch.enabled` | `true` | Enable automatic network fetch for repositories included in Roots |
+| `fetch.interval_seconds` | `300` | Automatic fetch interval, from `60` to `86400` seconds |
+| `fetch.freshness_seconds` | `60` | Successful-fetch age before focus return or Push/Branch/Log entry requests a fetch; from `1` to `fetch.interval_seconds` |
+| `fetch.timeout_seconds` | `120` | Timeout for each automatic fetch, from `1` to `600` seconds |
+| `fetch.all_remotes` | `false` | Explicitly fetch all eligible remotes instead of choosing the upstream remote, `origin`, or the sole remote |
+| `fetch.excluded_remotes` | `[]` | Remote names excluded from automatic fetch; no empty names, whitespace, control characters, leading `-`, or the name `.` |
 | `keybindings.hint_delay_ms` | `200` | Delay before showing sequence continuations, from `0` to `10000` milliseconds |
 | `keybindings.global` | See defaults | Switch workspace tabs, review Pull/Fetch, Roots, Actions, notification history, refresh, help, quit |
 | `keybindings.panes` | See defaults | Focus/cycle panes, resize/reset sizes, maximize/restore, optional Kitty synchronization, close a Log tab |

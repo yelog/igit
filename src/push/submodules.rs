@@ -2,7 +2,7 @@
 //! Git's built-in recurse-submodules=check skips uninitialized remotes and uses
 //! local tracking refs; those are not sufficient evidence of publication.
 use super::published_graph;
-use crate::core::git;
+use crate::core::{git, read_output};
 use anyhow::{anyhow, bail, Context, Result};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -19,7 +19,7 @@ fn local_objects(repo: &Path) -> Command {
 }
 
 fn object_read(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let result = local_objects(repo).args(args).output()?;
+    let result = read_output(repo, "submodule objects", local_objects(repo).args(args))?;
     if !result.status.success() {
         bail!("local Git object is unavailable")
     }
@@ -156,10 +156,10 @@ pub(super) fn verify_for_remote(
                 // Only contact a configured remote whose fetch URL matches that
                 // in the reviewed history. Do not execute URLs from .gitmodules.
                 let adv =
-                    git(&repo, &["ls-remote", "--heads", "--tags", "--", found]).map_err(|_| {
+                    git(&repo, &["ls-remote", "--heads", "--tags", "--", found]).map_err(|error| {
                         anyhow!(
-                            "{}: unable to read child remote branches/tags; parent was not pushed",
-                            path.display()
+                            "{}: unable to read child remote branches/tags; parent was not pushed: {error}",
+                            path.display(),
                         )
                     })?;
                 let tips = adv
@@ -181,15 +181,20 @@ pub(super) fn verify_for_remote(
                 )
             }
             let advertised = &active[&key];
-            let proven = advertised.contains(&oid)
-                || advertised.iter().any(|head| {
-                    local_objects(&repo)
-                        .args(["merge-base", "--is-ancestor", &oid, head])
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status()
-                        .is_ok_and(|s| s.success())
-                });
+            let mut proven = advertised.contains(&oid);
+            if !proven {
+                for head in advertised {
+                    let output = read_output(
+                        &repo,
+                        "advertised submodule ancestry",
+                        local_objects(&repo).args(["merge-base", "--is-ancestor", &oid, head]),
+                    )?;
+                    if output.status.success() {
+                        proven = true;
+                        break;
+                    }
+                }
+            }
             if !proven {
                 bail!("{}: gitlink {:.10} is not proven reachable from advertised child branches/tags. Fetch the child, publish its commit, then retry the parent.",path.display(),oid)
             }
@@ -274,11 +279,14 @@ fn collect_tree_links(
 ) -> Result<()> {
     let paths: Vec<_> = paths.into_iter().collect();
     for batch in paths.chunks(32) {
-        let output = local_objects(root)
-            .arg("--literal-pathspecs")
-            .args(["ls-tree", "-z", "--full-tree", rev, "--"])
-            .args(batch)
-            .output()?;
+        let output = read_output(
+            root,
+            "submodule tree",
+            local_objects(root)
+                .arg("--literal-pathspecs")
+                .args(["ls-tree", "-z", "--full-tree", rev, "--"])
+                .args(batch),
+        )?;
         if !output.status.success() {
             bail!(
                 "cannot inspect gitlinks for changed .gitmodules at {:.10}",

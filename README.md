@@ -75,6 +75,23 @@ the same compact layout as the loaded panel. Direct panel launches keep the
 requested tab selected while loading. Log history loads in the background
 the first time you open Log, and you can return to Commit while it loads.
 
+Remote information refreshes automatically by default, starting two seconds after
+the first workspace frame and then every five minutes. Returning terminal focus
+or entering Push, Branch, or Log requests a fetch when matching data is at least
+one minute old. These jobs run in the background for repositories in Roots only.
+The default remote is the current upstream remote, then `origin`, then the sole
+configured remote. Submodules are fetched independently when included in Roots;
+fetch never recurses into them. `F5` and file notifications only refresh local data.
+
+The footer and Push toolbar show fetch freshness when space permits. Failed
+fetches retain cached data; authentication failures pause automatic retries.
+Reviews, text input, and foreground Git operations take priority, and quitting
+does not wait for automatic fetch. Automatic fetch preserves HEAD, the index,
+working files, tags, and `FETCH_HEAD`. Unsupported refspecs or interactive custom
+transports are skipped. Set `[fetch] enabled = false` to disable it, or configure
+the interval, timeout, all-remotes policy, and exclusions in
+[configuration](docs/configuration.md#automatic-fetch).
+
 Open a panel directly, or inspect one file's history:
 
 ```sh
@@ -193,6 +210,12 @@ the diff is open, the plugin retains the restored result for recovery instead
 of overwriting those newer edits.
 The plugin's README and `:help igit.nvim` document all window and session options.
 Build this source version before using panel/file arguments with an older installed binary.
+Run `:checkhealth igit` to inspect the resolved executable, version, protocol,
+and supported integrations. The plugin probes `igit --capabilities` before
+integrated editor/revision/diff actions. Ordinary TUI hide/exit checks loaded
+file buffers for disk changes: clean buffers reload, while unsaved buffers
+remain intact and report concurrent disk edits. Authenticated repository
+events also refresh status, signs, and blame.
 
 ## Edit a working file
 
@@ -250,17 +273,60 @@ The message editor uses a vertical bar cursor where the terminal supports it.
 In Commit, highlight a tracked file and press `Ctrl-G`, or click **Hunks** in
 the Changes toolbar. **Unstaged** compares the index with the working copy;
 **Staged** compares HEAD with the index. `Tab` switches sides (`u` / `s` select
-them directly), `n/p` selects a hunk, and `j/k` or the wheel scrolls it.
+them directly), `n/p` selects a hunk, and `j/k` moves the line cursor.
+Press `v` to start or stop a line range, then extend it with `j/k`; `a` returns
+to the whole hunk. Clicking a patch line selects it, Shift-click extends the
+range, and dragging selects a range. The wheel scrolls the patch.
 Press `Space` or `Enter` to review **Stage hunk** or **Unstage hunk**, then
-confirm separately. `r` reloads the file and `Esc` closes the view.
+confirm separately. With a range selected, the review contains only the
+selected changed lines. `r` reloads the file and `Esc` closes the view.
 
 Hunk operations update only that file's index entry. They keep working files,
 unrelated staging, commit checkboxes, and the message. A changed file, index,
 branch, or conversion setting requires another review. Binary files, special
 modes, and unsupported Git conversions require whole-file or external staging.
-The view selects complete text hunks; individual-line selection is not included.
+In the ordinary Commit preview, `I` / **Staged** compares HEAD to Index and
+`W` / **Unstaged** compares Index to Working tree. Switching the inspected
+side does not change commit candidates. The default still previews the index
+when staged content exists.
 Untracked-file previews stop at 96 KiB and announce truncation; a selected
 commit still uses the complete file.
+
+## Local recovery and history cleanup
+
+Rollback saves reviewed working files and their individual index entries to
+application state before changing them. Open Rollback with `d`, then use `u`
+or **Restore** to review the latest recoverable rollback in the current Roots.
+Recovery works after restarting IGit, retains other index entries, and refuses
+paths changed since the rollback or its restore review. Backups retain up to
+eight operations per repository, subject to content limits; they are local
+recovery data, not permanent archival storage.
+Working bytes, file modes and staged blobs are captured; ACLs, extended
+attributes and hardlink relationships are outside this recovery format.
+
+Leaving a merge document saves its decisions and edited result to application
+state. Reopening resumes a matching draft only while repository identity,
+conflict stages, HEAD, and operation still match. Saving a draft does not apply
+the file or continue Git; those remain separately reviewed operations.
+
+In Log, highlight the oldest commit to include, open commit actions with `a`,
+and choose **Clean Up Linear History**. The plan covers that commit through the
+current branch tip (2–128 commits, excluding the root commit). Use `j/k` to select, `J/K` to reorder, `s` to squash and
+edit the message, `f` to fixup, and `p` to keep a separate commit. `F2` or
+`Ctrl-S` opens the final review. Cleanup requires a clean tracked working tree
+and index, unpublished linear history, and supported file conversions. It
+preserves other branches/tags and creates the displayed
+`refs/igit/backups/history-…` recovery ref. Conflicts retain native rebase state;
+use the separate Continue or Abort review in Conflicts.
+Publication checks use existing remote-tracking refs and do not fetch. Fetch
+before planning when publication may have changed outside this workspace.
+
+Actions → Open workspace also rescans the current directory in the background.
+`Ctrl-X` cancels a scan. Failure retains the current workspace; a same-directory
+rescan retains Roots and Commit selections, while new repositories need explicit
+inclusion in Roots. Status, preview, and Log readers use bounded output and a
+30-second per-command timeout; newer background requests cancel obsolete reads. Commit
+writes retain their stop-after-current-repository behavior.
 
 Confirmed commit batches run in the background, showing the current repository
 and progress. Browsing, pane navigation, resizing, and help remain available.
@@ -741,7 +807,7 @@ commit pane.
 
 **Merge editor:** The full-screen view places editable Result between the two read-only sources. Long unchanged ranges start folded; click a fold or press `o` to toggle all folds. The inner gutters show line numbers and per-side controls: `»` / `«` accepts a side, and `×` ignores it. The other side of a conflict remains open. **Left / All / Right** applies non-conflicting changes from the chosen sources (`a` for All). **Resolve Automatically** (`m`) applies all pending non-conflicting changes and combines disjoint edits on the same line. The button shows how many blocks it can resolve and disables when none remain. Overlapping conflicts and existing manual decisions are preserved; `u` undoes the entire batch. `H/L` resolves a block with one side and `b` takes both. Click text in Result or press `i` to edit inline; `Ctrl-S` or `Ctrl-Enter` accepts the edit. Use `[c` / `]c` to jump conflicts, `F7` / `Shift-F7` to visit pending changes, and `Tab` to switch panes.
 
-**Accept Left / Right** previews an entire version. **Save and Close** (`s`) keeps a session draft and returns to the list. **Apply Changes** (`A`) opens a write review once every block is decided. On confirmation it stages only the displayed path. Back in the conflict list, `C` separately reviews Continue when the repository is ready.
+**Accept Left / Right** previews an entire version. **Save and Close** (`s`) persists a validated draft in application state and returns to the list; reopening after restart resumes matching sources. Save failure keeps the editor open. **Apply Changes** (`A`) opens a write review once every block is decided. On confirmation it stages only the displayed path. Back in the conflict list, `C` separately reviews Continue when the repository is ready.
 
 Conflicts from `git stash apply` or `git stash pop` use the same editor, including
 ordinary UTF-8 files with `eol=lf`. Standard EOL rules are supported when Git's
@@ -830,10 +896,11 @@ current file and Diff scroll.
 **Update before Push:** Branch-style green `↗N` ahead and blue `↙N` behind
 counters compare the local branch with the selected `remote:branch`, which may
 differ from its configured upstream. ASCII mode uses `^N` / `vN`; zero counts
-are omitted. Browsing uses cached local target refs without network access;
-Fetch refreshes those refs. A separate push URL may have a different tip, so
-confirmation always fetches the actual push endpoint before deciding what to
-integrate.
+are omitted. Browsing immediately displays cached information while the automatic
+fetch scheduler refreshes stale targets independently. Push fetches its actual
+push URL and selected branch; a different fetch URL retains separate tracking
+refs and freshness. Confirmation always fetches the actual push endpoint again
+before deciding what to integrate.
 
 The right of the outgoing toolbar shows **Update strategy: Merge** or
 **Update strategy: Rebase**. Click it or press `s` to toggle and save the
@@ -901,8 +968,8 @@ the focused button, Tab switches buttons, and Esc cancels.
 ## Commit and Push Semantics
 
 - All checked files in the current Roots use the same commit message. Each repository gets its own Git commit or push; batches are not atomic across repositories. Successful repositories are not automatically rolled back.
-- In Commit's Changes list, `d` opens **Rollback Changes** with the full tree for the current Roots. It prechecks the highlighted file or the eligible members of the highlighted directory, repository, or changelist. Other rows remain visible; use Space or click a checkbox to add or remove files, `v` for a file's Diff, and `o` for Group By. Its Group By menu controls Directory and Repository independently of the main list; directory targets are repository-relative while Repository grouping is active. **Rollback** is focused initially, so pressing `Enter` immediately confirms the checked files. Press `Esc` to close, or `Tab` / `Shift-Tab` to focus another control. The single-key `y` shortcut applies only when focus is outside the file tree. Only checked files are affected: tracked files return to HEAD in both index and working tree, untracked files are deleted, and added files are unstaged. Check **Delete local copies of added files** to remove those copies as well. Rollback has no undo. Changed snapshots and unsupported paths require another review or separate handling.
-- Selection is per file. Files with staged changes use the **index version**; otherwise, they use the **working-tree version**. If line A was staged and line B changed afterward, only A is committed. Unselected staged entries in the real index remain intact. When a tracked file is replaced by a directory of the same name, selecting only the old file's deletion does not include files inside the new directory; AI patches use the same scope. This version does not offer manual line selection or split one file across multiple changelists.
+- In Commit's Changes list, `d` opens **Rollback Changes** with the full tree for the current Roots. It prechecks the highlighted file or the eligible members of the highlighted directory, repository, or changelist. Other rows remain visible; use Space or click a checkbox to add or remove files, `v` for a file's Diff, and `o` for Group By. Its Group By menu controls Directory and Repository independently of the main list; directory targets are repository-relative while Repository grouping is active. **Rollback** is focused initially, so pressing `Enter` immediately confirms the checked files. Press `Esc` to close, or `Tab` / `Shift-Tab` to focus another control. The single-key `y` shortcut applies only when focus is outside the file tree. Only checked files are affected: tracked files return to HEAD in both index and working tree, untracked files are deleted, and added files are unstaged. Check **Delete local copies of added files** to remove those copies as well. Reviewed backups are saved first; `u` opens a separate restore review. Changed snapshots and unsupported paths require another review or separate handling.
+- Selection is per file. Files with staged changes use the **index version**; otherwise, they use the **working-tree version**. If line A was staged and line B changed afterward, only A is committed. Unselected staged entries in the real index remain intact. When a tracked file is replaced by a directory of the same name, selecting only the old file's deletion does not include files inside the new directory; AI patches use the same scope. Use Hunks for reviewed line-range staging before committing. Splitting one file across multiple changelists is not supported.
 - Clicking **Commit** starts a local batch with the current selection and message. If the branch, HEAD, or selected content no longer matches the prepared batch, IGit stops the affected commit. Refresh with `F5` and check the selection before retrying.
 - Commits run real hooks. Amend is blocked for commits contained in known remote-tracking refs; local tracking records are not absolute proof of the server's publication state. Signing, hooks, or credential helpers that need interaction must use a system-configured agent / pinentry. The workspace does not collect Git passwords.
 - On first direct entry, Push checks and expands every repository in the current Roots with outgoing commits. Refresh and tab switching retain manual checkbox and fold choices. Commit and Push checks only the repositories that just committed successfully, while expanding all repositories with outgoing commits. In the outgoing list, `Space` toggles the current repository immediately. With the default `g n`, that toggle is independent of Notifications; if `notification-history` is rebound to a Space suffix, completing that chord restores the toggle and opens Notification History.

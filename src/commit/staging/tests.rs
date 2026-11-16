@@ -147,3 +147,85 @@ fn hunk_review_stages_only_its_file_and_rejects_external_edits() {
         before.0
     );
 }
+
+#[test]
+fn keyboard_and_mouse_line_ranges_review_exact_index_changes() {
+    let (_dir, c, mut panel) = fixture();
+    select_mixed(&mut panel);
+    let repo = &c.repos[0].path;
+    fs::write(repo.join("mixed.txt"), "staged marker\nfirst\nsecond\n").unwrap();
+    panel.open_staging(&c).unwrap();
+    let before = snapshot(&c);
+    let checks = panel.checks.clone();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|f| panel.draw(f, f.area(), &c)).unwrap();
+    let target = panel.staging.as_ref().unwrap().snapshot.hunks[0]
+        .text
+        .lines()
+        .position(|line| line == "+first")
+        .unwrap();
+    let stage = panel.staging.as_mut().unwrap();
+    stage.line = target;
+    panel.event(
+        &Event::Key(crossterm::event::KeyEvent::new(K::Char('v'), Mod::NONE)),
+        &c,
+    );
+    panel.event(
+        &Event::Key(crossterm::event::KeyEvent::new(K::Char('j'), Mod::NONE)),
+        &c,
+    );
+    let stage = panel.staging.as_ref().unwrap();
+    assert_eq!(stage.anchor, Some(target));
+    assert_eq!(stage.line, target + 1);
+    assert!(matches!(
+        panel.event(&Event::Key(crossterm::event::KeyEvent::new(K::Enter, Mod::NONE)), &c),
+        Action::Confirm { ref title, ref body, .. }
+            if title.contains("lines") && body.contains("+first") && body.contains("+second")
+    ));
+    assert_eq!(snapshot(&c), before);
+    panel.staging_plan = None;
+    panel.event(
+        &Event::Key(crossterm::event::KeyEvent::new(K::Char('a'), Mod::NONE)),
+        &c,
+    );
+    terminal.draw(|f| panel.draw(f, f.area(), &c)).unwrap();
+    let hit = panel
+        .staging
+        .as_ref()
+        .unwrap()
+        .hits
+        .iter()
+        .find(|(_, control)| matches!(control, Control::Line(line) if *line == target))
+        .unwrap()
+        .0;
+    panel.event(
+        &Event::Mouse(crossterm::event::MouseEvent {
+            kind: M::Down(MouseButton::Left),
+            column: hit.x,
+            row: hit.y,
+            modifiers: Mod::NONE,
+        }),
+        &c,
+    );
+    panel.event(
+        &Event::Mouse(crossterm::event::MouseEvent {
+            kind: M::Up(MouseButton::Left),
+            column: hit.x,
+            row: hit.y,
+            modifiers: Mod::NONE,
+        }),
+        &c,
+    );
+    panel.event(
+        &Event::Key(crossterm::event::KeyEvent::new(K::Enter, Mod::NONE)),
+        &c,
+    );
+    assert!(matches!(
+        panel.confirm_staging(&c),
+        Action::Refresh(NoticeLevel::Success, _)
+    ));
+    let staged = git(repo, &["show", ":mixed.txt"]).unwrap();
+    assert!(staged.contains("first") && !staged.contains("second"));
+    assert_eq!(snapshot(&c).2, before.2);
+    assert_eq!(panel.checks, checks);
+}

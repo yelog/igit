@@ -50,6 +50,7 @@ fn fixture(kind: Kind, count: usize) -> Dialog {
         confirm_focused: count > 0,
         jobs: vec![],
         load: Load::default(),
+        fetch_observations: Vec::new(),
     }
 }
 

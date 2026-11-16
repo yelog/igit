@@ -50,6 +50,37 @@ fn loaded(c: &Context, f: &Filter) -> History {
 }
 
 #[test]
+fn log_reads_propagate_cancellation_and_deadlines_instead_of_empty_data() {
+    use crate::core::process::{with_read_control, ReadControl};
+    use std::time::Duration;
+
+    let directory = tempdir().unwrap();
+    let path = repo(directory.path(), "app", "test@example.invalid");
+    for (control, expected) in [
+        (ReadControl::default(), "cancelled"),
+        (ReadControl::new(Duration::ZERO), "timed out"),
+    ] {
+        if expected == "cancelled" {
+            control.cancel();
+        }
+        with_read_control(&control, || {
+            let error = local_dates(&path).unwrap_err();
+            assert!(error.to_string().contains(expected), "{error:#}");
+            for filter in [
+                Filter::default(),
+                Filter {
+                    author: "me".into(),
+                    ..Default::default()
+                },
+            ] {
+                let error = revisions(&path, 0, &filter, &all_tips(), 10).unwrap_err();
+                assert!(error.to_string().contains(expected), "{error:#}");
+            }
+        });
+    }
+}
+
+#[test]
 fn log_tips_include_tags_remotes_and_detached_head_but_not_stash_snapshots() {
     let tmp = tempdir().unwrap();
     let p = repo(tmp.path(), "app", "t@example.invalid");

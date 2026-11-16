@@ -4,12 +4,11 @@ pub(crate) use working::load as working;
 #[cfg(test)]
 pub(crate) use working::UNTRACKED_LIMIT;
 
-use super::command;
+use super::{command, process, read_output};
 use anyhow::{bail, Context as _, Result};
 use std::{
-    io::Read,
-    path::Path,
-    process::{Command, Stdio},
+    path::{Path, PathBuf},
+    process::Command,
 };
 
 pub(crate) const LIMIT: usize = 512 * 1024;
@@ -44,10 +43,13 @@ pub(crate) fn regular_file(repo: &Path, oid: &str, path: &Path) -> Result<Option
 }
 
 fn file_with_mode(repo: &Path, oid: &str, path: &Path) -> Result<Option<(Source, String)>> {
-    let output = reader(repo)
-        .args(["--literal-pathspecs", "ls-tree", "-z", oid, "--"])
-        .arg(path)
-        .output()?;
+    let output = read_output(
+        repo,
+        "revision tree",
+        reader(repo)
+            .args(["--literal-pathspecs", "ls-tree", "-z", oid, "--"])
+            .arg(path),
+    )?;
     if !output.status.success() {
         bail!("Cannot read revision tree {oid}");
     }
@@ -81,7 +83,7 @@ pub(crate) fn blob(repo: &Path, oid: &str, mode: &str) -> Result<Source> {
     mode_supported(mode)?;
     let mut cmd = reader(repo);
     cmd.args(["cat-file", "blob", oid]);
-    let (bytes, cut) = read_output(cmd, "git cat-file")?;
+    let (bytes, cut) = process::read_prefix(repo, "cat-file", &mut cmd, LIMIT)?;
     if cut {
         bail!("File revision is limited to 512 KiB");
     }
@@ -124,33 +126,13 @@ pub(crate) fn text(bytes: Vec<u8>, mode: &str) -> Result<Source> {
     })
 }
 
-pub(crate) fn read_patch(cmd: Command) -> Result<(Vec<u8>, bool)> {
-    read_output(cmd, "git diff")
-}
-
-fn read_output(mut cmd: Command, operation: &str) -> Result<(Vec<u8>, bool)> {
-    let mut child = cmd
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .stdin(Stdio::null())
-        .spawn()
-        .with_context(|| operation.to_owned())?;
-    let mut raw = vec![];
-    let result = child
-        .stdout
-        .take()
-        .unwrap()
-        .take((LIMIT + 1) as u64)
-        .read_to_end(&mut raw);
-    let cut = raw.len() > LIMIT;
-    if cut || result.is_err() {
-        let _ = child.kill();
-    }
-    let status = child.wait()?;
-    result?;
-    if !cut && !status.success() {
-        bail!("{operation} failed ({status})")
-    }
-    raw.truncate(LIMIT);
-    Ok((raw, cut))
+pub(crate) fn read_patch(mut cmd: Command) -> Result<(Vec<u8>, bool)> {
+    let repo = cmd
+        .get_args()
+        .skip_while(|argument| *argument != "-C")
+        .nth(1)
+        .map(PathBuf::from)
+        .or_else(|| cmd.get_current_dir().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."));
+    process::read_prefix(&repo, "diff", &mut cmd, LIMIT)
 }

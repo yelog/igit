@@ -26,6 +26,14 @@ max_requests = 32
 # Deadline for the entire AI job in seconds (1..=3600).
 total_timeout_seconds = 300
 
+[fetch]
+enabled = true
+interval_seconds = 300
+freshness_seconds = 60
+timeout_seconds = 120
+all_remotes = false
+excluded_remotes = []
+
 [updates]
 check_on_startup = true
 check_interval_hours = 24
@@ -203,6 +211,8 @@ next-match = ["n"]
 previous-match = ["N"]
 scroll-preview-left = ["h", "Left"]
 scroll-preview-right = ["l", "Right"]
+preview-staged = ["I"]
+preview-unstaged = ["W"]
 move-down = ["j", "Down"]
 move-up = ["k", "Up"]
 collapse = ["h", "Left"]

@@ -424,11 +424,14 @@ fn configuration_smart_focus_stays_in_the_tab_and_survives_workspace_rescan() {
     assert_eq!(app.tab, Conflicts);
     assert_eq!(app.kitty.requests, [Direction::Up, Direction::Left]);
     send(&mut app, "Esc");
+    let tab = app.tab;
     app.pop = Some(Popup::Open {
         path: app.ctx.workspace.display().to_string(),
     });
     send(&mut app, "Enter");
+    finish_workspace_scan(&mut app);
     assert!(app.pop.is_none());
+    assert_eq!(app.tab, tab);
     assert!(app.config.smart_panes_enabled());
     assert_eq!(app.kitty.requests, [Direction::Up, Direction::Left]);
 }
@@ -828,6 +831,8 @@ fn configuration_prefix_cancel_context_changes_and_mouse_picker() {
 #[test]
 fn configuration_settings_survive_rescan_and_empty_workspace() {
     let (_dir, mut app) = fixture();
+    let repo = app.ctx.repos[0].path.clone();
+    let before = snapshot(&repo);
     configure(
         &mut app,
         "[terminal]\nmouse=false\n[keybindings.global]\nnotification-history=[]\nroots=['F8']",
@@ -836,8 +841,11 @@ fn configuration_settings_survive_rescan_and_empty_workspace() {
         path: app.ctx.workspace.display().to_string(),
     });
     send(&mut app, "Enter");
+    finish_workspace_scan(&mut app);
+    assert_eq!(app.ctx.repos.len(), 1);
     assert!(!app.config.mouse);
     assert_eq!(app.config.icons, IconMode::Ascii);
+    assert_eq!(app.icons, IconMode::Ascii);
     send(&mut app, "r");
     assert!(app.pop.is_none());
     send(&mut app, "F8");
@@ -846,9 +854,17 @@ fn configuration_settings_survive_rescan_and_empty_workspace() {
     app.pop = Some(Popup::Open {
         path: empty.path().display().to_string(),
     });
-    send(&mut app, "Enter F8");
+    send(&mut app, "Enter");
+    finish_workspace_scan(&mut app);
     assert!(app.ctx.repos.is_empty());
+    assert!(!app.config.mouse);
+    assert_eq!(app.config.icons, IconMode::Ascii);
+    assert_eq!(app.icons, IconMode::Ascii);
+    send(&mut app, "r");
+    assert!(app.pop.is_none());
+    send(&mut app, "F8");
     assert!(matches!(app.pop, Some(Popup::Scope { .. })));
+    assert_eq!(snapshot(&repo), before);
 }
 
 #[test]

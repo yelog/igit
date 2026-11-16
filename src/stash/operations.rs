@@ -1,6 +1,6 @@
 //! Reviewed operations on one exact stash entry in one repository.
 use super::model::{self, Entry};
-use crate::core::{command, git, git_bytes, revpath, Context, Repo};
+use crate::core::{command, git, git_bytes, read_operation, read_output, revpath, Context, Repo};
 use crate::ui::NoticeLevel;
 use anyhow::{bail, ensure, Context as _, Result};
 use std::{
@@ -60,7 +60,13 @@ struct Destination {
 }
 
 fn optional(repo: &Path, args: &[&str]) -> Result<Option<String>> {
-    let output = command(repo).args(args).output()?;
+    let mut cmd = command(repo);
+    cmd.args(args);
+    let output = if let Some(operation) = read_operation(args) {
+        read_output(repo, operation, &mut cmd)?
+    } else {
+        cmd.output()?
+    };
     match output.status.code() {
         Some(0) => Ok(Some(String::from_utf8(output.stdout)?.trim_end().into())),
         Some(1) => Ok(None),

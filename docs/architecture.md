@@ -222,17 +222,32 @@ preparation use [loading.rs](../src/log/loading.rs) with the same generation
 semantics. Actions and new comparisons wait for current history. The initial
 synchronous Log read runs on the startup worker, then enables runtime
 background loading; direct Panel callers keep synchronous refresh semantics.
-Opening/rescanning from Actions still synchronously rebuilds context and
-panels, then restores the prior runtime background mode.
+Opening/rescanning from Actions uses [rescan.rs](../src/shell/rescan.rs) and the
+startup worker. A cancelled or failed scan leaves the current Shell intact.
+Same-workspace scope is reconciled by canonical repository path, excluding
+new roots; Commit checks, message, grouping and selection survive. Stable
+repository ordering also retains loaded panel objects. Installation waits for
+active input/reviews/writes to finish and invalidates the new workspace.
 
 Commit batches use [execution.rs](../src/commit/execution.rs), reporting
 repository progress and independent outcomes while the terminal remains
 responsive. Ctrl-X stops only repositories that have not started. Merge writes,
 commit snapshot preparation, and explicit patch opening remain synchronous.
-Read-only Git operations still have no general timeout or cancellation layer
-for a hung child process; a disconnected worker is handled separately from a
-worker that never returns. The panels use standard threads and `mpsc`, without
-a global asynchronous scheduler.
+[core/process.rs](../src/core/process.rs) owns the shared isolated process
+registry used by Git reads and the AI runner. Read controls impose a 30-second
+per-command deadline, bounded stdout/stderr, descendant cleanup and bounded
+reaping. Errors identify the repository, operation and elapsed time without
+echoing command arguments. `core::git_bytes` classifies known read commands;
+explicit readers use `read_output`. Unknown commands and writes retain their
+existing execution semantics. `Load` cancellation terminates active reads and
+propagates to bounded repository workers. Commit refresh and workspace loading
+carry the same controls. The panels use standard threads and `mpsc`.
+Reads requiring input, such as NUL-delimited attribute queries, use
+`read_output_with_input` with a temporary file; ordinary readers keep stdin
+closed. Both paths share deadlines, output bounds and cancellation.
+Outgoing submodule verification retains its streaming raw-history reader to
+avoid capturing a repository's full introduction history. That reader remains
+outside the shared timeout and cancellation controls.
 
 [ui/selection.rs](../src/ui/selection.rs) provides shared text layout/selection for Log details/Diff, Commit message editing/preview, and Push Details / Diff. Each display line retains its original UTF-8 byte range. Cell hit testing, soft wrapping, scrolling, and highlighting share one projection; copy slices original text directly, while decorative rows have no source. Shared mouse handling returns `Action::Copy` on left-button release and collapses selection to its endpoint; the panel forwards the action to Shell. Clicks return no action; repeated releases do not copy again. Panels own selection lifetimes/focus. Log links reuse the same line layout and activate on release only without copying/dragging. `Panel::selected_text` exposes only valid selection in the current context, letting Shell send Ctrl-C to keyboard selection before quitting. Copy still uses `Action::Copy` → [ui/clipboard.rs](../src/ui/clipboard.rs); failures show reasons without logging text. The Commit editor keeps the post-copy caret endpoint and synchronizes source between consecutive events so input before redraw cannot misalign selection. Selection/viewport state stays in memory, outside draft files and Git plans. Shell tests capture copying through a thread-local receiver without modifying the system clipboard.
 
@@ -245,14 +260,46 @@ Commit's [preview adapter](../src/commit/preview.rs) feeds the same
 [read-only revision renderer](../src/merge/view/revision.rs) as file history.
 The [source reader](../src/commit/backend/preview.rs) uses literal native paths,
 stage-0 index entries, bounded blobs, and bounded working-file reads. Staged
-files compare HEAD (or an empty unborn tree) to Index; other files compare
-Index to Working tree. Missing sides stay explicit. Git conversions and
+files default to HEAD (or an empty unborn tree) to Index; other files default to
+Index to Working tree. Explicit Staged/Unstaged selection is captured with
+background preview requests, and a different-side result cannot replace the
+current view. Missing sides stay explicit. Git conversions and
 unsupported content use an explained patch fallback. Source reads never stage
 files or create Git objects. The existing background refresh worker returns
 the selected file's comparison only for its scanned repository, checks the
 current target, and preserves the viewer when its sources are unchanged.
 Commit keeps its own workspace pane cycle while `[` / `]` selects the revision;
 focused difference/fold controls take priority over workspace Pull/Fetch.
+
+[Hunk staging](../src/commit/backend/staging.rs) derives partial patches from
+captured sources. Omitted removals/additions become context or are excluded
+according to forward or reverse application; hunk counts and no-newline markers
+are rebuilt. A private index verifies and canonicalizes the exact review.
+Publication still locks and revalidates the real index, replacing only the
+reviewed path entry.
+
+Rollback [recovery](../src/commit/backend/discard/recovery.rs) atomically saves
+per-path working content, mode and index metadata before the destructive write,
+then journals completed paths. Restore compares the observed post-rollback
+state twice, publishes only reviewed entries under the real index lock, and
+retains backups after ambiguous/partial failures. Data lives under the workspace
+state directory, with eight retained operations per repository and bounded
+file/record sizes. [Merge drafts](../src/merge/drafts.rs) serialize decisions
+and result text against canonical worktree/Git-directory identity, conflict
+stages, HEAD and operation. Reopening validates this identity before applying
+the draft to the editor; it does not modify working files.
+
+The [history plan](../src/log/operations/history.rs) captures immutable commit
+IDs and current branch/ref/index/configuration state. Its editor changes only
+the plan. Execution revalidates publication and topology, creates a recovery
+ref, and runs controlled interactive rebase instructions with explicit message
+files. Other refs are protected and Git's own stopped rebase state remains
+available to Conflicts Continue/Abort.
+
+`--capabilities` exposes versioned native/editor capabilities without loading
+configuration or a workspace. [editor.rs](../src/shell/editor.rs) emits
+authenticated `igit-changed` OSC notifications for current Roots on workspace
+invalidation. These request reconciliation; they do not assert write success.
 
 When help opens, Shell captures the original area's `HelpContent` without extending the public `Panel` trait. Panels provide only single-action shortcuts available in context. Internal ordering remains area, panel-wide, then global; the UI deduplicates them into a compact lazydb-style list. Search always receives text, ↑/↓ changes candidates, and Enter returns `HelpCommand`. Shell restores the covered dialog, validates original context, then sends the candidate's statically registered key sequence back through `dispatch`. Sequences/modifiers use the original event path. Search text never becomes an executable sequence; the original panel still produces review/validation for commit, push, and merge writes. F1 is handled before ordinary dispatch and does not cancel input. Canceling help leaves drafts, checkboxes, buttons, and scroll positions in their original objects. Search/candidate/scroll state stays in memory.
 
@@ -374,11 +421,40 @@ and an absolute UTF-8 path. JSON escaping protects terminal control characters.
 The plugin accepts matching requests only from its own terminal buffer and
 schedules changes outside TermRequest, supporting both Nvim 0.10's string data
 and later `.sequence` data. Background/stale requests cannot steal focus.
-The parent reuses buffers through a normal guarded buffer switch, hides floats
-after success, and retains split/tab sessions and their jobs. There is no RPC
+The parent selects an existing target window in the source tab before a suitable
+source or other editing window. Routing respects `hidden`, `bufhidden`,
+`winfixbuf`, preview windows, and utility buffers. A new split preserves sources
+that cannot safely switch. Working files and revisions share the guarded buffer
+handoff, hide floats after success, and retain split/tab sessions and their jobs.
+Opening errors report a concise diagnostic. There is no RPC
 server, nested editor, staging or application-owned file writer in this path.
 
 ## Repositories, Scope, and Persistence
+
+[shell/fetch.rs](../src/shell/fetch.rs) owns the session's automatic-fetch
+scheduler, target freshness, retries, and foreground handoff. Runtime activation
+occurs after the first workspace frame; test constructors and startup discovery
+remain inert. Discovery uses bounded background readers, while at most two
+staggered network workers execute with shared common-directory exclusion.
+Requests capture Roots, branches, selected Push targets, effective endpoints,
+and configuration identity. Obsolete scope results cannot install.
+
+[core/fetch.rs](../src/core/fetch.rs) discovers eligible remotes and validates
+safe remote-tracking refspecs. Its controlled subprocesses disable recursive
+submodules, tags, pruning, FETCH_HEAD writes, maintenance, hooks, and interactive
+credentials. Config and Git storage identity are revalidated around execution.
+Exact Push endpoint/branch queries fetch an immutable object without updating
+ordinary tracking refs; Push's endpoint cache feeds outgoing calculations.
+Manual successful observations update matching freshness only. Errors retain
+cached data, use retry backoff, and suspend authentication failures. Unsupported
+interactive transports and unsafe refspecs are skipped with a concise status.
+
+Foreground events that could write cancel background fetch and wait in an
+input queue until its workers exit. Reviews, edits, selections, and drags defer
+launches and remote-dependent view installation. Quit cancels without waiting.
+Fetch completion invalidates Branch, Log, and Push through the existing refresh
+model; no automatic-success notification is emitted. F5 and file notifications
+retain their local-only responsibility.
 
 Workspace Pull and Fetch build a read-only plan from global Roots. The dialog
 opens immediately with repository names from the existing Context; the plan and
@@ -388,9 +464,11 @@ and confirmation stays disabled until the complete snapshot arrives in input
 order. Canceling invalidates late results. Each worktree is checked again before
 running Git. Pull also revalidates the branch, HEAD, upstream, and resolved
 remote URL; Fetch revalidates the configured remotes.
-After confirmation, Pull explicitly fetches its reviewed upstream and calls
-[core/update.rs](../src/core/update.rs) to integrate the fetched commit with
-Merge or Rebase. Workspace Fetch runs `git fetch --all`; both disable submodule
+After confirmation, Pull resolves its reviewed upstream to an exact OID,
+fetches that object, revalidates the reviewed source, and calls
+[core/update.rs](../src/core/update.rs) to integrate the captured commit with
+Merge or Rebase. Changes to shared tracking refs cannot substitute another
+integration target. Workspace Fetch runs `git fetch --all`; both disable submodule
 recursion. Pull inherits the saved application default, while `m/r` overrides
 only the current review. Its `s` selector saves the shared default. Execution
 captures the strategy and the update dialog stays active through completion so
@@ -910,7 +988,7 @@ Shell to the existing resolver. Apply file and Continue repository keep their
 separate reviews; Continue never resumes an old Push job. After finishing,
 the user must initiate another Push with a fresh review.
 
-[The conflict list](../src/merge/list.rs) groups unresolved index entries separately from repositories ready for Continue. It caches operation and source labels on refresh, derives both status columns from stages, and keeps selection by repository and path. [merge/loading.rs](../src/merge/loading.rs) reads Roots on a generation-checked background worker after startup, retains cached rows for the same Roots, and clears them immediately on scope change. A failed repository keeps its previous conflict/ready rows and source labels, adds a local refresh error, and waits for an explicit retry. An open document and draft stay in memory; changed conflict stages or native operation mark the document stale, display a warning, and block Apply until the user reopens it. Runtime installation waits for editors, menus, and drags. Its Accept controls fill an in-memory document from one side; Prepare Simple Drafts runs the same non-conflicting block rules for the selected repository and stores session drafts. Both use the existing file eligibility checks and leave all writes to the reviews below.
+[The conflict list](../src/merge/list.rs) groups unresolved index entries separately from repositories ready for Continue. It caches operation and source labels on refresh, derives both status columns from stages, and keeps selection by repository and path. [merge/loading.rs](../src/merge/loading.rs) reads Roots on a generation-checked background worker after startup, retains cached rows for the same Roots, and clears them immediately on scope change. A failed repository keeps its previous conflict/ready rows and source labels, adds a local refresh error, and waits for an explicit retry. An open document remains in memory; changed conflict stages or native operation mark it stale, display a warning, and block Apply. Save/Close persists its captured identity and decisions; reopening refuses stale saved sources while retaining the file for recovery. Runtime installation waits for editors, menus, and drags; workspace rescans also wait for an open conflict document to be saved and closed. Accept controls fill the document from one side; Prepare Simple Drafts applies the same non-conflicting block rules and persists the resulting drafts. Neither writes working files or the index.
 
 **Merge: preview, staging, and Continue have separate boundaries.** Read index stages 1 (base), 2 (ours), and 3 (theirs). An ordinary text conflict can open when the working file matches Git's conflict output or exactly matches stage 1, the editor's starting result. A stage 1 match leaves the same decisions pending as a fresh conflict. Compute base-to-side line differences and assemble blocks in base coordinates. Blocks changed on only one side, or with identical results on both sides, can be accepted automatically. `Chunk::automatic_result` shares eligibility between the editor's Resolve Automatically button/count, its batch action, and prepared session drafts. It accepts pending non-conflicting blocks and combines disjoint single-line edits only when neither side has been decided; touching insertions remain manual. Left / All / Right stays limited to non-conflicting blocks. An automatic batch has one undo snapshot. Stages 2/3 are Git's sides, so rebase identifies the rebased HEAD and replayed commit. Each source's pending decision and the result bytes are held in the in-memory `Document`; undo and session drafts retain both.
 
@@ -929,7 +1007,7 @@ After Apply confirmation, revalidate operation, HEAD, conflict stages, original 
 
 Commit's [discard controller](../src/commit/discard.rs) uses the cursor scope for initial checks independently of Commit checkboxes. Changelist rows use exact native paths from their visible members; physical directories and repositories can span changelists. The [Rollback modal](../src/commit/rollback.rs) is owned by Shell and renders all visible Changes rows with the shared tree and row renderer. Its checks, folds, grouping, Diff, and added-copy option are local to the modal. Directory targets use the displayed grouping root, matching path copying: repository-relative with repository grouping on, workspace-relative with it off. Close drops the pending plans, while F1 retains the modal and its state under Help.
 
-The [discard backend](../src/commit/backend/discard.rs) captures eligible visible paths at open, recording HEAD/branch, exact index records, and raw working-tree hashes/modes or symlink targets. Unavailable paths stay in the tree without a checkbox target. A file Diff is loaded on demand against the snapshot. Confirm narrows the retained plans to checked paths without recapturing Git state. Discard locks the real index, revalidates the selected snapshot, and prepares a private index with only the reviewed paths reset to HEAD (or the empty tree before the initial commit). `checkout-index` restores tracked leaves; `remove_file` removes untracked leaves and added local copies only when requested. Each leaf is checked again before writing. Unrelated staging is preserved, and partial failure publishes index changes only for completed leaves. Conflicts, active Git operations, submodule pointers, nested repositories, directory symlink traversal, and file/directory replacements remain read-only. Results refresh the workspace; no undo backup or cross-repository atomicity is provided.
+The [discard backend](../src/commit/backend/discard.rs) captures eligible visible paths at open, recording HEAD/branch, exact index records, and raw working-tree hashes/modes or symlink targets. Unavailable paths stay in the tree without a checkbox target. A file Diff is loaded on demand against the snapshot. Confirm narrows the retained plans to checked paths without recapturing Git state. Discard locks the real index, revalidates the selected snapshot, persists per-path recovery content and staged blobs, then prepares a private index with only the reviewed paths reset to HEAD (or the empty tree before the initial commit). `checkout-index` restores tracked leaves; `remove_file` removes untracked leaves and added local copies only when requested. Each leaf is checked again before writing and journaled afterward. Unrelated staging is preserved, and partial failure publishes index changes only for completed leaves. Conflicts, active Git operations, submodule pointers, nested repositories, directory symlink traversal, and file/directory replacements remain read-only. Results refresh the workspace. Restore requires a separate review against the recorded post-operation state; cross-repository atomicity is not provided.
 
 Commit's [Add to Git controller](../src/commit/add.rs) captures only untracked
 members of the highlighted row within Roots, independently of commit checkboxes.

@@ -96,7 +96,7 @@ message appears only after discovery completes.
 - Click a workspace tab or press `1` for Commit, `2` for Log, `3` for Push, `4` for Branch, `5` for Stash, or `6` for Remote. Each panel retains its cursor, checkboxes, and filters. Log's own filter tabs and `+` share the header row on the left; their hit areas stop before the workspace tabs. When full names do not fit, the header shortens Commit / Branch / Remote to Cmt / Br / Rem; all tabs remain clickable at 44 columns, including Conflicts.
 - **Conflicts** appears in bold amber while any repository in Roots has unmerged files or an operation awaiting Continue. Open it by clicking or pressing `7`. When the last pending operation ends, the tab disappears and returns to the last Commit, Log, Branch, Stash, or Remote tab if it was active. The same tabs are available from Actions (`:`).
 - In Push, `Esc` closes the active editor, details, or Diff. Use the footer’s Cancel button to return to the last Commit, Log, Branch, Stash, or Remote tab. In Conflicts, `Esc` first backs out of the conflict document, then returns to the last main tab. Commit & Push opens the Push tab after committing; pushing requires a separate review.
-- Press `r` for repository filtering (in Branch, use `:` → Roots because `r` renames a branch): `j/k` moves, `Space` toggles, `a` selects all, `Enter` applies, and `Esc` cancels. The header has no Console, Roots, Actions, or Help buttons. Use `:` for Actions and **Notifications**, or `?` / `F1` for help. `g n` opens Notification History from any normal workspace panel. The leading `g` waits indefinitely for a suffix; in Commit, Stash, Remote, and the Merge conflict list, `gg` completes the first-item action, while `G` moves to the last item. Log's Space filter prefix remains immediate: the first Space enters it, so lowercase b/u/d/p and the filter footer appear on the first press, and `b/u/d/p` opens a filter. If `notification-history` is rebound to a Space suffix, Commit's Changes tree and Push's outgoing list still apply every Space immediately; completing the notification chord restores the checks changed by the last press, and another key never replays the toggle. In other panels where Space is a standalone action, a second `Space` applies it, and another key first replays Space and then runs that key. The default 200ms hint delay only reveals continuation overlays. Dialogs and text input keep Space as text or their own control. `F5` queues a workspace refresh and updates Conflicts after external Git changes. Runtime invalidations are retained while a review, editor, message field, key sequence, text selection, or drag must remain stable. Same-Roots results install when allowed and retain current browsing state; changed Roots clear obsolete rows immediately. Actions → Open / rescan workspace reruns discovery synchronously, then restores runtime background loading for the new workspace.
+- Press `r` for repository filtering (in Branch, use `:` → Roots because `r` renames a branch): `j/k` moves, `Space` toggles, `a` selects all, `Enter` applies, and `Esc` cancels. The header has no Console, Roots, Actions, or Help buttons. Use `:` for Actions and **Notifications**, or `?` / `F1` for help. `g n` opens Notification History from any normal workspace panel. The leading `g` waits indefinitely for a suffix; in Commit, Stash, Remote, and the Merge conflict list, `gg` completes the first-item action, while `G` moves to the last item. Log's Space filter prefix remains immediate: the first Space enters it, so lowercase b/u/d/p and the filter footer appear on the first press, and `b/u/d/p` opens a filter. If `notification-history` is rebound to a Space suffix, Commit's Changes tree and Push's outgoing list still apply every Space immediately; completing the notification chord restores the checks changed by the last press, and another key never replays the toggle. In other panels where Space is a standalone action, a second `Space` applies it, and another key first replays Space and then runs that key. The default 200ms hint delay only reveals continuation overlays. Dialogs and text input keep Space as text or their own control. `F5` queues a workspace refresh and updates Conflicts after external Git changes. Runtime invalidations are retained while a review, editor, message field, key sequence, text selection, or drag must remain stable. Same-Roots results install when allowed and retain current browsing state; changed Roots clear obsolete rows immediately. Actions → Open / rescan workspace runs discovery in the background and retains the current workspace until inspection succeeds. `Ctrl-X` cancels; a same-directory rescan keeps Roots and Commit selections and excludes new repositories until explicitly included.
 - While Commit's Message actions are focused outside editing, `g` generates a message and takes priority over the `g n` notification chord. Open Notifications from Actions or leave Message before using that chord.
 - In normal mode, `q`, `Ctrl-C` without a text selection, and Actions → Quit close IGit immediately without confirmation. Configured quit bindings and the help action use the same path. Running Git writes and software installation prevent quitting until completion; retry quit afterward. Text entry, dialogs, and pending key sequences retain their own input and cancellation rules.
 - In normal mode, `Tab` / `Shift-Tab` cycles panes within the current tab (`F6` is equivalent). Commit cycles Changes, Preview (if open), and Message; Log cycles Branches, Commits, Files, and Details. Branch cycles Repositories and the branch tree when Roots includes multiple repositories; Stash cycles Repositories and Files. Hidden sidebars are skipped. `Ctrl-W` followed by `h/j/k/l` focuses the adjacent left/down/up/right pane and stops at the outside edge. Browsing focus is independent of file checkboxes.
@@ -248,6 +248,22 @@ The standalone revision comparison keeps its own `n/p` change navigation.
 
 ### Update Project and Fetch
 
+Automatic fetch runs quietly alongside the workspace. It starts two seconds
+after the first loaded frame, repeats every five minutes, and requests data at
+least one minute old on focus return or entry into Push, Branch, or Log.
+The workspace footer (at 80 columns and above) and Push toolbar show
+`Not fetched`, `Fetching…`, `Fetched 2m ago`, or a failed/cached status when room
+permits. Narrow layouts keep action controls first. Automatic success creates no
+notification. F5, local file watching, and saves remain local refresh actions.
+Only Roots participates; exclusions and remote selection live in configuration.
+
+Reviews, editors, selected text, and pane drags defer automatic launches and
+remote-dependent view installation. Foreground Git actions cancel active
+automatic jobs, retain the input, and replay it after those workers exit.
+Quitting cancels them immediately. Failures keep cached counters and commits;
+authentication failures pause automatic retry. Explicit Fetch can retry and
+refreshes only the matching endpoint/scope's freshness.
+
 In normal mode, `p` opens Update Project outside the Branch browser and `f` opens Fetch Repositories. In Branch, `p` reviews the focused local branch; Actions → Pull repositories still opens Update Project. Both workspace reviews are in Actions. Each review follows Push's visual hierarchy: a contextual title strip, blue pane heading, compact toolbar, tinted repository icons, bold names, aligned target/status columns, blue browsing row, and a separated footer with one primary action. Pull shows the current branch receiving its upstream; Fetch lists remotes without an integration arrow. Both show Branch's green `↗N` / blue `↙N` counters beside the current branch (ASCII `^N` / `vN`). The comparison uses the configured upstream, including differently named branches, and local refs; opening review performs no fetch. Zero and unavailable counts stay hidden. Counter space is reserved before clipping branch names. Wide layouts retain separate branch and submodule columns. Narrow layouts combine the branch and target and hide optional columns; complete branch/upstream names, counters, targets, and reasons remain in wrapped Details below the list. Repositories that cannot run the operation show an amber Skipped status and its reason. Global Roots still defines the entire batch; browsing is independent of scope, and Log tab filters and Push checkboxes do not change this list.
 
 Opening a review paints it before repository checks finish. The title and summary
@@ -324,6 +340,15 @@ change focus.
 The text search field's `.*` and `Cc` controls share its background, with the right border after `Cc`. Enabled options remain blue; both outer borders turn blue while editing.
 
 ### Commit actions
+
+**Clean Up Linear History** opens an editable plan from the captured commit
+through the current branch tip. Rows appear in execution order, oldest first.
+`j/k` selects, `J/K` reorders, `p` keeps a separate commit, `s` squashes and opens
+the message editor, and `f` fixes up into the preceding group. `m` edits the
+selected group's message. `F2` / `Ctrl-S` saves a message or opens the separate
+final review. The review shows every affected commit, messages, the branch,
+publication constraints and the recovery ref. Cancel writes nothing. A stopped
+rebase uses the existing separately reviewed Continue/Abort actions.
 
 Opening a commit in the browser captures the highlighted row independently of
 preview loading and cherry-pick checkboxes. It requires current history and a
@@ -608,7 +633,16 @@ The inline editor uses the message pane's existing rectangle, including in narro
 
 Commit uses native file events and per-repository debounce: a 300ms quiet period, capped at two seconds during continuous changes. One background worker reads only affected repositories in Roots and refreshes the current Diff only when its repository is scanned. Tab entry and terminal focus process queued changes without forcing a full scan. A 30-second Roots scan reconciles missed or unsupported events. Unchanged scans retain preview selection and scrolling; changes preserve checked paths, folds, cursor identity, the shared draft, and caret. Reviews, menus, and drags defer updates without discarding queued changes. Late results from before an explicit refresh or ignored-files toggle are discarded. F5 still refreshes the entire workspace.
 
-**The commit target is the actual patch.** If a file has staged content, preview and commit use its index version; later working-tree edits remain. Selection is per file, without line-level splitting. Each selected repository receives a separate commit with the shared message. Generate message / `g` immediately starts background preparation for checked files in the current Roots. A selection that fits the configured serialized input budget uses one request; larger patches are completely split and summarized, with reduction requests when needed, before final generation. No file is silently dropped. The button rotates and shows preparation, summary progress, generation, and source-checking stages; narrow panes keep a compact loading label and reachable controls. Browsing and message editing remain available. Success fills and saves the editable shared draft directly; failure produces an Error notification and preserves the draft and focus. Edits made while waiting are kept, repeated clicks do not start another job, and changes to Roots/checked paths cancel the old selection. Final source validation rejects changed selected versions while preserving the original index, working tree, and HEAD. Endpoint, model, prompt, request byte budget, request count, and job timeout can be set in `[ai]`; see [configuration](configuration.md#ai-commit-messages). Implementation: [commit.rs](../src/commit.rs), [commit/backend.rs](../src/commit/backend.rs).
+**The commit target is the actual patch.** If a file has staged content, commit
+uses its index version and later working-tree edits remain. Preview defaults to
+that candidate; `I` / **Staged** and `W` / **Unstaged** explicitly switch the
+comparison without changing candidates. Checkboxes select files. `Ctrl-G` /
+**Hunks** prepares smaller index changes: `j/k` moves the line cursor, `v`
+anchors a range, `a` selects the whole hunk, and click/Shift-click/drag selects
+lines. `Space` / `Enter` opens the exact partial-patch review before writing.
+Each selected repository receives a separate commit with the shared message.
+
+Generate message / `g` immediately starts background preparation for checked files in the current Roots. A selection that fits the configured serialized input budget uses one request; larger patches are completely split and summarized, with reduction requests when needed, before final generation. No file is silently dropped. The button rotates and shows preparation, summary progress, generation, and source-checking stages; narrow panes keep a compact loading label and reachable controls. Browsing and message editing remain available. Success fills and saves the editable shared draft directly; failure produces an Error notification and preserves the draft and focus. Edits made while waiting are kept, repeated clicks do not start another job, and changes to Roots/checked paths cancel the old selection. Final source validation rejects changed selected versions while preserving the original index, working tree, and HEAD. Endpoint, model, prompt, request byte budget, request count, and job timeout can be set in `[ai]`; see [configuration](configuration.md#ai-commit-messages). Implementation: [commit.rs](../src/commit.rs), [commit/backend.rs](../src/commit/backend.rs).
 
 **Display menu.** Under `Group By`, Directory and Repository start on; Module starts off as a legacy compatibility option for repository grouping. Repository adds a repository-name row beneath each changelist group, including Unversioned Files and Ignored Files, followed by repository-relative directories when Directory is on. Repository or Module enables that shared repository level; both remain individually toggleable, but enabling both never duplicates rows. With both repository options off, Directory keeps the existing workspace-relative tree and Directory off keeps the existing flat list. Merge Conflicts remains a flat special child. Menu checkboxes match the changes list: checked is bold blue, unchecked is gray. Switching preserves the current file, checks, and folds; Roots scope and Git write plans do not change. Options remain session-local. If a highlighted container disappears, selection moves to an existing parent. Only ancestors needed for the current row expand; other collapse preferences remain.
 
@@ -631,7 +665,7 @@ saved entries and their read-only comparisons.
 
 The review uses the Commit tree's filename colors, icons, disclosures, and tri-state checkboxes. It starts with Directory and Repository on; the eye / `o` toggles those two options for this modal independently of the main Commit tree. `j/k` or arrows browse, `h/l` fold or navigate, `z/Z` collapse/expand all, and Space or a checkbox click changes selection. Clicking a label highlights it. Use `v` or Diff to inspect both staged and working-tree patches for the highlighted file. The footer shows counts for checked files and explicitly labels untracked files that will be deleted. **Delete local copies of added files** is off initially and is available only for checked additions with local copies; click it or press `a` to toggle it.
 
-**Rollback** is focused initially, so pressing `Enter` immediately confirms the checked files. `Tab` changes focus, `Enter` activates the focused control, and `Esc` backs out of Diff/grouping or closes the modal. The single-key `y` shortcut applies only when focus is outside the file tree. Rollback is disabled with no checked files. Tracked files return to HEAD in the index and working tree; untracked files are removed individually, and added files are unstaged with their local copies kept unless deletion is enabled. There is no undo. Hidden repositories are excluded. Ignored files shown by Commit, conflicts, and other unavailable paths stay read-only in the tree; Diff explains why they cannot be rolled back. Unchecked paths are preserved, and a changed checked snapshot requires another review. Results refresh the workspace; partial failure reports completed files without clearing the remaining index entries.
+**Rollback** is focused initially, so pressing `Enter` immediately confirms the checked files. `Tab` changes focus, `Enter` activates the focused control, and `Esc` backs out of Diff/grouping or closes the modal. The single-key `y` shortcut applies only when focus is outside the file tree. Rollback is disabled with no checked files. Tracked files return to HEAD in the index and working tree; untracked files are removed individually, and added files are unstaged with their local copies kept unless deletion is enabled. Reviewed paths are backed up to application state first. `u` / **Restore** opens a separate review of saved paths and index entries, including after restart; the Back control starts selected. External path/index changes refuse recovery and retain the backup. Hidden repositories are excluded. Ignored files shown by Commit, conflicts, and other unavailable paths stay read-only in the tree; Diff explains why they cannot be rolled back. Unchecked paths are preserved, and a changed checked snapshot requires another review. Results refresh the workspace; partial failure reports completed files without clearing the remaining index entries.
 
 ### Edit the highlighted working file
 
@@ -647,17 +681,22 @@ normal terminal, including mouse, focus, paste and enhanced-key modes. Returning
 from the editor reacquires the TUI and refreshes status while retaining the
 current row, draft and checked paths. Errors also restore the TUI.
 
-In `igit.nvim`, the same key switches the source editing window to the target
-buffer. Loaded buffers retain unsaved content. Floating windows hide after a
+In `igit.nvim`, the same key reuses an existing target window in the source tab,
+then a suitable source or other editing window. Loaded buffers retain unsaved
+content. If all candidates are protected, a new split opens the file; modified
+buffers with destructive `bufhidden` policies, buffer-locked windows, previews,
+terminals, and utility buffers are preserved. Floating windows hide after a
 successful switch; split windows remain visible and tab sessions remain open.
 IGit keeps running, and its watcher processes saved working-copy changes.
-Modified-buffer guards or unavailable targets leave the IGit window available
-with an error. Opening a file changes neither HEAD nor the index.
+Unavailable targets and other opening failures leave the IGit window available
+with a concise error. Opening a file changes neither HEAD nor the index.
 
 **Hunk staging.** `Ctrl-G` from Changes/Preview or the Hunks toolbar control
 opens a file-local Staged/Unstaged view. Tab switches sides; `u/s` selects a side;
-`n/p` visits complete hunks; `j/k`, paging and the wheel scroll. Space/Enter or
-the primary button opens a separate Stage/Unstage review with Cancel focused.
+`n/p` visits complete hunks; `j/k` moves the line cursor, `v` anchors a range,
+and `a` returns to the whole hunk. Click/Shift-click/drag selects patch lines;
+paging and the wheel scroll. Space/Enter or the primary button opens a separate
+Stage/Unstage review of the exact selected patch with Cancel focused.
 Both sides and navigation/review/close controls have mouse targets at 44, 80,
 and 120 columns. Esc closes the view. Index changes preserve working files,
 unrelated staging, checkboxes and the message. Unsupported conversions and
@@ -700,12 +739,14 @@ Left/right proportions are about **50%** each. The left sorts by repository name
 Target divergence uses Branch's green `↗N` ahead and blue `↙N` behind spans,
 or `^N` / `vN` in ASCII. Each zero count is omitted; unavailable behind counts
 are not shown as zero. The comparison uses the selected Push `remote:branch`
-and cached local target refs, even when the branch tracks another upstream.
-Opening, browsing, or reviewing does not fetch. Reserve counter cells before
-clipping names; Details retains complete Unicode names and counts. Fetch
-refreshes available target refs. With different fetch/push endpoints, local
-tracking refs may describe the fetch endpoint; execution explicitly fetches
-the actual push endpoint and never integrates the unrelated upstream.
+and cached target data, even when the branch tracks another upstream.
+Opening shows cached rows immediately and requests a stale target refresh in the
+background. Reviews pause automatic fetch. Reserve counter cells before clipping
+names; Details retains complete Unicode names and counts. Automatic and explicit
+Push Fetch query the actual push endpoint and selected branch. With different
+fetch/push endpoints, ordinary tracking refs keep describing the fetch endpoint;
+Push caches the separate exact tip. Execution explicitly fetches and revalidates
+the push endpoint before integration.
 
 The right defaults to a full-height repository → directory → file tree, avoiding a repeated content-root name. Consecutive single-child directories compress to paths such as `dev/iframe-proxy`; directories show descendant file counts. Icons share Log / Commit type colors. Filenames use change colors: added/copied green, modified blue, deleted red, renamed/type changes amber, without trailing status letters. Details summarizes the current scope and splits the right side about 60/40%.
 
@@ -875,7 +916,7 @@ retained stash untouched.
 | Navigate and compare | The top arrows visit pending changes. Click a fold to expand it, or the fold tool to toggle all. Use Compare Contents and Show Details to inspect the versions. | `[c` / `]c` jumps unresolved conflicts, `F7` / `Shift-F7` visits pending changes, `o` toggles folds, and `v` opens Compare Contents. |
 | Resolve changes | Use Left / All / Right for non-conflicting changes. The inner gutter arrows accept one side, and × ignores it. For a conflict, accepting both sides appends the second. Accept Left / Right in the footer previews an entire file version. | `a` applies safe blocks, `H/L` resolves a block with one side, `b` takes both, `Y/T` accepts a whole version, and `u` undoes. |
 | Resolve automatically | The wand / lightning button shows its label, eligible block count, and configured shortcut. It applies pending non-conflicting changes and disjoint edits on the same line, leaving overlapping conflicts and manual decisions intact. | `m` resolves the batch; `u` restores it in one step. Left / All / Right remains limited to non-conflicting blocks. |
-| Edit and save | Click text in Result to edit it inline. Save and Close keeps a session draft and returns to the list. | `i` edits the selected block, `Ctrl-S` or `Ctrl-Enter` accepts, `Esc` cancels the edit, and `s` saves and closes. |
+| Edit and save | Click text in Result to edit it inline. Save and Close persists decisions and result text in application state and returns to the list. Matching sources can resume after restart; a save failure keeps the editor open. | `i` edits the selected block, `Ctrl-S` or `Ctrl-Enter` accepts, `Esc` cancels the edit, and `s` saves and closes. |
 | Write and continue | Apply Changes opens a review after all blocks are decided. Confirmation stages only the displayed path and opens the next conflict in the same repository, if any. Review Continue separately in the list. | `A` reviews application; `C` in the list reviews continuation. `Esc` or `F` from the editor returns to the list. |
 
 Automatic resolution has an accent label and button background when available, and dims when its count reaches zero or Result is being edited. Narrow toolbars shorten the label to **Auto** and reserve its space and Undo before optional controls. Applying the batch advances from a completed block to a remaining change and reports the applied count; it updates only the in-memory result until Apply Changes is reviewed.

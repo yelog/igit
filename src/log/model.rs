@@ -9,7 +9,7 @@ pub(super) use graph::{graph_color, Graph, GraphWindow, NodeGlyphs};
 #[cfg(test)]
 mod tests;
 
-use crate::core::{git, git_bytes, revision, Context};
+use crate::core::{git, git_bytes, read_output, revision, Context};
 use anyhow::{anyhow, bail, Context as _, Result};
 use std::{
     collections::{BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque},
@@ -175,16 +175,23 @@ impl History {
 
 // Obtain the current timestamp and local UTC offset from the same Git runtime that
 // formats commit dates. The process-local identity lets this work before user setup.
-fn local_dates(dir: &Path) -> Option<[String; 2]> {
-    let o = crate::core::command(dir)
-        .env("GIT_AUTHOR_NAME", "IGit")
-        .env("GIT_AUTHOR_EMAIL", "clock@invalid")
-        .env_remove("GIT_AUTHOR_DATE")
-        .args(["var", "GIT_AUTHOR_IDENT"])
-        .output()
-        .ok()?;
-    o.status.success().then_some(())?;
-    dates_from_ident(std::str::from_utf8(&o.stdout).ok()?)
+fn local_dates(dir: &Path) -> Result<Option<[String; 2]>> {
+    let output = read_output(
+        dir,
+        "var",
+        crate::core::command(dir)
+            .env("GIT_AUTHOR_NAME", "IGit")
+            .env("GIT_AUTHOR_EMAIL", "clock@invalid")
+            .env_remove("GIT_AUTHOR_DATE")
+            .args(["var", "GIT_AUTHOR_IDENT"]),
+    )?;
+    if !output.status.success() {
+        bail!(
+            "git var: {}",
+            String::from_utf8_lossy(&output.stderr).trim_end()
+        );
+    }
+    Ok(dates_from_ident(std::str::from_utf8(&output.stdout)?))
 }
 
 fn dates_from_ident(ident: &str) -> Option<[String; 2]> {
@@ -269,9 +276,7 @@ fn revisions(
     if f.author.eq_ignore_ascii_case("me") {
         // Include the delimiters: an email with dots or '+' is a literal identity,
         // not an author regex or a substring of a teammate's address.
-        let Ok(ident) = git(dir, &["var", "GIT_AUTHOR_IDENT"]) else {
-            return Ok(vec![]);
-        };
+        let ident = git(dir, &["var", "GIT_AUTHOR_IDENT"])?;
         let Some((email, _)) = ident.rsplit_once('<').and_then(|(_, s)| s.split_once('>')) else {
             return Ok(vec![]);
         };
@@ -302,11 +307,7 @@ fn revisions(
     }
     a.extend_from_slice(tips);
     a.push("--".into());
-    let output = crate::core::command(dir)
-        .args(a)
-        .args(paths)
-        .output()
-        .context("git log")?;
+    let output = read_output(dir, "log", crate::core::command(dir).args(a).args(paths))?;
     if !output.status.success() {
         bail!(
             "git log: {}",
@@ -559,8 +560,15 @@ pub(super) fn load_with_cancel(
         return h;
     }
     // Load a page for each global root; the tab can toggle these cached streams independently.
-    if let Some(r) = c.scope.iter().find_map(|&i| c.repos.get(i)) {
-        h.dates = local_dates(&r.path);
+    if let Some((root, repo)) = c
+        .scope
+        .iter()
+        .find_map(|&root| c.repos.get(root).map(|repo| (root, repo)))
+    {
+        match local_dates(&repo.path) {
+            Ok(dates) => h.dates = dates,
+            Err(error) => h.errors.push((root, format!("{}: {error}", repo.name))),
+        }
     }
     for &i in &c.scope {
         if cancelled() {

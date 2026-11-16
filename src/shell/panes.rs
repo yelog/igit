@@ -23,7 +23,7 @@ fn size_change(key: char) -> Option<(Axis, i32)> {
 }
 
 impl Shell {
-    fn layout(&self, tab: Tab) -> &PaneLayout {
+    pub(super) fn layout(&self, tab: Tab) -> &PaneLayout {
         match tab {
             Commit => &self.commit.panes,
             Log => &self.log.panes,

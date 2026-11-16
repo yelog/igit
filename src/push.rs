@@ -3,6 +3,8 @@ mod commit_copy;
 mod copy_tests;
 mod diff;
 mod display;
+#[cfg(test)]
+mod fetch_tests;
 mod files;
 mod keymap;
 mod loading;
@@ -18,9 +20,10 @@ mod view;
 mod view_tests;
 use crate::{
     core::{
-        command, git, git_bytes,
+        command, fetch as fetch_backend, git, git_bytes,
         loading::{Load, Scope},
-        redact_remote_error,
+        process::{with_read_control, ReadControl},
+        read_output, redact_remote_error,
         schedule::{self, RepoLock},
         strategy::Strategy,
         update::published_graph,
@@ -48,8 +51,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, TryRecvError},
-    time::Instant,
+    time::{Duration, Instant},
 };
+
+type FetchCache = BTreeMap<(PathBuf, String, String), (String, Option<String>)>;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Target {
@@ -68,6 +73,7 @@ struct Entry {
     head: String,
     t: Target,
     tracking: Option<String>,
+    fetch_invalidated: bool,
     config: upstream::Snapshot,
     n: usize,
     behind: Option<usize>,
@@ -115,6 +121,7 @@ struct Preview {
 enum Report {
     Started(usize),
     Row(usize, Result<PushOutcome, String>),
+    Fetched(fetch_backend::Observation),
     Phase(usize, &'static str),
     Conflicts(usize),
     Done,
@@ -166,6 +173,9 @@ pub struct PushPanel {
     load: Load<Vec<Entry>>,
     load_scope: Option<Scope>,
     load_error: Option<String>,
+    fetched: FetchCache,
+    fetch_status: BTreeMap<usize, String>,
+    fetch_observations: Vec<fetch_backend::Observation>,
     preview_load: Load<preview::Loaded>,
     preview_request: Option<preview::Request>,
     preview_failed: bool,
@@ -229,7 +239,32 @@ fn remote_head(p: &Path, t: &Target) -> Option<String> {
     )
     .ok()
 }
+
+fn absolute_endpoint(path: &Path, endpoint: String) -> Option<String> {
+    if endpoint.is_empty() {
+        return None;
+    }
+    if !endpoint.starts_with("file://")
+        && (!endpoint.contains(':') || Path::new(&endpoint).is_absolute())
+    {
+        let endpoint = Path::new(&endpoint);
+        let endpoint = if endpoint.is_absolute() {
+            endpoint.to_path_buf()
+        } else {
+            path.join(endpoint)
+        };
+        endpoint.into_os_string().into_string().ok()
+    } else {
+        Some(endpoint)
+    }
+}
+
+#[cfg(test)]
 fn entry(i: usize, r: &Repo, t: Option<&Target>) -> Entry {
+    entry_with_fetch(i, r, t, &FetchCache::new())
+}
+
+fn entry_with_fetch(i: usize, r: &Repo, t: Option<&Target>, fetched: &FetchCache) -> Entry {
     let mut x = Entry {
         idx: i,
         ..Default::default()
@@ -244,21 +279,43 @@ fn entry(i: usize, r: &Repo, t: Option<&Target>) -> Entry {
         if t.remote.is_empty() {
             bail!("no remote configured")
         }
-        let tracking = remote_head(&r.path, &t);
+        let push_endpoint = url(&r.path, &t.remote)
+            .ok()
+            .and_then(|endpoint| absolute_endpoint(&r.path, endpoint));
+        let fetch_endpoint = git(&r.path, &["remote", "get-url", "--", &t.remote])
+            .ok()
+            .and_then(|endpoint| absolute_endpoint(&r.path, endpoint));
+        let fallback = || {
+            if push_endpoint.is_some() && push_endpoint == fetch_endpoint {
+                remote_head(&r.path, &t)
+            } else {
+                None
+            }
+        };
+        let cached = fetched.get(&(r.path.clone(), t.remote.clone(), t.dst.clone()));
+        let (tracking, fetch_invalidated) = match cached {
+            Some((endpoint, tip)) if push_endpoint.as_ref() == Some(endpoint) => {
+                (tip.clone(), false)
+            }
+            Some(_) => (fallback(), true),
+            None => (fallback(), false),
+        };
         let range = tracking
             .as_ref()
             .map(|h| format!("{h}..{head}"))
             .unwrap_or_else(|| head.clone());
         let (n, behind) = if let Some(tip) = &tracking {
-            let output = published_graph(&r.path)
-                .args([
+            let output = read_output(
+                &r.path,
+                "outgoing history counts",
+                published_graph(&r.path).args([
                     "rev-list",
                     "--left-right",
                     "--count",
                     &format!("{head}...{tip}"),
                     "--",
-                ])
-                .output()?;
+                ]),
+            )?;
             if !output.status.success() {
                 bail!("Cannot compare the source and target history")
             }
@@ -303,6 +360,7 @@ fn entry(i: usize, r: &Repo, t: Option<&Target>) -> Entry {
             head,
             t,
             tracking,
+            fetch_invalidated,
             config,
             n,
             behind,
@@ -471,11 +529,13 @@ fn push_one(j: &Job, tags: bool, nohooks: bool) -> Result<PushOutcome> {
         bail!("remote tip differs from preview; Fetch, review target and retry (check push URL if different)")
     }
     if let Some(ref old) = j.tracking {
-        match published_graph(p)
-            .args(["merge-base", "--is-ancestor", old, &j.head])
-            .output()?
-            .status
-            .code()
+        match read_output(
+            p,
+            "push fast-forward ancestry",
+            published_graph(p).args(["merge-base", "--is-ancestor", old, &j.head]),
+        )?
+        .status
+        .code()
         {
             Some(0) => (),
             Some(1) => bail!("non-fast-forward; integrate upstream before retrying"),
@@ -606,6 +666,57 @@ fn failure_summary(error: &str) -> String {
 
 impl PushPanel {
     const PANES: [PaneId; 3] = [PaneId::Outgoing, PaneId::PushFiles, PaneId::PushDetails];
+
+    pub(crate) fn fetch_targets(&self, c: &Context) -> BTreeMap<PathBuf, Vec<(String, String)>> {
+        if self
+            .load_scope
+            .as_ref()
+            .is_some_and(|scope| !scope.matches(c))
+        {
+            return BTreeMap::new();
+        }
+        let mut targets = BTreeMap::new();
+        for entry in &self.entries {
+            if !c.scope.contains(&entry.idx) {
+                continue;
+            }
+            let Some(repo) = c.repos.get(entry.idx) else {
+                continue;
+            };
+            let target = self.targets.get(&entry.idx).unwrap_or(&entry.t);
+            if !target.remote.is_empty() && !target.dst.is_empty() {
+                targets
+                    .entry(repo.path.clone())
+                    .or_insert_with(Vec::new)
+                    .push((target.remote.clone(), target.dst.clone()));
+            }
+        }
+        targets
+    }
+
+    pub(crate) fn remember_fetch(&mut self, observation: fetch_backend::Observation) {
+        let Some(branch) = observation.branch else {
+            return;
+        };
+        let key = (observation.path, observation.remote, branch);
+        let value = (observation.endpoint, observation.tip);
+        if self.fetched.get(&key) != Some(&value) {
+            self.fetched.insert(key, value);
+            self.load.request();
+        }
+    }
+
+    pub(crate) fn take_fetch_observations(&mut self) -> Vec<fetch_backend::Observation> {
+        std::mem::take(&mut self.fetch_observations)
+    }
+
+    pub(crate) fn set_fetch_status(&mut self, status: BTreeMap<usize, String>) -> bool {
+        if self.fetch_status == status {
+            return false;
+        }
+        self.fetch_status = status;
+        true
+    }
 
     pub(crate) fn set_strategy(&mut self, strategy: Strategy) {
         if !self.busy() && self.strategy != strategy {
@@ -984,13 +1095,13 @@ impl PushPanel {
             .entries
             .iter()
             .filter(|e| c.scope.contains(&e.idx))
-            .map(|e| (e.idx, c.repos[e.idx].path.clone(), e.t.remote.clone()))
+            .map(|e| (e.idx, c.repos[e.idx].path.clone(), e.t.clone()))
             .collect();
         let parents: Vec<_> = c.repos.iter().map(|r| r.parent).collect();
         let inflight_items: BTreeSet<_> = if fetch {
             items
                 .iter()
-                .filter(|(_, _, remote)| !remote.is_empty())
+                .filter(|(_, _, target)| !target.remote.is_empty() && !target.dst.is_empty())
                 .map(|(idx, _, _)| *idx)
                 .collect()
         } else {
@@ -1018,7 +1129,7 @@ impl PushPanel {
             if fetch {
                 let items: Vec<_> = items
                     .into_iter()
-                    .filter(|(_, _, remote)| !remote.is_empty())
+                    .filter(|(_, _, target)| !target.remote.is_empty() && !target.dst.is_empty())
                     .collect();
                 let locks = items
                     .iter()
@@ -1030,14 +1141,26 @@ impl PushPanel {
                     &items,
                     &vec![Vec::new(); items.len()],
                     |left, right| locks[left].shares_git_state(&locks[right]),
-                    |_, (i, path, remote)| {
+                    |_, (i, path, destination)| {
                         let _ = worker.send(Report::Started(*i));
-                        git(path, &["fetch", "--no-recurse-submodules", "--", remote])
-                            .map(|_| PushOutcome::Complete)
-                            .map_err(|error| {
-                                let url = url(path, remote).unwrap_or_else(|_| "<remote>".into());
-                                redact_remote_error(&error.to_string(), &url)
-                            })
+                        let control = ReadControl::new(Duration::from_secs(120));
+                        with_read_control(&control, || {
+                            let target = fetch_backend::push_target(
+                                path,
+                                &destination.remote,
+                                &destination.dst,
+                            )?;
+                            let outcome = fetch_backend::execute(&target, &control)?;
+                            let _ = worker.send(Report::Fetched(fetch_backend::Observation {
+                                path: target.path,
+                                remote: target.key.remote,
+                                endpoint: target.endpoint,
+                                branch: target.key.branch,
+                                tip: outcome.tip,
+                            }));
+                            Ok(PushOutcome::Complete)
+                        })
+                        .map_err(|error: anyhow::Error| redact_remote_error(&error.to_string(), ""))
                     },
                     |result| result.is_ok(),
                     |index, result| {
@@ -1130,6 +1253,10 @@ impl PushPanel {
                     self.results.insert(i, r);
                     self.refresh_busy(c);
                     self.progress_seq = self.progress_seq.wrapping_add(1);
+                }
+                Report::Fetched(observation) => {
+                    self.remember_fetch(observation.clone());
+                    self.fetch_observations.push(observation);
                 }
                 Report::Done => finished = true,
                 Report::Phase(i, phase) => {
@@ -1282,6 +1409,14 @@ impl Panel for PushPanel {
     fn refresh(&mut self, c: &Context) -> Result<()> {
         self.cancel_key_sequence();
         let old = self.selected_identity();
+        let target_changed = old
+            .as_ref()
+            .and_then(|(root, _)| self.entries.iter().find(|entry| entry.idx == *root))
+            .is_some_and(|entry| {
+                self.targets
+                    .get(&entry.idx)
+                    .is_some_and(|target| target != &entry.t)
+            });
         let retry_preview = self.preview_failed;
         let scope_changed = self
             .load_scope
@@ -1292,7 +1427,7 @@ impl Panel for PushPanel {
         self.load.request();
         self.review.clear();
         self.entries.retain(|e| c.scope.contains(&e.idx));
-        if scope_changed || old != self.selected_identity() {
+        if scope_changed || target_changed || old != self.selected_identity() {
             self.outgoing_search.invalidate();
             self.pos = old
                 .as_ref()

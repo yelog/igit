@@ -137,7 +137,9 @@ fn opening_a_workspace_restores_runtime_background_loading() {
         path: app.ctx.workspace.display().to_string(),
     });
     app.dispatch(&key(KeyCode::Enter));
+    finish_workspace_scan(&mut app);
     assert!(app.pop.is_none());
+    assert_eq!(app.tab, Commit);
     assert!(app.refresh_state.background);
 
     app.go(Remote);

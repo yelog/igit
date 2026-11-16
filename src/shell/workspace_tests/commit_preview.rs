@@ -133,12 +133,14 @@ fn configured_tree_bindings_do_not_take_keys_from_the_revision_preview() {
     app.dispatch(&key(KeyCode::Char(']')));
     app.dispatch(&key(KeyCode::Char('y')));
     assert_eq!(capture.texts().last().unwrap(), "staged\n");
+    assert!(app.notifications.dismiss_all_live());
     app.dispatch(&key(KeyCode::Char('z')));
     let zoomed = screen(&mut app, 160, 36);
     assert!(
         zoomed.contains("After") && !zoomed.contains("Before"),
         "{zoomed}"
     );
+    assert!(zoomed.contains(" Split "), "{zoomed}");
     app.dispatch(&key(KeyCode::Char('z')));
     let split = screen(&mut app, 160, 36);
     assert!(

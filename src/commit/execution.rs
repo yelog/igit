@@ -89,10 +89,6 @@ impl CommitPanel {
         self.execution.enabled = true;
     }
 
-    pub(crate) fn background_execution_enabled(&self) -> bool {
-        self.execution.enabled
-    }
-
     pub(crate) fn execution_running(&self) -> bool {
         self.execution.pending.is_some()
     }

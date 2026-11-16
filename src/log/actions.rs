@@ -1,7 +1,10 @@
 //! Mouse and keyboard entry points for the selected commit's operations.
 use super::{
     input::TextInput,
-    operations::{Kind, Review, Target},
+    operations::{
+        history::{editor::Editor as HistoryEditor, editor::Response as HistoryResponse, Draft},
+        Kind, Review, Target,
+    },
     *,
 };
 use crate::ui::{help::HelpSection, idea::button_style};
@@ -17,7 +20,7 @@ fn shortcut(kind: Kind) -> Option<&'static str> {
         Kind::Revert => Some("R"),
         Kind::Drop => Some("d"),
         Kind::Edit => Some("F2"),
-        Kind::Branch | Kind::Tag | Kind::Checkout => None,
+        Kind::Branch | Kind::Tag | Kind::Checkout | Kind::History => None,
     }
 }
 
@@ -38,6 +41,7 @@ pub(super) struct Dialog {
 enum Mode {
     Menu(usize),
     Input(Kind, TextInput),
+    History(Box<HistoryEditor>),
 }
 
 #[derive(Clone, Copy)]
@@ -69,6 +73,7 @@ impl Dialog {
 
     pub fn help(&self) -> HelpSection {
         match self.mode {
+            Mode::History(ref editor) => editor.help(),
             Mode::Menu(_) => HelpSection::new(
                 "Log / Commit Actions",
                 &[
@@ -181,15 +186,21 @@ impl Dialog {
                     return Input::Review(*kind, input.text.clone());
                 }
             }
+            Mode::History(_) => (),
         }
         Input::None
     }
 
     fn draw(&mut self, f: &mut Frame, area: Rect, c: &Context) {
         self.hits.clear();
+        if let Mode::History(editor) = &mut self.mode {
+            editor.draw(f, area);
+            return;
+        }
         let (title, width, height) = match self.mode {
             Mode::Menu(_) => ("Commit Actions", 42, COMPARE_ROW as u16 + 4),
             Mode::Input(kind, _) => (kind.title(), 68, if kind == Kind::Edit { 15 } else { 7 }),
+            Mode::History(_) => unreachable!(),
         };
         let mut r = popup(area, width, height);
         if let (Mode::Menu(_), Some((x, y))) = (&self.mode, self.anchor) {
@@ -466,6 +477,19 @@ impl LogPanel {
         self.open_commit_dialog(c, None, Mode::Input(Kind::Edit, TextInput::new(text)))
     }
 
+    pub(crate) fn open_history_plan(&mut self, c: &Context) -> Result<()> {
+        anyhow::ensure!(
+            self.filter.comparison.is_none(),
+            "History cleanup is unavailable in a branch comparison"
+        );
+        self.require_current_history(c)?;
+        let rev = self
+            .rev()
+            .ok_or_else(|| anyhow::anyhow!("No commit selected"))?;
+        let draft = Draft::read(c, Target::new(c, rev)?)?;
+        self.open_commit_dialog(c, None, Mode::History(Box::new(HistoryEditor::new(draft))))
+    }
+
     pub(super) fn draw_commit_dialog(&mut self, f: &mut Frame, a: Rect, c: &Context) {
         if let Some(dialog) = &mut self.commit_dialog {
             dialog.draw(f, a, c);
@@ -489,6 +513,25 @@ impl LogPanel {
         let Some(dialog) = &mut self.commit_dialog else {
             return Ok(Action::None);
         };
+        if let Mode::History(editor) = &mut dialog.mode {
+            self.commit_review = None;
+            match editor.event(e)? {
+                HistoryResponse::None => return Ok(Action::None),
+                HistoryResponse::Close => {
+                    self.commit_dialog = None;
+                    return Ok(Action::None);
+                }
+                HistoryResponse::Review => {
+                    let (review, body) = Review::prepare_history(c, &editor.draft)?;
+                    self.commit_review = Some(review);
+                    return Ok(Action::Confirm {
+                        title: Kind::History.title().into(),
+                        body,
+                        token: REVIEW_TOKEN.into(),
+                    });
+                }
+            }
+        }
         let (kind, input) = match dialog.event(e) {
             Input::None => return Ok(Action::None),
             Input::Close => {
@@ -508,6 +551,10 @@ impl LogPanel {
             Input::Choose(Kind::CherryPick) => {
                 let target = dialog.target.clone();
                 return self.review_picks(c, Some(target));
+            }
+            Input::Choose(Kind::History) => {
+                self.open_history_plan(c)?;
+                return Ok(Action::None);
             }
             Input::Choose(kind @ (Kind::Branch | Kind::Tag | Kind::Edit)) => {
                 let text = if kind == Kind::Edit {
@@ -533,6 +580,9 @@ impl LogPanel {
         let Some(review) = self.commit_review.take() else {
             return Action::None;
         };
+        if review.is_history() {
+            self.commit_dialog = None;
+        }
         let is_pick = review.is_cherry_pick();
         let (level, message) = match review.execute(c) {
             Ok(outcome) => {

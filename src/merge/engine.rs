@@ -69,11 +69,13 @@ pub(super) fn native_path(bytes: &[u8]) -> Result<PathBuf> {
 }
 
 pub(super) fn run(repo: &Path, args: &[&str]) -> Result<Output> {
-    crate::core::command(repo)
-        .arg("--literal-pathspecs")
-        .args(args)
-        .output()
-        .context("run git")
+    let mut command = crate::core::command(repo);
+    command.arg("--literal-pathspecs").args(args);
+    if let Some(operation) = crate::core::read_operation(args) {
+        crate::core::read_output(repo, operation, &mut command)
+    } else {
+        command.output().context("run git")
+    }
 }
 pub(super) fn checked(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let o = run(repo, args)?;
@@ -581,7 +583,11 @@ fn generated(
         if let Some(arg) = fmt {
             cmd.arg(arg);
         }
-        let out = cmd.arg(&a).arg(&b).arg(&c).output()?;
+        let out = crate::core::read_output(
+            repo,
+            "conflict marker comparison",
+            cmd.arg(&a).arg(&b).arg(&c),
+        )?;
         if let Some(n) = out.status.code() {
             if n < 128 && clean_marker_labels(&String::from_utf8_lossy(&out.stdout)) == want {
                 return Ok(true);
@@ -902,6 +908,43 @@ mod tests {
         assert_eq!(o.status.code(), Some(1));
         td
     }
+
+    #[test]
+    fn cancelled_merge_reads_preserve_staging_and_do_not_cancel_explicit_index_writes() {
+        use crate::core::process::{with_read_control, ReadControl};
+
+        let directory = tempfile::tempdir().unwrap();
+        let repo = directory.path();
+        checked(repo, &["init", "-q"]).unwrap();
+        fs::write(repo.join("selected"), "staged selected\n").unwrap();
+        fs::write(repo.join("sibling"), "staged sibling\n").unwrap();
+        checked(repo, &["add", "--", "selected", "sibling"]).unwrap();
+        fs::write(repo.join("selected"), "working selected\n").unwrap();
+        fs::write(repo.join("sibling"), "working sibling\n").unwrap();
+        let index = fs::read(repo.join(".git/index")).unwrap();
+        let control = ReadControl::default();
+        control.cancel();
+        with_read_control(&control, || {
+            let error = run(repo, &["ls-files", "--stage", "-z"]).unwrap_err();
+            assert!(error.to_string().contains("cancelled"));
+            assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index);
+            checked(repo, &["write-tree"]).unwrap();
+            checked(repo, &["add", "--", "selected"]).unwrap();
+        });
+        assert_eq!(
+            checked(repo, &["show", ":selected"]).unwrap(),
+            b"working selected\n"
+        );
+        assert_eq!(
+            checked(repo, &["show", ":sibling"]).unwrap(),
+            b"staged sibling\n"
+        );
+        assert_eq!(
+            fs::read(repo.join("sibling")).unwrap(),
+            b"working sibling\n"
+        );
+    }
+
     #[test]
     fn real_merge_safe_conflict_apply_continue() {
         let td = fixture();

@@ -1,4 +1,4 @@
-use super::{command, git};
+use super::{command, git, read_output};
 use anyhow::{bail, ensure, Context as _, Result};
 use std::{collections::BTreeSet, path::Path};
 
@@ -33,10 +33,11 @@ pub(crate) fn commit_url(repo: &Path, oid: &str) -> Result<String> {
 }
 
 fn setting(repo: &Path, key: &str) -> Result<Option<String>> {
-    let output = command(repo)
-        .args(["config", "--get", key])
-        .output()
-        .context("Cannot read browser configuration")?;
+    let output = read_output(
+        repo,
+        "browser configuration",
+        command(repo).args(["config", "--get", key]),
+    )?;
     match output.status.code() {
         Some(0) => Ok(Some(
             String::from_utf8(output.stdout)

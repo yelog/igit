@@ -1,5 +1,8 @@
 use super::{PermanentLayout, Rev};
-use crate::{core::Context, log::model::all_tips};
+use crate::{
+    core::{read_output, Context},
+    log::model::all_tips,
+};
 use anyhow::{bail, Context as _, Result};
 use std::path::Path;
 
@@ -32,27 +35,29 @@ impl PermanentLayout {
 // IDEA's DFS fragment colors depend on older ancestors too. Read only object
 // IDs, parents and refs for layout; paged history still owns messages/authors.
 fn metadata(path: &Path, root: usize) -> Result<Vec<Rev>> {
-    let output = crate::core::command(path)
-        .args([
-            "log",
-            "--date-order",
-            "--no-show-signature",
-            "--no-notes",
-            "--no-color",
-            "--decorate=full",
-            "--decorate-refs=HEAD",
-            "--decorate-refs=refs/heads/*",
-            "--decorate-refs=refs/remotes/*",
-            "--decorate-refs=refs/tags/*",
-            "--decorate-refs-exclude=refs/remotes/*/HEAD",
-            "--ignore-missing",
-            "-z",
-            "--format=%H%x00%P%x00%D",
-        ])
-        .args(all_tips())
-        .arg("--")
-        .output()
-        .context("git log")?;
+    let output = read_output(
+        path,
+        "log",
+        crate::core::command(path)
+            .args([
+                "log",
+                "--date-order",
+                "--no-show-signature",
+                "--no-notes",
+                "--no-color",
+                "--decorate=full",
+                "--decorate-refs=HEAD",
+                "--decorate-refs=refs/heads/*",
+                "--decorate-refs=refs/remotes/*",
+                "--decorate-refs=refs/tags/*",
+                "--decorate-refs-exclude=refs/remotes/*/HEAD",
+                "--ignore-missing",
+                "-z",
+                "--format=%H%x00%P%x00%D",
+            ])
+            .args(all_tips())
+            .arg("--"),
+    )?;
     if !output.status.success() {
         bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
     }
@@ -74,7 +79,17 @@ fn metadata(path: &Path, root: usize) -> Result<Vec<Rev>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::process::{with_read_control, ReadControl};
     use crate::log::tests::{commit, git, init};
+
+    #[test]
+    fn metadata_propagates_cancellation_instead_of_empty_layout() {
+        let directory = init();
+        let control = ReadControl::default();
+        control.cancel();
+        let error = with_read_control(&control, || metadata(directory.path(), 0)).unwrap_err();
+        assert!(error.to_string().contains("cancelled"), "{error:#}");
+    }
 
     #[test]
     fn metadata_includes_older_parents_without_messages_or_worktree_writes() {

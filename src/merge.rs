@@ -1,4 +1,5 @@
 //! Three-way merge editor. The working file is untouched until Apply is confirmed.
+mod drafts;
 mod engine;
 mod keymap;
 mod list;
@@ -146,6 +147,8 @@ pub struct MergePanel {
     follow: bool,
     hist: Vec<Snapshot>,
     drafts: HashMap<(usize, PathBuf), (Stages, Snapshot)>,
+    draft_identity: Option<drafts::Identity>,
+    draft_origins: HashMap<(usize, PathBuf), drafts::Identity>,
     edit: Option<Editor>,
     prefix: Option<char>,
     goto_pending: bool,
@@ -255,14 +258,25 @@ impl MergePanel {
             .map(|d| d.file.root)
             .or_else(|| self.list.selected_root())
     }
-    fn stash(&mut self) {
+    fn stash(&mut self, c: &Context) -> Result<()> {
         if let Some(d) = &self.doc {
+            let repo = c
+                .repos
+                .get(d.file.root)
+                .ok_or_else(|| anyhow::anyhow!("Repository is no longer available"))?;
+            let identity = self.draft_identity.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("Draft identity is missing; keep the editor open")
+            })?;
+            drafts::save(&c.state_dir, &repo.path, d, identity)?;
             let s = snap(d, 0..d.chunks.len());
             self.drafts.insert(
                 (d.file.root, d.file.path.clone()),
                 (d.file.stages.clone(), s),
             );
+            self.draft_origins
+                .insert((d.file.root, d.file.path.clone()), identity.clone());
         }
+        Ok(())
     }
     fn store(&mut self, s: Snapshot) {
         if !s.is_empty() {
@@ -278,15 +292,12 @@ impl MergePanel {
             "Repository is outside Roots scope"
         );
         let mut d = Document::open(&c.repos[file.root].path, file)?;
-        if let Some((st, changes)) = self.drafts.get(&(d.file.root, d.file.path.clone())) {
-            if *st == d.file.stages {
-                replay(&mut d, changes.clone())
-            }
-        }
+        drafts::load(&c.state_dir, &c.repos[d.file.root].path, &mut d)?;
         Ok(d)
     }
     fn choose_file(&mut self, c: &Context, file: Conflict) -> Result<()> {
         let d = self.open_document(c, file)?;
+        self.draft_identity = Some(drafts::Identity::read(&c.repos[d.file.root].path, &d)?);
         self.idx = d.chunks.iter().position(|b| !b.done()).unwrap_or(0);
         self.list.select_file(&d.file);
         self.doc = Some(d);
@@ -392,7 +403,18 @@ impl MergePanel {
                     }
                 }
                 Hit::AcceptFile(i, side) => return self.preview_side(c, i, side),
-                Hit::PrepareSimple => return self.prepare_simple(c),
+                Hit::PrepareSimple => {
+                    let action = self.prepare_simple(c);
+                    if let Err(error) = self.persist_prepared_drafts(c) {
+                        return Action::Notice(
+                            NoticeLevel::Error,
+                            format!(
+                                "Draft persistence failed: {error:#}. Session drafts were retained"
+                            ),
+                        );
+                    }
+                    return action;
+                }
                 Hit::FoldUnresolved => self.list.toggle_unresolved(),
                 Hit::TogglePaths => self.list.toggle_paths(),
                 Hit::Close => return Action::CloseDialog,
@@ -403,13 +425,21 @@ impl MergePanel {
         let d = self.doc.as_mut().unwrap();
         match hit {
             Hit::List | Hit::Save => {
-                self.close_document();
-                if matches!(hit, Hit::Save) {
+                let stale = self.doc_stale;
+                if let Err(error) = self.close_document(c) {
                     return Action::Notice(
-                        NoticeLevel::Success,
-                        "Merge draft saved for this session".into(),
+                        NoticeLevel::Error,
+                        format!("Merge draft was not saved: {error:#}. Editor kept open"),
                     );
                 }
+                return Action::Notice(
+                    if stale { NoticeLevel::Warning } else { NoticeLevel::Success },
+                    if stale {
+                        "Outdated merge draft saved to app state; reopening requires matching sources"
+                    } else {
+                        "Merge draft saved to app state; sources will be rechecked when reopened"
+                    }.into(),
+                );
             }
             Hit::Auto(source) => {
                 let ids = d
@@ -643,13 +673,40 @@ impl MergePanel {
         }
     }
 
-    fn close_document(&mut self) {
+    fn persist_prepared_drafts(&mut self, c: &Context) -> Result<()> {
+        for ((root, path), (stages, snapshot)) in &self.drafts {
+            if !c.scope.contains(root) {
+                continue;
+            }
+            let repo = c
+                .repos
+                .get(*root)
+                .ok_or_else(|| anyhow::anyhow!("Repository is no longer available"))?;
+            let file = Conflict {
+                root: *root,
+                path: path.clone(),
+                stages: stages.clone(),
+            };
+            let mut document = Document::open(&repo.path, file)?;
+            let identity = self
+                .draft_origins
+                .entry((*root, path.clone()))
+                .or_insert(drafts::Identity::read(&repo.path, &document)?);
+            replay(&mut document, snapshot.clone());
+            drafts::save(&c.state_dir, &repo.path, &document, identity)?;
+        }
+        Ok(())
+    }
+
+    fn close_document(&mut self, c: &Context) -> Result<()> {
         self.finish_edit(false);
-        self.stash();
+        self.stash(c)?;
         self.doc = None;
+        self.draft_identity = None;
         self.doc_stale = false;
         self.hist.clear();
         self.view.reset_document();
+        Ok(())
     }
 }
 
@@ -715,8 +772,10 @@ impl Panel for MergePanel {
             return match plan.execute(&repo.path) {
                 Ok(message) => {
                     self.drafts.retain(|(id, _), _| *id != root);
+                    self.draft_origins.retain(|(id, _), _| *id != root);
                     if self.doc.as_ref().is_some_and(|d| d.file.root == root) {
                         self.doc = None;
+                        self.draft_identity = None;
                         self.doc_stale = false;
                         self.hist.clear();
                         self.view.reset_document();
@@ -742,6 +801,20 @@ impl Panel for MergePanel {
                         "Sources changed; reopen the conflict before applying".into(),
                     );
                 }
+                let identity = self.draft_identity.clone();
+                if let Some(identity) = &identity {
+                    if let Err(error) = drafts::Identity::read(&c.repos[d.file.root].path, d)
+                        .and_then(|current| {
+                            anyhow::ensure!(
+                                current == *identity,
+                                "Merge draft sources changed; reopen before applying"
+                            );
+                            Ok(())
+                        })
+                    {
+                        return Action::Notice(NoticeLevel::Error, format!("{error:#}"));
+                    }
+                }
                 match d.apply() {
                     Ok(()) => {
                         let next_step = if d.op.is_some() {
@@ -749,12 +822,20 @@ impl Panel for MergePanel {
                         } else {
                             "Review in Commit."
                         };
-                        let msg = format!(
+                        let mut msg = format!(
                             "{}: staged resolved {}. {next_step}",
                             c.repos[d.file.root].name,
                             d.file.label()
                         );
                         self.drafts.remove(&(d.file.root, d.file.path.clone()));
+                        self.draft_origins
+                            .remove(&(d.file.root, d.file.path.clone()));
+                        let cleanup_failed = identity
+                            .as_ref()
+                            .and_then(|identity| drafts::remove(&c.state_dir, identity).err());
+                        if let Some(error) = &cleanup_failed {
+                            msg.push_str(&format!(" Saved draft cleanup failed: {error:#}"));
+                        }
                         let root = d.file.root;
                         let path = &d.file.path;
                         let next = self
@@ -764,6 +845,7 @@ impl Panel for MergePanel {
                             .min_by_key(|f| (&f.path < path, &f.path))
                             .cloned();
                         self.doc = None;
+                        self.draft_identity = None;
                         self.doc_stale = false;
                         self.hist.clear();
                         self.view.reset_document();
@@ -775,7 +857,14 @@ impl Panel for MergePanel {
                                 );
                             }
                         }
-                        Action::Refresh(NoticeLevel::Success, msg)
+                        Action::Refresh(
+                            if cleanup_failed.is_some() {
+                                NoticeLevel::Warning
+                            } else {
+                                NoticeLevel::Success
+                            },
+                            msg,
+                        )
                     }
                     Err(e) => Action::Notice(NoticeLevel::Error, format!("{e:#}")),
                 }

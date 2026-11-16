@@ -19,21 +19,35 @@ enum Message {
 
 pub(super) struct WorkspaceLoad {
     receiver: Receiver<Message>,
+    control: crate::core::process::ReadControl,
     pub(super) stage: &'static str,
     pub(super) roots: Option<usize>,
 }
 
 impl WorkspaceLoad {
     pub(super) fn start(launch: cli::Launch, config: AppConfig) -> Result<Self> {
+        Self::start_preserving(launch, config, None)
+    }
+
+    pub(super) fn start_preserving(
+        launch: cli::Launch,
+        config: AppConfig,
+        previous: Option<Context>,
+    ) -> Result<Self> {
         let (sender, receiver) = mpsc::channel();
+        let control = crate::core::process::ReadControl::default();
+        let worker_control = control.clone();
         thread::Builder::new()
             .name("igit-startup".into())
             .spawn(move || {
-                let result = load_workspace(&launch, config, &sender);
+                let result = crate::core::process::with_read_control(&worker_control, || {
+                    load_workspace(&launch, config, &sender, previous.as_ref())
+                });
                 let _ = sender.send(Message::Ready(result.map(Box::new)));
             })?;
         Ok(Self {
             receiver,
+            control,
             stage: DISCOVERING,
             roots: None,
         })
@@ -52,12 +66,22 @@ impl WorkspaceLoad {
     }
 }
 
+impl Drop for WorkspaceLoad {
+    fn drop(&mut self) {
+        self.control.cancel();
+    }
+}
+
 fn load_workspace(
     launch: &cli::Launch,
     config: AppConfig,
     sender: &Sender<Message>,
+    previous: Option<&Context>,
 ) -> Result<Shell> {
-    let ctx = Context::discover(&launch.workspace)?;
+    let mut ctx = Context::discover(&launch.workspace)?;
+    if let Some(previous) = previous {
+        super::rescan::preserve_scope(previous, &mut ctx);
+    }
     sender
         .send(Message::Discovered(ctx.repos.len()))
         .map_err(|_| anyhow::anyhow!("Workspace loading cancelled"))?;
@@ -77,6 +101,19 @@ fn load_workspace(
         .send(Message::Stage("Checking conflicts..."))
         .map_err(|_| anyhow::anyhow!("Workspace loading cancelled"))?;
     app.refresh_conflicts();
+    if previous.is_some() {
+        if let Some(error) = app
+            .notifications
+            .history()
+            .find(|notice| notice.level == NoticeLevel::Error)
+        {
+            bail!(
+                "Workspace inspection failed: {}: {}",
+                error.source,
+                error.body
+            );
+        }
+    }
     // Enter through the regular activation path so each panel starts its own reads.
     // In particular, entering Log starts a separate worker and never waits for history.
     app.go(launch.tab);
@@ -299,6 +336,7 @@ pub(super) fn pending_workspace() -> (impl FnOnce(), WorkspaceLoad) {
         move || drop(sender),
         WorkspaceLoad {
             receiver,
+            control: crate::core::process::ReadControl::default(),
             stage: DISCOVERING,
             roots: None,
         },

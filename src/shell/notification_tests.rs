@@ -126,6 +126,7 @@ fn g_n_opens_history_in_an_empty_workspace_and_escape_cancels_the_chord() {
         path: empty.path().display().to_string(),
     });
     app.dispatch(&key(KeyCode::Enter));
+    finish_workspace_scan(&mut app);
     assert!(app.ctx.repos.is_empty());
     app.dispatch(&key(KeyCode::Char('g')));
     assert!(app.notification_prefix.is_some());
@@ -413,15 +414,19 @@ fn workspace_rescan_retains_notifications() {
     );
     let id = app.notifications.history().next().unwrap().id;
     app.pop = Some(Popup::Open {
-        path: app.ctx.repos[0].path.to_string_lossy().into_owned(),
+        path: app.ctx.workspace.display().to_string(),
     });
     app.dispatch(&key(KeyCode::Enter));
     assert!(app.pop.is_none());
+    finish_workspace_scan(&mut app);
     assert!(app
         .notifications
         .history()
         .any(|entry| entry.id == id && entry.body == "Copied before rescan"));
-    assert_eq!(app.notifications.latest_body(), "Workspace opened");
+    assert_eq!(
+        app.notifications.latest_body(),
+        "Workspace rescanned; Roots and Commit selections retained. Include new repositories in Roots."
+    );
 }
 
 #[test]

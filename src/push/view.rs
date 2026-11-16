@@ -806,7 +806,28 @@ impl PushPanel {
                 tools,
             );
         } else {
+            let start = self.hits.len();
             self.draw_toolbar(f, tools, &controls);
+            let left = self.hits[start..]
+                .iter()
+                .map(|(rect, _)| rect.right())
+                .max()
+                .unwrap_or(tools.x);
+            let width = tools.right().saturating_sub(left);
+            if width >= 12 {
+                if let Some(status) = self
+                    .selected()
+                    .filter(|(root, _)| c.scope.contains(root))
+                    .and_then(|(root, _)| self.fetch_status.get(&root))
+                    .filter(|status| !status.is_empty())
+                {
+                    f.render_widget(
+                        Paragraph::new(clipped(status, usize::from(width - 2)))
+                            .style(Style::new().fg(MUTED)),
+                        Rect::new(left + 1, tools.y, width - 2, 1),
+                    );
+                }
+            }
         }
     }
 

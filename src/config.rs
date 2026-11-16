@@ -24,8 +24,54 @@ struct Settings {
     terminal: Terminal,
     ui: Ui,
     ai: AiConfig,
+    fetch: FetchConfig,
     updates: UpdateConfig,
     keybindings: Keybindings,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FetchConfig {
+    pub enabled: bool,
+    pub interval_seconds: u64,
+    pub freshness_seconds: u64,
+    pub timeout_seconds: u64,
+    pub all_remotes: bool,
+    pub excluded_remotes: Vec<String>,
+}
+
+impl Default for FetchConfig {
+    fn default() -> Self {
+        toml::from_str::<Settings>(DEFAULT_TOML)
+            .expect("valid embedded fetch settings")
+            .fetch
+    }
+}
+
+impl FetchConfig {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if !(60..=86_400).contains(&self.interval_seconds) {
+            bail!("fetch.interval_seconds must be between 60 and 86400")
+        }
+        if !(1..=self.interval_seconds).contains(&self.freshness_seconds) {
+            bail!("fetch.freshness_seconds must be between 1 and fetch.interval_seconds")
+        }
+        if !(1..=600).contains(&self.timeout_seconds) {
+            bail!("fetch.timeout_seconds must be between 1 and 600")
+        }
+        for remote in &self.excluded_remotes {
+            if remote.is_empty()
+                || remote == "."
+                || remote.starts_with('-')
+                || remote
+                    .chars()
+                    .any(|character| character.is_whitespace() || character.is_control())
+            {
+                bail!("fetch.excluded_remotes must contain nonempty remote names without whitespace or control characters; names must not start with '-' or equal '.'")
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -180,6 +226,7 @@ pub struct AppConfig {
     pub icons: IconMode,
     pub mouse: bool,
     pub ai: Option<AiConfig>,
+    pub fetch: FetchConfig,
     pub updates: UpdateConfig,
     pub hint_delay: Duration,
     pub commands: Vec<BoundCommand>,
@@ -251,6 +298,7 @@ impl AppConfig {
         }
         validate(&commands)?;
         settings.ai.validate()?;
+        settings.fetch.validate()?;
         if settings.updates.check_interval_hours == 0
             || settings.updates.check_interval_hours > u64::MAX / 3600
         {
@@ -263,6 +311,7 @@ impl AppConfig {
             icons,
             mouse: settings.terminal.mouse,
             ai: has_ai.then_some(settings.ai),
+            fetch: settings.fetch,
             updates: settings.updates,
             hint_delay: Duration::from_millis(settings.keybindings.hint_delay_ms),
             commands,
@@ -495,6 +544,183 @@ mod tests {
         let disabled = AppConfig::from_toml("[keybindings.commit]\nreview = []").unwrap();
         assert_eq!(disabled.label("commit", "review"), "—");
     }
+
+    #[test]
+    fn fetch_configuration_defaults() {
+        let defaults = FetchConfig::default();
+        assert_eq!(
+            defaults,
+            FetchConfig {
+                enabled: true,
+                interval_seconds: 300,
+                freshness_seconds: 60,
+                timeout_seconds: 120,
+                all_remotes: false,
+                excluded_remotes: vec![],
+            }
+        );
+        assert_eq!(AppConfig::default().fetch, defaults);
+    }
+
+    #[test]
+    fn fetch_configuration_merges_partial_overrides() {
+        for (text, expected) in [
+            (
+                "interval_seconds=900",
+                FetchConfig {
+                    interval_seconds: 900,
+                    ..Default::default()
+                },
+            ),
+            (
+                "freshness_seconds=120",
+                FetchConfig {
+                    freshness_seconds: 120,
+                    ..Default::default()
+                },
+            ),
+            (
+                "timeout_seconds=180",
+                FetchConfig {
+                    timeout_seconds: 180,
+                    ..Default::default()
+                },
+            ),
+            (
+                "all_remotes=true",
+                FetchConfig {
+                    all_remotes: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                "excluded_remotes=['archive', 'team/镜像']",
+                FetchConfig {
+                    excluded_remotes: vec!["archive".into(), "team/镜像".into()],
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let fetch = AppConfig::from_toml(&format!("[fetch]\n{text}"))
+                .unwrap()
+                .fetch;
+            assert_eq!(fetch, expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn fetch_configuration_can_disable_automatic_fetch() {
+        let fetch = AppConfig::from_toml("[fetch]\nenabled=false")
+            .unwrap()
+            .fetch;
+        assert_eq!(
+            fetch,
+            FetchConfig {
+                enabled: false,
+                ..Default::default()
+            }
+        );
+        let error = AppConfig::from_toml("[fetch]\nenabled=false\ninterval_seconds=0")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("fetch.interval_seconds"), "{error}");
+    }
+
+    #[test]
+    fn fetch_configuration_accepts_inclusive_boundaries() {
+        for (interval_seconds, freshness_seconds, timeout_seconds) in
+            [(60, 1, 1), (60, 60, 600), (86_400, 86_400, 600)]
+        {
+            let fetch = AppConfig::from_toml(&format!(
+                "[fetch]\ninterval_seconds={interval_seconds}\nfreshness_seconds={freshness_seconds}\ntimeout_seconds={timeout_seconds}"
+            ))
+            .unwrap()
+            .fetch;
+            assert_eq!(fetch.interval_seconds, interval_seconds);
+            assert_eq!(fetch.freshness_seconds, freshness_seconds);
+            assert_eq!(fetch.timeout_seconds, timeout_seconds);
+        }
+    }
+
+    #[test]
+    fn fetch_configuration_rejects_invalid_ranges() {
+        for (field, value) in [
+            ("interval_seconds", 0),
+            ("interval_seconds", 59),
+            ("interval_seconds", 86_401),
+            ("freshness_seconds", 0),
+            ("freshness_seconds", 301),
+            ("timeout_seconds", 0),
+            ("timeout_seconds", 601),
+        ] {
+            let text = format!("[fetch]\n{field}={value}");
+            let error = AppConfig::from_toml(&text).unwrap_err().to_string();
+            assert!(error.contains(&format!("fetch.{field}")), "{text}: {error}");
+        }
+        let text = "[fetch]\ninterval_seconds=60\nfreshness_seconds=61";
+        let error = AppConfig::from_toml(text).unwrap_err().to_string();
+        assert!(error.contains("fetch.freshness_seconds"), "{text}: {error}");
+    }
+
+    #[test]
+    fn fetch_configuration_rejects_invalid_remote_exclusions() {
+        for remote in [
+            r#""""#,
+            r#"" ""#,
+            r#"" origin""#,
+            r#""origin ""#,
+            r#""team mirror""#,
+            r#""team\tmirror""#,
+            r#""team\nmirror""#,
+            r#""team\u0000mirror""#,
+            r#""team\u007fmirror""#,
+            r#""team\u0085mirror""#,
+            r#""team\u2003mirror""#,
+            r#""-origin""#,
+            r#"".""#,
+        ] {
+            let text = format!("[fetch]\nexcluded_remotes=[{remote}]");
+            let error = AppConfig::from_toml(&text).unwrap_err().to_string();
+            assert!(error.contains("fetch.excluded_remotes"), "{text}: {error}");
+        }
+    }
+
+    #[test]
+    fn fetch_configuration_rejects_unknown_fields_and_invalid_types() {
+        for text in [
+            "enable=true",
+            "interval=300",
+            "freshness=60",
+            "timeout=120",
+            "all_remote=true",
+            "excluded_remote=[]",
+        ] {
+            for settings in [format!("[fetch]\n{text}"), format!("fetch={{ {text} }}")] {
+                assert!(AppConfig::from_toml(&settings).is_err(), "{settings}");
+            }
+        }
+        for text in [
+            "enabled='false'",
+            "interval_seconds=-1",
+            "interval_seconds='300'",
+            "interval_seconds=300.0",
+            "freshness_seconds=-1",
+            "freshness_seconds='60'",
+            "freshness_seconds=60.0",
+            "timeout_seconds=-1",
+            "timeout_seconds='120'",
+            "timeout_seconds=120.0",
+            "all_remotes='true'",
+            "excluded_remotes='origin'",
+            "excluded_remotes=[1]",
+        ] {
+            assert!(
+                AppConfig::from_toml(&format!("[fetch]\n{text}")).is_err(),
+                "{text}"
+            );
+        }
+    }
+
     #[test]
     fn ai_configuration_merges_defaults_and_accepts_custom_prompt() {
         assert!(AppConfig::default().ai.is_none());

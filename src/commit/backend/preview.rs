@@ -11,6 +11,18 @@ pub struct Comparison {
 }
 
 pub fn load(repo: &Path, change: &Change) -> Result<Comparison> {
+    load_side(
+        repo,
+        change,
+        if change.staged() {
+            super::staging::Side::Staged
+        } else {
+            super::staging::Side::Unstaged
+        },
+    )
+}
+
+pub fn load_side(repo: &Path, change: &Change, side: super::staging::Side) -> Result<Comparison> {
     if !change.selectable() {
         bail!("Split preview is unavailable for ignored or unmerged paths; showing the Git patch");
     }
@@ -28,7 +40,7 @@ pub fn load(repo: &Path, change: &Change) -> Result<Comparison> {
     // pathspec can also match children; exact_path filters those records out.
     let entries = exact_path(repo, None, &["ls-files", "--stage", "-z"], &change.path)?;
     let index = index_entry(&entries)?;
-    if change.staged() {
+    if side == super::staging::Side::Staged {
         let head = oid(repo)?;
         let before = match head.as_deref() {
             Some(head) => revision::source(repo, head, &change.path)?,
@@ -51,7 +63,7 @@ pub fn load(repo: &Path, change: &Change) -> Result<Comparison> {
         }
         absent("Untracked · absent from index")
     } else {
-        if index.is_none() {
+        if index.is_none() && change.xy[0] != b'D' {
             bail!("The tracked path no longer has an index entry; refresh before reviewing it");
         }
         // Intent-to-add has a real stage-0 empty blob. Read it as such, rather

@@ -1,10 +1,13 @@
 use super::model::Branch;
 use super::operations::Operation;
 use crate::{
-    core::{command, git, redact_remote_error, Repo},
+    core::{command, git, redact_remote_error, update::fetch_upstream, Repo},
     push::FocusedPush,
 };
 use anyhow::{ensure, Result};
+
+#[cfg(test)]
+mod tests;
 
 #[derive(PartialEq, Eq)]
 struct Upstream {
@@ -134,7 +137,22 @@ impl Sync {
         let url = Self::fetch_url(repo, &self.upstream)?;
         ensure!(fetch_url == &url, "Remote URL changed; review again");
 
-        let tracking = format!("{}:{}", self.upstream.reference, self.upstream.tracking);
+        let tip = fetch_upstream(
+            &repo.path,
+            &self.upstream.remote,
+            &self.upstream.reference,
+            &self.upstream.tracking,
+            &url,
+        )?;
+        revalidate()?;
+        ensure!(
+            Upstream::read(repo, branch)? == self.upstream,
+            "Upstream changed during fetch; review again"
+        );
+        ensure!(
+            Self::fetch_url(repo, &self.upstream)? == *fetch_url,
+            "Remote URL changed during fetch; review again"
+        );
         let fetch = [
             "fetch",
             "--no-tags",
@@ -145,19 +163,6 @@ impl Sync {
             "--refmap=",
             "--",
         ];
-        let mut args = fetch.to_vec();
-        args.extend([&self.upstream.remote, &tracking].map(String::as_str));
-        git(&repo.path, &args)
-            .map_err(|error| anyhow::anyhow!(redact_remote_error(&error.to_string(), &url)))?;
-        revalidate()?;
-        ensure!(
-            Upstream::read(repo, branch)? == self.upstream,
-            "Upstream changed during fetch; review again"
-        );
-        let tip = git(
-            &repo.path,
-            &["rev-parse", "--verify", &self.upstream.tracking],
-        )?;
         if branch.current {
             git(
                 &repo.path,

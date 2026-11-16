@@ -1,11 +1,17 @@
 //! Review and run a workspace update without routing through the Push dialog.
+#[cfg(test)]
+mod fetch_tests;
+#[cfg(test)]
+mod pull_tests;
 mod view;
 #[cfg(test)]
 mod view_tests;
 
 use crate::{
     core::{
-        command, git,
+        command,
+        fetch::{self as fetch_backend, Observation},
+        git,
         loading::{self, Load},
         redact_remote_error, revpath,
         schedule::{self, RepoLock},
@@ -178,35 +184,14 @@ impl Plan {
                 remote,
                 ..
             } => {
-                let refspec = if remote.name == "." {
-                    upstream.clone()
-                } else {
-                    format!("{upstream}:{tracking}")
-                };
-                git(
+                let target = crate::core::update::fetch_upstream(
                     repo,
-                    &[
-                        "fetch",
-                        "--no-tags",
-                        "--no-prune",
-                        "--no-prune-tags",
-                        "--no-recurse-submodules",
-                        "--no-write-fetch-head",
-                        "--refmap=",
-                        "--",
-                        &remote.name,
-                        &refspec,
-                    ],
-                )
-                .map_err(|error| {
-                    anyhow::anyhow!(redact_remote_error(&error.to_string(), &remote.url))
-                })?;
+                    &remote.name,
+                    upstream,
+                    tracking,
+                    &remote.url,
+                )?;
                 self.revalidate(repo, kind)?;
-                let target = git(
-                    repo,
-                    &["rev-parse", "--verify", &format!("{tracking}^{{commit}}")],
-                )
-                .context("Fetched upstream commit unavailable")?;
                 return crate::core::update::integrate(repo, &target, strategy);
             }
             Self::Fetch(remotes) => remotes,
@@ -226,6 +211,35 @@ impl Plan {
             bail!("{}", safe.trim());
         }
         Ok(())
+    }
+
+    fn fetch_targets(&self, repo: &Path) -> Vec<fetch_backend::Target> {
+        if !matches!(self, Self::Fetch(_)) {
+            return Vec::new();
+        }
+        fetch_backend::discover(repo, true, &[], &[]).unwrap_or_default()
+    }
+
+    fn fetch_observations(
+        &self,
+        repo: &Path,
+        captured: &[fetch_backend::Target],
+    ) -> Vec<Observation> {
+        if !matches!(self, Self::Fetch(_)) || self.revalidate(repo, Kind::Fetch).is_err() {
+            return Vec::new();
+        }
+        fetch_backend::discover(repo, true, &[], &[])
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|target| captured.iter().any(|previous| previous.key == target.key))
+            .map(|target| Observation {
+                path: target.path,
+                remote: target.key.remote,
+                endpoint: target.endpoint,
+                branch: None,
+                tip: None,
+            })
+            .collect()
     }
 }
 
@@ -339,6 +353,7 @@ impl RepositoryRow {
 enum Report {
     Started(usize),
     Row(usize, Outcome, Comparison),
+    Fetched(Vec<Observation>),
     Done,
 }
 
@@ -371,12 +386,25 @@ fn execute(kind: Kind, strategy: Strategy, targets: Vec<Target>, sender: mpsc::S
         },
         |_, (row, target)| {
             let _ = worker.send(Report::Started(*row));
+            let fetched = target
+                .plan
+                .as_ref()
+                .map(|plan| plan.fetch_targets(&target.path))
+                .unwrap_or_default();
             let outcome = match &target.plan {
                 Ok(plan) => plan
                     .execute(&target.path, kind, strategy)
                     .map_err(|error| error.to_string()),
                 Err(reason) => Err(reason.clone()),
             };
+            if outcome.is_ok() {
+                if let Ok(plan) = &target.plan {
+                    let observations = plan.fetch_observations(&target.path, &fetched);
+                    if !observations.is_empty() {
+                        let _ = worker.send(Report::Fetched(observations));
+                    }
+                }
+            }
             RunResult {
                 outcome,
                 comparison: Comparison::read(&target.path),
@@ -490,6 +518,7 @@ pub(super) struct Dialog {
     confirm_focused: bool,
     jobs: Vec<Job>,
     load: Load<Prepared>,
+    fetch_observations: Vec<Observation>,
 }
 
 impl Dialog {
@@ -541,6 +570,7 @@ impl Dialog {
             confirm_focused: false,
             jobs,
             load: Load::default(),
+            fetch_observations: Vec::new(),
         };
         dialog.load.request();
         dialog
@@ -548,6 +578,14 @@ impl Dialog {
 
     pub(super) fn reads_pending(&self) -> bool {
         self.load.pending()
+    }
+
+    pub(super) fn take_fetch_observations(&mut self) -> Vec<Observation> {
+        std::mem::take(&mut self.fetch_observations)
+    }
+
+    pub(super) fn running(&self) -> bool {
+        matches!(self.stage, Stage::Running(_))
     }
 
     pub(super) fn label(&self) -> &'static str {
@@ -620,6 +658,9 @@ impl Dialog {
                             row.outcome = outcome;
                             row.comparison = comparison;
                         }
+                    }
+                    Ok(Report::Fetched(observations)) => {
+                        self.fetch_observations.extend(observations);
                     }
                     Ok(Report::Done) => {
                         finished = true;

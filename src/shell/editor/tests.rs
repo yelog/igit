@@ -1,4 +1,33 @@
 use super::*;
+
+#[test]
+fn capability_contract_and_repository_events_are_versioned_and_escaped() {
+    let advertised = capabilities();
+    assert_eq!(advertised["schema_version"], 1);
+    assert_eq!(advertised["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(advertised["editor_protocol"], 1);
+    for feature in ["editor", "revision", "file-diff", "repository-events"] {
+        assert!(advertised["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&feature.into()));
+    }
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("repo\n\x1b\x07 文件");
+    let sequence = repository_sequence(&path, "authenticated-session").unwrap();
+    assert_eq!(sequence.bytes().filter(|&byte| byte == 0x1b).count(), 1);
+    assert_eq!(sequence.bytes().filter(|&byte| byte == 7).count(), 1);
+    let payload = sequence
+        .strip_prefix("\x1b]51;igit-changed;")
+        .unwrap()
+        .strip_suffix('\x07')
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_str(payload).unwrap();
+    assert_eq!(payload["version"], 1);
+    assert_eq!(payload["session"], "authenticated-session");
+    assert_eq!(payload["repo"], path.to_str().unwrap());
+    assert!(repository_sequence(Path::new("relative"), "session").is_err());
+}
 use std::fs;
 
 fn fixture() -> (tempfile::TempDir, Request) {

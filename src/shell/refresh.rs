@@ -32,9 +32,12 @@ impl Shell {
         }
     }
 
-    fn refresh_allowed(&self, tab: Tab) -> bool {
+    pub(super) fn refresh_allowed(&self, tab: Tab) -> bool {
+        !self.git_busy() && self.view_install_allowed(tab)
+    }
+
+    pub(super) fn view_install_allowed(&self, tab: Tab) -> bool {
         if self.pop.is_some()
-            || self.git_busy()
             || self.pending_keys.is_some()
             || self.notification_prefix.is_some()
             || self.window_prefix.is_some()

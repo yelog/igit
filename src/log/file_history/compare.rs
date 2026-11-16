@@ -262,21 +262,23 @@ fn safe_file(repo: &Path, path: &Path, allow_missing_parent: bool) -> Result<Pat
 }
 
 fn conversion_state(repo: &Path, path: &Path) -> Result<Vec<u8>> {
-    let output = crate::core::command(repo)
-        .args([
-            "--literal-pathspecs",
-            "check-attr",
-            "-z",
-            "filter",
-            "working-tree-encoding",
-            "ident",
-            "text",
-            "eol",
-            "--",
-        ])
-        .arg(path)
-        .output()
-        .context("read Git attributes")?;
+    let output = crate::core::read_output(
+        repo,
+        "check-attr",
+        crate::core::command(repo)
+            .args([
+                "--literal-pathspecs",
+                "check-attr",
+                "-z",
+                "filter",
+                "working-tree-encoding",
+                "ident",
+                "text",
+                "eol",
+                "--",
+            ])
+            .arg(path),
+    )?;
     ensure!(output.status.success(), "Cannot read Git attributes");
     let fields: Vec<_> = output.stdout.split(|&byte| byte == 0).collect();
     for field in fields.chunks_exact(3) {
@@ -301,10 +303,11 @@ fn conversion_state(repo: &Path, path: &Path) -> Result<Vec<u8>> {
         "core.filemode",
     ] {
         state.push(0);
-        let output = crate::core::command(repo)
-            .args(["config", "--get", key])
-            .output()
-            .with_context(|| format!("read Git config {key}"))?;
+        let output = crate::core::read_output(
+            repo,
+            "config",
+            crate::core::command(repo).args(["config", "--get", key]),
+        )?;
         ensure!(
             output.status.success() || output.status.code() == Some(1),
             "Cannot read Git configuration"
@@ -614,5 +617,24 @@ impl LocalCompare {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::process::{with_read_control, ReadControl};
+    use crate::log::tests::init;
+
+    #[test]
+    fn conversion_state_propagates_read_cancellation() {
+        let directory = init();
+        let control = ReadControl::default();
+        control.cancel();
+        let error = with_read_control(&control, || {
+            conversion_state(directory.path(), Path::new("file.txt"))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("cancelled"), "{error:#}");
     }
 }

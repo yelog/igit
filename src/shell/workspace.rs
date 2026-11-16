@@ -208,7 +208,11 @@ impl Shell {
                 String::new()
             };
             self.merge.draw_editor(f, editor, &self.ctx, &notice);
-            let hint = format!("{} Updates  F1 Help", self.config.label("global", "update"));
+            let hint = if self.workspace_scan.pending() {
+                self.workspace_scan.status(true)
+            } else {
+                format!("{} Updates  F1 Help", self.config.label("global", "update"))
+            };
             self.draw_footer(f, Rect::new(a.x, a.bottom() - 1, a.width, 1), &hint, MUTED);
             let hints = Rect::new(
                 a.x,
@@ -319,6 +323,11 @@ impl Shell {
                 .into(),
                 MUTED,
             )
+        } else if self.workspace_scan.pending() {
+            (
+                self.workspace_scan.status(self.merge.has_document()),
+                ACCENT,
+            )
         } else if self.ctx.repos.is_empty() {
             (
                 format!(
@@ -375,6 +384,18 @@ impl Shell {
         } else {
             format!("  {hint}")
         };
+        let used = brand.width() + version.width() + status.width();
+        let minimum_hint_width = 24;
+        let fetch = self.auto_fetch.footer();
+        let fetch = if search.is_none()
+            && !fetch.is_empty()
+            && foot.width >= 80
+            && used + fetch.width() + 4 + minimum_hint_width <= foot.width as usize
+        {
+            format!("  {fetch}")
+        } else {
+            String::new()
+        };
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 brand,
@@ -385,6 +406,13 @@ impl Shell {
             .style(Style::new().bg(TAG)),
             foot,
         );
+        if !fetch.is_empty() {
+            let width = fetch.width() as u16;
+            f.render_widget(
+                Paragraph::new(fetch).style(Style::new().fg(MUTED).bg(TAG)),
+                Rect::new(foot.right() - width, foot.y, width, 1),
+            );
+        }
         if let Some(search) = search {
             let x = self.regions.software_update.right().min(foot.right());
             search.draw(f, Rect::new(x, foot.y, foot.right() - x, 1));

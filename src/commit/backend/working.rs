@@ -41,12 +41,13 @@ pub(super) fn read_many(repo: &Path, paths: &[&Path]) -> Result<Vec<Working>> {
             .count()
             .max(1);
         let (batch, rest) = remaining.split_at(count);
-        let hashes = txt(checked(
+        let hashes = txt(checked(crate::core::read_output(
+            repo,
+            "working-file fingerprints",
             cmd(repo, None)
                 .args(["hash-object", "--no-filters", "--"])
-                .args(batch.iter().map(|(_, path)| path.as_os_str()))
-                .output()?,
-        )?);
+                .args(batch.iter().map(|(_, path)| path.as_os_str())),
+        )?)?);
         let hashes: Vec<_> = hashes.lines().collect();
         ensure!(
             hashes.len() == batch.len(),
@@ -104,4 +105,65 @@ fn metadata(repo: &Path, path: &Path) -> Result<Working> {
         hash: String::new(),
         mode,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{
+        git,
+        process::{with_read_control, ReadControl},
+    };
+    use std::time::Duration;
+
+    #[test]
+    fn cancelled_and_expired_fingerprints_preserve_real_index_and_worktree() {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = directory.path();
+        git(repo, &["init", "-q"]).unwrap();
+        git(repo, &["config", "core.autocrlf", "false"]).unwrap();
+        let paths: Vec<_> = (0..129)
+            .map(|number| PathBuf::from(format!("file {number:03} [literal] 文件.txt")))
+            .collect();
+        for (number, path) in paths.iter().enumerate() {
+            fs::write(repo.join(path), format!("staged {number}\n")).unwrap();
+        }
+        git(repo, &["add", "--", "."]).unwrap();
+        let contents: Vec<_> = paths
+            .iter()
+            .enumerate()
+            .map(|(number, path)| {
+                let bytes = format!("working {number}\n").into_bytes();
+                fs::write(repo.join(path), &bytes).unwrap();
+                bytes
+            })
+            .collect();
+        let index = fs::read(repo.join(".git/index")).unwrap();
+        let paths: Vec<_> = paths.iter().map(PathBuf::as_path).collect();
+        let expected = read_many(repo, &paths).unwrap();
+        assert_eq!(expected.len(), paths.len());
+        assert!(expected
+            .iter()
+            .all(|value| matches!(value, Working::File { hash, .. } if !hash.is_empty())));
+
+        let cancelled = ReadControl::default();
+        cancelled.cancel();
+        for (control, reason) in [
+            (cancelled, "cancelled"),
+            (ReadControl::new(Duration::ZERO), "timed out"),
+        ] {
+            let error = with_read_control(&control, || read_many(repo, &paths))
+                .err()
+                .expect("The fingerprint read must honor its control");
+            let message = error.to_string();
+            assert!(message.contains(reason), "{message}");
+            assert!(message.contains("working-file fingerprints"), "{message}");
+            assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index);
+            assert!(!repo.join(".git/index.lock").exists());
+            for (path, bytes) in paths.iter().zip(&contents) {
+                assert_eq!(fs::read(repo.join(path)).unwrap(), *bytes);
+            }
+        }
+        assert!(read_many(repo, &paths).unwrap() == expected);
+    }
 }

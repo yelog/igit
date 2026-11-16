@@ -22,6 +22,139 @@ enum Target {
     Apply,
 }
 
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    use crate::core::git;
+    use crossterm::event::KeyEvent;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn fixture() -> (tempfile::TempDir, Context, CommitPanel) {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["visible", "hidden"] {
+            let repo = dir.path().join(name);
+            fs::create_dir(&repo).unwrap();
+            git(&repo, &["init", "-q", "-b", "main"]).unwrap();
+            for (key, value) in [
+                ("user.name", "Recovery tester"),
+                ("user.email", "recovery@example.invalid"),
+                ("commit.gpgsign", "false"),
+                ("core.hooksPath", "/dev/null"),
+            ] {
+                git(&repo, &["config", key, value]).unwrap();
+            }
+            fs::write(repo.join("file"), "base\n").unwrap();
+            git(&repo, &["add", "."]).unwrap();
+            git(&repo, &["commit", "-qm", "base"]).unwrap();
+            fs::write(repo.join("file"), format!("{name} working\n")).unwrap();
+        }
+        let mut ctx = Context::discover(dir.path()).unwrap();
+        ctx.state_dir = dir.path().join("state");
+        for (root, repo) in ctx.repos.iter().enumerate() {
+            let (plan, unavailable) = discard::review(
+                root,
+                &repo.path,
+                discard::Target::Files(["file".into()].into()),
+            )
+            .unwrap();
+            assert!(unavailable.is_empty());
+            discard::execute_in(&plan, true, &ctx.state_dir).unwrap();
+        }
+        let mut panel = CommitPanel::default();
+        panel.refresh(&ctx).unwrap();
+        (dir, ctx, panel)
+    }
+
+    fn key(dialog: &mut Rollback, ctx: &Context, code: K) -> RollbackEvent {
+        dialog.event(&Event::Key(KeyEvent::new(code, Mod::NONE)), ctx)
+    }
+
+    #[test]
+    fn rollback_recovery_dialog_opens_with_clean_commit_and_reviews_only_visible_roots() {
+        let (_dir, mut ctx, mut panel) = fixture();
+        let visible = ctx
+            .repos
+            .iter()
+            .position(|repo| repo.name == "visible")
+            .unwrap();
+        let hidden = ctx
+            .repos
+            .iter()
+            .position(|repo| repo.name == "hidden")
+            .unwrap();
+        ctx.scope = [visible].into();
+        panel.refresh(&ctx).unwrap();
+        assert!(matches!(
+            panel.discard_review(&ctx).unwrap(),
+            Action::ReviewRollback
+        ));
+        let mut dialog = panel.take_rollback().unwrap();
+        assert!(matches!(
+            key(&mut dialog, &ctx, K::Char('u')),
+            RollbackEvent::Keep
+        ));
+        let review = dialog.restore.as_ref().unwrap();
+        assert_eq!(review.plans.len(), 1);
+        assert_eq!(review.plans[0].root, visible);
+        assert!(!review.apply);
+        for (width, height) in [(120, 36), (80, 24), (44, 12)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| dialog.draw(frame, frame.area(), &ctx))
+                .unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(
+                text.contains("Restore Last Rollback"),
+                "{width}x{height}: {text}"
+            );
+            assert!(text.contains(" Restore "), "{width}x{height}: {text}");
+        }
+        assert_eq!(
+            fs::read(ctx.repos[visible].path.join("file")).unwrap(),
+            b"base\n"
+        );
+        key(&mut dialog, &ctx, K::Tab);
+        assert!(matches!(
+            key(&mut dialog, &ctx, K::Enter),
+            RollbackEvent::Apply
+        ));
+        assert!(matches!(
+            dialog.apply(&ctx),
+            Action::Refresh(NoticeLevel::Success, _)
+        ));
+        assert_eq!(
+            fs::read(ctx.repos[visible].path.join("file")).unwrap(),
+            b"visible working\n"
+        );
+        assert_eq!(
+            fs::read(ctx.repos[hidden].path.join("file")).unwrap(),
+            b"base\n"
+        );
+    }
+
+    #[test]
+    fn rollback_recovery_dialog_rechecks_roots_before_restoring() {
+        let (_dir, mut ctx, panel) = fixture();
+        let mut dialog = Rollback::new(&panel, &ctx, &BTreeMap::new());
+        key(&mut dialog, &ctx, K::Char('u'));
+        assert!(!dialog.restore.as_ref().unwrap().plans.is_empty());
+        ctx.scope.clear();
+        assert!(matches!(
+            dialog.apply(&ctx),
+            Action::Refresh(NoticeLevel::Error, message) if message.contains("hidden or changed")
+        ));
+        for repo in &ctx.repos {
+            assert_eq!(fs::read(repo.path.join("file")).unwrap(), b"base\n");
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Hit {
     Row(usize),
@@ -35,6 +168,7 @@ enum Hit {
     Close,
     Apply,
     Help,
+    Restore,
 }
 
 pub(crate) enum RollbackEvent {
@@ -48,6 +182,13 @@ struct Preview {
     path: String,
     text: String,
     scroll: usize,
+}
+
+struct RestoreReview {
+    plans: Vec<discard::RestorePlan>,
+    text: String,
+    scroll: usize,
+    apply: bool,
 }
 
 pub(crate) struct Rollback {
@@ -70,6 +211,7 @@ pub(crate) struct Rollback {
     preview: Option<Preview>,
     tree_area: Rect,
     hits: Vec<(Rect, Hit)>,
+    restore: Option<RestoreReview>,
 }
 
 impl Rollback {
@@ -171,6 +313,7 @@ impl Rollback {
             preview: None,
             tree_area: Rect::default(),
             hits: vec![],
+            restore: None,
         };
         dialog.rebuild(c);
         if let Some(i) = panel
@@ -207,7 +350,11 @@ impl Rollback {
     }
 
     pub(crate) fn path_copy_target(&self, c: &Context) -> Option<crate::ui::path_copy::Target> {
-        if self.focus != Target::Tree || self.preview.is_some() || self.group_menu.is_some() {
+        if self.restore.is_some()
+            || self.focus != Target::Tree
+            || self.preview.is_some()
+            || self.group_menu.is_some()
+        {
             return None;
         }
         self.rows
@@ -348,6 +495,9 @@ impl Rollback {
     }
 
     pub(crate) fn event(&mut self, e: &Event, c: &Context) -> RollbackEvent {
+        if self.restore.is_some() {
+            return self.restore_event(e);
+        }
         match e {
             Event::Key(k) if k.modifiers.is_empty() || k.modifiers == Mod::SHIFT => {
                 if let Some(row) = self.group_menu {
@@ -363,6 +513,7 @@ impl Rollback {
                     return RollbackEvent::Keep;
                 }
                 match k.code {
+                    K::Char('u') => self.review_restore(c),
                     K::Esc if self.preview.is_some() => self.preview = None,
                     K::Esc | K::Char('n') => return RollbackEvent::Close,
                     K::Char('y') if self.focus != Target::Tree && self.selected() => {
@@ -443,6 +594,7 @@ impl Rollback {
                         }
                         Some(Hit::Close) => return RollbackEvent::Close,
                         Some(Hit::Help) => return RollbackEvent::Help,
+                        Some(Hit::Restore) => self.review_restore(c),
                         Some(Hit::Apply) if self.selected() => return RollbackEvent::Apply,
                         Some(Hit::Added) if self.can_delete_added() => {
                             self.focus = Target::Added;
@@ -469,7 +621,17 @@ impl Rollback {
     }
 
     pub(crate) fn keymap(&self) -> HelpContent {
-        let current = if self.group_menu.is_some() {
+        let current = if self.restore.is_some() {
+            HelpSection::new(
+                "Rollback / Restore review",
+                &[
+                    ("j/k", "Scroll the saved paths and working copies"),
+                    ("Tab", "Select Back or Restore"),
+                    ("Enter", "Activate the selected control"),
+                    ("Esc", "Return without restoring"),
+                ],
+            )
+        } else if self.group_menu.is_some() {
             HelpSection::new(
                 "Rollback / Group By",
                 &[
@@ -510,6 +672,7 @@ impl Rollback {
                     ("z", "Collapse all rows"),
                     ("Z", "Expand all rows"),
                     ("a", "Toggle deletion of added local copies"),
+                    ("u", "Review the last saved rollback in visible Roots"),
                     ("Tab", "Focus next control"),
                     ("Shift-Tab", "Focus previous control"),
                     ("Enter", "Activate focused control"),
@@ -525,6 +688,36 @@ impl Rollback {
     }
 
     pub(crate) fn apply(self, c: &Context) -> Action {
+        if let Some(review) = self.restore {
+            let mut results = vec![];
+            let mut succeeded = 0;
+            let mut issues = false;
+            for plan in review.plans {
+                let Some(repo) = c.repos.get(plan.root).filter(|repo| {
+                    c.scope.contains(&plan.root)
+                        && fs::canonicalize(&repo.path).ok().as_ref() == Some(&plan.repo)
+                }) else {
+                    issues = true;
+                    results.push("Repository hidden or changed; restore skipped".into());
+                    continue;
+                };
+                match plan.execute() {
+                    Ok(count) => {
+                        succeeded += 1;
+                        results.push(format!("{}: restored {count} rollback path(s)", repo.name));
+                    }
+                    Err(error) => {
+                        issues = true;
+                        results.push(format!("{}: restore failed: {error:#}", repo.name));
+                    }
+                }
+            }
+            return if results.is_empty() {
+                Action::None
+            } else {
+                Action::Refresh(result_level(succeeded, issues), results.join(" | "))
+            };
+        }
         let mut checked = BTreeMap::<usize, BTreeSet<PathBuf>>::new();
         for f in self
             .files
@@ -557,7 +750,7 @@ impl Rollback {
                 ));
                 continue;
             }
-            match discard::execute(&plan, self.delete_added) {
+            match discard::execute_in(&plan, self.delete_added, &c.state_dir) {
                 Ok(()) => {
                     succeeded += 1;
                     results.push(format!(
@@ -578,6 +771,168 @@ impl Rollback {
         } else {
             Action::Refresh(result_level(succeeded, issues), results.join(" | "))
         }
+    }
+
+    fn review_restore(&mut self, c: &Context) {
+        let mut plans = vec![];
+        let mut text = String::from(
+            "Review saved working copies and index entries before restoring.\nUnrelated index entries stay unchanged. Hidden Roots are excluded.\n\n",
+        );
+        let mut failed = false;
+        for &root in &c.scope {
+            let Some(repo) = c.repos.get(root) else {
+                continue;
+            };
+            match discard::RestorePlan::latest(root, &repo.path, &c.state_dir) {
+                Ok(Some(plan)) => match plan.description() {
+                    Ok(description) => {
+                        text.push_str(&description);
+                        plans.push(plan);
+                    }
+                    Err(error) => {
+                        failed = true;
+                        text.push_str(&format!("{}: {error:#}\n\n", repo.name));
+                    }
+                },
+                Ok(None) => (),
+                Err(error) => {
+                    failed = true;
+                    text.push_str(&format!("{}: {error:#}\n\n", repo.name));
+                }
+            }
+        }
+        if failed {
+            plans.clear();
+            text.push_str("Recovery refused. Backups are retained; inspect the errors above.\n");
+        } else if plans.is_empty() {
+            text.push_str("No saved rollback is available in visible Roots.\n");
+        }
+        self.restore = Some(RestoreReview {
+            plans,
+            text,
+            scroll: 0,
+            apply: false,
+        });
+        self.hits.clear();
+    }
+
+    fn restore_event(&mut self, event: &Event) -> RollbackEvent {
+        let review = self.restore.as_mut().unwrap();
+        match event {
+            Event::Key(key) if key.modifiers.is_empty() || key.modifiers == Mod::SHIFT => {
+                match key.code {
+                    K::Esc | K::Char('n' | 'u') => self.restore = None,
+                    K::Tab | K::BackTab if !review.plans.is_empty() => review.apply = !review.apply,
+                    K::Enter if review.apply && !review.plans.is_empty() => {
+                        return RollbackEvent::Apply
+                    }
+                    K::Enter => self.restore = None,
+                    K::Char('?') => return RollbackEvent::Help,
+                    K::Down | K::Char('j') => review.scroll = review.scroll.saturating_add(1),
+                    K::Up | K::Char('k') => review.scroll = review.scroll.saturating_sub(1),
+                    K::PageDown => review.scroll = review.scroll.saturating_add(self.page),
+                    K::PageUp => review.scroll = review.scroll.saturating_sub(self.page),
+                    K::Home | K::Char('g') => review.scroll = 0,
+                    K::End | K::Char('G') => review.scroll = usize::MAX,
+                    _ => (),
+                }
+            }
+            Event::Mouse(mouse) => match mouse.kind {
+                M::Down(MouseButton::Left) => {
+                    let hit = self.hits.iter().rev().find_map(|(area, hit)| {
+                        inside(*area, mouse.column, mouse.row).then_some(*hit)
+                    });
+                    match hit {
+                        Some(Hit::Close) => self.restore = None,
+                        Some(Hit::Help) => return RollbackEvent::Help,
+                        Some(Hit::Apply) if !review.plans.is_empty() => {
+                            return RollbackEvent::Apply
+                        }
+                        _ => (),
+                    }
+                }
+                M::ScrollUp => review.scroll = review.scroll.saturating_sub(3),
+                M::ScrollDown => review.scroll = review.scroll.saturating_add(3),
+                _ => (),
+            },
+            _ => (),
+        }
+        RollbackEvent::Keep
+    }
+
+    fn draw_restore(&mut self, frame: &mut Frame, area: Rect) {
+        self.hits.clear();
+        let width = area.width.saturating_sub(4).min(74);
+        let height = area.height.saturating_sub(2).min(32);
+        if width < 34 || height < 9 {
+            return;
+        }
+        let dialog = Rect::new(
+            area.x + (area.width - width) / 2,
+            area.y + (area.height - height) / 2,
+            width,
+            height,
+        );
+        frame.buffer_mut().set_style(area, Style::new().dim());
+        frame.render_widget(Clear, dialog);
+        let border = pane(" Restore Last Rollback ", true);
+        let inner = border.inner(dialog);
+        frame.render_widget(border, dialog);
+        let [hint, body, footer] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+        ])
+        .areas(inner);
+        frame.render_widget(
+            Paragraph::new("j/k Scroll · Tab Select · Enter Activate").style(Style::new().fg(DIM)),
+            hint,
+        );
+        let review = self.restore.as_mut().unwrap();
+        let mut layout = TextLayout::default();
+        for line in review.text.lines() {
+            layout.push(diff_line(line), body.width, TextWrap::Character);
+        }
+        self.page = usize::from(body.height).max(1);
+        review.scroll = review
+            .scroll
+            .min(layout.rows.len().saturating_sub(self.page));
+        frame.render_widget(
+            Paragraph::new(
+                layout
+                    .rows
+                    .into_iter()
+                    .skip(review.scroll)
+                    .take(self.page)
+                    .map(|row| row.line)
+                    .collect::<Vec<_>>(),
+            ),
+            body,
+        );
+        let enabled = !review.plans.is_empty();
+        let active = review.apply;
+        let back = " Back ";
+        let restore = " Restore ";
+        let restore_x = footer.right().saturating_sub(restore.len() as u16);
+        let back_x = restore_x.saturating_sub(back.len() as u16 + 1);
+        self.button(
+            frame,
+            Rect::new(back_x, footer.y, back.len() as u16, 1),
+            back,
+            button_style(!active),
+            Some(Hit::Close),
+        );
+        self.button(
+            frame,
+            Rect::new(restore_x, footer.y, restore.len() as u16, 1),
+            restore,
+            if enabled {
+                button_style(active)
+            } else {
+                Style::new().fg(DIM).bg(TAG)
+            },
+            enabled.then_some(Hit::Apply),
+        );
     }
 
     fn button(
@@ -601,6 +956,10 @@ impl Rollback {
     }
 
     pub(crate) fn draw(&mut self, f: &mut Frame, a: Rect, c: &Context) {
+        if self.restore.is_some() {
+            self.draw_restore(f, a);
+            return;
+        }
         self.hits.clear();
         let w = a.width.saturating_sub(4).min(74);
         let h = a.height.saturating_sub(2).min(32);
@@ -666,19 +1025,27 @@ impl Rollback {
                 can_diff.then_some(Hit::Diff),
             )
             + 1;
-        self.button(
+        let group_width = self.button(
             f,
             Rect::new(x, bar.y, bar.right().saturating_sub(x), 1),
             &group,
             button_style(self.group_menu.is_some()),
             Some(Hit::Groups),
         );
+        let restore_x = x + group_width;
+        let restore_width = self.button(
+            f,
+            Rect::new(restore_x, bar.y, bar.right().saturating_sub(restore_x), 1),
+            " u Restore ",
+            button_style(false),
+            Some(Hit::Restore),
+        );
         let mut right = bar.right();
         for (icon, expand) in [(Icon::CollapseAll, false), (Icon::ExpandAll, true)] {
             let label = format!(" {} ", self.icons.glyph(icon));
             let width = label.width() as u16;
             right = right.saturating_sub(width);
-            if right > x + group.width() as u16 {
+            if right > restore_x + restore_width {
                 self.button(
                     f,
                     Rect::new(right, bar.y, width, 1),
@@ -800,9 +1167,9 @@ impl Rollback {
         let message = if stats.is_empty() {
             "No files selected".into()
         } else if summary.height > 1 {
-            format!("{stats}\nRollback cannot be undone.")
+            format!("{stats}\nBackup before rollback · u Restore last rollback")
         } else {
-            format!("{stats} · No undo")
+            format!("{stats} · u Restore last rollback")
         };
         f.render_widget(
             Paragraph::new(message).style(Style::new().fg(BLUE)),
@@ -858,7 +1225,7 @@ impl Rollback {
             apply.then_some(Hit::Apply),
         );
         let hint = clipped(
-            "Space Toggle · F1 Help",
+            "u Restore last rollback · F1 Help",
             usize::from(left.saturating_sub(footer.x + 1)),
         );
         f.render_widget(

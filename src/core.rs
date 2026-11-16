@@ -1,6 +1,8 @@
+pub(crate) mod fetch;
 pub(crate) mod hosting;
 pub(crate) mod loading;
 pub(crate) mod paths;
+pub(crate) mod process;
 pub(crate) mod revision;
 pub(crate) mod schedule;
 mod state;
@@ -14,7 +16,10 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    time::Instant,
 };
+
+pub(crate) use process::read_output;
 
 #[derive(Clone, Debug)]
 pub struct Repo {
@@ -98,10 +103,24 @@ fn extend_without_root<'a>(
     }
 }
 pub fn git_bytes(path: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let o = command(path)
-        .args(args)
-        .output()
-        .with_context(|| format!("Git launch: {}", path.display()))?;
+    let mut cmd = command(path);
+    cmd.args(args);
+    let o = if let Some(operation) = read_operation(args) {
+        let started = Instant::now();
+        let output = read_output(path, operation, &mut cmd)?;
+        if !output.status.success() {
+            bail!(
+                "Git {operation} failed in {} after {:.3}s ({}); refresh to retry",
+                path.display(),
+                started.elapsed().as_secs_f64(),
+                output.status
+            );
+        }
+        output
+    } else {
+        cmd.output()
+            .with_context(|| format!("Git launch: {}", path.display()))?
+    };
     if !o.status.success() {
         bail!(
             "{}",
@@ -112,6 +131,120 @@ pub fn git_bytes(path: &Path, args: &[&str]) -> Result<Vec<u8>> {
         )
     }
     Ok(o.stdout)
+}
+
+pub(crate) fn read_operation<'a>(mut args: &[&'a str]) -> Option<&'a str> {
+    loop {
+        let (option, rest) = args.split_first()?;
+        match *option {
+            "-c" | "--config-env" => {
+                rest.first()?;
+                args = &rest[1..];
+            }
+            "--no-pager"
+            | "--no-optional-locks"
+            | "--no-replace-objects"
+            | "--literal-pathspecs"
+            | "--no-literal-pathspecs"
+            | "--glob-pathspecs"
+            | "--noglob-pathspecs"
+            | "--icase-pathspecs"
+            | "--no-lazy-fetch" => args = rest,
+            value
+                if value.starts_with("-c") && value.len() > 2
+                    || value.starts_with("--config-env=") =>
+            {
+                args = rest;
+            }
+            _ => break,
+        }
+    }
+    let (&operation, options) = args.split_first()?;
+    if options
+        .iter()
+        .any(|option| *option == "--output" || option.starts_with("--output="))
+    {
+        return None;
+    }
+    let read = match operation {
+        "cat-file" | "check-attr" | "check-ignore" | "check-ref-format" | "cherry" | "describe"
+        | "diff" | "diff-files" | "diff-index" | "diff-tree" | "for-each-ref" | "log"
+        | "ls-files" | "ls-remote" | "ls-tree" | "merge-base" | "name-rev" | "rev-list"
+        | "rev-parse" | "show" | "show-ref" | "status" | "var" | "version" => true,
+        "--version" | "--exec-path" => options.is_empty(),
+        "config" => config_read(options),
+        "remote" => {
+            options.is_empty()
+                || matches!(options, ["-v"] | ["--verbose"])
+                || options.first() == Some(&"get-url")
+        }
+        "symbolic-ref" => {
+            let mut names = 0;
+            let mut literal = false;
+            for option in options {
+                if literal || !option.starts_with('-') {
+                    names += 1;
+                } else if *option == "--" {
+                    literal = true;
+                } else if !matches!(
+                    *option,
+                    "-q" | "--quiet" | "--short" | "--recurse" | "--no-recurse"
+                ) {
+                    return None;
+                }
+            }
+            names == 1
+        }
+        "hash-object" => !options.iter().any(|option| {
+            option.starts_with('-') && !option.starts_with("--") && option.contains('w')
+        }),
+        "branch" => options.is_empty() || options == ["--show-current"],
+        "tag" => options.is_empty(),
+        "stash" => matches!(options.first().copied(), Some("list" | "show")),
+        "reflog" => {
+            options.is_empty()
+                || matches!(options.first().copied(), Some("show" | "list" | "exists"))
+        }
+        _ => false,
+    };
+    read.then_some(operation)
+}
+
+fn config_read(args: &[&str]) -> bool {
+    if matches!(args.first().copied(), Some("get" | "list")) {
+        return true;
+    }
+    let mut args = args.iter();
+    let mut action = false;
+    let mut names = 0;
+    while let Some(&option) = args.next() {
+        match option {
+            "--get" | "--get-all" | "--get-regexp" | "--get-urlmatch" | "--list" | "-l" => {
+                action = true;
+            }
+            "--local" | "--global" | "--system" | "--worktree" | "--includes" | "--no-includes"
+            | "--null" | "-z" | "--name-only" | "--show-origin" | "--show-scope"
+            | "--fixed-value" | "--bool" | "--int" | "--bool-or-int" | "--bool-or-str"
+            | "--path" | "--expiry-date" => (),
+            "--type" | "--default" | "--file" | "-f" | "--blob" => {
+                if args.next().is_none() {
+                    return false;
+                }
+            }
+            "--" => {
+                names += args.count();
+                break;
+            }
+            value
+                if value.starts_with("--type=")
+                    || value.starts_with("--default=")
+                    || value.starts_with("--file=")
+                    || value.starts_with("--blob=") => {}
+            value if value.starts_with('-') => return false,
+            _ => names += 1,
+        }
+    }
+    action || names == 1
 }
 trait Empty {
     fn if_empty(self, s: &str) -> String;
@@ -153,14 +286,22 @@ fn os_path(v: Vec<u8>) -> PathBuf {
     String::from_utf8_lossy(&v).into_owned().into()
 }
 pub(crate) fn revpath(p: &Path, what: &str) -> Option<PathBuf> {
-    let mut b = git_bytes(p, &["rev-parse", what]).ok()?;
+    read_revpath(p, what).ok().flatten()
+}
+
+fn read_revpath(p: &Path, what: &str) -> Result<Option<PathBuf>> {
+    let output = read_output(p, "repository path", command(p).args(["rev-parse", what]))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let mut b = output.stdout;
     if b.last() == Some(&b'\n') {
         b.pop();
     }
     if b.is_empty() {
-        return None;
+        return Ok(None);
     }
-    fs::canonicalize(os_path(b)).ok()
+    Ok(fs::canonicalize(os_path(b)).ok())
 }
 fn skip(n: &OsStr) -> bool {
     matches!(
@@ -208,19 +349,21 @@ pub fn branch(p: &Path) -> String {
 }
 impl Context {
     pub fn discover(path: &Path) -> Result<Self> {
+        process::check_read_control()?;
         let workspace =
             fs::canonicalize(path).with_context(|| format!("Workspace: {}", path.display()))?;
         if !workspace.is_dir() {
             bail!("Not a directory: {}", workspace.display())
         }
         let mut roots = BTreeSet::new();
-        if let Some(r) = revpath(&workspace, "--show-toplevel") {
+        if let Some(r) = read_revpath(&workspace, "--show-toplevel")? {
             roots.insert(r);
         }
         let mut todo = vec![workspace.clone()];
         while let Some(dir) = todo.pop() {
+            process::check_read_control()?;
             if dir.join(".git").exists() {
-                if let Some(r) = revpath(&dir, "--show-toplevel") {
+                if let Some(r) = read_revpath(&dir, "--show-toplevel")? {
                     roots.insert(r);
                 }
             }
@@ -235,6 +378,7 @@ impl Context {
                 continue;
             };
             for e in items.flatten() {
+                process::check_read_control()?;
                 if !skip(&e.file_name()) && e.file_type().is_ok_and(|t| t.is_dir()) {
                     todo.push(e.path())
                 }
@@ -256,9 +400,38 @@ impl Context {
         let repos = paths
             .iter()
             .map(|p| {
+                process::check_read_control()?;
                 let base = p.file_name().unwrap_or_default();
-                let sup = revpath(p, "--show-superproject-working-tree");
-                Repo {
+                let sup = read_revpath(p, "--show-superproject-working-tree")?;
+                let reference = read_output(
+                    p,
+                    "current branch",
+                    command(p).args(["symbolic-ref", "-q", "HEAD"]),
+                )?;
+                let branch = if reference.status.success() {
+                    branch_label(
+                        String::from_utf8_lossy(&reference.stdout).trim_end_matches(['\n', '\r']),
+                        None,
+                    )
+                } else {
+                    let head = read_output(
+                        p,
+                        "current commit",
+                        command(p).args(["rev-parse", "--verify", "HEAD"]),
+                    )?;
+                    branch_label(
+                        "HEAD",
+                        head.status
+                            .success()
+                            .then(|| {
+                                String::from_utf8_lossy(&head.stdout)
+                                    .trim_end_matches(['\n', '\r'])
+                                    .to_owned()
+                            })
+                            .as_deref(),
+                    )
+                };
+                Ok(Repo {
                     path: p.clone(),
                     name: if count[base] > 1 {
                         p.strip_prefix(&workspace)
@@ -268,12 +441,13 @@ impl Context {
                     } else {
                         base.to_string_lossy().into()
                     },
-                    branch: branch(p),
+                    branch,
                     submodule: sup.is_some(),
                     parent: sup.and_then(|q| idx.get(&q).copied()),
-                }
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
+        process::check_read_control()?;
         let state_base = state::directory()?;
         // Hash canonical workspace path using deterministic FNV-1a for file-system-safe names.
         let id = workspace

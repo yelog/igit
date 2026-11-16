@@ -579,6 +579,130 @@ pub fn plan(snapshot: &Snapshot, hunk: usize) -> Result<Plan> {
         .get(hunk)
         .context("No hunk selected; choose a changed text hunk")?;
     let patch = format!("{}{}", split(&snapshot.patch)?.0, selected.text);
+    plan_patch(snapshot, patch)
+}
+
+pub fn plan_range(snapshot: &Snapshot, hunk: usize, first: usize, last: usize) -> Result<Plan> {
+    snapshot.validate()?;
+    let selected = snapshot
+        .hunks
+        .get(hunk)
+        .context("No hunk selected; choose a changed text hunk")?;
+    let mut lines = selected.text.split_inclusive('\n');
+    let header = lines.next().context("Missing hunk header")?;
+    let mut fields = header.split_whitespace();
+    if fields.next() != Some("@@") {
+        bail!("Invalid hunk header");
+    }
+    let position = |field: Option<&str>, prefix: char| -> Result<(usize, usize)> {
+        let field = field
+            .and_then(|field| field.strip_prefix(prefix))
+            .context("Invalid hunk position")?;
+        let (start, count) = field.split_once(',').unwrap_or((field, "1"));
+        Ok((start.parse()?, count.parse()?))
+    };
+    let (old_start, old_total) = position(fields.next(), '-')?;
+    let (new_start, new_total) = position(fields.next(), '+')?;
+    let range = first.min(last)..=first.max(last);
+    let mut body = String::new();
+    let mut old_count = 0;
+    let mut new_count = 0;
+    let mut changed = false;
+    let mut emitted = false;
+    for (offset, line) in lines.enumerate() {
+        if line.starts_with('\\') {
+            if emitted {
+                body.push_str(line);
+            }
+            continue;
+        }
+        let kind = line
+            .as_bytes()
+            .first()
+            .copied()
+            .context("Empty patch line")?;
+        let chosen = range.contains(&(offset + 1));
+        let output = match (kind, chosen, snapshot.side) {
+            (b' ', _, _) | (b'-' | b'+', true, _) => Some(line.to_owned()),
+            (b'-', false, Side::Unstaged) | (b'+', false, Side::Staged) => {
+                Some(format!(" {}", &line[1..]))
+            }
+            (b'+', false, Side::Unstaged) | (b'-', false, Side::Staged) => None,
+            _ => bail!("Unsupported hunk line"),
+        };
+        changed |= chosen && matches!(kind, b'-' | b'+');
+        emitted = output.is_some();
+        if let Some(output) = output {
+            old_count += usize::from(!output.starts_with('+'));
+            new_count += usize::from(!output.starts_with('-'));
+            body.push_str(&output);
+        }
+    }
+    if !changed {
+        bail!("Select at least one added or removed line");
+    }
+    let old_start = if old_count > 0 {
+        old_start.max(1)
+    } else if old_total > 0 {
+        old_start.saturating_sub(1)
+    } else {
+        old_start
+    };
+    let new_start = if new_count > 0 {
+        new_start.max(1)
+    } else if new_total > 0 {
+        new_start.saturating_sub(1)
+    } else {
+        new_start
+    };
+    let header = range_header(split(&snapshot.patch)?.0, old_count, new_count)?;
+    let patch = format!("{header}@@ -{old_start},{old_count} +{new_start},{new_count} @@\n{body}");
+    plan_patch(snapshot, patch)
+}
+
+fn range_header(header: &str, old_count: usize, new_count: usize) -> Result<String> {
+    if old_count == 0 || new_count == 0 {
+        return Ok(header.into());
+    }
+    let (source_marker, target_marker, source_prefix, target_prefix) = if header
+        .lines()
+        .any(|line| line.starts_with("new file mode "))
+    {
+        ("+++ ", "--- ", "b/", "a/")
+    } else if header
+        .lines()
+        .any(|line| line.starts_with("deleted file mode "))
+    {
+        ("--- ", "+++ ", "a/", "b/")
+    } else {
+        return Ok(header.into());
+    };
+    let path = header
+        .lines()
+        .find_map(|line| line.strip_prefix(source_marker))
+        .context("Missing patch path")?;
+    let (quote, path) = path
+        .strip_prefix('"')
+        .map_or(("", path), |path| ("\"", path));
+    let path = path
+        .strip_prefix(source_prefix)
+        .context("Invalid patch path prefix")?;
+    let replacement = format!("{target_marker}{quote}{target_prefix}{path}\n");
+    let missing = format!("{target_marker}/dev/null\n");
+    let mut normalized = String::new();
+    for line in header.split_inclusive('\n') {
+        if line.starts_with("new file mode ")
+            || line.starts_with("deleted file mode ")
+            || line.starts_with("index ")
+        {
+            continue;
+        }
+        normalized.push_str(if line == missing { &replacement } else { line });
+    }
+    Ok(normalized)
+}
+
+fn plan_patch(snapshot: &Snapshot, patch: String) -> Result<Plan> {
     let index = &snapshot.captured.state.index;
     let temp = tempfile::Builder::new()
         .prefix("igit-hunk-review-")

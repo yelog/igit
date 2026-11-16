@@ -10,6 +10,7 @@ use std::{
 pub(super) enum Command {
     Help,
     Version,
+    Capabilities,
     Open(Options),
 }
 
@@ -61,6 +62,9 @@ pub(super) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command>
             }
             if argument == "--version" || argument == "-V" {
                 return Ok(Command::Version);
+            }
+            if argument == "--capabilities" {
+                return Ok(Command::Capabilities);
             }
             if argument == "--list-roots" {
                 options.list = true;
@@ -438,6 +442,10 @@ mod tests {
         for flag in ["--version", "-V"] {
             assert!(matches!(parse([flag.into()]).unwrap(), Command::Version));
         }
+        assert!(matches!(
+            parse(["--capabilities".into()]).unwrap(),
+            Command::Capabilities
+        ));
     }
 
     #[cfg(unix)]

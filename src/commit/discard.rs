@@ -4,12 +4,10 @@ use backend::discard::Target;
 impl CommitPanel {
     pub(super) fn discard_review(&mut self, c: &Context) -> Result<Action> {
         self.rollback = None;
-        let row = self
-            .active()
-            .ok_or(Constraint("Select changes to roll back"))?;
-        if !self.files.iter().any(|f| c.scope.contains(&f.root)) {
-            bail!(Constraint("No changes to review"))
-        }
+        let Some(row) = self.active() else {
+            self.rollback = Some(Box::new(Rollback::new(self, c, &BTreeMap::new())));
+            return Ok(Action::ReviewRollback);
+        };
         let mut targets = vec![];
         match &row.kind {
             Kind::File(i) => {

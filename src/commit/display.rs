@@ -4,6 +4,7 @@ use crate::ui::idea::{checkbox, clipped, DIM, EDGE, INK, SELECT};
 use ratatui::{style::Stylize, text::Span, widgets::BorderType};
 use unicode_width::UnicodeWidthStr;
 
+#[derive(Clone)]
 pub(super) struct Options {
     pub directories: bool,
     pub repositories: bool,

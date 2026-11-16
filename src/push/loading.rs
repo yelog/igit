@@ -42,7 +42,16 @@ impl PushPanel {
             .or_else(|| rows.iter().position(|row| *row == (*root, None)))
     }
 
-    fn install_entries(&mut self, entries: Vec<Entry>, c: &Context) {
+    fn install_entries(&mut self, mut entries: Vec<Entry>, c: &Context) {
+        for entry in &mut entries {
+            if std::mem::take(&mut entry.fetch_invalidated) {
+                self.fetched.remove(&(
+                    c.repos[entry.idx].path.clone(),
+                    entry.t.remote.clone(),
+                    entry.t.dst.clone(),
+                ));
+            }
+        }
         let old = self.selected_identity();
         let previous = old
             .as_ref()
@@ -105,8 +114,10 @@ impl PushPanel {
         let selected = current
             .as_ref()
             .and_then(|(i, _)| self.entries.iter().find(|e| e.idx == *i));
+        let immutable_commit = current.as_ref().is_some_and(|(_, commit)| commit.is_some());
         // Identical successful snapshots keep the current file, folds, scroll and text selection.
-        if reseed.is_some() || old != current || previous.as_ref() != selected {
+        if reseed.is_some() || old != current || !immutable_commit && previous.as_ref() != selected
+        {
             self.inspect(c);
         } else if self.preview_failed {
             self.retry_failed_preview(c);
@@ -132,7 +143,10 @@ impl PushPanel {
             changed = true;
         }
         if !self.busy() {
-            if let Some(result) = self.load.take_result() {
+            if let Some(result) = (self.refresh_allowed() && self.review.is_empty())
+                .then(|| self.load.take_result())
+                .flatten()
+            {
                 match result {
                     Ok(entries) => self.install_entries(entries, c),
                     Err(error) => {
@@ -143,6 +157,7 @@ impl PushPanel {
                 changed = true;
             }
             if self.load.needs_start() {
+                let fetched = self.fetched.clone();
                 let jobs: Vec<_> = c
                     .scope
                     .iter()
@@ -150,7 +165,7 @@ impl PushPanel {
                     .collect();
                 if let Err(error) = self.load.start("igit-push-read", move |version| {
                     read_repositories(&jobs, &version, |(i, repo, target)| {
-                        entry(*i, repo, target.as_ref())
+                        entry_with_fetch(*i, repo, target.as_ref(), &fetched)
                     })
                 }) {
                     self.load_error = Some(format!("Unable to load outgoing commits: {error}"));
@@ -219,7 +234,9 @@ impl PushPanel {
     #[cfg(test)]
     pub(crate) fn finish_loading(&mut self, c: &Context) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while self.reads_pending() {
+        while self.reads_pending()
+            && (self.refresh_allowed() && self.review.is_empty() || self.preview_load.pending())
+        {
             self.poll_loading(c).unwrap();
             assert!(
                 std::time::Instant::now() < deadline,

@@ -1,19 +1,22 @@
 use super::{reader, text, Source, LIMIT};
+use crate::core::read_output;
 use anyhow::{bail, ensure, Context as _, Result};
 use std::{
     fs,
     io::Read,
     path::{Component, Path},
     process::Output,
+    time::Instant,
 };
 
 pub(crate) const UNTRACKED_LIMIT: usize = 96 * 1024;
 
-fn checked(output: Output) -> Result<Vec<u8>> {
+fn checked(repo: &Path, operation: &str, started: Instant, output: Output) -> Result<Vec<u8>> {
     ensure!(
         output.status.success(),
-        "Git: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
+        "Git {operation} failed in {} after {:.3}s",
+        repo.display(),
+        started.elapsed().as_secs_f64()
     );
     Ok(output.stdout)
 }
@@ -98,13 +101,17 @@ pub(crate) fn load(
     #[cfg(unix)]
     let mode = {
         use std::os::unix::fs::PermissionsExt;
-        let output = reader(repo)
-            .args(["config", "--type=bool", "--get", "core.filemode"])
-            .output()?;
+        let started = Instant::now();
+        let output = read_output(
+            repo,
+            "file mode configuration",
+            reader(repo).args(["config", "--type=bool", "--get", "core.filemode"]),
+        )?;
         let filemode = if output.status.code() == Some(1) {
             true
         } else {
-            String::from_utf8(checked(output)?)?.trim() == "true"
+            String::from_utf8(checked(repo, "file mode configuration", started, output)?)?.trim()
+                == "true"
         };
         if !filemode {
             index_mode.unwrap_or("100644")
@@ -120,7 +127,10 @@ pub(crate) fn load(
 }
 
 fn attributes(repo: &Path, path: &Path) -> Result<Vec<u8>> {
-    let output = checked(
+    let started = Instant::now();
+    let output = read_output(
+        repo,
+        "file attributes",
         reader(repo)
             .args([
                 "--literal-pathspecs",
@@ -135,9 +145,9 @@ fn attributes(repo: &Path, path: &Path) -> Result<Vec<u8>> {
                 "diff",
                 "--",
             ])
-            .arg(path)
-            .output()?,
+            .arg(path),
     )?;
+    let output = checked(repo, "file attributes", started, output)?;
     let fields: Vec<_> = output.split(|&byte| byte == 0).collect();
     if fields.len() != 22 || fields.last().is_none_or(|field| !field.is_empty()) {
         bail!("Cannot verify Git attributes; showing the Git patch");
@@ -182,13 +192,16 @@ fn check_line_endings(repo: &Path, attributes: &[u8], bytes: &[u8]) -> Result<()
     if attr(b"text") == b"unset" {
         return Ok(());
     }
-    let output = reader(repo)
-        .args(["config", "--type=bool-or-str", "--get", "core.autocrlf"])
-        .output()?;
+    let started = Instant::now();
+    let output = read_output(
+        repo,
+        "line ending configuration",
+        reader(repo).args(["config", "--type=bool-or-str", "--get", "core.autocrlf"]),
+    )?;
     let autocrlf = if output.status.code() == Some(1) {
         "false".into()
     } else {
-        String::from_utf8(checked(output)?)?
+        String::from_utf8(checked(repo, "line ending configuration", started, output)?)?
             .trim()
             .to_ascii_lowercase()
     };

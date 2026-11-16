@@ -22,6 +22,26 @@ fn init(path: &Path) {
 }
 
 #[test]
+fn cancelled_config_reads_are_reported_on_the_repository() {
+    use crate::core::process::{with_read_control, ReadControl};
+
+    let directory = tempfile::tempdir().unwrap();
+    let control = ReadControl::default();
+    control.cancel();
+    with_read_control(&control, || {
+        let error = ConfigSnapshot::read(directory.path()).unwrap_err();
+        assert!(format!("{error:#}").contains("cancelled"), "{error:#}");
+        let repository = load_repository(4, directory.path());
+        assert_eq!(repository.root, 4);
+        assert!(repository.remotes.is_empty());
+        assert!(repository
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("cancelled")));
+    });
+}
+
+#[test]
 fn load_lists_every_endpoint_and_isolates_a_broken_repository() {
     let dir = tempfile::tempdir().unwrap();
     let api = dir.path().join("api");

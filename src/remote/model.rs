@@ -1,6 +1,6 @@
 //! Read configured remotes without contacting them or changing Git state.
-use crate::core::{command, Context};
-use anyhow::{bail, Result};
+use crate::core::{command, read_output, Context};
+use anyhow::{bail, Context as _, Result};
 use std::{collections::BTreeMap, path::Path, process::Output};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,10 +31,12 @@ pub(super) struct ConfigSnapshot {
 
 impl ConfigSnapshot {
     pub(super) fn read(repo: &Path) -> Result<Self> {
-        let output = command(repo)
-            .args(["config", "--null", "--show-origin", "--includes", "--list"])
-            .output()
-            .map_err(|error| anyhow::anyhow!("Cannot read Git configuration: {error}"))?;
+        let output = read_output(
+            repo,
+            "config",
+            command(repo).args(["config", "--null", "--show-origin", "--includes", "--list"]),
+        )
+        .context("Cannot read Git configuration")?;
         if !output.status.success() {
             bail!("{}", detail(&output));
         }

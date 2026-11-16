@@ -1,6 +1,9 @@
-use super::{command, git, git_bytes, revpath, strategy::Strategy};
+use super::{command, git, git_bytes, read_output, revpath, strategy::Strategy};
 use anyhow::{bail, ensure, Context as _, Result};
 use std::{path::Path, process::Command};
+
+mod fetch;
+pub(crate) use fetch::fetch_upstream;
 
 #[cfg(test)]
 mod tests;
@@ -13,11 +16,13 @@ pub(crate) fn published_graph(repo: &Path) -> Command {
 }
 
 pub(crate) fn is_ancestor(repo: &Path, ancestor: &str, commit: &str) -> Result<bool> {
-    match published_graph(repo)
-        .args(["merge-base", "--is-ancestor", ancestor, commit])
-        .output()?
-        .status
-        .code()
+    match read_output(
+        repo,
+        "stored history ancestry",
+        published_graph(repo).args(["merge-base", "--is-ancestor", ancestor, commit]),
+    )?
+    .status
+    .code()
     {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
@@ -181,9 +186,11 @@ pub(crate) fn integrate_reviewed(
                 "HEAD changed during update; review before pushing"
             );
         } else {
-            let output = published_graph(repo)
-                .args(["show", "-s", "--format=%P", &updated, "--"])
-                .output()?;
+            let output = read_output(
+                repo,
+                "merge parents",
+                published_graph(repo).args(["show", "-s", "--format=%P", &updated, "--"]),
+            )?;
             ensure!(
                 output.status.success()
                     && String::from_utf8_lossy(&output.stdout).trim() == format!("{head} {target}"),

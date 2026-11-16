@@ -12,12 +12,23 @@ use std::{
 };
 use tempfile::NamedTempFile;
 
+pub(super) mod history;
 mod reword;
 mod tip;
 mod transaction;
 
 fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    checked(command(repo).args(args).output()?)
+    checked(git_output(repo, args)?)
+}
+
+fn git_output(repo: &Path, args: &[&str]) -> Result<Output> {
+    let mut cmd = command(repo);
+    cmd.args(args);
+    if let Some(operation) = crate::core::read_operation(args) {
+        crate::core::read_output(repo, operation, &mut cmd)
+    } else {
+        Ok(cmd.output()?)
+    }
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<String> {
@@ -36,10 +47,11 @@ pub(super) enum Kind {
     Drop,
     Edit,
     CherryPick,
+    History,
 }
 
 impl Kind {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Branch,
         Self::Tag,
         Self::Checkout,
@@ -48,6 +60,7 @@ impl Kind {
         Self::Drop,
         Self::Edit,
         Self::CherryPick,
+        Self::History,
     ];
 
     pub fn title(self) -> &'static str {
@@ -60,6 +73,7 @@ impl Kind {
             Self::Revert => "Revert Commit",
             Self::Drop => "Drop Commit",
             Self::Edit => "Edit Commit Message",
+            Self::History => "Clean Up Linear History",
         }
     }
 }
@@ -134,7 +148,7 @@ fn message(repo: &Path, oid: &str) -> Result<String> {
 }
 
 fn optional(repo: &Path, args: &[&str]) -> Result<Option<String>> {
-    let output = command(repo).args(args).output()?;
+    let output = git_output(repo, args)?;
     if output.status.code() == Some(1) && output.stderr.is_empty() {
         return Ok(None);
     }
@@ -330,9 +344,7 @@ impl Plan {
                 merge: parents.len() > 1,
             });
         }
-        let ancestor = command(repo)
-            .args(["merge-base", "--is-ancestor", oid, &head.oid])
-            .output()?;
+        let ancestor = git_output(repo, &["merge-base", "--is-ancestor", oid, &head.oid])?;
         ensure!(
             ancestor.status.code() != Some(1),
             "Selected commit is outside the current branch"
@@ -361,9 +373,29 @@ pub(super) struct Review {
     input: String,
     plan: Plan,
     picks: Vec<Target>,
+    history: Option<history::Reviewed>,
 }
 
 impl Review {
+    pub fn is_history(&self) -> bool {
+        self.history.is_some()
+    }
+
+    pub fn prepare_history(c: &Context, draft: &history::Draft) -> Result<(Self, String)> {
+        let (reviewed, body) = history::Reviewed::prepare(c, draft)?;
+        Ok((
+            Self {
+                target: draft.target.clone(),
+                kind: Kind::History,
+                input: String::new(),
+                plan: Plan::Ref,
+                picks: Vec::new(),
+                history: Some(reviewed),
+            },
+            body,
+        ))
+    }
+
     pub fn is_cherry_pick(&self) -> bool {
         self.kind == Kind::CherryPick
     }
@@ -419,6 +451,7 @@ impl Review {
                 input: String::new(),
                 plan,
                 picks,
+                history: None,
             },
             body,
         ))
@@ -430,6 +463,10 @@ impl Review {
         kind: Kind,
         input: String,
     ) -> Result<(Self, String)> {
+        ensure!(
+            kind != Kind::History,
+            "Open the editable history plan before reviewing cleanup"
+        );
         let repo = target.repo(c)?;
         let plan = Plan::read(&repo.path, &target.oid, kind, &input)?;
         if kind == Kind::Edit {
@@ -501,12 +538,16 @@ impl Review {
                 input,
                 plan,
                 picks: Vec::new(),
+                history: None,
             },
             body,
         ))
     }
 
     pub fn execute(self, c: &Context) -> Result<(NoticeLevel, String)> {
+        if let Some(history) = self.history {
+            return history.execute(c);
+        }
         let repo = self.target.repo(c)?;
         let oid = self.target.oid.as_str();
         let current = Plan::read(&repo.path, oid, self.kind, &self.input)

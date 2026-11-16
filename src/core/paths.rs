@@ -1,4 +1,4 @@
-use super::{git, git_bytes};
+use super::{git, git_bytes, read_output};
 use anyhow::{ensure, Result};
 use std::{
     collections::BTreeSet,
@@ -83,7 +83,11 @@ pub(crate) fn protect(repo: &Path, span: &str, single: bool) -> Result<()> {
         args.push("-1");
     }
     args.extend([span, "--"]);
-    let output = super::update::published_graph(repo).args(args).output()?;
+    let output = read_output(
+        repo,
+        "stored history paths",
+        super::update::published_graph(repo).args(args),
+    )?;
     ensure!(
         output.status.success(),
         "Cannot inspect paths in the stored history"

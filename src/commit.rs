@@ -141,6 +141,7 @@ enum Hit {
     Refresh,
     UndoCheck,
     TogglePreview,
+    PreviewSide(backend::staging::Side),
     ViewOptions,
     ViewItem(display::Item),
     Directories,
@@ -166,6 +167,8 @@ impl Hit {
             Self::Move => "Move to changelist  m",
             Self::New => "New changelist  Ctrl-N",
             Self::TogglePreview => "Show or hide preview  v",
+            Self::PreviewSide(backend::staging::Side::Staged) => "Inspect staged content  I",
+            Self::PreviewSide(backend::staging::Side::Unstaged) => "Inspect unstaged content  W",
             Self::ViewOptions => "View Options  o",
             Self::Directories => "Group by directory  t",
             Self::Status => "Show Git status columns  T",
@@ -218,6 +221,7 @@ pub struct CommitPanel {
     diff_root: Option<usize>,
     diff_text: String,
     diff_sources: Option<backend::preview::Comparison>,
+    preview_side: Option<backend::staging::Side>,
     preview: preview::State,
     diff_comparison: Option<Box<crate::merge::RevisionDiff>>,
     diff_scroll: usize,
@@ -284,6 +288,7 @@ impl Default for CommitPanel {
             diff_root: Default::default(),
             diff_text: Default::default(),
             diff_sources: None,
+            preview_side: None,
             preview: Default::default(),
             diff_comparison: None,
             diff_scroll: Default::default(),
@@ -367,6 +372,54 @@ fn result_level(succeeded: usize, issues: bool) -> NoticeLevel {
     }
 }
 impl CommitPanel {
+    pub(crate) fn inherit_workspace(&mut self, previous: &Self, old: &Context, current: &Context) {
+        self.saved = previous.saved.clone();
+        self.checks.extend(previous.checks.clone());
+        self.last_check = previous.last_check.clone();
+        self.fold = previous
+            .fold
+            .iter()
+            .filter_map(|id| tree::remap_id(id, old, current))
+            .collect();
+        self.options = previous.options.clone();
+        self.preview_open = previous.preview_open;
+        self.preview_side = previous.preview_side;
+        self.focus = previous.focus;
+        self.message_action = previous.message_action;
+        for file in &mut self.files {
+            if let Some(old_file) = previous
+                .files
+                .iter()
+                .find(|old_file| old_file.key == file.key)
+            {
+                file.group = old_file.group.clone();
+            }
+        }
+        self.amend = current
+            .repos
+            .iter()
+            .enumerate()
+            .filter_map(|(root, repo)| {
+                old.repos
+                    .iter()
+                    .position(|old_repo| old_repo.path == repo.path)
+                    .filter(|old_root| previous.amend.contains(old_root))
+                    .map(|_| root)
+            })
+            .collect();
+        self.sync(current);
+        if let Some(key) = previous
+            .active()
+            .and_then(|row| tree::remap_id(&row.id, old, current))
+        {
+            if let Some(cursor) = self.view.iter().position(|row| row.id == key) {
+                self.cursor = cursor;
+            }
+        }
+        self.invalidate_preview();
+        self.request_refresh();
+    }
+
     pub(crate) fn configure_message_shortcuts(&mut self, config: &crate::config::AppConfig) {
         self.message_mnemonics = [
             (MessageAction::Commit, "commit"),
@@ -850,6 +903,7 @@ impl CommitPanel {
                 Hit::Row(_)
                     | Hit::Show(_)
                     | Hit::TogglePreview
+                    | Hit::PreviewSide(_)
                     | Hit::ViewOptions
                     | Hit::ViewItem(_)
                     | Hit::Directories
@@ -861,6 +915,15 @@ impl CommitPanel {
         }
         match h {
             Hit::StageHunks => return self.open_staging(c).unwrap_or_else(err),
+            Hit::PreviewSide(side) => {
+                if self.active().and_then(Row::file).is_none() {
+                    return warning("Select a file to compare its staged or unstaged content");
+                }
+                self.preview_side = Some(side);
+                self.invalidate_preview();
+                self.focus = Focus::Diff;
+                self.preview_open = true;
+            }
             Hit::Refresh => {
                 return Action::Refresh(NoticeLevel::Success, "Changes refreshed".into())
             }
@@ -1466,6 +1529,16 @@ impl Panel for CommitPanel {
                             .saturating_add_signed(if right { 4 } else { -4 });
                 }
                 K::Char('t') => return self.launch(Hit::Directories, c),
+                K::Char('I' | 'W')
+                    if self.focus == Focus::Diff && (k.modifiers - Mod::SHIFT).is_empty() =>
+                {
+                    let side = if k.code == K::Char('I') {
+                        backend::staging::Side::Staged
+                    } else {
+                        backend::staging::Side::Unstaged
+                    };
+                    return self.launch(Hit::PreviewSide(side), c);
+                }
                 K::Char('o') => return self.launch(Hit::ViewOptions, c),
                 K::Char('s') if k.modifiers == Mod::NONE => return self.edit_stash(c),
                 K::Char('T') => return self.launch(Hit::Status, c),

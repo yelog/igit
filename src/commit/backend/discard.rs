@@ -11,6 +11,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(super) mod recovery;
+pub use recovery::RestorePlan;
+
 pub enum Target {
     Files(BTreeSet<PathBuf>),
     Directory(PathBuf),
@@ -278,7 +281,13 @@ fn copy_index(repo: &Path, real: &Path, next: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn execute(p: &Plan, delete_added: bool) -> Result<()> {
+#[cfg(test)]
+fn execute(p: &Plan, delete_added: bool) -> Result<()> {
+    let state = tempfile::tempdir()?;
+    execute_in(p, delete_added, state.path())
+}
+
+pub fn execute_in(p: &Plan, delete_added: bool, state: &Path) -> Result<()> {
     let repo = &p.repo;
     let index = git_path(repo, "index")?;
     let lock = index.with_file_name("index.lock");
@@ -300,7 +309,9 @@ pub fn execute(p: &Plan, delete_added: bool) -> Result<()> {
         &p.base,
         p.files.iter().map(|f| f.path.as_path()),
     )?;
-    // Finish all potentially scope-expanding preparation before touching files.
+    p.validate()?;
+    let mut journal = recovery::Journal::prepare(p, state)
+        .context("Rollback backup failed; no working files or index entries were changed")?;
     p.validate()?;
     let mut completed = vec![];
     let result = p
@@ -318,9 +329,11 @@ pub fn execute(p: &Plan, delete_added: bool) -> Result<()> {
                     .with_context(|| format!("Cannot remove {}", f.label()))?;
             }
             completed.push(f.path.as_path());
+            journal.record_working(&f.path)?;
             Ok(())
         });
     if completed.is_empty() {
+        journal.finish()?;
         return result;
     }
     if result.is_err() {
@@ -329,6 +342,7 @@ pub fn execute(p: &Plan, delete_added: bool) -> Result<()> {
         copy_index(repo, &index, &next)?;
         reset_index_paths(repo, &next, &p.base, completed.iter().copied())?;
     }
+    journal.record_index(&next, &completed)?;
     if index.exists() {
         lockfile.set_permissions(fs::metadata(&index)?.permissions())?;
     }
@@ -339,6 +353,9 @@ pub fn execute(p: &Plan, delete_added: bool) -> Result<()> {
     guard.1 = true;
     fs::rename(&lock, &index)
         .context("Working-tree changes discarded, but publishing the index failed. Keep index.lock and inspect before retrying")?;
+    journal.finish().context(
+        "Rollback completed; final backup update failed. Recovery will recheck the saved post-state",
+    )?;
     result.with_context(|| {
         format!(
             "Discarded {} of {} files; refresh and review the remaining changes",

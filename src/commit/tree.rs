@@ -102,6 +102,26 @@ fn directory_id(repo_id: &str, path: &Path) -> String {
     format!("d:{}:{repo_id}", keypart(path))
 }
 
+pub(super) fn remap_id(id: &str, previous: &Context, current: &Context) -> Option<String> {
+    if let Some(directory) = id.strip_prefix("d:") {
+        let (path, container) = directory.split_once(':')?;
+        if container.starts_with("w:") && directory_root(previous) != directory_root(current) {
+            return None;
+        }
+        return Some(format!(
+            "d:{path}:{}",
+            remap_id(container, previous, current)?
+        ));
+    }
+    if let Some(repository) = id.strip_prefix("r:") {
+        let (root, group) = repository.split_once(':')?;
+        let path = &previous.repos.get(root.parse::<usize>().ok()?)?.path;
+        let root = current.repos.iter().position(|repo| &repo.path == path)?;
+        return Some(repo_id(root, group));
+    }
+    Some(id.to_owned())
+}
+
 pub(super) fn directory_root(c: &Context) -> &Path {
     c.repos
         .iter()

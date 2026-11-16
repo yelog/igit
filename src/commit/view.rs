@@ -98,6 +98,7 @@ impl CommitPanel {
                 Hit::EditSave => button_style(true),
                 Hit::EditCancel => button_style(false),
                 Hit::TogglePreview if self.preview_open => fg(BLUE).bg(TAG),
+                Hit::PreviewSide(side) if side == self.active_preview_side() => fg(BLUE).bg(TAG),
                 Hit::ViewOptions if self.view_menu.is_some() => fg(BLUE).bg(TAG),
                 Hit::Directories if self.options.directories => fg(BLUE).bg(TAG),
                 Hit::Status if self.options.status => fg(BLUE).bg(TAG),
@@ -517,10 +518,23 @@ impl CommitPanel {
             .max(header.x);
         let right = x.saturating_sub(1);
         self.hit_button(f, header, &mut x, &close, Hit::Show(Focus::Tree));
-        let Some(row) = self.view.get(self.cursor) else {
-            return;
-        };
         if let Some(i) = file {
+            let [sources, body] =
+                Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(body);
+            self.diff = body;
+            let active_side = self.active_preview_side();
+            let mut source_x = sources.x;
+            for (side, label) in [
+                (backend::staging::Side::Staged, "I Staged"),
+                (backend::staging::Side::Unstaged, "W Unstaged"),
+            ] {
+                let label = if active_side == side {
+                    format!("[{label}]")
+                } else {
+                    label.to_owned()
+                };
+                self.hit_button(f, sources, &mut source_x, &label, Hit::PreviewSide(side));
+            }
             let v = &self.files[i];
             let source = if v.change.ignored() {
                 "Ignored · read-only".to_owned()
@@ -528,10 +542,10 @@ impl CommitPanel {
                 "Conflict".to_owned()
             } else if v.change.xy == *b"??" {
                 "Untracked".to_owned()
-            } else if v.change.staged() {
+            } else if active_side == backend::staging::Side::Staged {
                 format!("HEAD {} INDEX", self.icons.glyph(Icon::Right))
             } else {
-                "Working tree".to_owned()
+                format!("INDEX {} WORKTREE", self.icons.glyph(Icon::Right))
             };
             let tag = format!(" {} · {source} ", String::from_utf8_lossy(&v.change.xy));
             let w = tag.width() as u16;
@@ -578,6 +592,9 @@ impl CommitPanel {
                 self.draw_patch(f, body, details);
             }
         } else {
+            let Some(row) = self.view.get(self.cursor) else {
+                return;
+            };
             let (checked, _) = self.check_counts(row);
             let conflicts = row
                 .files

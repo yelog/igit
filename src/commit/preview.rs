@@ -24,6 +24,7 @@ struct Target {
     root: usize,
     repo: PathBuf,
     change: Change,
+    side: Option<backend::staging::Side>,
 }
 
 pub(super) struct Prepared {
@@ -62,14 +63,22 @@ pub(super) struct Loaded {
 }
 
 impl Loaded {
-    pub(super) fn read(repo: &Path, change: &Change) -> Self {
+    pub(super) fn read_side(
+        repo: &Path,
+        change: &Change,
+        side: Option<backend::staging::Side>,
+    ) -> Self {
         if change.ignored() || change.conflict {
             return Self {
                 patch: backend::diff(repo, change).unwrap_or_else(|e| e.to_string()),
                 pair: None,
             };
         }
-        match backend::preview::load(repo, change) {
+        let result = side.map_or_else(
+            || backend::preview::load(repo, change),
+            |side| backend::preview::load_side(repo, change, side),
+        );
+        match result {
             Ok(pair) => Self {
                 patch: String::new(),
                 pair: Some(pair),
@@ -77,7 +86,13 @@ impl Loaded {
             Err(error) => Self {
                 patch: format!(
                     "{error}\n\n{}",
-                    backend::diff(repo, change).unwrap_or_else(|e| e.to_string())
+                    backend::diff_side(
+                        repo,
+                        change,
+                        side.map_or(change.staged(), |side| side
+                            == backend::staging::Side::Staged),
+                    )
+                    .unwrap_or_else(|e| e.to_string())
                 ),
                 pair: None,
             },
@@ -120,6 +135,7 @@ impl CommitPanel {
             root: file.root,
             repo: c.repos[file.root].path.clone(),
             change: file.change.clone(),
+            side: self.preview_side,
         })
     }
 
@@ -144,7 +160,7 @@ impl CommitPanel {
                 }
                 return;
             }
-            let loaded = Loaded::read(&target.repo, &target.change);
+            let loaded = Loaded::read_side(&target.repo, &target.change, target.side);
             self.set_prepared_preview(key, Prepared::new(target.change.label(), loaded));
         } else {
             self.set_prepared_preview(
@@ -186,7 +202,7 @@ impl CommitPanel {
         {
             let target = self.preview.target.as_ref().unwrap().clone();
             let started = self.preview.task.start("commit-preview", move |version| {
-                let loaded = Loaded::read(&target.repo, &target.change);
+                let loaded = Loaded::read_side(&target.repo, &target.change, target.side);
                 (!version.cancelled()).then(|| Prepared::new(target.change.label(), loaded))
             });
             self.preview.due = None;
@@ -211,6 +227,20 @@ impl CommitPanel {
                 ),
             );
         }
+    }
+
+    pub(super) fn active_preview_side(&self) -> backend::staging::Side {
+        self.preview_side.unwrap_or_else(|| {
+            if self
+                .active()
+                .and_then(Row::file)
+                .is_some_and(|index| self.files[index].change.staged())
+            {
+                backend::staging::Side::Staged
+            } else {
+                backend::staging::Side::Unstaged
+            }
+        })
     }
 
     pub(super) fn preview_root(&self) -> Option<usize> {

@@ -1,5 +1,8 @@
 //! Keep repository reads off the terminal thread and retain only the latest request.
-use super::Context;
+use super::{
+    process::{with_read_control, ReadControl},
+    Context,
+};
 use anyhow::Result;
 use std::{
     path::PathBuf,
@@ -15,6 +18,7 @@ pub(crate) struct Load<T> {
     generation: Arc<AtomicU64>,
     requested: bool,
     running: Option<(u64, Receiver<T>)>,
+    control: Option<ReadControl>,
 }
 
 impl<T> Default for Load<T> {
@@ -23,24 +27,38 @@ impl<T> Default for Load<T> {
             generation: Arc::default(),
             requested: false,
             running: None,
+            control: None,
         }
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Version {
     generation: Arc<AtomicU64>,
     value: u64,
+    control: ReadControl,
 }
 
 impl Version {
     pub(crate) fn cancelled(&self) -> bool {
-        self.generation.load(Ordering::Relaxed) != self.value
+        self.control.cancelled() || self.generation.load(Ordering::Relaxed) != self.value
+    }
+
+    pub(crate) fn read_control(&self) -> &ReadControl {
+        &self.control
+    }
+
+    pub(crate) fn with_read_control<T>(&self, read: impl FnOnce() -> T) -> T {
+        with_read_control(self.read_control(), read)
     }
 }
 
 impl<T> Drop for Load<T> {
     fn drop(&mut self) {
         self.generation.fetch_add(1, Ordering::Relaxed);
+        if let Some(control) = &self.control {
+            control.cancel();
+        }
     }
 }
 
@@ -52,6 +70,9 @@ impl<T: Send + 'static> Load<T> {
 
     pub(crate) fn cancel(&mut self) {
         self.generation.fetch_add(1, Ordering::Relaxed);
+        if let Some(control) = &self.control {
+            control.cancel();
+        }
         self.requested = false;
     }
 
@@ -81,15 +102,19 @@ impl<T: Send + 'static> Load<T> {
         }
         self.requested = false;
         let value = self.generation.load(Ordering::Relaxed);
+        let control = ReadControl::default();
         let version = Version {
             generation: self.generation.clone(),
             value,
+            control: control.clone(),
         };
         let (send, receive) = mpsc::channel();
+        let worker_control = control.clone();
         thread::Builder::new().name(name.into()).spawn(move || {
-            let _ = send.send(read(version));
+            let _ = send.send(with_read_control(&worker_control, || read(version)));
         })?;
         self.running = Some((value, receive));
+        self.control = Some(control);
         Ok(())
     }
 
@@ -104,6 +129,7 @@ impl<T: Send + 'static> Load<T> {
         };
         let current = *generation == self.generation.load(Ordering::Relaxed);
         self.running = None;
+        self.control = None;
         current.then_some(result)
     }
 
@@ -158,13 +184,15 @@ pub(crate) fn read_repositories<Job: Sync, Output: Send>(
         let workers: Vec<_> = (0..READERS.min(jobs.len()))
             .map(|_| {
                 scope.spawn(|| {
-                    let mut results = Vec::new();
-                    while !version.cancelled() {
-                        let i = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(job) = jobs.get(i) else { break };
-                        results.push((i, read(job)));
-                    }
-                    results
+                    version.with_read_control(|| {
+                        let mut results = Vec::new();
+                        while !version.cancelled() {
+                            let i = next.fetch_add(1, Ordering::Relaxed);
+                            let Some(job) = jobs.get(i) else { break };
+                            results.push((i, read(job)));
+                        }
+                        results
+                    })
                 })
             })
             .collect();

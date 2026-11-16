@@ -11,6 +11,47 @@ use std::{
 
 pub(super) const NVIM_SESSION: &str = "IGIT_NVIM_SESSION";
 
+pub(super) fn capabilities() -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "version": env!("CARGO_PKG_VERSION"),
+        "editor_protocol": 1,
+        "capabilities": ["editor", "revision", "file-diff", "repository-events"]
+    })
+}
+
+fn repository_sequence(repo: &Path, session: &str) -> Result<String> {
+    ensure!(
+        repo.is_absolute(),
+        "Repository events require an absolute path"
+    );
+    let repo = repo
+        .to_str()
+        .context("Repository events require a UTF-8 path")?;
+    let payload = serde_json::json!({
+        "version": 1,
+        "session": session,
+        "repo": repo
+    });
+    Ok(format!("\x1b]51;igit-changed;{payload}\x07"))
+}
+
+pub(super) fn invalidate_repositories<'a>(repos: impl Iterator<Item = &'a Path>) -> Result<()> {
+    let Some(session) = std::env::var(NVIM_SESSION)
+        .ok()
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    let mut output = std::io::stdout().lock();
+    for repo in repos {
+        if repo.to_str().is_some() {
+            send_request(&mut output, &repository_sequence(repo, &session)?)?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub(super) struct Request {
     pub repo: PathBuf,

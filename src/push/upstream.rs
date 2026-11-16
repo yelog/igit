@@ -17,15 +17,17 @@ struct Value {
 
 impl Snapshot {
     pub fn read(path: &Path, branch: &str) -> Result<Self> {
-        let output = command(path)
-            .args([
+        let output = read_output(
+            path,
+            "branch configuration",
+            command(path).args([
                 "config",
                 "--null",
                 "--show-origin",
                 "--get-regexp",
                 r"^(branch\..*\.(remote|pushremote|merge)|remote\.pushdefault|extensions\.worktreeconfig)$",
-            ])
-            .output()?;
+            ]),
+        )?;
         if !output.status.success() && output.status.code() != Some(1) {
             bail!(
                 "Cannot read branch configuration: {}",

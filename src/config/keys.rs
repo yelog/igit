@@ -272,6 +272,8 @@ commands! {
         "add-to-git" => "a", CHANGES;
         "edit-file" => "e", CHANGES;
         "stage-hunks" => "Ctrl-g", CHANGES | PREVIEW;
+        "preview-staged" => "I", PREVIEW;
+        "preview-unstaged" => "W", PREVIEW;
         "open" => "Enter", COMMIT;
         "move-to-group" => "m", COMMIT;
         "preview" => "v", COMMIT;

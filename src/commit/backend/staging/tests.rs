@@ -43,6 +43,16 @@ fn hash(repo: &Path, contents: &[u8]) -> String {
     .unwrap())
 }
 
+fn range_paths() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("range file.txt"),
+        #[cfg(unix)]
+        PathBuf::from("src/[literal]*?/quote\"\tline\n文件.txt"),
+        #[cfg(all(unix, not(target_os = "macos")))]
+        PathBuf::from(raw(b"src/[literal]*?/bad\xff")),
+    ]
+}
+
 #[test]
 fn stage_one_hunk_preserves_existing_and_later_unrelated_staging() {
     let dir = seeded();
@@ -83,6 +93,248 @@ fn stage_one_hunk_preserves_existing_and_later_unrelated_staging() {
     assert_eq!(fs::read(repo.join("file")).unwrap(), working.as_bytes());
     assert_eq!(oid(repo).unwrap(), head);
     assert!(!git_path(repo, "index.lock").unwrap().exists());
+}
+
+#[test]
+fn selected_lines_stage_adjacent_changes_and_preserve_other_index_entries() {
+    let dir = seeded();
+    let repo = dir.path();
+    put(repo, "sibling", "staged sibling\n");
+    g(repo, None, &["add", "sibling"]).unwrap();
+    let sibling = entry(repo, None, Path::new("sibling")).unwrap();
+    let working = lines()
+        .replace("line 20\n", "task one\n")
+        .replace("line 22\n", "task two\n");
+    put(repo, "file", &working);
+    let snapshot = snapshot(repo, Side::Unstaged);
+    assert_eq!(snapshot.hunks.len(), 1);
+    let source = &snapshot.hunks[0].text;
+    let first = source.lines().position(|line| line == "-line 20").unwrap();
+    let last = source.lines().position(|line| line == "+task one").unwrap();
+    let selected = plan_range(&snapshot, 0, first, last).unwrap();
+    assert!(!selected.patch.contains("task two"));
+    execute(&selected).unwrap();
+    assert_eq!(
+        bytes(repo, ":file"),
+        lines().replace("line 20\n", "task one\n").as_bytes()
+    );
+    assert_eq!(entry(repo, None, Path::new("sibling")).unwrap(), sibling);
+    assert_eq!(fs::read(repo.join("file")).unwrap(), working.as_bytes());
+}
+
+#[test]
+fn selected_lines_unstage_one_replacement_after_an_earlier_insertion() {
+    let dir = seeded();
+    let repo = dir.path();
+    let staged = format!("earlier insertion\n{}", lines())
+        .replace("line 20\n", "task one\n")
+        .replace("line 22\n", "task two\n");
+    put(repo, "file", &staged);
+    g(repo, None, &["add", "file"]).unwrap();
+    let working = format!("{staged}later working edit\n");
+    put(repo, "file", &working);
+    let snapshot = snapshot(repo, Side::Staged);
+    let hunk = snapshot
+        .hunks
+        .iter()
+        .position(|hunk| hunk.text.contains("+task one"))
+        .unwrap();
+    let source = &snapshot.hunks[hunk].text;
+    let first = source.lines().position(|line| line == "-line 20").unwrap();
+    let last = source.lines().position(|line| line == "+task one").unwrap();
+    execute(&plan_range(&snapshot, hunk, first, last).unwrap()).unwrap();
+    assert_eq!(
+        bytes(repo, ":file"),
+        staged.replace("task one\n", "line 20\n").as_bytes()
+    );
+    assert_eq!(fs::read(repo.join("file")).unwrap(), working.as_bytes());
+}
+
+#[test]
+fn line_selection_handles_insert_delete_and_missing_final_newline() {
+    for (base, working, selected, expected) in [
+        ("base\n", "first\nsecond\nbase\n", "+first", "first\nbase\n"),
+        (
+            "first\nsecond\nbase\n",
+            "base\n",
+            "-first",
+            "second\nbase\n",
+        ),
+        ("base", "first\nbase", "+first", "first\nbase"),
+    ] {
+        let dir = setup();
+        let repo = dir.path();
+        put(repo, "file", base);
+        commit_all(repo);
+        put(repo, "file", working);
+        let snapshot = snapshot(repo, Side::Unstaged);
+        let line = snapshot.hunks[0]
+            .text
+            .lines()
+            .position(|line| line == selected)
+            .unwrap();
+        execute(&plan_range(&snapshot, 0, line, line).unwrap()).unwrap();
+        assert_eq!(bytes(repo, ":file"), expected.as_bytes());
+        assert_eq!(fs::read(repo.join("file")).unwrap(), working.as_bytes());
+    }
+}
+
+#[test]
+fn selecting_only_context_or_changing_the_source_never_stages_lines() {
+    let dir = seeded();
+    let repo = dir.path();
+    put(repo, "file", &lines().replace("line 20\n", "selected\n"));
+    let snapshot = snapshot(repo, Side::Unstaged);
+    let before = index(repo);
+    assert!(plan_range(&snapshot, 0, 0, 1).is_err());
+    assert_eq!(index(repo), before);
+    put(repo, "file", "external change\n");
+    assert!(plan_range(&snapshot, 0, 0, usize::MAX).is_err());
+    assert_eq!(index(repo), before);
+}
+
+#[test]
+fn partial_new_file_ranges_unstage_only_selected_lines_and_keep_native_paths() {
+    for path in range_paths() {
+        let dir = seeded();
+        let repo = dir.path();
+        fs::create_dir_all(repo.join(&path).parent().unwrap()).unwrap();
+        fs::write(repo.join(&path), b"first\nsecond\n").unwrap();
+        exact_path(repo, None, &["add"], &path).unwrap();
+        let working = b"first\nsecond\nworking only\n";
+        fs::write(repo.join(&path), working).unwrap();
+        put(repo, "sibling", "staged sibling\n");
+        g(repo, None, &["add", "sibling"]).unwrap();
+        put(repo, "sibling", "working sibling\n");
+        let sibling = entry(repo, None, Path::new("sibling")).unwrap();
+        let before = index(repo);
+        let source = read(7, repo, &path, Side::Staged).unwrap();
+        assert!(source.patch.contains("new file mode "));
+        let line = source.hunks[0]
+            .text
+            .lines()
+            .position(|line| line == "+first")
+            .unwrap();
+        let selected = plan_range(&source, 0, line, line).unwrap();
+        assert!(!selected.patch.contains("new file mode "));
+        assert!(!selected.patch.contains("--- /dev/null"));
+        assert_eq!(index(repo), before);
+        execute(&selected).unwrap();
+        let record = entry(repo, None, &path).unwrap();
+        let (mode, blob) = regular(&record).unwrap().unwrap();
+        assert_eq!(mode, "100644");
+        assert_eq!(
+            g(repo, None, &["cat-file", "blob", blob]).unwrap(),
+            b"second\n"
+        );
+        assert_eq!(entry(repo, None, Path::new("sibling")).unwrap(), sibling);
+        assert_eq!(fs::read(repo.join(&path)).unwrap(), working);
+        assert_eq!(
+            fs::read(repo.join("sibling")).unwrap(),
+            b"working sibling\n"
+        );
+    }
+}
+
+#[test]
+fn partial_deleted_file_ranges_stage_only_selected_lines_and_keep_native_paths() {
+    for path in range_paths() {
+        let dir = seeded();
+        let repo = dir.path();
+        fs::create_dir_all(repo.join(&path).parent().unwrap()).unwrap();
+        fs::write(repo.join(&path), b"first\nsecond\n").unwrap();
+        commit_all(repo);
+        fs::remove_file(repo.join(&path)).unwrap();
+        put(repo, "sibling", "staged sibling\n");
+        g(repo, None, &["add", "sibling"]).unwrap();
+        put(repo, "sibling", "working sibling\n");
+        let sibling = entry(repo, None, Path::new("sibling")).unwrap();
+        let before = index(repo);
+        let source = read(7, repo, &path, Side::Unstaged).unwrap();
+        assert!(source.patch.contains("deleted file mode "));
+        let line = source.hunks[0]
+            .text
+            .lines()
+            .position(|line| line == "-first")
+            .unwrap();
+        let selected = plan_range(&source, 0, line, line).unwrap();
+        assert!(!selected.patch.contains("deleted file mode "));
+        assert!(!selected.patch.contains("+++ /dev/null"));
+        assert_eq!(index(repo), before);
+        execute(&selected).unwrap();
+        let record = entry(repo, None, &path).unwrap();
+        let (mode, blob) = regular(&record).unwrap().unwrap();
+        assert_eq!(mode, "100644");
+        assert_eq!(
+            g(repo, None, &["cat-file", "blob", blob]).unwrap(),
+            b"second\n"
+        );
+        assert_eq!(entry(repo, None, Path::new("sibling")).unwrap(), sibling);
+        assert!(!repo.join(&path).exists());
+        assert_eq!(
+            fs::read(repo.join("sibling")).unwrap(),
+            b"working sibling\n"
+        );
+    }
+}
+
+#[test]
+fn entire_file_ranges_preserve_add_delete_semantics_and_unrelated_staging() {
+    for side in [Side::Staged, Side::Unstaged] {
+        for path in range_paths() {
+            let dir = seeded();
+            let repo = dir.path();
+            fs::create_dir_all(repo.join(&path).parent().unwrap()).unwrap();
+            fs::write(repo.join(&path), b"first\nsecond\n").unwrap();
+            if side == Side::Staged {
+                exact_path(repo, None, &["add"], &path).unwrap();
+                fs::write(repo.join(&path), b"first\nsecond\nworking only\n").unwrap();
+            } else {
+                commit_all(repo);
+                fs::remove_file(repo.join(&path)).unwrap();
+            }
+            put(repo, "sibling", "staged sibling\n");
+            g(repo, None, &["add", "sibling"]).unwrap();
+            put(repo, "sibling", "working sibling\n");
+            let sibling = entry(repo, None, Path::new("sibling")).unwrap();
+            let original = entry(repo, None, &path).unwrap();
+            let before = index(repo);
+            let source = read(7, repo, &path, side).unwrap();
+            let selected = plan_range(&source, 0, 0, usize::MAX).unwrap();
+            if side == Side::Staged {
+                assert!(selected.patch.contains("new file mode "));
+                assert!(selected.patch.contains("--- /dev/null\n"));
+                assert!(selected.patch.contains("@@ -0,0 "));
+            } else {
+                assert!(selected.patch.contains("deleted file mode "));
+                assert!(selected.patch.contains("+++ /dev/null\n"));
+                assert!(selected.patch.contains(" +0,0 @@"));
+            }
+            assert_eq!(index(repo), before);
+            execute(&selected).unwrap();
+            assert!(entry(repo, None, &path).unwrap().is_empty());
+            assert_eq!(entry(repo, None, Path::new("sibling")).unwrap(), sibling);
+            if side == Side::Staged {
+                assert_eq!(
+                    fs::read(repo.join(&path)).unwrap(),
+                    b"first\nsecond\nworking only\n"
+                );
+            } else {
+                assert!(!repo.join(&path).exists());
+                let deleted = read(7, repo, &path, Side::Staged).unwrap();
+                let restored = plan_range(&deleted, 0, 0, usize::MAX).unwrap();
+                assert!(restored.patch.contains("deleted file mode "));
+                execute(&restored).unwrap();
+                assert_eq!(entry(repo, None, &path).unwrap(), original);
+                assert!(!repo.join(&path).exists());
+                assert_eq!(entry(repo, None, Path::new("sibling")).unwrap(), sibling);
+            }
+            assert_eq!(
+                fs::read(repo.join("sibling")).unwrap(),
+                b"working sibling\n"
+            );
+        }
+    }
 }
 
 #[test]

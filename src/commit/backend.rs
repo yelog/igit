@@ -3,7 +3,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Seek, Write},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
 };
@@ -62,14 +62,24 @@ fn cmd(repo: &Path, idx: Option<&Path>) -> Command {
 }
 fn run(repo: &Path, idx: Option<&Path>, args: &[&OsStr], input: Option<&[u8]>) -> Result<Output> {
     let mut c = cmd(repo, idx);
-    c.args(args)
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    c.args(args);
+    let text: Vec<_> = args.iter().map(|arg| arg.to_str().unwrap_or("")).collect();
+    if let Some(operation) = crate::core::read_operation(&text) {
+        if let Some(bytes) = input {
+            let mut source = tempfile::tempfile()?;
+            source.write_all(bytes)?;
+            source.rewind()?;
+            return crate::core::process::read_output_with_input(repo, operation, &mut c, source);
+        }
+        return crate::core::read_output(repo, operation, &mut c);
+    }
+    c.stdin(if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
     let mut child = c.spawn()?;
     if let Some(b) = input {
         child.stdin.take().unwrap().write_all(b)?;
@@ -252,7 +262,11 @@ fn exact_path(repo: &Path, idx: Option<&Path>, args: &[&str], file: &Path) -> Re
     if !index_read {
         command.arg(raw(&exclude));
     }
-    let output = checked(command.output()?)?;
+    let output = checked(if let Some(operation) = crate::core::read_operation(args) {
+        crate::core::read_output(repo, operation, &mut command)?
+    } else {
+        command.output()?
+    })?;
     if !index_read {
         return Ok(output);
     }
@@ -698,6 +712,10 @@ pub fn execute(p: &Plan) -> Result<Outcome> {
     })
 }
 pub fn diff(repo: &Path, f: &Change) -> Result<String> {
+    diff_side(repo, f, f.staged())
+}
+
+pub fn diff_side(repo: &Path, f: &Change, staged: bool) -> Result<String> {
     if f.ignored() {
         return Ok("Ignored by Git · read-only\nExcluded from commits and AI patches.".into());
     }
@@ -705,6 +723,9 @@ pub fn diff(repo: &Path, f: &Change) -> Result<String> {
         return Ok("Unmerged path · open the Conflicts tab to resolve it".into());
     }
     if f.xy == *b"??" {
+        if staged {
+            return Ok("No staged changes for this untracked path".into());
+        }
         let path = repo.join(&f.path);
         if path.is_file() && !path.is_symlink() {
             use std::io::Read;
@@ -750,7 +771,7 @@ pub fn diff(repo: &Path, f: &Change) -> Result<String> {
         "--ignore-submodules=none",
         "--submodule=short",
     ];
-    if f.staged() {
+    if staged {
         args.push("--cached")
     }
     Ok(txt(exact_path(repo, None, &args, &f.path)?))
