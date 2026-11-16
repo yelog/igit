@@ -2,6 +2,57 @@ use super::*;
 use crate::ui::panes::PaneId;
 
 #[test]
+fn commit_background_preview_wakes_without_input_and_follows_the_latest_tree_row() {
+    let (_dir, mut app) = fixture();
+    let repo = app.ctx.repos[0].path.clone();
+    let before = snapshot(&repo);
+    app.enable_background_loading();
+    app.dispatch(&key(KeyCode::Home));
+    app.dispatch(&key(KeyCode::Down));
+    app.dispatch(&key(KeyCode::Down));
+    let loading = screen(&mut app, 160, 36);
+    assert!(loading.contains("Loading diff"), "{loading}");
+    assert!(app.commit.preview_wakeup().is_some());
+    assert!(app.poll_timeout() <= Duration::from_millis(60));
+    app.commit.focus_pane(PaneId::Preview);
+    for code in ['p', 'f', '[', ']'] {
+        app.dispatch(&key(KeyCode::Char(code)));
+        assert!(app.pop.is_none(), "{code} escaped the loading preview");
+    }
+    app.commit.focus_pane(PaneId::Changes);
+    for _ in 0..10 {
+        app.dispatch(&key(KeyCode::Char('j')));
+        screen(&mut app, 160, 36);
+        app.poll();
+        app.dispatch(&key(KeyCode::Char('k')));
+        screen(&mut app, 160, 36);
+        app.poll();
+    }
+    app.dispatch(&key(KeyCode::Home));
+    app.dispatch(&key(KeyCode::Down));
+    app.dispatch(&key(KeyCode::Down));
+    screen(&mut app, 160, 36);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        app.poll();
+        let text = screen(&mut app, 160, 36);
+        if text.contains("Before") && text.contains("After") {
+            assert!(text.contains("staged"), "{text}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "preview timed out: {text}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    app.commit.focus_pane(PaneId::Preview);
+    app.dispatch(&Event::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL,
+    )));
+    assert_eq!(app.commit.selected_text(), Some("staged\n"));
+    assert_eq!(snapshot(&repo), before);
+}
+
+#[test]
 fn commit_revision_controls_keep_global_keys_and_panel_focus_in_their_contexts() {
     let (_dir, mut app) = fixture();
     let repo = app.ctx.repos[0].path.clone();

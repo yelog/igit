@@ -30,7 +30,7 @@ struct Pending {
 struct Snapshot {
     statuses: BTreeMap<usize, Status>,
     branches: BTreeMap<usize, String>,
-    preview: Option<(String, Change, preview::Loaded)>,
+    preview: Option<(String, Change, preview::Prepared)>,
 }
 
 fn statuses(c: &Context, ignored: bool, roots: &BTreeSet<usize>) -> BTreeMap<usize, Status> {
@@ -67,7 +67,8 @@ impl Snapshot {
                 .iter()
                 .find(|f| f.path == path)?;
             let loaded = preview::Loaded::read(&c.repos[root].path, change);
-            Some((key, change.clone(), loaded))
+            let prepared = preview::Prepared::new(change.label(), loaded);
+            Some((key, change.clone(), prepared))
         });
         let branches = roots
             .into_iter()
@@ -90,6 +91,7 @@ impl CommitPanel {
     /// Request a fresh scan without starting a second worker.
     pub(crate) fn request_refresh(&mut self) {
         self.invalidate_ai_check();
+        self.cancel_preview_read();
         self.refresh.generation = self.refresh.generation.wrapping_add(1);
         self.refresh.deferred.clear();
         self.refresh.requested = true;
@@ -159,7 +161,10 @@ impl CommitPanel {
             }
         }
         self.apply_statuses(c, statuses);
-        if self.diff_root.is_some_and(|root| scanned.contains(&root)) {
+        if self
+            .preview_root()
+            .is_some_and(|root| scanned.contains(&root))
+        {
             self.invalidate_preview();
         }
     }
@@ -273,12 +278,14 @@ impl CommitPanel {
                                         && r.file().is_some_and(|i| self.files[i].change == change)
                                 })
                             {
-                                changed |= self.set_preview(key, loaded);
+                                changed |= self.set_prepared_preview(key, loaded);
                                 preview_applied = true;
                             }
                         }
                         if !preview_applied
-                            && self.diff_root.is_some_and(|root| scanned.contains(&root))
+                            && self
+                                .preview_root()
+                                .is_some_and(|root| scanned.contains(&root))
                         {
                             self.invalidate_preview();
                             changed = true;

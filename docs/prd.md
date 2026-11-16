@@ -159,6 +159,16 @@ focus while preserving search cancellation and text-selection clearing.
 Acceptance covers pending previews, hidden inspectors, contextual Help, and
 120×36, 80×24, and 44×12 terminals without changing Git state.
 
+**Commit navigation responsiveness (R1/R7/R8, 2026-11-16).** Holding `j/k` or
+Up/Down moves the Changes highlight without synchronously reading Git or
+constructing a file comparison. A 60ms stable selection schedules one background
+preview; only the latest file/repository/source generation may install. Loading
+shows the current file identity, and hidden previews cancel pending reads.
+Status refresh prepares comparisons on its worker and preserves unchanged
+preview state. Acceptance covers blocked and obsolete reads, changing sources
+or Roots, mixed staged/unstaged files with an unchecked staged sibling, and
+read-only navigation timing against an explicitly supplied workspace.
+
 **Workflow completeness (R1/R2/R3/R7/R8 extension, 2026-11-08).** Commit offers
 reviewed Stage/Unstage for one tracked text hunk from its Staged/Unstaged view
 (`Ctrl-G` / Hunks), preserving working bytes, unrelated staging, checkboxes,

@@ -218,6 +218,10 @@ native executable must both contain this integration.
 
 ## Review a file before committing
 
+Hold `j/k` or Up/Down in Changes to browse without waiting for file reads.
+After the highlighted file stays still for 60ms, its Diff loads in the
+background. `Loading diff…` keeps the current file identity visible until ready.
+
 Select a file in Commit's Changes tree to show a read-only **Before / After**
 comparison beside it. The preview uses the same syntax highlighting, line
 numbers, aligned changes, context folding, and synchronized scrolling as file

@@ -218,6 +218,7 @@ pub struct CommitPanel {
     diff_root: Option<usize>,
     diff_text: String,
     diff_sources: Option<backend::preview::Comparison>,
+    preview: preview::State,
     diff_comparison: Option<Box<crate::merge::RevisionDiff>>,
     diff_scroll: usize,
     diff_left: usize,
@@ -283,6 +284,7 @@ impl Default for CommitPanel {
             diff_root: Default::default(),
             diff_text: Default::default(),
             diff_sources: None,
+            preview: Default::default(),
             diff_comparison: None,
             diff_scroll: Default::default(),
             diff_left: 0,
@@ -875,6 +877,7 @@ impl CommitPanel {
                     !self.preview_open || (self.stacked && self.focus != Focus::Diff);
                 if !self.preview_open {
                     self.clear_preview_selection();
+                    self.cancel_preview_read();
                 }
                 self.focus = if self.preview_open && self.stacked {
                     Focus::Diff
@@ -958,6 +961,7 @@ impl CommitPanel {
                 self.preview_open = focus == Focus::Diff;
                 if !self.preview_open {
                     self.clear_preview_selection();
+                    self.cancel_preview_read();
                 }
             }
             Hit::Row(_) => {}
@@ -1531,6 +1535,7 @@ impl CommitPanel {
         self.draw_workbench(f, a, c);
         if self.diff.is_empty() {
             self.clear_preview_selection();
+            self.cancel_preview_read();
         }
     }
     pub(crate) fn draw_overlays(&mut self, f: &mut Frame, a: Rect, c: &Context, cursor: bool) {

@@ -557,7 +557,11 @@ impl CommitPanel {
                 Span::styled(format!("{file_icon} "), fg(tint)),
                 Span::styled(v.change.label(), fg(INK)),
             ])];
-            if let Some(comparison) = self.diff_comparison.as_mut() {
+            if self.active().is_some_and(|row| row.id != self.diff_key) {
+                let mut layout = preview_layout(body.width, details);
+                layout.decoration(Line::styled("Loading diff…", fg(DIM)));
+                self.diff_selection.render(f, body, layout, 0, 0);
+            } else if let Some(comparison) = self.diff_comparison.as_mut() {
                 let mut layout = preview_layout(body.width, details);
                 let height = (layout.rows.len() as u16).min(body.height.saturating_sub(4));
                 let [details, comparison_area] =

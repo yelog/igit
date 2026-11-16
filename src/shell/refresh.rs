@@ -23,6 +23,7 @@ impl State {
 impl Shell {
     pub(super) fn enable_background_loading(&mut self) {
         self.refresh_state.background = true;
+        self.commit.enable_background_previews();
         self.merge.enable_background_loading();
         self.stash.enable_background_loading();
         self.remote.enable_background_loading();

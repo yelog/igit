@@ -2021,6 +2021,17 @@ impl Shell {
                 }
             }
         }
+        if self.tab == Commit && self.pop.is_none() {
+            match self.commit.poll_preview(&self.ctx) {
+                Ok(redraw) => change |= redraw,
+                Err(error) => {
+                    self.notify(NoticeLevel::Error, "Commit", format!("{error:#}"));
+                    change = true;
+                }
+            }
+        } else {
+            self.commit.cancel_preview_read();
+        }
         change |= self.key_picker.poll(Instant::now());
         let popup = match self.pop.as_mut() {
             Some(Popup::Help { origin, .. }) => origin.as_deref_mut(),
@@ -2186,6 +2197,7 @@ impl Shell {
             .log
             .preview_wakeup()
             .unwrap_or(idle)
+            .min(self.commit.preview_wakeup().unwrap_or(idle))
             .min(self.stash.preview_wakeup().unwrap_or(idle))
             .min(self.branch.preview_wakeup().unwrap_or(idle))
             .min(update_timeout.unwrap_or(idle))
