@@ -196,10 +196,12 @@ impl Plan {
             }
             Self::Fetch(remotes) => remotes,
         };
-        let output = command(repo)
-            .args(["fetch", "--all", "--no-recurse-submodules"])
-            .output()
-            .context("Cannot launch Git")?;
+        let output = crate::core::process::write_output(
+            repo,
+            "workspace fetch",
+            command(repo).args(["fetch", "--all", "--no-recurse-submodules"]),
+        )
+        .context("Cannot launch Git")?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -362,7 +364,13 @@ struct RunResult {
     comparison: Comparison,
 }
 
-fn execute(kind: Kind, strategy: Strategy, targets: Vec<Target>, sender: mpsc::Sender<Report>) {
+fn execute_recorded(
+    kind: Kind,
+    strategy: Strategy,
+    targets: Vec<Target>,
+    sender: mpsc::Sender<Report>,
+    state: &Path,
+) {
     let mut jobs = Vec::with_capacity(targets.len());
     let mut skipped = Vec::new();
     for (row, target) in targets.into_iter().enumerate() {
@@ -391,12 +399,14 @@ fn execute(kind: Kind, strategy: Strategy, targets: Vec<Target>, sender: mpsc::S
                 .as_ref()
                 .map(|plan| plan.fetch_targets(&target.path))
                 .unwrap_or_default();
-            let outcome = match &target.plan {
-                Ok(plan) => plan
-                    .execute(&target.path, kind, strategy)
-                    .map_err(|error| error.to_string()),
-                Err(reason) => Err(reason.clone()),
+            let run = || match &target.plan {
+                Ok(plan) => plan.execute(&target.path, kind, strategy),
+                Err(reason) => Err(anyhow::anyhow!("{reason}")),
             };
+            let outcome = crate::core::activity::with_directory(state, || {
+                crate::core::activity::record(&target.path, kind.label(), run)
+            })
+            .map_err(|error| error.to_string());
             if outcome.is_ok() {
                 if let Ok(plan) = &target.plan {
                     let observations = plan.fetch_observations(&target.path, &fetched);
@@ -856,10 +866,11 @@ impl Dialog {
             };
             let targets = std::mem::take(targets);
             let (kind, strategy) = (self.kind, self.strategy);
+            let state_dir = self.state_dir.clone();
             let (tx, rx) = mpsc::channel();
             self.stage = Stage::Running(rx);
             std::thread::spawn(move || {
-                execute(kind, strategy, targets, tx);
+                execute_recorded(kind, strategy, targets, tx, &state_dir);
             });
         }
         false

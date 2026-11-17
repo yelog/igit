@@ -63,7 +63,7 @@ impl LogPanel {
     pub(super) fn matcher(&self, q: &str) -> Result<Option<Needle>> {
         matcher(q, self.regex, self.case_sensitive)
     }
-    pub(super) fn toggle_match_mode(&mut self, h: Hit) -> Result<()> {
+    pub(super) fn toggle_match_mode(&mut self, h: Hit, c: &Context) -> Result<()> {
         let old = (self.regex, self.case_sensitive);
         match h {
             Hit::ToggleRegex => self.regex = !self.regex,
@@ -73,6 +73,21 @@ impl LogPanel {
         if let Err(e) = self.matcher(&self.filter.query) {
             (self.regex, self.case_sensitive) = old;
             return Err(e);
+        }
+        if self.editor.is_none() && self.filter.search.is_some() {
+            self.filter.search = Some(model::HistorySearch {
+                query: self.filter.query.clone(),
+                regex: self.regex,
+                case_sensitive: self.case_sensitive,
+            });
+            self.reload(c, false)
+        } else {
+            self.rebuild_text_preview(keep)
+        }
+    }
+    fn rebuild_text_preview(&mut self, keep: Option<(usize, String)>) -> Result<()> {
+        if loading::Projection::new(self).build(&self.hist)?.0 == self.visible {
+            return Ok(());
         }
         self.rebuild_visible(keep)
     }
@@ -104,6 +119,9 @@ impl LogPanel {
             return Ok(());
         }
         self.discard_editor();
+        if k == Field::Text {
+            self.text_search_selection = self.history_selection();
+        }
         self.view_menu = None;
         self.last = None;
         if k == Field::Refs {
@@ -127,6 +145,8 @@ impl LogPanel {
         Ok(())
     }
     pub(super) fn discard_editor(&mut self) {
+        let text = matches!(self.editor, Some((Field::Text, _)));
+        let keep = self.text_search_selection.take();
         self.path_options.clear();
         self.path_dialog = None;
         self.branch_menu = None;
@@ -135,6 +155,9 @@ impl LogPanel {
         self.choice = None;
         self.author_top = 0;
         self.suggestions.clear();
+        if text {
+            let _ = self.rebuild_text_preview(keep);
+        }
     }
     pub(crate) fn dismiss_filter_dropdown(&mut self) {
         self.view_menu = None;
@@ -157,7 +180,11 @@ impl LogPanel {
                 self.rebuild_refs(c);
                 return;
             }
-            Field::Text | Field::Branch => return,
+            Field::Text => {
+                let _ = self.rebuild_text_preview(self.text_search_selection.clone());
+                return;
+            }
+            Field::Branch => return,
             Field::Author => {
                 opts.push(("me".into(), "me  · Git identity".into()));
                 let mut authors = self
@@ -269,6 +296,12 @@ impl LogPanel {
             Field::Text => {
                 self.matcher(&v)?;
                 self.filter.query = v;
+                self.filter.search =
+                    (!self.filter.query.is_empty()).then(|| model::HistorySearch {
+                        query: self.filter.query.clone(),
+                        regex: self.regex,
+                        case_sensitive: self.case_sensitive,
+                    });
             }
             Field::Branch => return Ok(()), // The hierarchical menu applies complete ref identities.
             Field::Author => self.filter.author = v,
@@ -297,7 +330,7 @@ impl LogPanel {
                 self.refs.reset_cursor();
                 Ok(())
             }
-            Field::Text => self.rebuild_visible(None),
+            Field::Text => self.reload(c, false),
             _ => self.reload(c, false),
         }
     }
@@ -391,11 +424,14 @@ impl LogPanel {
                 });
             }
             K::Char('r' | 'c') if *field == Field::Text && k.modifiers.contains(Mods::ALT) => self
-                .toggle_match_mode(if k.code == K::Char('r') {
-                    Hit::ToggleRegex
-                } else {
-                    Hit::ToggleCase
-                })?,
+                .toggle_match_mode(
+                    if k.code == K::Char('r') {
+                        Hit::ToggleRegex
+                    } else {
+                        Hit::ToggleCase
+                    },
+                    c,
+                )?,
             K::Backspace => {
                 v.pop();
                 self.edit_changed(c);

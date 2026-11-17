@@ -1,5 +1,59 @@
 use anyhow::{Context as _, Result};
+use serde::{Deserialize, Serialize};
 use std::{ffi::OsString, path::PathBuf};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Native {
+    platform: String,
+    bytes: Vec<u8>,
+}
+
+impl Native {
+    pub(crate) fn new(path: &std::path::Path) -> Self {
+        #[cfg(unix)]
+        {
+            Self {
+                platform: "unix".into(),
+                bytes: path.as_os_str().as_encoded_bytes().to_vec(),
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            Self {
+                platform: "windows".into(),
+                bytes: path
+                    .as_os_str()
+                    .encode_wide()
+                    .flat_map(u16::to_le_bytes)
+                    .collect(),
+            }
+        }
+    }
+
+    pub(crate) fn path(&self) -> Result<PathBuf> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            anyhow::ensure!(self.platform == "unix", "State belongs to another platform");
+            Ok(OsString::from_vec(self.bytes.clone()).into())
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            anyhow::ensure!(
+                self.platform == "windows" && self.bytes.len().is_multiple_of(2),
+                "Invalid Windows state path"
+            );
+            let wide: Vec<_> = self
+                .bytes
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect();
+            Ok(OsString::from_wide(&wide).into())
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 enum Platform {

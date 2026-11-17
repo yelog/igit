@@ -225,6 +225,12 @@ fn branch_pull_alias_remapping_disabling_and_help_keep_their_scope() {
             if bindings.contains(&binding) {
                 assert_pull_review(&app);
                 app.dispatch(&key(KeyCode::Esc));
+            } else if binding == KeyCode::F(8) && app.config.label("global", "activity") == "F8" {
+                assert!(
+                    matches!(app.pop, Some(Popup::Activity(_))),
+                    "{config}: {binding:?}"
+                );
+                app.dispatch(&key(KeyCode::Esc));
             } else {
                 assert!(app.pop.is_none(), "{config}: {binding:?}");
             }

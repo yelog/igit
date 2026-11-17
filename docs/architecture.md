@@ -229,17 +229,29 @@ new roots; Commit checks, message, grouping and selection survive. Stable
 repository ordering also retains loaded panel objects. Installation waits for
 active input/reviews/writes to finish and invalidates the new workspace.
 
-Commit batches use [execution.rs](../src/commit/execution.rs), reporting
-repository progress and independent outcomes while the terminal remains
-responsive. Ctrl-X stops only repositories that have not started. Merge writes,
-commit snapshot preparation, and explicit patch opening remain synchronous.
+Commit preparation and batches use [execution.rs](../src/commit/execution.rs),
+reporting repository progress and independent outcomes while the terminal
+remains responsive. Ctrl-X stops preparation or repositories that have not
+started; the current repository may finish. The runtime Shell moves reviewed
+Log, Merge, Stash, Remote, Commit staging/stash, and local Branch confirmations
+into an owned-panel worker in [operations.rs](../src/shell/operations.rs).
+The modal operation view keeps writes exclusive, shows phase/scope/elapsed
+time, and offers a separate Ctrl-X interruption review. Panel restoration and
+workspace refresh follow completion. Direct Panel callers keep synchronous
+semantics. Explicit patch opening and some read-only review preparation still
+run synchronously.
 [core/process.rs](../src/core/process.rs) owns the shared isolated process
 registry used by Git reads and the AI runner. Read controls impose a 30-second
 per-command deadline, bounded stdout/stderr, descendant cleanup and bounded
 reaping. Errors identify the repository, operation and elapsed time without
 echoing command arguments. `core::git_bytes` classifies known read commands;
-explicit readers use `read_output`. Unknown commands and writes retain their
-existing execution semantics. `Load` cancellation terminates active reads and
+explicit readers use `read_output`. Writes use
+[write.rs](../src/core/process/write.rs) with owned process groups, bounded
+capture that drains excess output, optional file stdin, and explicit
+interruption. Writes have no automatic read deadline. Ref transactions retain
+their prepare/commit protocol while sharing owned process cleanup. A cancelled
+or uncertain Commit independently inspects HEAD and retains its prepared real
+`index.lock` if a commit may have been created. `Load` cancellation terminates active reads and
 propagates to bounded repository workers. Commit refresh and workspace loading
 carry the same controls. The panels use standard threads and `mpsc`.
 Reads requiring input, such as NUL-delimited attribute queries, use
@@ -255,6 +267,27 @@ Shell routes quit shortcuts, Actions, and help through `request_quit`. It checks
 software installation and running Git writes, then sets the event-loop exit flag
 directly. Quitting has no confirmation token or popup; existing terminal cleanup
 restores the user's terminal on return.
+
+[Workspace sessions](../src/shell/session.rs) store versioned, size-bounded
+`session.json` in the existing workspace state directory. Roots and named
+worksets match canonical worktree paths plus Git storage identity, preserving
+empty sets and excluding new or replaced repositories. Restoration precedes
+the initial Commit/conflict reads. Native paths preserve platform encoding.
+The session also stores the last panel, pane character-cell sizes, and up to
+16 ordinary [Log filter sets](../src/log/session.rs). CLI panel selection wins;
+temporary file/comparison tabs and transient selections are not restored.
+An OS file lock plus revision comparison rejects stale concurrent saves.
+Invalid or unsupported session files are retained and not overwritten.
+
+[Activity](../src/core/activity.rs) writes one versioned JSON file per recorded
+repository action or Git step, atomically before the write and after its
+result. TLS directory context is explicitly propagated into repository worker
+threads. Records hold IDs, operation labels, native paths, HEAD observations,
+and status, without arguments, patches, endpoints, or error contents. The
+reader shows up to 200 newest entries, isolates unreadable records, and retains
+unfinished files during pruning. The [Activity / Recovery dialog](../src/shell/activity.rs)
+provides inspection and copyable diagnostics, links to existing recovery
+panels, and never automatically retries or rolls back an uncertain operation.
 
 Commit's [preview adapter](../src/commit/preview.rs) feeds the same
 [read-only revision renderer](../src/merge/view/revision.rs) as file history.
@@ -707,7 +740,7 @@ Compare with Local flow with one-group apply and reviewed Apply All.
 
 Log holds cherry-pick selections by repository and immutable object ID. Review validates all sources against the same destination HEAD and passes the reviewed order to Git in one command. Git owns the pending queue and Conflicts handles continuation, skipping, and aborting.
 
-**Log: multiple commit graphs on one screen.** Each repository starts from local branches, remote-tracking branches, tags, and valid HEAD. `git log --date-order` produces a topologically valid sequence; sequences are then merged by their head timestamps. [Graph metadata](../src/log/model/graph/load.rs) reads full object IDs, parents, and branch/tag decorations once per history load, without loading all messages or authors. Its cached permanent ordering keeps fragment colors stable when older commits are outside the display page. [Graph topology](../src/log/model/graph.rs) matches real parents/children by repository ID + object ID. Each parent edge remains independent until its parent commit. [Layout](../src/log/model/graph/layout.rs) orders branch heads by Git reference priority, assigns DFS fragment indices, and sorts each row's node and passing edges using IDEA's endpoint comparator. Removing a node or folding a long edge changes the next row's positions; adjacent half-row segments share one boundary coordinate. The compact projection is prepared with history; the expanded projection is cached lazily. [Character rendering](../src/log/model/graph/render.rs) draws only the viewport with one horizontal origin, separating crossings from commit joins. [Colors](../src/log/model/graph/color.rs) use reference names and fragment indices, independently of screen columns. Text/hash filtering keeps the loaded topology's ordering/colors and includes only real edges with both endpoints visible. The first page is 160 commits per repository. When the cursor enters its final 24 rows, [loading.rs](../src/log/loading.rs) queues the next page on the existing generation-checked worker while cached rows remain usable. Page windows double (160, 320, 640, …) and have no total cap; `+` requests the next window immediately. Git has no stable resumable cursor for this combined multi-root ordering, so each request re-reads a longer prefix; geometric growth keeps cumulative work proportional to the final window. Selection remains keyed by repository ID and object ID. Rendering remains viewport-only. Text/hash filter changes do not reload all history; `regex-lite` matches in memory. Queries use full ref names across repositories and Git namespaces to distinguish identically named branches, remotes, and tags. Log tabs store only filters/selection; switching reuses the same panel and reloads visible data. Roots applies to all tabs.
+**Log: multiple commit graphs on one screen.** Each repository starts from local branches, remote-tracking branches, tags, and valid HEAD. `git log --date-order` produces a topologically valid sequence; sequences are then merged by their head timestamps. [Graph metadata](../src/log/model/graph/load.rs) reads at most 8,192 object IDs, parents, and branch/tag decorations per repository. An eight-repository process cache is keyed by canonical worktree, Git directory, ref tips/symrefs, HEAD, replacement refs, and shallow/graft state; a cache hit remaps repository indices. Cold reads omit messages and authors. Its cached permanent ordering keeps fragment colors stable when older commits are outside the display page. [Graph topology](../src/log/model/graph.rs) matches real parents/children by repository ID + object ID. Each parent edge remains independent until its parent commit. [Layout](../src/log/model/graph/layout.rs) orders branch heads by Git reference priority, assigns DFS fragment indices, and sorts each row's node and passing edges using IDEA's endpoint comparator. Removing a node or folding a long edge changes the next row's positions; adjacent half-row segments share one boundary coordinate. The compact projection is prepared with history; the expanded projection is cached lazily. [Character rendering](../src/log/model/graph/render.rs) draws only the viewport with one horizontal origin, separating crossings from commit joins. [Colors](../src/log/model/graph/color.rs) use reference names and fragment indices, independently of screen columns. Text/hash filtering keeps the loaded topology's ordering/colors and includes only real edges with both endpoints visible. The first page is 160 commits per repository. When the cursor enters its final 24 rows, [loading.rs](../src/log/loading.rs) queues the next page on the existing generation-checked worker while cached rows remain usable. Page windows double (160, 320, 640, …) and have no total cap; `+` requests the next window immediately. Git has no stable resumable cursor for this combined multi-root ordering, so each request re-reads a longer prefix; geometric growth keeps cumulative work proportional to the final window. Selection remains keyed by repository ID and object ID. Rendering remains viewport-only. Typing text/hash filters previews the loaded page in memory. Enter submits a full-history search using the same Rust matcher on complete messages, object IDs, and refs. A single controlled Git stream pins ref tips, bounds record and retained-result memory, stops after one extra matching result, and has a 30-second repository budget. Older matches use the loaded DAG when the bounded permanent layout lacks a node. Unambiguous SHA lookup uses an exact no-walk query outside branch/range filters; other filters remain applied. Timeout/read errors keep the search explicitly incomplete; Esc cancels through the existing generation mechanism. Queries use full ref names across repositories and Git namespaces to distinguish identically named branches, remotes, and tags. Log tabs store only filters/selection; switching reuses the same panel and reloads visible data. Roots applies to all tabs.
 
 The [Branch menu](../src/log/branches.rs) builds candidates from loaded refs within the current tab's Roots, listing each full ref once across repositories. Hover, submenu scrolling, and search do not run Git. `branch-favorites.json` in workspace state stores only manual star preferences, atomically replaced through a temporary file without changing repository configuration. Each Log tab has its own [branch expression](../src/log/model/branch_filter.rs). Full refs resolve per repository before queries; history and reachability use identical starts/exclusions. Cherry comparison is enabled only for one unambiguous branch.
 

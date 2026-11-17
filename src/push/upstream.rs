@@ -247,11 +247,14 @@ pub(super) fn set(job: &Job) -> Result<()> {
             format!("refs/heads/{}", job.t.dst),
         ),
     ] {
-        let output = command(directory)
-            .args(["config", "--file"])
-            .arg(filename)
-            .args(["--replace-all", &key, &value])
-            .output()?;
+        let output = crate::core::process::write_output(
+            &job.path,
+            "upstream config",
+            command(directory)
+                .args(["config", "--file"])
+                .arg(filename)
+                .args(["--replace-all", &key, &value]),
+        )?;
         if !output.status.success() {
             bail!(
                 "Cannot update upstream config: {}",

@@ -13,8 +13,12 @@ use crate::core::{git, git_bytes, read_output, revision, Context};
 use anyhow::{anyhow, bail, Context as _, Result};
 use std::{
     collections::{BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque},
+    io::{BufRead, Read},
     path::Path,
+    process::Command,
 };
+
+const HISTORY_MARKER: &[u8] = b"IGIT-COMMIT";
 
 pub(super) fn plain(v: &[u8]) -> String {
     let s = String::from_utf8_lossy(v);
@@ -33,6 +37,7 @@ pub(super) struct Filter {
     pub comparison: Option<super::compare::Range>,
     pub file_history: Option<super::file_history::Target>,
     pub query: String,
+    pub search: Option<HistorySearch>,
     pub author: String,
     pub date: Option<DateFilter>,
     pub paths: PathFilter,
@@ -40,12 +45,18 @@ pub(super) struct Filter {
     pub roots: Option<BTreeSet<usize>>,
     pub branch: Option<BranchFilter>,
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct HistorySearch {
+    pub query: String,
+    pub regex: bool,
+    pub case_sensitive: bool,
+}
 impl Filter {
     pub fn single_branch(&self) -> Option<&str> {
         self.branch.as_ref().and_then(BranchFilter::single)
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) enum DateFilter {
     Last24Hours,
     Last7Days,
@@ -96,6 +107,7 @@ pub(super) struct Rev {
     pub author: String,
     pub email: String,
     pub subject: String,
+    pub message: String,
     pub refs: String,
     pub file: Option<HistoryPath>,
 }
@@ -244,13 +256,45 @@ fn revisions(
     tips: &[String],
     limit: usize,
 ) -> Result<Vec<Rev>> {
+    revisions_at(dir, root, f, tips, limit, 0)
+}
+
+fn revisions_at(
+    dir: &Path,
+    root: usize,
+    f: &Filter,
+    tips: &[String],
+    limit: usize,
+    skip: usize,
+) -> Result<Vec<Rev>> {
+    let Some(mut command) = revision_command(dir, root, f, tips, Some(limit), skip)? else {
+        return Ok(Vec::new());
+    };
+    let output = read_output(dir, "log", &mut command)?;
+    if !output.status.success() {
+        bail!(
+            "git log: {}",
+            String::from_utf8_lossy(&output.stderr).trim_end()
+        );
+    }
+    parse_revisions(&output.stdout, root, f.file_history.is_some())
+}
+
+fn revision_command(
+    dir: &Path,
+    root: usize,
+    f: &Filter,
+    tips: &[String],
+    limit: Option<usize>,
+    skip: usize,
+) -> Result<Option<Command>> {
     let paths = if let Some(file) = &f.file_history {
         (file.root == root).then(|| vec![file.path.as_path()])
     } else {
         f.paths.for_root(root)
     };
     let Some(paths) = paths else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
     let mut a = vec![
         "--literal-pathspecs".to_owned(),
@@ -267,9 +311,13 @@ fn revisions(
         "--decorate-refs-exclude=refs/remotes/*/HEAD".into(),
         "--date=format-local:%Y/%m/%d, %H:%M".into(),
         "-z".into(),
-        format!("--max-count={limit}"),
-        "--format=%H%x00%P%x00%ct%x00%cd%x00%an%x00%s%x00%D%x00%ae%x00%ad".into(),
+        format!("--skip={skip}"),
+        "--format=IGIT-COMMIT%x00%H%x00%P%x00%ct%x00%cd%x00%an%x00%s%x00%D%x00%ae%x00%ad%x00%B"
+            .into(),
     ];
+    if let Some(limit) = limit {
+        a.push(format!("--max-count={limit}"));
+    }
     if f.comparison.is_none() {
         a.push("--ignore-missing".into());
     }
@@ -278,10 +326,10 @@ fn revisions(
         // not an author regex or a substring of a teammate's address.
         let ident = git(dir, &["var", "GIT_AUTHOR_IDENT"])?;
         let Some((email, _)) = ident.rsplit_once('<').and_then(|(_, s)| s.split_once('>')) else {
-            return Ok(vec![]);
+            return Ok(None);
         };
         if email.is_empty() {
-            return Ok(vec![]);
+            return Ok(None);
         }
         a.push("--fixed-strings".into());
         a.push(format!("--author=<{email}>"));
@@ -307,25 +355,27 @@ fn revisions(
     }
     a.extend_from_slice(tips);
     a.push("--".into());
-    let output = read_output(dir, "log", crate::core::command(dir).args(a).args(paths))?;
-    if !output.status.success() {
-        bail!(
-            "git log: {}",
-            String::from_utf8_lossy(&output.stderr).trim_end()
-        );
-    }
-    let data = output.stdout;
+    let mut command = crate::core::command(dir);
+    command.args(a).args(paths);
+    Ok(Some(command))
+}
+
+fn parse_revisions(data: &[u8], root: usize, file_history: bool) -> Result<Vec<Rev>> {
     let mut it = data.split(|b| *b == 0).peekable();
     let mut out = vec![];
     let mut seen = HashSet::new();
-    while let Some(id) = it.next().filter(|s| !s.is_empty()) {
+    while let Some(marker) = it.next().filter(|s| !s.is_empty()) {
+        anyhow::ensure!(
+            history_marker(marker),
+            "git log returned an unexpected history record"
+        );
         let mut next = || {
             it.next()
                 .ok_or_else(|| anyhow!("incomplete git log record"))
         };
         let mut rev = Rev {
             root,
-            oid: plain(id),
+            oid: plain(next()?),
             parents: plain(next()?)
                 .split_whitespace()
                 .map(str::to_owned)
@@ -337,16 +387,15 @@ fn revisions(
             refs: plain(next()?),
             email: plain(next()?),
             authored_date: plain(next()?).replace("/0", "/"),
+            message: String::from_utf8_lossy(next()?).into_owned(),
             file: None,
         };
-        if f.file_history.is_some() {
+        if file_history {
             // -z keeps filenames literal. A status owns one path (two for a
-            // rename); consuming those fields prevents hash-like filenames
-            // from being confused with the next fixed-length commit record.
+            // rename). The fixed marker separates one commit from the next,
+            // including hash-like filenames and merges without a status.
             while let Some(status) = it.peek().copied() {
-                if (status.len() == 40 || status.len() == 64)
-                    && status.iter().all(u8::is_ascii_hexdigit)
-                {
+                if history_marker(status) {
                     break;
                 }
                 it.next();
@@ -375,6 +424,175 @@ fn revisions(
         }
     }
     Ok(out)
+}
+
+fn history_marker(value: &[u8]) -> bool {
+    let value = value.strip_suffix(b"\0").unwrap_or(value);
+    value
+        .strip_prefix(b"\n")
+        .unwrap_or(value)
+        .eq(HISTORY_MARKER)
+}
+
+fn search_revisions(
+    dir: &Path,
+    root: usize,
+    filter: &Filter,
+    tips: &[String],
+    limit: usize,
+    cancelled: &(impl Fn() -> bool + Sync),
+) -> Result<Vec<Rev>> {
+    let Some(search) = &filter.search else {
+        return revisions(dir, root, filter, tips, limit);
+    };
+    let matcher = super::filters::matcher(&search.query, search.regex, search.case_sensitive)?;
+    if !search.regex
+        && filter.branch.is_none()
+        && filter.comparison.is_none()
+        && filter.file_history.is_none()
+        && (4..=64).contains(&search.query.len())
+        && search.query.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        let output = read_output(
+            dir,
+            "resolve commit",
+            crate::core::command(dir).args([
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                &format!("{}^{{commit}}", search.query),
+            ]),
+        )?;
+        if output.status.success() {
+            let oid = String::from_utf8(output.stdout)?.trim().to_owned();
+            return revisions(
+                dir,
+                root,
+                filter,
+                &["--no-walk=unsorted".into(), format!("{oid}^!")],
+                1,
+            );
+        }
+        if String::from_utf8_lossy(&output.stderr).contains("ambiguous") {
+            bail!("Commit hash is ambiguous; enter more characters");
+        }
+    }
+    crate::core::process::with_read_budget(|| {
+        let pinned = git_bytes(
+            dir,
+            &["rev-parse", "--revs-only"]
+                .into_iter()
+                .chain(tips.iter().map(String::as_str))
+                .collect::<Vec<_>>(),
+        )?;
+        let pinned: Vec<String> = String::from_utf8(pinned)?
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        if pinned.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(mut command) = revision_command(dir, root, filter, &pinned, None, 0)? else {
+            return Ok(Vec::new());
+        };
+        crate::core::process::read_stream(dir, "history search", &mut command, |mut reader| {
+            let mut found = Vec::new();
+            let mut seen = HashSet::new();
+            let mut retained_bytes = 0;
+            let mut pending = None;
+            loop {
+                if cancelled() {
+                    bail!("History search cancelled");
+                }
+                let first = match pending.take() {
+                    Some(token) => token,
+                    None => history_token(&mut reader)?,
+                };
+                if first.is_empty() {
+                    return Ok((found, true));
+                }
+                anyhow::ensure!(
+                    history_marker(&first),
+                    "git log returned an unexpected history record"
+                );
+                let mut record = first;
+                for _ in 0..10 {
+                    let token = history_token(&mut reader)?;
+                    anyhow::ensure!(!token.is_empty(), "Incomplete history search record");
+                    record.extend(token);
+                    anyhow::ensure!(
+                        record.len() <= 16 * 1024 * 1024,
+                        "History record exceeds the size limit"
+                    );
+                }
+                if filter.file_history.is_some() {
+                    loop {
+                        let token = history_token(&mut reader)?;
+                        if token.is_empty() {
+                            break;
+                        }
+                        if history_marker(&token) {
+                            pending = Some(token);
+                            break;
+                        }
+                        let status = token.strip_prefix(b"\n").unwrap_or(&token);
+                        let paths = if status == [0] {
+                            0
+                        } else if matches!(status.first(), Some(b'R' | b'C')) {
+                            2
+                        } else {
+                            1
+                        };
+                        record.extend(token);
+                        for _ in 0..paths {
+                            let path = history_token(&mut reader)?;
+                            anyhow::ensure!(!path.is_empty(), "Incomplete history search path");
+                            record.extend(path);
+                        }
+                        anyhow::ensure!(
+                            record.len() <= 16 * 1024 * 1024,
+                            "History record exceeds the size limit"
+                        );
+                    }
+                }
+                let rev = parse_revisions(&record, root, filter.file_history.is_some())?
+                    .pop()
+                    .context("Incomplete history search record")?;
+                if matcher.as_ref().is_none_or(|needle| {
+                    [&rev.oid, &rev.message, &rev.refs]
+                        .into_iter()
+                        .any(|value| needle.is_match(value))
+                }) && seen.insert(rev.oid.clone())
+                {
+                    retained_bytes += record.len();
+                    anyhow::ensure!(
+                        retained_bytes <= 16 * 1024 * 1024,
+                        "History matches exceed the output size limit; narrow the search"
+                    );
+                    found.push(rev);
+                    if found.len() >= limit {
+                        return Ok((found, false));
+                    }
+                }
+            }
+        })
+    })
+}
+
+fn history_token(reader: &mut impl BufRead) -> Result<Vec<u8>> {
+    let mut token = Vec::new();
+    reader
+        .take(16 * 1024 * 1024 + 1)
+        .read_until(0, &mut token)?;
+    anyhow::ensure!(
+        token.len() <= 16 * 1024 * 1024,
+        "History field exceeds the size limit"
+    );
+    anyhow::ensure!(
+        token.is_empty() || token.last() == Some(&0),
+        "Incomplete history search field"
+    );
+    Ok(token)
 }
 
 impl Rev {
@@ -532,7 +750,7 @@ pub(super) fn load_with_cancel(
     c: &Context,
     f: &Filter,
     limit: usize,
-    cancelled: &impl Fn() -> bool,
+    cancelled: &(impl Fn() -> bool + Sync),
 ) -> History {
     let mut scoped_context;
     let c = if f.file_history.is_some() || f.comparison.is_some() {
@@ -600,7 +818,7 @@ pub(super) fn load_with_cancel(
                 None => all_tips(),
             }
         };
-        match revisions(&r.path, i, f, &tips, limit.saturating_add(1)) {
+        match search_revisions(&r.path, i, f, &tips, limit.saturating_add(1), cancelled) {
             Ok(mut v) => {
                 if cancelled() {
                     return h;

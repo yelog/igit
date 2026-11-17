@@ -446,7 +446,7 @@ impl LogPanel {
         let text = if let Some((_, s)) = input {
             s
         } else if self.filter.query.is_empty() {
-            "Text or hash"
+            "Search history"
         } else {
             &self.filter.query
         };
@@ -863,8 +863,15 @@ impl LogPanel {
             {
                 "No commits in this scope"
             } else {
+                let coverage = if errors.is_some() {
+                    "Search incomplete; inspect history errors"
+                } else if self.filter.search.is_some() && self.editor.is_none() {
+                    "No matching commits in searched history"
+                } else {
+                    "No matches in loaded commits · Enter searches history"
+                };
                 reset = format!(
-                    "No matching commits · {} clear filters",
+                    "{coverage} · {} clear filters",
                     self.icons.glyph(Icon::Close)
                 );
                 &reset

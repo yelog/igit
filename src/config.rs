@@ -255,6 +255,11 @@ impl AppConfig {
         let mut merged: toml::Value = toml::from_str(DEFAULT_TOML)?;
         let overrides: toml::Value = toml::from_str(overrides)?;
         let has_ai = overrides.get("ai").is_some();
+        let explicit_activity = overrides
+            .get("keybindings")
+            .and_then(|value| value.get("global"))
+            .and_then(|value| value.get("activity"))
+            .is_some();
         merge(&mut merged, overrides);
         let settings: Settings = merged.try_into()?;
         if settings.version != 1 {
@@ -295,6 +300,28 @@ impl AppConfig {
                 sequences: parse(&settings.keybindings)?,
                 defaults: parse(&defaults.keybindings)?,
             });
+        }
+        if !explicit_activity {
+            let activity = commands
+                .iter()
+                .position(|bound| {
+                    bound.command.group == "global" && bound.command.name == "activity"
+                })
+                .expect("Activity command");
+            let shadowed = commands.iter().enumerate().any(|(index, bound)| {
+                index != activity
+                    && bound.changed()
+                    && bound.command.contexts & commands[activity].command.contexts != 0
+                    && bound.sequences.iter().any(|sequence| {
+                        commands[activity]
+                            .sequences
+                            .iter()
+                            .any(|other| sequence.starts_with(other) || other.starts_with(sequence))
+                    })
+            });
+            if shadowed {
+                commands[activity].sequences.clear();
+            }
         }
         validate(&commands)?;
         settings.ai.validate()?;
@@ -522,6 +549,24 @@ fn config_home(env: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activity_default_yields_to_existing_explicit_f8_bindings() {
+        let config = AppConfig::from_toml("[keybindings.remote]\nadd=['F8']").unwrap();
+        assert!(config
+            .commands
+            .iter()
+            .find(|command| command.command.name == "activity")
+            .unwrap()
+            .sequences
+            .is_empty());
+        assert_eq!(config.label("remote", "add"), "F8");
+        assert!(AppConfig::from_toml(
+            "[keybindings.global]\nactivity=['F8']\n[keybindings.remote]\nadd=['F8']"
+        )
+        .is_err());
+        assert_eq!(AppConfig::default().label("global", "activity"), "F8");
+    }
     #[test]
     fn defaults_and_partial_overrides() {
         let config = AppConfig::from_toml(

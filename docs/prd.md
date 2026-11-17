@@ -12,6 +12,53 @@ Product-owned interface text, help, errors, examples, and documentation use Engl
 
 ## Requirements and Delivery Status
 
+**Workspace reliability (R1/R3/R4/R7/R8, 2026-11-16).** Commit prepares exact
+selected-file snapshots on its worker, then retains independent repository
+results and stop-after-current-repository behavior. Other confirmed Log,
+Merge, Stash, Remote, Commit staging/stash/Rollback, and local Branch writes
+use an owned-panel worker with operation phase, elapsed time, scope, and a
+separate interruption review. Shared write capture drains excess output
+without automatically killing slow hooks. Explicit interruption owns the
+process tree and reports potentially unknown results; an uncertain Commit
+retains `index.lock` if HEAD changed or cannot be verified.
+
+Log typing previews loaded subjects, hashes, and refs. Enter searches complete
+messages and history using the same Rust literal/regex semantics, with exact
+SHA lookup where applicable. A bounded stream retains only matching rows;
+timeouts and repository errors are shown as incomplete searches. Esc cancels.
+The initial result window remains 160 per repository, and paging requests more
+matches. Topology reads are capped at 8,192 rows and cached for eight
+repositories using Git storage/ref/HEAD identity, with a loaded-DAG fallback.
+
+F8 and Actions expose durable Activity / Recovery entries for repository
+actions and Git steps: identity, scope repository, HEAD observations, and
+status. State is written outside repositories; arguments, patches, endpoints,
+credentials, and raw errors are excluded. Unfinished records are retained and
+never replayed. The dialog inspects the newest 200 records, isolates malformed
+records, and provides copyable diagnostics plus existing recovery entrances.
+This is a bounded operation journal, not cross-repository atomicity or a
+universal undo.
+
+Roots supports up to 32 named worksets with reviewed loading and deletion,
+empty scopes, and cached change/conflict counts. Saved scope matches canonical
+worktrees and Git storage identity, excludes new/replaced repositories, and
+reports missing repositories before initial reads. Normal exit also saves the
+last panel, pane sizes, and up to 16 ordinary Log filter tabs. Explicit CLI
+panels override restoration; temporary file/comparison tabs are excluded.
+Version/size checks preserve invalid state; an OS lock and revision check
+reject stale concurrent saves.
+
+Acceptance uses disposable repositories and local remotes: old body-only and
+SHA matches beyond the loaded page, renamed file history, search cancellation,
+ref-cache invalidation, slow filters/hooks, large output, process descendants,
+mixed selected staging and unselected staged siblings, interruption after HEAD
+publication, restart with new/missing/replaced/empty Roots, Unicode workset
+names, malformed state, and concurrent writers. Run the focused Rust tests
+first, then the cross-panel suite. The explicit
+`history_performance_probe` test imports 20,000 disposable commits; the
+[PTY smoke script](../scripts/smoke_workspace_reliability.py) exercises the
+built binary at 120×36 and 44×12 with network features disabled.
+
 **Automatic fetch (R1/R3/R4/R7/R8, 2026-11-16).** Enabled by default, automatic
 fetch starts two seconds after the first runtime workspace frame. The periodic
 interval is 300 seconds; focus return and entering Push, Branch, or Log request

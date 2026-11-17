@@ -114,6 +114,14 @@ their existing review and scope rules. F5 and file watching refresh local
 information; they do not request a network fetch. These preferences follow the
 same read-only, startup-only loading rules as the rest of `settings.toml`.
 
+## Activity and Recovery
+
+Activity / Recovery uses `F8` by default. Configure
+`keybindings.global.activity` to remap or disable it. Existing explicit
+bindings that already use F8 take precedence over this new default, leaving
+Activity available in Actions. Explicitly configuring both conflicting
+bindings is still an error.
+
 ## Update checks
 
 ```toml

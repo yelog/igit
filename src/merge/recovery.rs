@@ -121,10 +121,13 @@ fn fingerprint_files(repo: &Path, states: &mut BTreeMap<PathBuf, Working>) -> Re
             bytes += size;
             end += 1;
         }
-        let output = crate::core::command(repo)
-            .args(["hash-object", "--no-filters", "--"])
-            .args(&files[first..end])
-            .output()?;
+        let output = crate::core::read_output(
+            repo,
+            "working file fingerprints",
+            crate::core::command(repo)
+                .args(["hash-object", "--no-filters", "--"])
+                .args(&files[first..end]),
+        )?;
         ensure!(
             output.status.success(),
             "Working files changed or could not be fingerprinted; review again"
@@ -374,14 +377,16 @@ impl RecoveryPlan {
             State::read(repo)? == self.state,
             "Repository, operation, HEAD, index, or working files changed; review again"
         );
-        let output = crate::core::command(repo)
-            .args([
+        let output = crate::core::process::write_output(
+            repo,
+            self.action.flag(),
+            crate::core::command(repo).args([
                 "-c",
                 "submodule.recurse=false",
                 self.state.op.name,
                 self.action.flag(),
-            ])
-            .output()?;
+            ]),
+        )?;
         let details = [output.stdout, output.stderr]
             .into_iter()
             .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_owned())

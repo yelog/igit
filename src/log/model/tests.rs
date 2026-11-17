@@ -50,6 +50,163 @@ fn loaded(c: &Context, f: &Filter) -> History {
 }
 
 #[test]
+fn full_history_search_respects_exact_sha_paths_empty_repositories_and_followed_renames() {
+    let directory = tempdir().unwrap();
+    let path = repo(directory.path(), "search", "search@example.invalid");
+    let context = Context::discover(directory.path()).unwrap();
+    let search = |query: &str| Filter {
+        query: query.into(),
+        search: Some(HistorySearch {
+            query: query.into(),
+            regex: false,
+            case_sensitive: false,
+        }),
+        ..Default::default()
+    };
+    assert!(loaded(&context, &search("absent")).revs.is_empty());
+    file(&path, "old", "before\n\nbody match");
+    g(&path, &["mv", "old", "new"]);
+    let renamed = commit(&path, "rename\n\nbody match");
+    let latest = file(&path, "other", "latest");
+    let mut exact = search(&latest);
+    exact.paths.0.insert((None, "new".into()));
+    assert!(
+        loaded(&context, &exact).revs.is_empty(),
+        "SHA lookup returned an ancestor matching the path"
+    );
+    let mut follow = search("body match");
+    follow.file_history = Some(super::super::file_history::Target {
+        root: 0,
+        path: "new".into(),
+    });
+    let history = loaded(&context, &follow);
+    assert_eq!(history.revs.len(), 2);
+    assert_eq!(history.revs[0].oid, renamed);
+    assert!(history.revs.iter().all(|rev| rev.file.is_some()));
+    let hash_path = "a".repeat(40);
+    let hash_oid = file(&path, &hash_path, "hash-shaped path body");
+    let mut hash_file = search("path body");
+    hash_file.file_history = Some(super::super::file_history::Target {
+        root: 0,
+        path: hash_path.into(),
+    });
+    let history = loaded(&context, &hash_file);
+    assert_eq!(history.revs.len(), 1);
+    assert_eq!(history.revs[0].oid, hash_oid);
+}
+
+#[test]
+fn full_history_search_finds_old_message_body_and_resolves_hash() {
+    let directory = tempdir().unwrap();
+    let path = repo(directory.path(), "search", "search@example.invalid");
+    let old = commit(&path, "first\n\nA body-only needle");
+    for index in 0..165 {
+        commit(&path, &format!("recent {index}"));
+    }
+    let context = Context::discover(directory.path()).unwrap();
+    let before = g(&path, &["rev-parse", "HEAD"]);
+    for query in ["body-only needle", &old[..10]] {
+        let filter = Filter {
+            query: query.into(),
+            search: Some(HistorySearch {
+                query: query.into(),
+                regex: false,
+                case_sensitive: false,
+            }),
+            ..Default::default()
+        };
+        let history = load(&context, &filter, 160);
+        assert!(history.errors.is_empty(), "{:?}", history.errors);
+        assert_eq!(history.revs.len(), 1);
+        assert_eq!(history.revs[0].oid, old);
+        assert!(!history.more.contains(&0));
+    }
+    assert_eq!(g(&path, &["rev-parse", "HEAD"]), before);
+    assert!(g(&path, &["status", "--porcelain"]).is_empty());
+}
+
+#[test]
+fn full_history_search_uses_rust_regex_semantics_and_respects_cancellation() {
+    let directory = tempdir().unwrap();
+    let path = repo(directory.path(), "search", "search@example.invalid");
+    commit(&path, "first\n\nUnicode 中文");
+    let context = Context::discover(directory.path()).unwrap();
+    let filter = Filter {
+        search: Some(HistorySearch {
+            query: "(?m)^Unicode.*中文$".into(),
+            regex: true,
+            case_sensitive: true,
+        }),
+        ..Default::default()
+    };
+    let history = load(&context, &filter, 160);
+    assert!(history.errors.is_empty(), "{:?}", history.errors);
+    assert_eq!(history.revs.len(), 1);
+    assert!(search_revisions(&path, 0, &filter, &all_tips(), 160, &|| true).is_err());
+}
+
+#[test]
+#[ignore = "Disposable 20,000-commit timing probe; run explicitly with --ignored --nocapture"]
+fn history_performance_probe() {
+    use std::io::{Seek, Write};
+    use std::time::Instant;
+    let directory = tempdir().unwrap();
+    let path = repo(
+        directory.path(),
+        "performance",
+        "performance@example.invalid",
+    );
+    let mut input = tempfile::tempfile().unwrap();
+    for index in 0..20_000 {
+        let message = if index == 0 {
+            "first\n\nold body needle".to_owned()
+        } else {
+            format!("commit {index}")
+        };
+        write!(input, "commit refs/heads/main\ncommitter Probe <probe@example.invalid> {} +0000\ndata {}\n{}\n\n", 1_700_000_000 + index, message.len(), message).unwrap();
+    }
+    input.rewind().unwrap();
+    let imported = crate::core::process::write_output_with_input(
+        &path,
+        "fixture history",
+        command(&path).args(["fast-import", "--quiet"]),
+        Some(input),
+    )
+    .unwrap();
+    assert!(
+        imported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    let context = Context::discover(directory.path()).unwrap();
+    let cold = Instant::now();
+    let first = load(&context, &Filter::default(), 160);
+    let cold = cold.elapsed();
+    assert!(first.errors.is_empty(), "{:?}", first.errors);
+    assert_eq!(first.revs.len(), 160);
+    let warm = Instant::now();
+    let second = load(&context, &Filter::default(), 160);
+    let warm = warm.elapsed();
+    assert!(second.errors.is_empty(), "{:?}", second.errors);
+    let query = Filter {
+        query: "old body needle".into(),
+        search: Some(HistorySearch {
+            query: "old body needle".into(),
+            regex: false,
+            case_sensitive: false,
+        }),
+        ..Default::default()
+    };
+    let scan = Instant::now();
+    let found = load(&context, &query, 160);
+    let scan = scan.elapsed();
+    assert!(found.errors.is_empty(), "{:?}", found.errors);
+    assert_eq!(found.revs.len(), 1);
+    assert_eq!(found.revs[0].subject, "first");
+    eprintln!("20,000 commits: cold {cold:?}; warm {warm:?}; complete body search {scan:?}");
+}
+
+#[test]
 fn log_reads_propagate_cancellation_and_deadlines_instead_of_empty_data() {
     use crate::core::process::{with_read_control, ReadControl};
     use std::time::Duration;

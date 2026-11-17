@@ -94,6 +94,7 @@ pub(crate) fn global_section(show_conflicts: bool, show_scope_actions: bool) -> 
         ("f", "Fetch repositories in Roots"),
         (":", "Open Actions"),
         ("F5", "Refresh workspace"),
+        ("F8", "Open Activity / Recovery"),
         ("F9", "Open Update Center"),
         ("g n", "Open notification history"),
         ("F1", "Open help for current pane"),

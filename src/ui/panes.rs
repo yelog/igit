@@ -38,7 +38,9 @@ pub(crate) enum PaneId {
     Incoming,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) enum SplitId {
     StashFiles,
     BranchRepos,
@@ -196,6 +198,17 @@ impl Default for PaneLayout {
 }
 
 impl PaneLayout {
+    pub(crate) fn saved_sizes(&self) -> BTreeMap<SplitId, u16> {
+        self.sizes.clone()
+    }
+
+    pub(crate) fn restore_sizes(&mut self, sizes: BTreeMap<SplitId, u16>) {
+        self.sizes = sizes;
+        self.maximized = false;
+        self.drag = None;
+        self.begin();
+    }
+
     pub fn begin(&mut self) {
         self.nodes.clear();
         self.splits.clear();

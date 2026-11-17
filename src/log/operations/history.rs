@@ -205,15 +205,16 @@ impl State {
                     .filter(|path| !path.is_empty())
                     .map(<[u8]>::to_vec),
             );
-            checked(
+            checked(crate::core::process::write_output(
+                &repo.path,
+                "history staging preparation",
                 command(&repo.path)
                     .arg("-c")
                     .arg(format!("core.hooksPath={}", scratch.path().display()))
                     .args(["-c", "submodule.recurse=false"])
                     .args(["read-tree", tree])
-                    .env("GIT_INDEX_FILE", &index)
-                    .output()?,
-            )?;
+                    .env("GIT_INDEX_FILE", &index),
+            )?)?;
             attributes.push(check_attributes(&repo.path, &names, Some(&index))?);
         }
         let tracked = git_bytes(&repo.path, &["ls-files", "--cached", "-z"])?;
@@ -571,37 +572,40 @@ impl Reviewed {
             "Branch or HEAD changed; inspect the repository. Original tip: {}",
             self.backup,
         );
-        let output = rebase_command(&state.repo, hooks.path())
-            .env("IGIT_HISTORY_TODO", todo.path())
-            .env(
-                "GIT_SEQUENCE_EDITOR",
-                "sh -c 'cat \"$IGIT_HISTORY_TODO\" > \"$1\"' igit-history",
-            )
-            .args([
-                "rebase",
-                "--interactive",
-                "--merge",
-                "--force-rebase",
-                "--no-rebase-merges",
-                "--no-autostash",
-                "--no-update-refs",
-                "--no-autosquash",
-                "--no-fork-point",
-                "--no-rerere-autoupdate",
-                "--no-gpg-sign",
-                "--no-verify",
-                "--keep-empty",
-                "--empty=stop",
-                "--reapply-cherry-picks",
-                "--strategy=ort",
-                "--strategy-option=no-renames",
-                "--strategy-option=no-renormalize",
-                "--onto",
-                &state.base,
-                &state.base,
-            ])
-            .output()
-            .context("Cannot start reviewed rebase")?;
+        let output = crate::core::process::write_output(
+            &state.repo,
+            "reviewed history rebase",
+            rebase_command(&state.repo, hooks.path())
+                .env("IGIT_HISTORY_TODO", todo.path())
+                .env(
+                    "GIT_SEQUENCE_EDITOR",
+                    "sh -c 'cat \"$IGIT_HISTORY_TODO\" > \"$1\"' igit-history",
+                )
+                .args([
+                    "rebase",
+                    "--interactive",
+                    "--merge",
+                    "--force-rebase",
+                    "--no-rebase-merges",
+                    "--no-autostash",
+                    "--no-update-refs",
+                    "--no-autosquash",
+                    "--no-fork-point",
+                    "--no-rerere-autoupdate",
+                    "--no-gpg-sign",
+                    "--no-verify",
+                    "--keep-empty",
+                    "--empty=stop",
+                    "--reapply-cherry-picks",
+                    "--strategy=ort",
+                    "--strategy-option=no-renames",
+                    "--strategy-option=no-renormalize",
+                    "--onto",
+                    &state.base,
+                    &state.base,
+                ]),
+        )
+        .context("Cannot start reviewed rebase")?;
         if !output.status.success() {
             let stopped = state.directory.join("rebase-merge").is_dir();
             return Ok((

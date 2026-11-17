@@ -25,6 +25,7 @@ pub(super) struct Options {
     diff: bool,
     line: Option<usize>,
     tab: Tab,
+    explicit_panel: bool,
     path: Option<PathBuf>,
 }
 
@@ -46,6 +47,7 @@ pub(super) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command>
         diff: false,
         line: None,
         tab: Tab::Commit,
+        explicit_panel: false,
         path: None,
     };
     let mut args = args.into_iter();
@@ -159,10 +161,14 @@ pub(super) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command>
     if options.line.is_some() && !options.diff {
         bail!("--line is supported only by igit diff");
     }
+    options.explicit_panel = panel_seen;
     Ok(Command::Open(options))
 }
 
 impl Options {
+    pub(super) fn explicit_panel(&self) -> bool {
+        self.explicit_panel
+    }
     pub(super) fn diff_target(&self, cwd: &Path) -> Option<(PathBuf, usize)> {
         if !self.diff {
             return None;
@@ -269,6 +275,8 @@ mod tests {
     #[test]
     fn default_directory_and_every_direct_panel_resolve_from_the_invocation_directory() {
         let cwd = tempfile::tempdir().unwrap();
+        assert!(!options(&[]).explicit_panel());
+        assert!(!options(&["--", "log"]).explicit_panel());
         let default = options(&[]).launch(cwd.path()).unwrap();
         assert_eq!(default.workspace, cwd.path());
         assert_eq!(default.tab, Tab::Commit);
@@ -284,6 +292,7 @@ mod tests {
             ("stash", Tab::Stash),
             ("remote", Tab::Remote),
         ] {
+            assert!(options(&[name]).explicit_panel());
             let launch = options(&[name]).launch(cwd.path()).unwrap();
             assert_eq!(launch.tab, tab);
             assert_eq!(launch.workspace, cwd.path());

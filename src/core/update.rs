@@ -132,7 +132,8 @@ pub(crate) fn integrate_reviewed(
             ]);
         }
     }
-    let output = cmd.output().context("Cannot launch Git update")?;
+    let output = super::process::write_output(repo, strategy.label(), &mut cmd)
+        .context("Cannot launch Git update")?;
     if !output.status.success() {
         let detail = format!(
             "{}\n{}",

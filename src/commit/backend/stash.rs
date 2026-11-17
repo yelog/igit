@@ -170,23 +170,26 @@ pub fn execute(plan: &Plan) -> Result<Outcome> {
     let before = reflog(&plan.repo)?;
     // Explicitly suppress recursive resets: each repository in Roots has its
     // own review, and hidden submodule worktrees must never be cleaned here.
-    let output = cmd(&plan.repo, None)
-        // No caller-supplied pathspecs are involved. Git's internal cleanup
-        // constructs its own escaped paths, which require default semantics.
-        .env_remove("GIT_LITERAL_PATHSPECS")
-        .env_remove("GIT_GLOB_PATHSPECS")
-        .env_remove("GIT_NOGLOB_PATHSPECS")
-        .env_remove("GIT_ICASE_PATHSPECS")
-        .args([
-            "-c",
-            "submodule.recurse=false",
-            "stash",
-            "push",
-            "--include-untracked",
-            "--message",
-        ])
-        .arg(&plan.message)
-        .output()?;
+    let output = crate::core::process::write_output(
+        &plan.repo,
+        "commit stash",
+        cmd(&plan.repo, None)
+            // No caller-supplied pathspecs are involved. Git's internal cleanup
+            // constructs its own escaped paths, which require default semantics.
+            .env_remove("GIT_LITERAL_PATHSPECS")
+            .env_remove("GIT_GLOB_PATHSPECS")
+            .env_remove("GIT_NOGLOB_PATHSPECS")
+            .env_remove("GIT_ICASE_PATHSPECS")
+            .args([
+                "-c",
+                "submodule.recurse=false",
+                "stash",
+                "push",
+                "--include-untracked",
+                "--message",
+            ])
+            .arg(&plan.message),
+    )?;
     let after = reflog(&plan.repo)?;
     if after == before {
         checked(output)?;

@@ -372,6 +372,16 @@ fn result_level(succeeded: usize, issues: bool) -> NoticeLevel {
     }
 }
 impl CommitPanel {
+    pub(crate) fn cached_root_summary(&self, root: usize) -> Option<(usize, usize)> {
+        self.rendered_scope.contains(&root).then(|| {
+            self.files
+                .iter()
+                .filter(|file| file.root == root && !file.change.ignored())
+                .fold((0, 0), |(changes, conflicts), file| {
+                    (changes + 1, conflicts + usize::from(file.change.conflict))
+                })
+        })
+    }
     pub(crate) fn inherit_workspace(&mut self, previous: &Self, old: &Context, current: &Context) {
         self.saved = previous.saved.clone();
         self.checks.extend(previous.checks.clone());

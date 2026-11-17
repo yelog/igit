@@ -316,7 +316,8 @@ fn notification_shortcuts_are_configurable_and_actions_open_the_same_history() {
     assert!(matches!(app.pop, Some(Popup::Notifications(_))));
     app.dispatch(&key(KeyCode::Esc));
     app.dispatch(&key(KeyCode::F(8)));
-    assert!(app.pop.is_none());
+    assert!(matches!(app.pop, Some(Popup::Activity(_))));
+    app.dispatch(&key(KeyCode::Esc));
     app.config =
         AppConfig::from_toml("[keybindings.global]\nnotification-history=['F10']").unwrap();
     app.dispatch(&key(KeyCode::Char('g')));

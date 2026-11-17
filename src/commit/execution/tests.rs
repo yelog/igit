@@ -73,6 +73,106 @@ fn background_commits_preserve_mixed_staging_and_shared_message_behavior() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn slow_filter_preparation_returns_immediately_and_stopping_preserves_drafts_and_index() {
+    let (_dir, c, mut panel) = super::super::message_tests::fixture();
+    for repo in &c.repos {
+        git(&repo.path, &["restore", "--staged", "--", "mixed.txt"]).unwrap();
+        fs::write(repo.path.join(".gitattributes"), "mixed.txt filter=slow\n").unwrap();
+        git(
+            &repo.path,
+            &["config", "filter.slow.clean", "sleep 0.2; cat"],
+        )
+        .unwrap();
+    }
+    panel.refresh(&c).unwrap();
+    let original_message = panel.saved.message.clone();
+    let original: Vec<_> = c
+        .repos
+        .iter()
+        .map(|repo| {
+            (
+                git(&repo.path, &["rev-parse", "HEAD"]).unwrap(),
+                fs::read(repo.path.join(".git/index")).unwrap(),
+            )
+        })
+        .collect();
+    panel.enable_background_execution();
+    let started = Instant::now();
+    panel.submit(&c, false).unwrap();
+    assert!(started.elapsed() < Duration::from_millis(150));
+    panel.stop_execution();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while panel.execution_running() {
+        panel.poll_execution(&c);
+        assert!(Instant::now() < deadline, "Preparation did not stop");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(panel.saved.message, original_message);
+    for (repo, (head, index)) in c.repos.iter().zip(original) {
+        assert_eq!(git(&repo.path, &["rev-parse", "HEAD"]).unwrap(), head);
+        assert_eq!(fs::read(repo.path.join(".git/index")).unwrap(), index);
+        assert_eq!(
+            fs::read(repo.path.join("mixed.txt")).unwrap(),
+            b"unstaged private marker\n"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupted_post_commit_keeps_recovery_lock_and_unselected_staged_content() {
+    use crate::core::process::{with_write_control, WriteControl};
+    use std::os::unix::fs::PermissionsExt;
+    let (_dir, c, mut panel) = super::super::message_tests::fixture();
+    let plan = panel.prepare_submission(&c).unwrap().remove(0);
+    let repo = plan.repo.clone();
+    let index = fs::read(repo.join(".git/index")).unwrap();
+    let before = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+    let hook = repo.join(".git/hooks/post-commit");
+    fs::write(&hook, "#!/bin/sh\n: > .git/post-commit-started\nsleep 30\n").unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    git(&repo, &["config", "core.hooksPath", ".git/hooks"]).unwrap();
+    let control = WriteControl::default();
+    let worker_control = control.clone();
+    let worker =
+        std::thread::spawn(move || with_write_control(&worker_control, || backend::execute(&plan)));
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !repo.join(".git/post-commit-started").exists() {
+        if Instant::now() >= deadline {
+            control.interrupt();
+            panic!("Post-commit hook did not start");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    control.interrupt();
+    let error = worker
+        .join()
+        .unwrap()
+        .err()
+        .expect("Interrupted commit must require verification");
+    assert!(
+        format!("{error:#}").contains("Keep index.lock"),
+        "{error:#}"
+    );
+    assert_ne!(git(&repo, &["rev-parse", "HEAD"]).unwrap(), before);
+    assert!(repo.join(".git/index.lock").exists());
+    assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index);
+    assert_eq!(
+        git(&repo, &["show", "HEAD:mixed.txt"]).unwrap(),
+        "app staged"
+    );
+    assert_eq!(
+        git(&repo, &["show", ":unselected.txt"]).unwrap(),
+        "unselected staged marker"
+    );
+    assert_eq!(
+        fs::read(repo.join("mixed.txt")).unwrap(),
+        b"unstaged private marker\n"
+    );
+}
+
 #[test]
 fn completed_commits_report_warnings_for_cleanup_save_and_worker_failures() {
     for (cleanup_warning, save_failure, interrupted) in [

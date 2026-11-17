@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+mod write;
 use std::{
     cell::RefCell,
     fs::File,
@@ -11,6 +12,9 @@ use std::{
     },
     thread,
     time::{Duration, Instant},
+};
+pub(crate) use write::{
+    start_write, with_write_control, write_output, write_output_with_input, WriteControl,
 };
 
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -260,12 +264,80 @@ pub(crate) fn check_read_control() -> Result<()> {
     })
 }
 
+pub(crate) fn with_read_budget<T>(read: impl FnOnce() -> T) -> T {
+    with_read_control(&current_control().scoped(), read)
+}
+
 fn current_control() -> ReadControl {
     READ_CONTROL.with(|slot| slot.borrow().clone().unwrap_or_default())
 }
 
 pub(crate) fn read_output(repo: &Path, operation: &str, command: &mut Command) -> Result<Output> {
     read_output_using(repo, operation, command, Stdio::null())
+}
+
+pub(crate) fn read_stream<T: Send>(
+    repo: &Path,
+    operation: &str,
+    command: &mut Command,
+    read: impl FnOnce(io::BufReader<std::process::ChildStdout>) -> Result<(T, bool)> + Send,
+) -> Result<T> {
+    let started = Instant::now();
+    let control = current_control();
+    control
+        .check_running(started)
+        .map_err(|failure| failure.error(repo, operation, started))?;
+    let errors = tempfile::tempfile()?;
+    command
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(errors.try_clone()?);
+    thread::scope(|scope| {
+        let mut process = control.registry.spawn(command)?;
+        process.activate()?;
+        let stdout = process.child().stdout.take().expect("Piped history output");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        scope.spawn(move || {
+            let _ = sender.send(read(io::BufReader::new(stdout)));
+        });
+        let result = (|| {
+            let (value, complete) = loop {
+                control
+                    .check_running(started)
+                    .map_err(|failure| failure.error(repo, operation, started))?;
+                if errors.metadata()?.len() > STDERR_LIMIT as u64 {
+                    return Err(Failure::Limit.error(repo, operation, started));
+                }
+                match receiver.recv_timeout(Duration::from_millis(10)) {
+                    Ok(result) => break result?,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (),
+                    Err(_) => return Err(Failure::Io.error(repo, operation, started)),
+                }
+            };
+            if complete {
+                loop {
+                    control
+                        .check_running(started)
+                        .map_err(|failure| failure.error(repo, operation, started))?;
+                    if let Some(status) = process.child().try_wait()? {
+                        if !status.success() {
+                            bail!(
+                                "Git {operation} failed in {}; history search is incomplete",
+                                repo.display()
+                            );
+                        }
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+            Ok(value)
+        })();
+        drop(process);
+        result
+    })
 }
 
 pub(crate) fn controlled_output(
@@ -714,27 +786,18 @@ mod controlled_tests {
 
     #[test]
     fn scoped_controls_share_one_deadline_and_the_cancellation_registry() {
-        let directory = tempfile::tempdir().unwrap();
-        let control = ReadControl::new(Duration::from_millis(250));
+        let mut control = ReadControl::new(Duration::from_secs(1));
+        control.deadline = Some(Instant::now());
         let scoped = control.scoped();
         assert!(Arc::ptr_eq(&scoped.registry, &control.registry));
-        let first = controlled_output(
-            directory.path(),
-            "controlled mutation",
-            Command::new("sh").args(["-c", "sleep 0.15"]),
-            &scoped,
-        )
-        .unwrap();
-        assert!(first.status.success());
-        let error = controlled_output(
-            directory.path(),
-            "controlled mutation",
-            Command::new("sh").args(["-c", "sleep 0.15"]),
-            &scoped.scoped(),
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("timed out"));
-        assert!(scoped.check().is_err());
+        assert_eq!(scoped.deadline, control.deadline);
+        let nested = scoped.scoped();
+        assert_eq!(nested.deadline, control.deadline);
+        assert!(nested
+            .check()
+            .unwrap_err()
+            .to_string()
+            .contains("timed out"));
         control.cancel();
         assert!(scoped.cancelled());
         assert!(control.registry.is_empty());

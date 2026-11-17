@@ -306,7 +306,23 @@ pub(super) fn run(
     operation: &str,
     command: &mut Command,
 ) -> Result<Vec<u8>> {
-    let output = process::controlled_output(&target.path, operation, command, control)?;
+    let pending = if operation.contains("fetch") {
+        crate::core::activity::Pending::start(&target.path, operation)?
+    } else {
+        None
+    };
+    let result = process::controlled_output(&target.path, operation, command, control);
+    if let Some(pending) = pending {
+        pending.finish(
+            &target.path,
+            match &result {
+                Ok(output) if output.status.success() => "Succeeded",
+                Ok(_) => "Failed",
+                Err(_) => "Unknown",
+            },
+        )?;
+    }
+    let output = result?;
     if !output.status.success() {
         let message = String::from_utf8_lossy(&output.stderr);
         if authentication_failed(&message) {

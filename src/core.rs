@@ -1,3 +1,4 @@
+pub(crate) mod activity;
 pub(crate) mod fetch;
 pub(crate) mod hosting;
 pub(crate) mod loading;
@@ -5,7 +6,7 @@ pub(crate) mod paths;
 pub(crate) mod process;
 pub(crate) mod revision;
 pub(crate) mod schedule;
-mod state;
+pub(crate) mod state;
 pub(crate) mod strategy;
 pub(crate) mod update;
 
@@ -118,7 +119,7 @@ pub fn git_bytes(path: &Path, args: &[&str]) -> Result<Vec<u8>> {
         }
         output
     } else {
-        cmd.output()
+        process::write_output(path, args.first().copied().unwrap_or("write"), &mut cmd)
             .with_context(|| format!("Git launch: {}", path.display()))?
     };
     if !o.status.success() {

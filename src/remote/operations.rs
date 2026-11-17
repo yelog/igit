@@ -244,10 +244,12 @@ impl Review {
     }
 
     fn add(&self, repo: &Repo, after: &Remote) -> Result<String> {
-        let output = command(&repo.path)
-            .args(["remote", "add", "--", &after.name, &after.urls[0]])
-            .output()
-            .context("Cannot start Git")?;
+        let output = crate::core::process::write_output(
+            &repo.path,
+            "remote add",
+            command(&repo.path).args(["remote", "add", "--", &after.name, &after.urls[0]]),
+        )
+        .context("Cannot start Git")?;
         if !output.status.success() {
             match ConfigSnapshot::read(&repo.path) {
                 Ok(config) if config.has_remote(&after.name) => {
@@ -356,10 +358,12 @@ impl Review {
             ));
         }
 
-        let output = command(&repo.path)
-            .args(["remote", "rename", "--", &before.name, &after.name])
-            .output()
-            .context("Cannot start Git")?;
+        let output = crate::core::process::write_output(
+            &repo.path,
+            "remote rename",
+            command(&repo.path).args(["remote", "rename", "--", &before.name, &after.name]),
+        )
+        .context("Cannot start Git")?;
         if !output.status.success() {
             let changed = ConfigSnapshot::read(&repo.path)
                 .map(|config| config != self.config)
@@ -441,10 +445,12 @@ impl Review {
     }
 
     fn remove(&self, repo: &Repo, before: &Remote) -> Result<String> {
-        let output = command(&repo.path)
-            .args(["remote", "remove", "--", &before.name])
-            .output()
-            .context("Cannot start Git")?;
+        let output = crate::core::process::write_output(
+            &repo.path,
+            "remote remove",
+            command(&repo.path).args(["remote", "remove", "--", &before.name]),
+        )
+        .context("Cannot start Git")?;
         if !output.status.success() {
             let config_changed = ConfigSnapshot::read(&repo.path)
                 .map(|config| config != self.config)
@@ -619,10 +625,12 @@ fn validate_name(repo: &Path, name: &str) -> Result<()> {
         "Remote names cannot contain control characters"
     );
     let reference = format!("refs/remotes/{name}/igit-check");
-    let output = command(repo)
-        .args(["check-ref-format", &reference])
-        .output()
-        .context("Cannot validate the remote name")?;
+    let output = crate::core::read_output(
+        repo,
+        "remote name",
+        command(repo).args(["check-ref-format", &reference]),
+    )
+    .context("Cannot validate the remote name")?;
     ensure!(
         output.status.success(),
         "Enter a valid remote name: {}",
@@ -787,34 +795,43 @@ fn set_values(
         if previous.is_empty() {
             return Ok(());
         }
-        let output = command(repo)
-            .args(["config", "--file"])
-            .arg(git_path(config))
-            .args(["--unset-all", "--", key])
-            .output()
-            .context("Cannot start Git")?;
+        let output = crate::core::process::write_output(
+            repo,
+            "remote config",
+            command(repo)
+                .args(["config", "--file"])
+                .arg(git_path(config))
+                .args(["--unset-all", "--", key]),
+        )
+        .context("Cannot start Git")?;
         if !output.status.success() && output.status.code() != Some(5) {
             bail!("{}", detail(&output));
         }
         return Ok(());
     }
 
-    let output = command(repo)
-        .args(["config", "--file"])
-        .arg(git_path(config))
-        .args(["--replace-all", "--", key, &values[0]])
-        .output()
-        .context("Cannot start Git")?;
+    let output = crate::core::process::write_output(
+        repo,
+        "remote config",
+        command(repo)
+            .args(["config", "--file"])
+            .arg(git_path(config))
+            .args(["--replace-all", "--", key, &values[0]]),
+    )
+    .context("Cannot start Git")?;
     if !output.status.success() {
         bail!("{}", detail(&output));
     }
     for value in &values[1..] {
-        let output = command(repo)
-            .args(["config", "--file"])
-            .arg(git_path(config))
-            .args(["--add", "--", key, value])
-            .output()
-            .context("Cannot start Git")?;
+        let output = crate::core::process::write_output(
+            repo,
+            "remote config",
+            command(repo)
+                .args(["config", "--file"])
+                .arg(git_path(config))
+                .args(["--add", "--", key, value]),
+        )
+        .context("Cannot start Git")?;
         if !output.status.success() {
             bail!("{}", detail(&output));
         }
@@ -836,14 +853,16 @@ impl Drop for ConfigLock {
 }
 
 fn read_refs(repo: &Path) -> Result<Vec<u8>> {
-    let output = command(repo)
-        .args([
+    let output = crate::core::read_output(
+        repo,
+        "remote refs",
+        command(repo).args([
             "for-each-ref",
             "--format=%(refname)%00%(objectname)",
             "refs/remotes/",
-        ])
-        .output()
-        .context("Cannot read remote-tracking refs")?;
+        ]),
+    )
+    .context("Cannot read remote-tracking refs")?;
     if !output.status.success() {
         bail!("{}", detail(&output));
     }
@@ -851,9 +870,7 @@ fn read_refs(repo: &Path) -> Result<Vec<u8>> {
 }
 
 fn absolute_git_path(repo: &Path, args: &[&str]) -> Result<PathBuf> {
-    let output = command(repo)
-        .args(args)
-        .output()
+    let output = crate::core::read_output(repo, "remote Git directory", command(repo).args(args))
         .context("Cannot read the Git directory")?;
     if !output.status.success() {
         bail!("{}", detail(&output));

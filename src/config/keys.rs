@@ -108,6 +108,7 @@ commands! {
         "pull" => "p", ALL & !BRANCH;
         "fetch" => "f", ALL & !PUSH;
         "update" => "F9", ALL;
+        "activity" => "F8", ALL;
         "notification-history" => (notifications), ALL;
         "roots" => "r", ALL & !BRANCH;
         "actions" => ":", ALL;

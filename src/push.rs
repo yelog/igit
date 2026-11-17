@@ -1126,6 +1126,7 @@ impl PushPanel {
                 self.conflicted.remove(&j.idx);
             }
         }
+        let state_dir = c.state_dir.clone();
         std::thread::spawn(move || {
             if fetch {
                 let items: Vec<_> = items
@@ -1183,8 +1184,16 @@ impl PushPanel {
                     |left, right| locks[left].conflicts(&locks[right]),
                     |_, job| {
                         let _ = worker.send(Report::Started(job.idx));
-                        let result = update::execute(job, strategy, tags, hooks, |phase| {
-                            let _ = worker.send(Report::Phase(job.idx, phase));
+                        let result = crate::core::activity::with_directory(&state_dir, || {
+                            crate::core::activity::record(
+                                &job.path,
+                                "Update and push reviewed target",
+                                || {
+                                    update::execute(job, strategy, tags, hooks, |phase| {
+                                        let _ = worker.send(Report::Phase(job.idx, phase));
+                                    })
+                                },
+                            )
                         })
                         .map(|publication| {
                             if let Some(endpoint) = absolute_endpoint(&job.path, job.url.clone()) {

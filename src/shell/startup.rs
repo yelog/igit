@@ -89,6 +89,8 @@ fn load_workspace(
         .send(Message::Stage("Loading changes..."))
         .map_err(|_| anyhow::anyhow!("Workspace loading cancelled"))?;
     let mut app = Shell::unloaded(ctx, config);
+    app.restore_session(previous.is_none_or(|old| old.workspace != app.ctx.workspace));
+    app.notify_unfinished_activity();
     if let Some(file) = &launch.file_history {
         app.log.set_file_history(&app.ctx, file)?;
     }

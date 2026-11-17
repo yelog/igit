@@ -360,7 +360,9 @@ impl Review {
                 cmd.args(["branch", "-m", "--", &self.source.name, &self.name]);
             }
         }
-        let output = cmd.output().context("Cannot start Git")?;
+        let output =
+            crate::core::process::write_output(&self.path, self.operation.title(), &mut cmd)
+                .context("Cannot start Git")?;
         if !output.status.success() {
             let detail = format!(
                 "{}\n{}",

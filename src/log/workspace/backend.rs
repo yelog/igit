@@ -43,27 +43,35 @@ pub(super) fn files(repo: &Path, oid: &str) -> Result<Vec<model::File>> {
             .arg(format!("core.hooksPath={}", temporary.path().display()));
         command
     };
-    checked(private().args(["read-tree", oid]).output()?)?;
-    let base = checked(private().args(["ls-files", "--cached", "-z"]).output()?)?;
+    checked(crate::core::read_output(
+        repo,
+        "workspace snapshot tree",
+        private().args(["read-tree", oid]),
+    )?)?;
+    let base = checked(crate::core::read_output(
+        repo,
+        "workspace snapshot files",
+        private().args(["ls-files", "--cached", "-z"]),
+    )?)?;
     let base: BTreeSet<_> = base
         .split(|&byte| byte == 0)
         .filter(|path| !path.is_empty())
         .collect();
-    let changed = checked(
-        private()
-            .args([
-                "diff",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--no-renames",
-                "--ignore-submodules=dirty",
-                "--name-status",
-                "-z",
-                oid,
-                "--",
-            ])
-            .output()?,
-    )?;
+    let changed = checked(crate::core::read_output(
+        repo,
+        "workspace snapshot changes",
+        private().args([
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--ignore-submodules=dirty",
+            "--name-status",
+            "-z",
+            oid,
+            "--",
+        ]),
+    )?)?;
     let mut fields = changed.split(|&byte| byte == 0);
     let mut files = BTreeMap::new();
     while let Some(status) = fields.next().filter(|field| !field.is_empty()) {
@@ -77,17 +85,17 @@ pub(super) fn files(repo: &Path, oid: &str) -> Result<Vec<model::File>> {
             },
         );
     }
-    let current = checked(
-        reader(repo)
-            .args([
-                "ls-files",
-                "--cached",
-                "--others",
-                "--exclude-standard",
-                "-z",
-            ])
-            .output()?,
-    )?;
+    let current = checked(crate::core::read_output(
+        repo,
+        "workspace working files",
+        reader(repo).args([
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ]),
+    )?)?;
     for raw in current
         .split(|&byte| byte == 0)
         .filter(|path| !path.is_empty() && !base.contains(path))
@@ -115,12 +123,13 @@ pub(super) fn diff(
     let name = model::plain(&file.raw);
     let sources = (|| -> Result<_> {
         let before = revision::source(repo, oid, path)?;
-        let entries = checked(
+        let entries = checked(crate::core::read_output(
+            repo,
+            "workspace file mode",
             reader(repo)
                 .args(["ls-files", "--stage", "-z", "--"])
-                .arg(path)
-                .output()?,
-        )?;
+                .arg(path),
+        )?)?;
         let mode = entries.split(|&byte| byte == 0).find_map(|entry| {
             let tab = entry.iter().position(|&byte| byte == b'\t')?;
             (&entry[tab + 1..] == file.raw.as_slice()).then_some(&entry[..tab])

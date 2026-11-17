@@ -1,12 +1,15 @@
+mod activity;
 mod cli;
 mod configuration;
 mod editor;
 mod fetch;
 mod file_diff;
 mod kitty;
+mod operations;
 mod panes;
 mod refresh;
 mod rescan;
+mod session;
 mod software_update;
 mod startup;
 mod update;
@@ -62,7 +65,7 @@ use std::{
     time::{Duration, Instant},
 };
 use unicode_width::UnicodeWidthStr;
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Tab {
     Commit,
     Log,
@@ -101,6 +104,7 @@ impl Tab {
 }
 #[derive(Clone, Copy)]
 enum MenuAction {
+    Activity,
     Switch(Tab),
     Roots,
     Update(update::Kind),
@@ -175,6 +179,9 @@ enum NotificationPrefixEvent {
 }
 
 enum Popup {
+    Worksets(session::Dialog),
+    Operation,
+    Activity(activity::Dialog),
     Rollback(Box<Rollback>),
     Update(update::Dialog),
     SoftwareUpdate,
@@ -247,6 +254,8 @@ struct Shell {
     main_tab: Tab,
     refresh_state: refresh::State,
     auto_fetch: fetch::State,
+    operation: Option<operations::Running>,
+    session: session::State,
     workspace_scan: rescan::State,
     pop: Option<Popup>,
     notifications: notifications::Center,
@@ -306,6 +315,8 @@ impl Shell {
             main_tab: Commit,
             refresh_state: refresh::State::default(),
             auto_fetch: fetch::State::default(),
+            operation: None,
+            session: session::State::default(),
             workspace_scan: rescan::State::default(),
             pop: None,
             notifications: Default::default(),
@@ -687,6 +698,9 @@ impl Shell {
     }
     fn go(&mut self, tab: Tab) {
         self.cancel_key_sequences();
+        if self.operation.is_some() {
+            return;
+        }
         if self.tab == tab {
             return;
         }
@@ -857,6 +871,10 @@ impl Shell {
             }
             Action::Confirm { title, body, token } => {
                 self.cancel_key_sequences();
+                let body = format!(
+                    "Scope: {}\n\n{body}",
+                    operations::scope_label(self.tab, &token)
+                );
                 self.pop = Some(Popup::Confirm {
                     title,
                     body,
@@ -904,6 +922,9 @@ impl Shell {
             return;
         }
         self.remote.block_writes(false);
+        if self.start_confirmed_operation(owner, token) {
+            return;
+        }
         let a = match owner {
             Log => self.log.confirm(token, &self.ctx),
             Commit => self.commit.confirm(token, &self.ctx),
@@ -927,6 +948,7 @@ impl Shell {
             return;
         }
         self.workspace_scan = rescan::State::default();
+        self.save_session();
         self.quit = true;
     }
     fn review_update(&mut self, kind: update::Kind) {
@@ -999,6 +1021,38 @@ impl Shell {
 
     fn help_content(&self) -> HelpContent {
         match self.pop.as_ref() {
+            Some(Popup::Worksets(_)) => HelpContent::new(
+                HelpSection::new(
+                    "Roots worksets",
+                    &[
+                        ("s", "Save checked Roots"),
+                        ("j/k", "Browse worksets"),
+                        ("Enter", "Load for review / save name"),
+                        ("d", "Review workset deletion"),
+                        ("Esc", "Return to Roots"),
+                    ],
+                ),
+                vec![],
+            ),
+            Some(Popup::Operation) => HelpContent::new(
+                HelpSection::new(
+                    "Git operation",
+                    &[("Ctrl-x", "Review interruption of the active process")],
+                ),
+                vec![],
+            ),
+            Some(Popup::Activity(_)) => HelpContent::new(
+                HelpSection::new(
+                    "Activity / Recovery",
+                    &[
+                        ("j/k", "Browse operation entries"),
+                        ("J/K", "Scroll details"),
+                        ("y", "Copy operation details"),
+                        ("Esc", "Close Activity"),
+                    ],
+                ),
+                vec![],
+            ),
             Some(Popup::Rollback(dialog)) => dialog.keymap(),
             Some(Popup::Update(dialog)) => dialog.keymap(),
             Some(Popup::SoftwareUpdate) => self.software_update.keymap(),
@@ -1010,6 +1064,8 @@ impl Shell {
                         ("k", "Select previous repository"),
                         ("Space", "Toggle repository selection"),
                         ("a", "Select all repositories"),
+                        ("s", "Save checked Roots as a workset"),
+                        ("w", "Browse saved worksets"),
                         ("F5", "Refresh repository branches"),
                         ("Enter", "Apply repository scope"),
                         ("Esc", "Discard scope changes"),
@@ -1141,6 +1197,7 @@ impl Shell {
                 MenuAction::Refresh,
                 MenuAction::Open,
                 MenuAction::Notifications,
+                MenuAction::Activity,
                 MenuAction::SoftwareUpdate,
                 MenuAction::Quit,
             ])
@@ -1161,12 +1218,42 @@ impl Shell {
                 })
             }
             Some(MenuAction::Notifications) => self.global(4),
+            Some(MenuAction::Activity) => self.open_activity(),
             Some(MenuAction::SoftwareUpdate) => self.open_software_update(),
             Some(MenuAction::Quit) => self.global(3),
             None => (),
         }
     }
     fn pop_event(&mut self, ev: &Event) {
+        if matches!(self.pop, Some(Popup::Worksets(_))) {
+            self.worksets_event(ev);
+            return;
+        }
+        if matches!(self.pop, Some(Popup::Operation)) {
+            self.operation_event(ev);
+            return;
+        }
+        if let Some(Popup::Activity(dialog)) = self.pop.as_mut() {
+            let target = match ev {
+                Event::Key(key) if key.kind != KeyEventKind::Release => match key.code {
+                    KeyCode::Char('1') => Some(Commit),
+                    KeyCode::Char('7') => Some(Conflicts),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(target) = target {
+                self.pop = None;
+                self.go(target);
+            } else if let Some(action) = dialog.event(ev) {
+                if matches!(action, Action::CloseDialog) {
+                    self.pop = None;
+                } else {
+                    self.action_from("Activity", action);
+                }
+            }
+            return;
+        }
         if self.defer_fetch_popup(ev) {
             return;
         }
@@ -1247,6 +1334,10 @@ impl Shell {
                     let Some(Popup::Rollback(dialog)) = self.pop.take() else {
                         unreachable!()
                     };
+                    if self.refresh_state.background {
+                        self.start_rollback(dialog);
+                        return;
+                    }
                     let action = dialog.apply(&self.ctx);
                     self.action_from("Commit", action);
                 }
@@ -1298,6 +1389,9 @@ impl Shell {
         }
         let popup = self.pop.take().unwrap();
         self.pop = match popup {
+            Popup::Operation | Popup::Activity(_) | Popup::Worksets(_) => {
+                unreachable!("operation events handled above")
+            }
             Popup::Rollback(_) => unreachable!("rollback events are handled above"),
             Popup::Update(_) => unreachable!("update events are handled above"),
             Popup::SoftwareUpdate => unreachable!("software update events are handled above"),
@@ -1349,46 +1443,57 @@ impl Shell {
                 mut picked,
                 mut row,
             } => {
-                let n = self.ctx.repos.len();
-                if key == Some(KeyCode::F(5)) {
-                    if self.refresh_state.background {
-                        if n > 0 {
-                            self.commit.request_refresh();
+                if matches!(key, Some(KeyCode::Char('s') | KeyCode::Char('w')))
+                    || hit == Some(self.ctx.repos.len() + 2)
+                    || hit == Some(self.ctx.repos.len() + 3)
+                {
+                    Some(Popup::Worksets(session::Dialog::new(
+                        picked,
+                        row,
+                        key == Some(KeyCode::Char('s')) || hit == Some(self.ctx.repos.len() + 3),
+                    )))
+                } else {
+                    let n = self.ctx.repos.len();
+                    if key == Some(KeyCode::F(5)) {
+                        if self.refresh_state.background {
+                            if n > 0 {
+                                self.commit.request_refresh();
+                            }
+                        } else {
+                            self.ctx.repos.iter_mut().for_each(Repo::refresh_branch);
                         }
-                    } else {
-                        self.ctx.repos.iter_mut().for_each(Repo::refresh_branch);
                     }
-                }
-                if down {
-                    row = (row + 1).min(n.saturating_sub(1))
-                }
-                if up {
-                    row = row.saturating_sub(1)
-                }
-                if hit == Some(n + 1) || key == Some(KeyCode::Char('a')) {
-                    picked = (0..n).collect()
-                }
-                if let Some(i) = hit.filter(|i| *i < n) {
-                    row = i;
-                    if !picked.remove(&row) {
+                    if down {
+                        row = (row + 1).min(n.saturating_sub(1))
+                    }
+                    if up {
+                        row = row.saturating_sub(1)
+                    }
+                    if hit == Some(n + 1) || key == Some(KeyCode::Char('a')) {
+                        picked = (0..n).collect()
+                    }
+                    if let Some(i) = hit.filter(|i| *i < n) {
+                        row = i;
+                        if !picked.remove(&row) {
+                            picked.insert(row);
+                        }
+                    }
+                    if key == Some(KeyCode::Char(' ')) && n > 0 && !picked.remove(&row) {
                         picked.insert(row);
                     }
+                    if hit == Some(n) || key == Some(KeyCode::Enter) {
+                        self.ctx.scope = picked;
+                        self.refresh();
+                        self.save_session();
+                        self.notify(
+                            NoticeLevel::Info,
+                            "Roots",
+                            format!("{} roots in scope", self.ctx.scope.len()),
+                        );
+                        return;
+                    }
+                    Some(Popup::Scope { picked, row })
                 }
-                if key == Some(KeyCode::Char(' ')) && n > 0 && !picked.remove(&row) {
-                    picked.insert(row);
-                }
-                if (hit == Some(n) || key == Some(KeyCode::Enter)) && (!picked.is_empty() || n == 0)
-                {
-                    self.ctx.scope = picked;
-                    self.refresh();
-                    self.notify(
-                        NoticeLevel::Info,
-                        "Roots",
-                        format!("{} roots in scope", self.ctx.scope.len()),
-                    );
-                    return;
-                }
-                Some(Popup::Scope { picked, row })
             }
             Popup::Menu { mut row } => {
                 let last = self.menu_actions().count() - 1;
@@ -1977,6 +2082,10 @@ impl Shell {
                         self.open_software_update();
                         return;
                     }
+                    KeyCode::F(8) if k.modifiers.is_empty() => {
+                        self.open_activity();
+                        return;
+                    }
                     _ => (),
                 }
             }
@@ -1995,6 +2104,10 @@ impl Shell {
     }
     fn poll(&mut self) -> bool {
         let mut change = self.notifications.expire(Instant::now());
+        change |= self.poll_operation();
+        if let Some(Popup::Activity(dialog)) = self.pop.as_mut() {
+            change |= dialog.poll();
+        }
         change |= self.poll_workspace_scan();
         change |= self.poll_refresh_requests();
         change |= self.poll_list_refreshes();
@@ -2209,6 +2322,7 @@ impl Shell {
         const IDLE: Duration = Duration::from_millis(150);
         let now = Instant::now();
         let idle = if self.workspace_scan.pending()
+            || self.operation.is_some()
             || self.log_load.pending()
             || self.log.history_pending()
             || self.refresh_state.background && self.commit.refresh_pending()
@@ -2254,13 +2368,26 @@ impl Shell {
     }
 
     fn git_busy(&self) -> bool {
-        self.branch.syncing()
+        self.operation.is_some()
+            || self.branch.syncing()
             || self.push.busy()
             || self.commit.execution_running()
             || self.commit.add_running()
             || self.workspace_update_running()
     }
     fn draw_popup(&mut self, f: &mut Frame, a: Rect) {
+        if let Some(Popup::Worksets(dialog)) = self.pop.as_ref() {
+            self.draw_worksets(f, a, dialog);
+            return;
+        }
+        if matches!(self.pop, Some(Popup::Operation)) {
+            self.draw_operation(f, a);
+            return;
+        }
+        if let Some(Popup::Activity(dialog)) = self.pop.as_ref() {
+            dialog.draw(f, a);
+            return;
+        }
         if let Some(Popup::Notifications(history)) = self.pop.as_mut() {
             self.notifications.draw_history(f, a, self.icons, history);
             return;
@@ -2360,6 +2487,9 @@ impl Shell {
         .min(a.width - 4);
         let p = Rect::new(a.x + (a.width - w) / 2, a.y + (a.height - h) / 2, w, h);
         let title = match pop {
+            Popup::Operation | Popup::Activity(_) | Popup::Worksets(_) => {
+                unreachable!("operation rendered above")
+            }
             Popup::Rollback(_) => unreachable!("rollback is rendered above"),
             Popup::Update(_) => unreachable!("update is rendered above"),
             Popup::SoftwareUpdate => unreachable!("software update is rendered above"),
@@ -2387,6 +2517,9 @@ impl Shell {
         );
         let mut controls = vec![];
         match pop {
+            Popup::Operation | Popup::Activity(_) | Popup::Worksets(_) => {
+                unreachable!("operation rendered above")
+            }
             Popup::Rollback(_) => unreachable!("rollback is rendered above"),
             Popup::Update(_) => unreachable!("update is rendered above"),
             Popup::SoftwareUpdate => unreachable!("software update is rendered above"),
@@ -2447,6 +2580,21 @@ impl Shell {
                             if r.submodule { " · submodule" } else { "" },
                             Style::new().fg(MUTED),
                         ),
+                        Span::styled(
+                            self.commit.cached_root_summary(i).map_or_else(
+                                || " · not loaded".into(),
+                                |(changes, conflicts)| {
+                                    if conflicts > 0 {
+                                        format!(
+                                            " · {changes} changed · {conflicts} conflicts (cached)"
+                                        )
+                                    } else {
+                                        format!(" · {changes} changed (cached)")
+                                    }
+                                },
+                            ),
+                            Style::new().fg(MUTED),
+                        ),
                     ]);
                     f.render_widget(
                         Paragraph::new(label).style(Style::default().bg(if i == *row {
@@ -2458,9 +2606,22 @@ impl Shell {
                     );
                     self.pop_hits.push((rr, i))
                 }
+                let count = self.ctx.repos.len();
+                if inner.width >= 55 {
+                    controls.push((" a All ", count + 1, false));
+                }
                 controls.extend([
-                    (" a All roots ", self.ctx.repos.len() + 1, false),
-                    (" Enter Apply ", self.ctx.repos.len(), true),
+                    (" Enter Apply ", count, true),
+                    (" s Save ", count + 3, false),
+                    (
+                        if inner.width >= 55 {
+                            " w Worksets "
+                        } else {
+                            " w Sets "
+                        },
+                        count + 2,
+                        false,
+                    ),
                 ])
             }
             Popup::Help { .. } => unreachable!("help is rendered above"),
@@ -2476,6 +2637,7 @@ impl Shell {
                             format!("{}  Switch to {}", label(tab.binding()), tab.name())
                         }
                         MenuAction::Roots => "Roots / Select repositories".into(),
+                        MenuAction::Activity => "Activity / Recovery".into(),
                         MenuAction::Update(update::Kind::Pull) => {
                             if self.tab == Branch && !self.branch.comparing() {
                                 "Pull repositories…".into()
@@ -2707,6 +2869,9 @@ pub fn run() -> Result<()> {
     let Some(mut app) = startup::open(&mut term, launch, config)? else {
         return Ok(());
     };
+    if !options.explicit_panel() {
+        app.restore_last_panel();
+    }
     app.kitty = kitty;
     let mut dirty = true;
     let mut buffered = None;
@@ -2805,6 +2970,10 @@ pub fn run() -> Result<()> {
         if app.poll() {
             dirty = true
         }
+    }
+    if let Some(warning) = app.session.last_error.take() {
+        guard.leave()?;
+        eprintln!("IGit: {warning}");
     }
     if let Some(executable) = app.restart.take() {
         // exec does not run destructors. Cancel owned AI subprocess groups

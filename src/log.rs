@@ -11,6 +11,8 @@ mod input;
 mod inspector;
 mod keymap;
 mod loading;
+mod session;
+pub(crate) use session::SavedSession;
 mod model;
 mod navigation;
 mod operations;
@@ -193,6 +195,7 @@ pub struct LogPanel {
     preview: preview::Preview,
     focus: Pane,
     editor: Option<(Field, String)>,
+    text_search_selection: Option<(usize, String)>,
     branch_menu: Option<branches::Menu>,
     date_range: Option<DateRangeEditor>,
     diff: Option<DiffView>,
@@ -251,6 +254,7 @@ impl Default for LogPanel {
             preview: Default::default(),
             focus: Pane::Graph,
             editor: None,
+            text_search_selection: None,
             branch_menu: None,
             date_range: None,
             diff: None,
@@ -639,7 +643,7 @@ impl LogPanel {
                 self.file_fold_all(v);
             }
             Hit::Clear(k) => self.clear_field(k, c)?,
-            Hit::ToggleRegex | Hit::ToggleCase => self.toggle_match_mode(hit)?,
+            Hit::ToggleRegex | Hit::ToggleCase => self.toggle_match_mode(hit, c)?,
             Hit::ViewOptions => self.toggle_view_menu(),
             Hit::ViewMenu(item) => self.view_menu_hit(item, c)?,
             Hit::Refresh => self.reload(c, true)?,
@@ -903,6 +907,18 @@ impl Panel for LogPanel {
             return action;
         }
         self.check_history_context(c);
+        if self.editor.is_none()
+            && self.filter.search.is_some()
+            && self.history_pending()
+            && matches!(e, Event::Key(key) if key.code == K::Esc)
+        {
+            self.filter.search = None;
+            self.filter.query.clear();
+            return self.reload(c, false).map_or_else(
+                |error| Action::Notice(NoticeLevel::Error, format!("Log: {error:#}")),
+                |()| Action::Redraw,
+            );
+        }
         if self.focused_search().is_some() && self.file_search_event(e, c) {
             self.panes.cancel_drag();
             self.cancel_key_sequence();
@@ -1434,6 +1450,7 @@ mod tests {
             author: String::new(),
             email: String::new(),
             subject: String::new(),
+            message: String::new(),
             refs: String::new(),
             file: None,
         };

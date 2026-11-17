@@ -328,13 +328,39 @@ inclusion in Roots. Status, preview, and Log readers use bounded output and a
 30-second per-command timeout; newer background requests cancel obsolete reads. Commit
 writes retain their stop-after-current-repository behavior.
 
-Confirmed commit batches run in the background, showing the current repository
+Commit snapshot preparation and confirmed commit batches run in the background, showing the current repository
 and progress. Browsing, pane navigation, resizing, and help remain available.
 `Ctrl-X` in Commit stops repositories that have not started after the current
 repository finishes. Completed commits stay recorded; remaining selections
 and the shared message stay available for a fresh review. Finish the batch
 before changing Roots, opening another workspace, editing files, or starting
 another Git write. The current Git command is not forcibly interrupted.
+
+Other reviewed writes in Log, Commit staging/stash, Conflicts, Stash, Remote,
+and local Branch actions use a background operation view with the current Git
+phase, repository scope, and elapsed time. `Ctrl-X` opens an interruption
+review. An interrupted command can have already changed Git; inspect the
+reported state before retrying. Slow hooks have no automatic write timeout.
+Push and Branch synchronization keep their existing background progress views.
+
+Press `F8` or choose **Activity / Recovery** in Actions to inspect durable
+repository actions and Git steps. Each entry has its own identity, status,
+repository, and before/after HEAD observations. Entries left unfinished after
+exit require verification and are never replayed. `j/k` changes entries,
+`J/K` scrolls details, and `y` copies diagnostics without command arguments,
+patches, endpoints, or keys. Existing Commit Rollback, conflict drafts, native
+Continue/Abort, and history backup refs remain the recovery tools.
+
+Roots now supports named worksets: `r` → check repositories → `s` saves a name;
+`w` browses saved worksets, `Enter` loads one for review, and another `Enter`
+applies it. `d` reviews deleting a workset. Empty scopes are supported.
+Roots also shows cached change/conflict counts for repositories already loaded.
+On a normal exit, IGit saves Roots, the last panel, pane sizes, and up to 16
+ordinary Log tabs with filters. Explicit startup panels such as `igit commit`
+override the saved panel. File-history and comparison tabs are temporary.
+New, missing, or replaced repositories do not broaden a restored workset.
+Session files live outside repositories in workspace state; unreadable files
+are retained, and concurrent instances cannot silently overwrite newer state.
 
 ## Configuration
 
@@ -426,7 +452,17 @@ Log filters, branch search, notification history, and help search use the same r
 
 Search is literal, ignores case, and stays within the loaded content and Roots.
 It moves the cursor without checking rows or changing Git. Log's commit list
-uses `/` to filter commit text or hashes. In Log's branch tree, `/` focuses
+uses `/` to preview matches in loaded commit subjects, hashes, and refs.
+Press `Enter` to search complete messages, hashes, and refs across history
+within the current filters. `.*` and `Cc` retain their regex and case semantics;
+an unambiguous commit SHA can resolve beyond the loaded page. A search streams
+records with bounded memory and a 30-second repository budget; timeout or
+read failure is shown as incomplete search. `Esc` cancels a pending search,
+and `+` loads another window of matching commits. Topology reads are capped
+at 8,192 commits per repository and cached by Git storage, ref tips,
+replacement refs, and shallow/graft state; older matches use a graph derived
+from the loaded commits.
+In Log's branch tree, `/` focuses
 the **Branch or tag** input above the tree; `S` opens the same input. Typing
 filters branch and tag names immediately, including folded paths within Roots.
 `Enter` keeps the query and returns to the tree; `Esc` cancels editing and

@@ -27,6 +27,7 @@ struct Request {
     limit: usize,
     signatures: bool,
     cherry: bool,
+    search: Option<model::HistorySearch>,
 }
 
 impl Request {
@@ -42,6 +43,7 @@ impl Request {
             limit: p.limit,
             signatures: p.options.shows(display::Column::Signature),
             cherry: p.options.not_cherry_picked,
+            search: p.filter.search.clone(),
         }
     }
 
@@ -56,6 +58,7 @@ impl Request {
             && self.limit == p.limit
             && self.signatures == p.options.shows(display::Column::Signature)
             && self.cherry == p.options.not_cherry_picked
+            && self.search == p.filter.search
     }
 }
 
@@ -66,15 +69,21 @@ pub(super) struct Projection {
     roots: Option<BTreeSet<usize>>,
     regex: bool,
     case_sensitive: bool,
+    full_history: bool,
 }
 
 impl Projection {
     pub(super) fn new(p: &LogPanel) -> Self {
         Self {
-            query: p.filter.query.clone(),
+            query: p
+                .editor
+                .as_ref()
+                .filter(|(field, _)| *field == Field::Text)
+                .map_or_else(|| p.filter.query.clone(), |(_, input)| input.clone()),
             roots: p.filter.roots.clone(),
             regex: p.regex,
             case_sensitive: p.case_sensitive,
+            full_history: p.filter.search.is_some() && !matches!(p.editor, Some((Field::Text, _))),
         }
     }
 
@@ -89,9 +98,17 @@ impl Projection {
                     .as_ref()
                     .is_none_or(|roots| roots.contains(&r.root))
                     && matcher.as_ref().is_none_or(|m| {
-                        [&r.oid, &r.subject, &r.refs]
-                            .into_iter()
-                            .any(|v| m.is_match(v))
+                        [
+                            &r.oid,
+                            if self.full_history && !r.message.is_empty() {
+                                &r.message
+                            } else {
+                                &r.subject
+                            },
+                            &r.refs,
+                        ]
+                        .into_iter()
+                        .any(|v| m.is_match(v))
                     })
             })
             .map(|(i, _)| i)
@@ -131,7 +148,7 @@ struct Read {
 }
 
 impl Read {
-    fn run(self, cancelled: impl Fn() -> bool) -> Option<Result<Loaded>> {
+    fn run(self, cancelled: impl Fn() -> bool + Sync) -> Option<Result<Loaded>> {
         let hist = match self.project {
             Some(hist) => hist,
             None => {
@@ -206,6 +223,8 @@ impl LogPanel {
         if self.history_load.stale() {
             if let Some(error) = self.history_load.error.as_deref() {
                 Some(error)
+            } else if self.filter.search.is_some() {
+                Some("Searching all history… · Esc cancels")
             } else if self.hist.revs.is_empty() {
                 Some("Loading history…")
             } else if self.history_load.loading_more {

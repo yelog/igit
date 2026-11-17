@@ -32,6 +32,7 @@ enum Report {
     Started(String),
     Completed(Box<Completed>),
     Done,
+    Failed(String),
 }
 
 fn run(c: &Context, plans: Vec<Plan>, stop: &AtomicBool, mut report: impl FnMut(Report)) {
@@ -59,7 +60,10 @@ fn run(c: &Context, plans: Vec<Plan>, stop: &AtomicBool, mut report: impl FnMut(
                 index + 1,
                 total
             )));
-            backend::execute(&plan).map_err(|error| format!("{error:#}"))
+            crate::core::activity::record(&plan.repo, "Commit selected files", || {
+                backend::execute(&plan)
+            })
+            .map_err(|error| format!("{error:#}"))
         };
         if outcome.is_err() {
             failed.insert(root);
@@ -119,6 +123,80 @@ impl CommitPanel {
         }
         if self.execution_running() {
             bail!(Constraint("Wait for the current commit batch to finish"));
+        }
+        if self.execution.enabled {
+            let mut files_by_root = BTreeMap::<_, Vec<_>>::new();
+            for file in self.selection(c) {
+                files_by_root
+                    .entry(file.root)
+                    .or_default()
+                    .push(file.change.clone());
+            }
+            if files_by_root.is_empty() {
+                bail!(Constraint("Select files first"));
+            }
+            let message = self.saved.message.clone();
+            let text = message.clone().unwrap_or_default();
+            if text.trim().is_empty() {
+                self.edit_message(c);
+                bail!(Constraint("Enter a commit message for the selected files"));
+            }
+            let context = c.clone();
+            let amend = self.amend.clone();
+            let stop = Arc::new(AtomicBool::new(false));
+            let worker_stop = stop.clone();
+            let (sender, receiver) = mpsc::channel();
+            std::thread::Builder::new()
+                .name("igit-commit-prepare".into())
+                .spawn(move || {
+                    crate::core::activity::with_directory(&context.state_dir, || {
+                        let result = (|| -> Result<_> {
+                            let mut plans = Vec::new();
+                            for (root, files) in files_by_root {
+                                anyhow::ensure!(
+                                    !worker_stop.load(Ordering::Acquire),
+                                    "Commit preparation stopped; nothing committed"
+                                );
+                                let _ = sender.send(Report::Started(format!(
+                                    "Preparing {} · selected files only",
+                                    context.repos[root].name
+                                )));
+                                plans.push(backend::plan(
+                                    root,
+                                    &context.repos[root].path,
+                                    files,
+                                    text.clone(),
+                                    amend.contains(&root),
+                                )?);
+                            }
+                            plans.sort_by_key(|plan| {
+                                std::cmp::Reverse(plan.repo.components().count())
+                            });
+                            Ok(plans)
+                        })();
+                        match result {
+                            Ok(plans) => run(&context, plans, &worker_stop, |report| {
+                                let _ = sender.send(report);
+                            }),
+                            Err(error) => {
+                                let _ = sender
+                                    .send(Report::Failed(format!("Commit preparation: {error:#}")));
+                            }
+                        }
+                    });
+                })?;
+            self.execution.pending = Some(Pending {
+                receiver,
+                stop,
+                completed: Vec::new(),
+                push,
+                message,
+            });
+            self.execution.progress = "Preparing selected files in the background…".into();
+            return Ok(Action::Notice(
+                NoticeLevel::Info,
+                self.execution.progress.clone(),
+            ));
         }
         let plans = self.prepare_submission(c)?;
         Ok(self.execute_submission(c, plans, push))
@@ -205,6 +283,10 @@ impl CommitPanel {
         let mut progress = None;
         loop {
             match pending.receiver.try_recv() {
+                Ok(Report::Failed(message)) => {
+                    self.execution.progress.clear();
+                    return Action::Refresh(NoticeLevel::Error, message);
+                }
                 Ok(Report::Started(label)) => progress = Some(label),
                 Ok(Report::Completed(result)) => pending.completed.push(*result),
                 Ok(Report::Done) => {

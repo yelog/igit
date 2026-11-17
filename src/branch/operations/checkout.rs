@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io::Write,
     path::Path,
-    process::{Output, Stdio},
+    process::Output,
 };
 
 mod view;
@@ -340,9 +340,11 @@ impl Checkout {
                     && git(repo, &["rev-parse", "--verify", "refs/stash"])? == oid,
                 "Stash list changed"
             );
-            let output = command(repo)
-                .args(["stash", "drop", "stash@{0}"])
-                .output()?;
+            let output = crate::core::process::write_output(
+                repo,
+                "checkout backup cleanup",
+                command(repo).args(["stash", "drop", "stash@{0}"]),
+            )?;
             ensure!(output.status.success(), "{}", detail(&output));
             Ok(())
         };
@@ -373,7 +375,7 @@ impl Checkout {
             if index {
                 cmd.arg("--index");
             }
-            Ok(cmd.arg(oid).output()?)
+            crate::core::process::write_output(repo, "checkout restore", cmd.arg(oid))
         };
         let mut output = apply(true)?;
         if output.status.success() {
@@ -452,10 +454,12 @@ fn restore_staging(repo: &Path, oid: &str) -> Result<bool> {
     let temp = tempfile::tempdir()?;
     let index = temp.path().join("index");
     let mut read = command(repo);
-    let output = read
-        .env("GIT_INDEX_FILE", &index)
-        .args(["read-tree", "HEAD"])
-        .output()?;
+    let output = crate::core::process::write_output(
+        repo,
+        "checkout staging preparation",
+        read.env("GIT_INDEX_FILE", &index)
+            .args(["read-tree", "HEAD"]),
+    )?;
     ensure!(
         output.status.success(),
         "Cannot prepare staging recovery: {}",
@@ -463,19 +467,20 @@ fn restore_staging(repo: &Path, oid: &str) -> Result<bool> {
     );
     let mut staged_merged = true;
     if !patch.is_empty() {
-        let mut child = command(repo)
-            .env("GIT_INDEX_FILE", &index)
-            .args(["apply", "--cached", "--3way", "--whitespace=nowarn"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        child
-            .stdin
-            .take()
-            .context("Cannot restore staging")?
-            .write_all(&patch)?;
-        let output = child.wait_with_output()?;
+        let mut input = tempfile::tempfile()?;
+        input.write_all(&patch)?;
+        std::io::Seek::rewind(&mut input)?;
+        let output = crate::core::process::write_output_with_input(
+            repo,
+            "checkout staging merge",
+            command(repo).env("GIT_INDEX_FILE", &index).args([
+                "apply",
+                "--cached",
+                "--3way",
+                "--whitespace=nowarn",
+            ]),
+            Some(input),
+        )?;
         staged_merged = output.status.success();
         ensure!(
             output.status.success() || output.status.code() == Some(1),
@@ -483,10 +488,13 @@ fn restore_staging(repo: &Path, oid: &str) -> Result<bool> {
             detail(&output)
         );
     }
-    let output = command(repo)
-        .env("GIT_INDEX_FILE", &index)
-        .args(["ls-files", "--stage", "-z"])
-        .output()?;
+    let output = crate::core::read_output(
+        repo,
+        "recovered staging",
+        command(repo)
+            .env("GIT_INDEX_FILE", &index)
+            .args(["ls-files", "--stage", "-z"]),
+    )?;
     ensure!(output.status.success(), "Cannot read recovered staging");
     let desired = index_entries(&output.stdout);
     let current = index_entries(&git_bytes(repo, &["ls-files", "--stage", "-z"])?);
@@ -544,18 +552,15 @@ fn restore_staging(repo: &Path, oid: &str) -> Result<bool> {
         }
     }
     if !input.is_empty() {
-        let mut child = command(repo)
-            .args(["update-index", "-z", "--index-info"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        child
-            .stdin
-            .take()
-            .context("Cannot restore staging")?
-            .write_all(&input)?;
-        let output = child.wait_with_output()?;
+        let mut data = tempfile::tempfile()?;
+        data.write_all(&input)?;
+        std::io::Seek::rewind(&mut data)?;
+        let output = crate::core::process::write_output_with_input(
+            repo,
+            "checkout staging restore",
+            command(repo).args(["update-index", "-z", "--index-info"]),
+            Some(data),
+        )?;
         ensure!(
             output.status.success(),
             "Cannot restore staging: {}",

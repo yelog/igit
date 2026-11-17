@@ -74,7 +74,12 @@ pub(super) fn run(repo: &Path, args: &[&str]) -> Result<Output> {
     if let Some(operation) = crate::core::read_operation(args) {
         crate::core::read_output(repo, operation, &mut command)
     } else {
-        command.output().context("run git")
+        crate::core::process::write_output(
+            repo,
+            args.first().copied().unwrap_or("merge"),
+            &mut command,
+        )
+        .context("run git")
     }
 }
 pub(super) fn checked(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
@@ -500,9 +505,11 @@ pub(super) fn continue_op(repo: &Path, op: &Operation, tree: &str) -> Result<Str
         &now == op && tree == index,
         "Operation or staged files changed; review again"
     );
-    let o = crate::core::command(repo)
-        .args([op.name, "--continue"])
-        .output()?;
+    let o = crate::core::process::write_output(
+        repo,
+        "continue",
+        crate::core::command(repo).args([op.name, "--continue"]),
+    )?;
     ensure!(
         o.status.success(),
         "git {} --continue: {}",

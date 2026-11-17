@@ -5,17 +5,35 @@ use anyhow::{bail, ensure};
 use regex_lite::Regex;
 use std::collections::BTreeSet;
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(in crate::log) struct BranchFilter(Vec<Term>);
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Term {
     value: String,
     exclude: bool,
+    #[serde(with = "stored_regex")]
     pattern: Option<Regex>,
     range_start: Option<String>,
 }
 
+mod stored_regex {
+    use regex_lite::Regex;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    pub(super) fn serialize<S: Serializer>(
+        pattern: &Option<Regex>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        pattern.as_ref().map(Regex::as_str).serialize(serializer)
+    }
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Regex>, D::Error> {
+        Option::<String>::deserialize(deserializer)?
+            .map(|value| Regex::new(&value).map_err(serde::de::Error::custom))
+            .transpose()
+    }
+}
 impl From<&str> for BranchFilter {
     fn from(name: &str) -> Self {
         Self::refs([name])

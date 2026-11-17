@@ -65,7 +65,7 @@ fn optional(repo: &Path, args: &[&str]) -> Result<Option<String>> {
     let output = if let Some(operation) = read_operation(args) {
         read_output(repo, operation, &mut cmd)?
     } else {
-        cmd.output()?
+        crate::core::process::write_output(repo, "stash", &mut cmd)?
     };
     match output.status.code() {
         Some(0) => Ok(Some(String::from_utf8(output.stdout)?.trim_end().into())),
@@ -235,9 +235,11 @@ impl Review {
         // A stash selector is a reflog position, not a stable object ID. Never
         // reuse it after an external push/drop, even if the selected OID remains.
         self.check_entries()?;
-        let output = command(&self.path)
-            .args(["stash", "drop", &self.source.selector])
-            .output()?;
+        let output = crate::core::process::write_output(
+            &self.path,
+            "stash drop",
+            command(&self.path).args(["stash", "drop", &self.source.selector]),
+        )?;
         ensure!(output.status.success(), "{}", detail(&output));
         Ok(())
     }
@@ -288,10 +290,12 @@ impl Review {
         if destination.restore_index {
             cmd.arg("--index");
         }
-        let output = cmd
-            .arg(&self.source.oid)
-            .output()
-            .context("Cannot start Git")?;
+        let output = crate::core::process::write_output(
+            &self.path,
+            "stash apply",
+            cmd.arg(&self.source.oid),
+        )
+        .context("Cannot start Git")?;
         if !output.status.success() {
             let conflicts = git_bytes(&self.path, &["ls-files", "--unmerged", "-z"])
                 .is_ok_and(|entries| !entries.is_empty());

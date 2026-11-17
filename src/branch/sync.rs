@@ -180,11 +180,13 @@ impl Sync {
                 ],
             )?;
         } else {
-            match command(&repo.path)
-                .args(["merge-base", "--is-ancestor", &tip, &branch.oid])
-                .output()?
-                .status
-                .code()
+            match crate::core::read_output(
+                &repo.path,
+                "branch ancestry",
+                command(&repo.path).args(["merge-base", "--is-ancestor", &tip, &branch.oid]),
+            )?
+            .status
+            .code()
             {
                 Some(0) => return Ok(()), // The local branch already contains the upstream.
                 Some(1) => (),

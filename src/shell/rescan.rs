@@ -48,6 +48,7 @@ pub(super) fn preserve_scope(previous: &Context, next: &mut Context) {
 impl Shell {
     pub(super) fn start_workspace_scan(&mut self, path: PathBuf) -> Result<()> {
         self.auto_fetch.cancel();
+        self.save_session();
         self.workspace_scan = State::default();
         let launch = cli::Launch {
             workspace: path,
@@ -122,6 +123,7 @@ impl Shell {
         let mut next = *self.workspace_scan.ready.take().unwrap();
         let same = next.ctx.workspace == self.ctx.workspace;
         if same {
+            next.session = std::mem::take(&mut self.session);
             next.auto_fetch = std::mem::take(&mut self.auto_fetch);
             preserve_scope(&self.ctx, &mut next.ctx);
             next.commit
@@ -161,6 +163,8 @@ impl Shell {
         }
         if same {
             next.go(self.tab);
+        } else {
+            next.restore_last_panel();
         }
         *self = next;
         self.refresh();

@@ -295,7 +295,8 @@ impl BranchPanel {
         let refresh_on_error = retry.is_none();
         let (send, receive) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let report = match Review::prepare(&context, root, &branch, operation, &name) {
+            crate::core::activity::with_directory(&context.state_dir, || {
+                let report = match Review::prepare(&context, root, &branch, operation, &name) {
                 Ok(review) => match review.execute_switch() {
                     Ok(message) => match review.checkout_outcome() {
                         Ok(checkout) => SyncReport::Done(Box::new(SyncDone {
@@ -334,7 +335,8 @@ impl BranchPanel {
                     refresh: refresh_on_error,
                 })),
             };
-            let _ = send.send(report);
+                let _ = send.send(report);
+            });
         });
         self.syncing = Some(receive);
         Action::Notice(
@@ -380,15 +382,17 @@ impl BranchPanel {
         let context = c.clone();
         let (send, receive) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let (level, message, checkout) = checkout.execute_outcome(&context, force);
-            let refresh = checkout.is_none();
-            let _ = send.send(SyncReport::Done(Box::new(SyncDone {
-                level,
-                message,
-                checkout,
-                retry: None,
-                refresh,
-            })));
+            crate::core::activity::with_directory(&context.state_dir, || {
+                let (level, message, checkout) = checkout.execute_outcome(&context, force);
+                let refresh = checkout.is_none();
+                let _ = send.send(SyncReport::Done(Box::new(SyncDone {
+                    level,
+                    message,
+                    checkout,
+                    retry: None,
+                    refresh,
+                })));
+            });
         });
         self.syncing = Some(receive);
         Action::Notice(
@@ -759,23 +763,25 @@ impl Panel for BranchPanel {
             let context = c.clone();
             let (send, receive) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
-                let report = match review.execute(&context) {
-                    Ok(message) => SyncReport::Done(Box::new(SyncDone {
-                        level: NoticeLevel::Success,
-                        message,
-                        checkout: None,
-                        retry: None,
-                        refresh: true,
-                    })),
-                    Err(error) => SyncReport::Done(Box::new(SyncDone {
-                        level: NoticeLevel::Error,
-                        message: format!("{error:#}"),
-                        checkout: None,
-                        retry: None,
-                        refresh: true,
-                    })),
-                };
-                let _ = send.send(report);
+                crate::core::activity::with_directory(&context.state_dir, || {
+                    let report = match review.execute(&context) {
+                        Ok(message) => SyncReport::Done(Box::new(SyncDone {
+                            level: NoticeLevel::Success,
+                            message,
+                            checkout: None,
+                            retry: None,
+                            refresh: true,
+                        })),
+                        Err(error) => SyncReport::Done(Box::new(SyncDone {
+                            level: NoticeLevel::Error,
+                            message: format!("{error:#}"),
+                            checkout: None,
+                            retry: None,
+                            refresh: true,
+                        })),
+                    };
+                    let _ = send.send(report);
+                });
             });
             self.syncing = Some(receive);
             return Action::Notice(NoticeLevel::Info, "Branch sync running…".into());

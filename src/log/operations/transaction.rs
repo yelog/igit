@@ -1,13 +1,16 @@
 use super::*;
 use std::{
     io::{BufRead, BufReader},
-    process::{Child, ChildStdout, Stdio},
+    process::{ChildStdout, Stdio},
 };
 
 pub(super) struct Transaction {
-    child: Child,
+    child: crate::core::process::Running,
     output: BufReader<ChildStdout>,
     errors: NamedTempFile,
+    activity: Option<crate::core::activity::Pending>,
+    repository: PathBuf,
+    commit_requested: bool,
 }
 
 impl Transaction {
@@ -18,18 +21,30 @@ impl Transaction {
         reason: &str,
     ) -> Result<Self> {
         let errors = NamedTempFile::new()?;
-        let mut child = command(repo)
-            .args(["update-ref", "-m", reason, "--stdin"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(errors.reopen()?)
-            .spawn()
-            .context("Cannot lock the reviewed branch")?;
-        let output = BufReader::new(child.stdout.take().context("Git output unavailable")?);
+        let (mut child, activity) = crate::core::process::start_write(
+            repo,
+            "reviewed ref transaction",
+            command(repo)
+                .args(["update-ref", "-m", reason, "--stdin"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(errors.reopen()?),
+        )
+        .context("Cannot lock the reviewed branch")?;
+        let output = BufReader::new(
+            child
+                .child()
+                .stdout
+                .take()
+                .context("Git output unavailable")?,
+        );
         let mut transaction = Self {
             child,
             output,
             errors,
+            activity,
+            repository: repo.to_owned(),
+            commit_requested: false,
         };
         let change = new.map_or_else(
             || format!("delete HEAD {}\n", head.oid),
@@ -47,14 +62,19 @@ impl Transaction {
     }
 
     pub(super) fn commit(mut self) -> Result<()> {
+        self.commit_requested = true;
         self.exchange("commit\n", &["commit: ok"])?;
-        self.child.stdin.take();
-        ensure!(self.child.wait()?.success(), "{}", self.error());
+        self.child.child().stdin.take();
+        ensure!(self.child.child().wait()?.success(), "{}", self.error());
+        if let Some(activity) = self.activity.take() {
+            activity.finish(&self.repository, "Succeeded")?;
+        }
         Ok(())
     }
 
     fn exchange(&mut self, input: &str, responses: &[&str]) -> Result<()> {
         self.child
+            .child()
             .stdin
             .as_mut()
             .context("Git transaction is closed")?
@@ -80,7 +100,27 @@ impl Transaction {
 
 impl Drop for Transaction {
     fn drop(&mut self) {
-        self.child.stdin.take();
-        let _ = self.child.wait();
+        self.child.child().stdin.take();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        while self
+            .child
+            .child()
+            .try_wait()
+            .is_ok_and(|status| status.is_none())
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        if !self.commit_requested
+            && self
+                .child
+                .child()
+                .try_wait()
+                .is_ok_and(|status| status.is_some_and(|status| status.success()))
+        {
+            if let Some(activity) = self.activity.take() {
+                let _ = activity.finish(&self.repository, "Aborted");
+            }
+        }
     }
 }

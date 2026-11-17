@@ -5,7 +5,7 @@ use std::{
     fs::{self, OpenOptions},
     io::{Seek, Write},
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::{Command, Output},
 };
 use tempfile::TempDir;
 
@@ -73,18 +73,20 @@ fn run(repo: &Path, idx: Option<&Path>, args: &[&OsStr], input: Option<&[u8]>) -
         }
         return crate::core::read_output(repo, operation, &mut c);
     }
-    c.stdin(if input.is_some() {
-        Stdio::piped()
-    } else {
-        Stdio::null()
-    })
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped());
-    let mut child = c.spawn()?;
-    if let Some(b) = input {
-        child.stdin.take().unwrap().write_all(b)?;
-    }
-    Ok(child.wait_with_output()?)
+    let source = input
+        .map(|bytes| -> Result<_> {
+            let mut file = tempfile::tempfile()?;
+            file.write_all(bytes)?;
+            file.rewind()?;
+            Ok(file)
+        })
+        .transpose()?;
+    crate::core::process::write_output_with_input(
+        repo,
+        text.first().copied().unwrap_or("write"),
+        &mut c,
+        source,
+    )
 }
 fn checked(o: Output) -> Result<Vec<u8>> {
     if !o.status.success() {
@@ -265,7 +267,7 @@ fn exact_path(repo: &Path, idx: Option<&Path>, args: &[&str], file: &Path) -> Re
     let output = checked(if let Some(operation) = crate::core::read_operation(args) {
         crate::core::read_output(repo, operation, &mut command)?
     } else {
-        command.output()?
+        crate::core::read_output(repo, "selected path", &mut command)?
     })?;
     if !index_read {
         return Ok(output);
@@ -653,7 +655,20 @@ pub fn execute(p: &Plan) -> Result<Outcome> {
         aa.push(OsStr::new("--amend"))
     }
     aa.extend([OsStr::new("--file=-"), OsStr::new("--cleanup=verbatim")]);
-    checked(run(repo, Some(&at), &aa, Some(p.msg.as_bytes()))?)?;
+    let committed = run(repo, Some(&at), &aa, Some(p.msg.as_bytes())).and_then(checked);
+    if let Err(error) = committed {
+        let current = crate::core::process::with_read_control(
+            &crate::core::process::ReadControl::default(),
+            || oid(repo),
+        );
+        if current.as_ref().is_err() || current.ok().flatten() != p.head {
+            guard.1 = true;
+            return Err(error).context(
+                "Commit result is uncertain or HEAD changed. Keep index.lock; inspect HEAD and the index before retrying",
+            );
+        }
+        return Err(error);
+    }
     guard.1 = true;
     let hash = txt(g(repo, None, &["rev-parse", "--short", "HEAD"])
         .context("Commit created, but HEAD could not be read. Keep index.lock; do not retry")?);

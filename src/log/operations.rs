@@ -27,7 +27,11 @@ fn git_output(repo: &Path, args: &[&str]) -> Result<Output> {
     if let Some(operation) = crate::core::read_operation(args) {
         crate::core::read_output(repo, operation, &mut cmd)
     } else {
-        Ok(cmd.output()?)
+        crate::core::process::write_output(
+            repo,
+            args.first().copied().unwrap_or("history"),
+            &mut cmd,
+        )
     }
 }
 
@@ -620,7 +624,11 @@ impl Review {
                     }
                     Plan::RemoveTip { .. } | Plan::Reword { .. } => unreachable!(),
                 }
-                checked(cmd.output().context("Cannot start Git")?).map(|_| ())
+                checked(
+                    crate::core::process::write_output(&repo.path, self.kind.title(), &mut cmd)
+                        .context("Cannot start Git")?,
+                )
+                .map(|_| ())
             }
         };
         if let Plan::CherryPick(head) = &self.plan {
@@ -702,7 +710,12 @@ fn write_temp(data: &[u8]) -> Result<NamedTempFile> {
 
 fn git_input(repo: &Path, args: &[&str], data: &[u8]) -> Result<String> {
     let file = write_temp(data)?;
-    let output = checked(command(repo).args(args).stdin(file.reopen()?).output()?)?;
+    let output = checked(crate::core::process::write_output_with_input(
+        repo,
+        args.first().copied().unwrap_or("history"),
+        command(repo).args(args),
+        Some(file.reopen()?),
+    )?)?;
     Ok(String::from_utf8(output)?.trim_end().to_owned())
 }
 
