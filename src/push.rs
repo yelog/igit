@@ -174,6 +174,7 @@ pub struct PushPanel {
     load: Load<Vec<Entry>>,
     load_scope: Option<Scope>,
     load_error: Option<String>,
+    read_indicator: crate::ui::loading::Indicator,
     fetched: FetchCache,
     fetch_status: BTreeMap<usize, String>,
     fetch_observations: Vec<fetch_backend::Observation>,
@@ -785,7 +786,9 @@ impl PushPanel {
         !self.activities.is_empty()
     }
     pub(crate) fn tick_animation(&mut self, now: Instant) -> bool {
-        let mut changed = false;
+        let mut changed = self
+            .read_indicator
+            .tick(self.load.loading() && !self.busy(), now);
         for activity in self.activities.values_mut() {
             let frame = spinner_frame(activity.started, now);
             if frame != activity.frame {

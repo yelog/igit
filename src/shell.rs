@@ -51,6 +51,7 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
+    buffer::Buffer,
     layout::Rect,
     style::Style,
     text::{Line, Span},
@@ -255,6 +256,7 @@ struct Shell {
     refresh_state: refresh::State,
     auto_fetch: fetch::State,
     operation: Option<operations::Running>,
+    backdrop: Option<Buffer>,
     session: session::State,
     workspace_scan: rescan::State,
     pop: Option<Popup>,
@@ -316,6 +318,7 @@ impl Shell {
             refresh_state: refresh::State::default(),
             auto_fetch: fetch::State::default(),
             operation: None,
+            backdrop: None,
             session: session::State::default(),
             workspace_scan: rescan::State::default(),
             pop: None,
@@ -2190,6 +2193,7 @@ impl Shell {
                 }
             }
             let outcome = dialog.poll();
+            change |= dialog.tick_animation(Instant::now());
             for observation in dialog.take_fetch_observations() {
                 self.auto_fetch.observe(observation, Instant::now());
             }
@@ -2315,6 +2319,8 @@ impl Shell {
                 }
             }
         }
+        let animation = self.branch.tick_animation(Instant::now());
+        change |= animation && self.tab == Branch;
         change |= self.poll_auto_fetch();
         change
     }
@@ -2337,7 +2343,10 @@ impl Shell {
             || self.branch.syncing()
         {
             Duration::from_millis(16)
-        } else if self.commit.add_running() || self.push.busy() {
+        } else if self.commit.add_running()
+            || self.push.busy()
+            || matches!(&self.pop, Some(Popup::Update(dialog)) if dialog.running())
+        {
             Duration::from_millis(100)
         } else {
             IDLE

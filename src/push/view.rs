@@ -756,16 +756,26 @@ impl PushPanel {
         if self.conflicted.iter().any(|root| c.scope.contains(root)) {
             controls.push((Icon::Error, "Conflicts", Hit::Conflicts));
         }
-        let reserved = controls
-            .iter()
-            .map(|(icon, label, hit)| {
-                if matches!(hit, Hit::Fetch) {
-                    label.width() + 2
-                } else {
-                    self.icons.glyph(*icon).width() + 2
-                }
-            })
-            .sum::<usize>();
+        let loading = self.load.loading() && !self.busy();
+        let loading_labels: &[&str] = if self.entries.is_empty() {
+            &["Loading outgoing commits…", "Loading…"]
+        } else {
+            &["Refreshing outgoing commits…", "Refreshing…", "Refresh…"]
+        };
+        let reserved = if loading {
+            loading_labels[1].width() + 3
+        } else {
+            controls
+                .iter()
+                .map(|(icon, label, hit)| {
+                    if matches!(hit, Hit::Fetch) {
+                        label.width() + 2
+                    } else {
+                        self.icons.glyph(*icon).width() + 2
+                    }
+                })
+                .sum::<usize>()
+        };
         let shortcut = self.shortcut_labels.get("s").map_or("s", String::as_str);
         let labels = [
             format!("Update strategy: {}", self.strategy.label()),
@@ -792,7 +802,16 @@ impl PushPanel {
             self.hits.push((strategy, Hit::Strategy));
         }
         let tools = Rect::new(area.x, area.y, strategy.x - area.x, 1);
-        if self.busy() || self.read_status().is_some() {
+        if loading {
+            f.render_widget(
+                Paragraph::new(self.read_indicator.line(
+                    self.icons,
+                    loading_labels,
+                    tools.width.saturating_sub(1),
+                )),
+                tools,
+            );
+        } else if self.busy() || self.read_status().is_some() {
             f.render_widget(
                 Paragraph::new(format!(
                     " {}",
@@ -802,7 +821,7 @@ impl PushPanel {
                         self.read_status().unwrap()
                     }
                 ))
-                .style(Style::new().fg(ACCENT)),
+                .style(Style::new().fg(if self.busy() { ACCENT } else { RED })),
                 tools,
             );
         } else {

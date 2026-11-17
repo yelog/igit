@@ -1,6 +1,7 @@
 use super::*;
 mod controls;
 mod diff;
+mod loading;
 mod review;
 mod strategy;
 mod text_selection;

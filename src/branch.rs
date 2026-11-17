@@ -113,6 +113,7 @@ pub struct BranchPanel {
     viewport: Viewport,
     focus: Focus,
     loading: loading::Loading,
+    read_indicator: crate::ui::loading::Indicator,
     goto_pending: bool,
     view_menu: bool,
     view_menu_cursor: usize,

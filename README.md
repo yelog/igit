@@ -472,7 +472,7 @@ the focused revision or patch fallback horizontally. See [search bindings](docs/
 
 **Pull and Fetch:** The workspace reviews use Push-style title bars, colored repository icons, aligned targets and statuses, and a separated action footer. They list every repository in global Roots, regardless of the current Log tab or Push checkboxes. In Branch, `p` instead reviews only the focused local branch; use Actions → Pull repositories for the workspace review. Branch names show the same green `↗N` (ahead) and blue `↙N` (behind) counts as Branch; ASCII uses `^N` / `vN`. Counts compare the current branch with its configured upstream using locally available refs. Opening review does not fetch; zero or unavailable counts stay hidden, and results refresh them after the operation. Workspace Pull uses each current branch's upstream and inherits the saved application-wide Merge/Rebase default, initially **Merge incoming changes** (allowing fast-forward). Use `m/r` or click a toolbar option to override it for this Pull only. Press `s` or click the default-strategy control to save a default shared with Push. Fetch lists all configured remotes and updates remote refs without integrating changes.
 
-Browse with `j/k`, arrows, PageUp/PageDown, Home/End, row clicks, or the wheel; highlighting a row only changes Details. Complete branch/upstream names, counts, and errors wrap there; `J/K` or the wheel over Details scrolls them. **Pull** / **Fetch** starts focused when available; otherwise Cancel has focus. A blue background marks the focused button. Use `h/l`, `Tab`, or `Shift-Tab` to switch between **Cancel** and **Pull** / **Fetch**, then `Enter` to activate the focused button. Action labels have no repository count; ready and Roots counts remain visible separately. `Esc` cancels before Git runs. Eligible repositories run up to four at a time; starting rows show Running and update separately to OK, Failed, or Skipped. Parent and child workspaces, and worktrees that share Git storage, run one at a time. Results retain the repository list, color successes/failures/skips, and select the first failure for inspection. If Pull stops with conflicts, close results and select the highlighted **Conflicts** tab or press `7`.
+Browse with `j/k`, arrows, PageUp/PageDown, Home/End, row clicks, or the wheel; highlighting a row only changes Details. Complete branch/upstream names, counts, and errors wrap there; `J/K` or the wheel over Details scrolls them. **Pull** / **Fetch** starts focused when available; otherwise Cancel has focus. A blue background marks the focused button. Use `h/l`, `Tab`, or `Shift-Tab` to switch between **Cancel** and **Pull** / **Fetch**, then `Enter` to activate the focused button. Action labels have no repository count; ready and Roots counts remain visible separately. `Esc` cancels before Git runs. Checks and execution use the Generate-message spinner without Checking, Pending, or Running labels; active rows are blue and queued rows are gray. Numeric progress remains visible, and the review stops animating when ready for confirmation. Eligible repositories run up to four at a time and update separately to OK, Failed, or Skipped. Parent and child workspaces, and worktrees that share Git storage, run one at a time. Results retain the repository list, color successes/failures/skips, and select the first failure for inspection. If Pull stops with conflicts, close results and select the highlighted **Conflicts** tab or press `7`.
 
 In Push, `f` fetches its Push targets in Roots directly. Use Actions → Fetch
 repositories to open the workspace Fetch review from that panel.
@@ -555,7 +555,10 @@ near the removed entry in the same repository.
 **Branch management:** Press `4` to open **Branch** immediately while refs load
 in the background. Returning shows the cached tree for the current Roots while
 it refreshes. You can browse it during refresh; branch actions wait for the
-current list. With one repository in Roots, the branch tree uses the full
+current list. Loading and refresh show the same spinner as Generate message
+in the Branch column heading, without shifting cached rows. Narrow headings
+shorten the status while retaining View Options. With one repository in Roots,
+the branch tree uses the full
 width and omits the repository name. With several, **Repositories** is on the
 left and only the selected repository's branches appear on the right. Click a
 repository or use `j/k` in the left pane to switch. `Tab` moves between panes;
@@ -931,7 +934,9 @@ python3 scripts/cargo_serial.py run --locked --bin ig -- "$push_demo"
 
 Push opens immediately while outgoing commits load in the background. Returning
 keeps the previous list visible during refresh. File lists and Diffs also load
-without blocking navigation. Push/Retry/Fetch wait for the current outgoing
+without blocking navigation. Outgoing loading and refresh use Generate message's
+spinner in the existing toolbar; narrow panes keep both the spinner and update
+strategy visible. Push/Retry/Fetch wait for the current outgoing
 snapshot; Cancel, tab switching, and quit remain available. Refresh preserves
 checked repositories and the highlighted commit, and unchanged data retains the
 current file and Diff scroll.

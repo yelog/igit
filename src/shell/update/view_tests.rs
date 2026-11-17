@@ -8,6 +8,8 @@ use crossterm::event::{KeyEvent, MouseButton, MouseEvent};
 use ratatui::{backend::TestBackend, buffer::Buffer, style::Modifier, Terminal};
 use unicode_width::UnicodeWidthStr;
 
+mod activity;
+
 fn fixture(kind: Kind, count: usize) -> Dialog {
     Dialog {
         kind,
@@ -50,6 +52,7 @@ fn fixture(kind: Kind, count: usize) -> Dialog {
         confirm_focused: count > 0,
         jobs: vec![],
         load: Load::default(),
+        indicator: crate::ui::loading::Indicator::default(),
         fetch_observations: Vec::new(),
     }
 }
@@ -258,8 +261,9 @@ fn update_loading_keeps_the_review_open_without_confirmation() {
         row.outcome = Outcome::Checking;
     }
     let (_, hits, text) = draw(&mut dialog, 120, 36, IconMode::Ascii);
-    assert!(text.contains("Update Project · Checking"), "{text}");
-    assert!(text.contains("Checking 2 repositories"), "{text}");
+    assert!(text.contains("| Update Project · 2 repositories"), "{text}");
+    assert!(text.contains("workspace: |"), "{text}");
+    assert!(!text.contains("Checking"), "{text}");
     assert!(text.contains("Cancel") && !text.contains("Enter Activate"));
     assert!(!hits.iter().any(|(_, id)| *id == CONFIRM));
     assert!(!dialog.event(&key(K::Enter), None));
@@ -273,7 +277,8 @@ fn update_running_and_results_keep_repository_rows_and_color_outcomes() {
     let (tx, rx) = mpsc::channel();
     dialog.stage = Stage::Running(rx);
     let (_, hits, text) = draw(&mut dialog, 120, 36, IconMode::Ascii);
-    assert!(text.contains("Running") && text.contains("Pending"));
+    assert!(text.contains("| Update Project") && text.contains("workspace: |"));
+    assert!(!text.contains("Running") && !text.contains("Pending"));
     assert!(!hits.iter().any(|(_, id)| *id < ROW));
     assert!(!dialog.event(&key(K::Esc), None));
     tx.send(Report::Started(1)).unwrap();

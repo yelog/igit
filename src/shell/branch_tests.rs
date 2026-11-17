@@ -219,6 +219,16 @@ fn branch_entry_paints_before_git_and_leaves_navigation_available() {
     let release = app.branch.hold_loading(&app.ctx);
     app.poll();
     assert!(app.poll_timeout() <= Duration::from_millis(16));
+    let first_spinner = format!("{} Loading branches", app.icons.spinner(0));
+    assert!(screen(&mut app, 120, 36).contains(&first_spinner));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if app.poll() && !screen(&mut app, 120, 36).contains(&first_spinner) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "Branch loading did not animate");
+        std::thread::sleep(Duration::from_millis(5));
+    }
     app.dispatch(&key(KeyCode::F(1)));
     assert!(matches!(app.pop, Some(Popup::Help { .. })));
     app.dispatch(&key(KeyCode::Esc));

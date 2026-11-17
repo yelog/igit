@@ -211,7 +211,7 @@ impl Shell {
             width,
             height,
         );
-        frame.render_widget(Clear, area);
+        frame.render_widget(Clear, popup);
         let block = pane(
             format!(
                 "{} operation · {}s",
@@ -231,13 +231,30 @@ impl Shell {
         };
         frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), body);
     }
+
+    pub(super) fn draw_operation_backdrop(&self, frame: &mut Frame) {
+        let area = frame.area();
+        if let Some(backdrop) = self
+            .backdrop
+            .as_ref()
+            .filter(|backdrop| backdrop.area == area)
+        {
+            *frame.buffer_mut() = backdrop.clone();
+        } else {
+            frame.render_widget(Block::default().style(Style::new().bg(BG)), area);
+        }
+        frame.buffer_mut().set_style(
+            area,
+            Style::new().add_modifier(ratatui::style::Modifier::DIM),
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::git;
-    use crate::shell::test_support::{fixture, snapshot};
+    use crate::shell::test_support::{fixture, screen, snapshot};
 
     fn send(app: &mut Shell, sequence: &str) {
         for key in crate::config::keys::parse_sequence(sequence).unwrap() {
@@ -299,5 +316,33 @@ mod tests {
             }
             assert_eq!(snapshot(&repo), before);
         }
+    }
+
+    #[test]
+    fn operation_dialog_keeps_the_previous_panel_frame_visible() {
+        let (_directory, mut app) = fixture();
+        send(&mut app, "4");
+        let before = screen(&mut app, 120, 36);
+        assert!(before.contains("IGit"), "{before}");
+        assert!(before.contains("Branch"), "{before}");
+
+        let _taken = std::mem::take(&mut app.branch);
+        let (_sender, receiver) = mpsc::channel();
+        app.operation = Some(Running {
+            receiver,
+            control: WriteControl::default(),
+            owner: Branch,
+            started: Instant::now(),
+            second: 0,
+            review_interrupt: false,
+            scope: "Reviewed repository only",
+        });
+        app.pop = Some(Popup::Operation);
+
+        let during = screen(&mut app, 120, 36);
+        assert!(during.contains("IGit"), "{during}");
+        assert!(during.contains("Branch"), "{during}");
+        assert!(during.contains("Branch operation"), "{during}");
+        assert!(during.contains("Revalidating reviewed state…"), "{during}");
     }
 }

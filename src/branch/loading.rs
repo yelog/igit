@@ -176,6 +176,14 @@ impl BranchPanel {
         self.loading.task.pending()
     }
 
+    pub(crate) fn tick_animation(&mut self, now: std::time::Instant) -> bool {
+        self.read_indicator.tick(self.loading.task.loading(), now)
+    }
+
+    pub(super) fn loading(&self) -> bool {
+        self.loading.task.loading()
+    }
+
     pub(super) fn read_status(&self) -> Option<&str> {
         if self.loading.task.loading() {
             Some(if self.repos.is_empty() {

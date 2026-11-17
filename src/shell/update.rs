@@ -528,6 +528,7 @@ pub(super) struct Dialog {
     confirm_focused: bool,
     jobs: Vec<Job>,
     load: Load<Prepared>,
+    indicator: crate::ui::loading::Indicator,
     fetch_observations: Vec<Observation>,
 }
 
@@ -580,6 +581,7 @@ impl Dialog {
             confirm_focused: false,
             jobs,
             load: Load::default(),
+            indicator: crate::ui::loading::Indicator::default(),
             fetch_observations: Vec::new(),
         };
         dialog.load.request();
@@ -596,6 +598,14 @@ impl Dialog {
 
     pub(super) fn running(&self) -> bool {
         matches!(self.stage, Stage::Running(_))
+    }
+
+    fn animation_running(&self) -> bool {
+        matches!(self.stage, Stage::Loading | Stage::Running(_))
+    }
+
+    pub(super) fn tick_animation(&mut self, now: std::time::Instant) -> bool {
+        self.indicator.tick(self.animation_running(), now)
     }
 
     pub(super) fn label(&self) -> &'static str {

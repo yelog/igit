@@ -118,11 +118,12 @@ Explicit startup panels take precedence; temporary comparison/file tabs do
 not persist.
 
 Confirmed panel writes use a modal operation view showing phase, repository
-scope, and elapsed seconds. Ctrl-X opens an interruption review; `n/Esc`
-continues waiting and `y` interrupts the owned Git process tree. The result
-can require verification. Commit batches keep their separate
-stop-after-current-repository behavior, while Push/Branch sync retain their
-existing progress views.
+scope, and elapsed seconds. The last panel frame remains visible and dimmed
+behind the dialog instead of clearing the workspace. Ctrl-X opens an
+interruption review; `n/Esc` continues waiting and `y` interrupts the owned Git
+process tree. The result can require verification. Commit batches keep their
+separate stop-after-current-repository behavior, while Push/Branch sync retain
+their existing progress views.
 
 F8 or Actions → Activity / Recovery opens durable entries. `j/k` changes the
 entry, `J/K` scrolls, `y` copies details, `1` opens Commit, `7` opens available
@@ -290,13 +291,18 @@ refreshes only the matching endpoint/scope's freshness.
 
 In normal mode, `p` opens Update Project outside the Branch browser and `f` opens Fetch Repositories. In Branch, `p` reviews the focused local branch; Actions → Pull repositories still opens Update Project. Both workspace reviews are in Actions. Each review follows Push's visual hierarchy: a contextual title strip, blue pane heading, compact toolbar, tinted repository icons, bold names, aligned target/status columns, blue browsing row, and a separated footer with one primary action. Pull shows the current branch receiving its upstream; Fetch lists remotes without an integration arrow. Both show Branch's green `↗N` / blue `↙N` counters beside the current branch (ASCII `^N` / `vN`). The comparison uses the configured upstream, including differently named branches, and local refs; opening review performs no fetch. Zero and unavailable counts stay hidden. Counter space is reserved before clipping branch names. Wide layouts retain separate branch and submodule columns. Narrow layouts combine the branch and target and hide optional columns; complete branch/upstream names, counters, targets, and reasons remain in wrapped Details below the list. Repositories that cannot run the operation show an amber Skipped status and its reason. Global Roots still defines the entire batch; browsing is independent of scope, and Log tab filters and Push checkboxes do not change this list.
 
-Opening a review paints it before repository checks finish. The title and summary
-say `Checking`, each row shows `Checking`, and the only footer action is Cancel.
+Opening a review paints it before repository checks finish. The title and each
+row's Status cell use the Generate-message spinner on a shared 100 ms clock,
+with ASCII, Unicode, and Nerd Font fallbacks. Checks and active work use blue;
+queued rows use muted spinners. Title, summary, Details, and footer omit
+Checking, Pending, Running, and Updating process labels. Repository counts
+and numeric execution progress remain visible. The only loading action is Cancel.
 Repository hosts, branch targets, counters, and Skipped reasons appear when the
 background snapshot arrives. Browsing, resizing, strategy controls, and `Esc`
 remain available while checking; `Enter` does not queue execution and the
 Pull / Fetch button stays disabled. Closing the dialog discards a late snapshot.
-During execution, Ready rows become Pending, starting rows show Running, and
+The review restores static Ready labels and stops animation before confirmation.
+During execution, queued spinners turn blue when their repository starts, and
 each row changes to OK or Failed as its own Git process finishes. Up to four
 independent repositories run concurrently. Parent/child workspaces and linked
 worktrees sharing Git storage are serialized, and the summary/footer track
@@ -312,7 +318,7 @@ both the current choice and the default shared with Push; canceling preserves
 the current override. The strategy is fixed once execution starts. Branch's
 `p` / `U` remains fast-forward-only. Fetch has no integration choices.
 
-Browse repositories with `j/k`, arrows, PageUp/PageDown, Home/End (`G` also selects the last row), row clicks, or the wheel. Details follows that row; scroll long content using `J/K` or the wheel over Details. Pull / Fetch starts focused when available; otherwise Cancel has focus. Only the focused button has a blue background; the other button has a neutral background, and neither uses a focus underline. Use `h/l`, `Tab`, or `Shift-Tab` to switch between Cancel and Pull / Fetch, and `Enter` or a click to activate a button. The primary label is simply **Pull** or **Fetch**, with repository counts in the summary/footer. Wide footers show Tab/Enter hints. Pull / Fetch is disabled when no repository is ready. `Esc` or Cancel returns to the original pane without running Git. During execution, the same rows remain visible with no action buttons; Ready becomes Pending, started rows show Running, and completion updates each row separately. Completion refreshes the branch comparison and displays separate success/failure/skip counts and colored row statuses, initially selecting the first failed repository. Details contains its complete error. If Git leaves conflicts, close results and open the highlighted Conflicts tab.
+Browse repositories with `j/k`, arrows, PageUp/PageDown, Home/End (`G` also selects the last row), row clicks, or the wheel. Details follows that row; scroll long content using `J/K` or the wheel over Details. Pull / Fetch starts focused when available; otherwise Cancel has focus. Only the focused button has a blue background; the other button has a neutral background, and neither uses a focus underline. Use `h/l`, `Tab`, or `Shift-Tab` to switch between Cancel and Pull / Fetch, and `Enter` or a click to activate a button. The primary label is simply **Pull** or **Fetch**, with repository counts in the summary/footer. Wide footers show Tab/Enter hints. Pull / Fetch is disabled when no repository is ready. `Esc` or Cancel returns to the original pane without running Git. During execution, the same rows remain visible with no action buttons; muted spinners identify queued rows, blue spinners identify active rows, and completion replaces each spinner separately. Completion refreshes the branch comparison and displays separate success/failure/skip counts and colored row statuses, initially selecting the first failed repository. Details contains its complete error. If Git leaves conflicts, close results and open the highlighted Conflicts tab.
 
 ## 1 · Log: IDEA Git Tool Window Reference
 
@@ -750,7 +756,12 @@ workspace replacement, Roots changes, and quitting wait for batch completion.
 The Push tab has one contextual title: `Push Commits to <repository>` for a single repository, or a repository count for a batch. Pane headings and toolbars align. The lowercase **fetch** control sits at the outgoing toolbar's left edge; **Update strategy: Merge/Rebase** stays at the far right of the same row. Retry appears there only after a push failure in visible scope, and Conflicts appears after an interrupted update. Target editing uses the row's target or `t`. Tree grouping/details sit on the right, with compact expand/collapse icons at its far edge. Every pane has a complete border, including a bottom edge in its current focus color. The footer contains quiet Follow tags / Hooks options, a secondary Cancel button, and one highlighted Push button. The s in strategy, f in fetch, P in Push, F in Follow tags, and H in Hooks use Commit's gold, bold, underlined mnemonic style while their default shortcuts are available. Fetch's label and shortcut both use lowercase `f`; Follow tags uses uppercase `F`. Disabled or remapped defaults do not retain misleading mnemonic highlights. At narrow widths, strategy shortens to **Strategy: Merge/Rebase** or the shortcut plus strategy, toolbar actions compact, and footer actions move onto a separate row; hidden checked repositories retain a separate notice. Pane headings shorten to preserve complete counts. Push is disabled when no visible, checked repository is eligible or while a remote operation runs. Cancel returns to the last Commit, Log, Branch, Stash, or Remote tab, including when Details is open; target editing must first be saved or canceled. During a remote operation it reads Close and the operation continues in the background.
 
 Opening Push shows `Loading outgoing commits…` immediately. On later visits,
-existing rows and previews remain visible under `Refreshing outgoing commits…`.
+existing rows and previews remain visible with `Refreshing outgoing commits…`
+in the outgoing toolbar. Both labels begin with the same rotating glyph as
+Commit's Generate message: blue animation, muted text, and a 100 ms clock.
+Narrow panes shorten the status and strategy labels independently, preserving
+the spinner, a gap, and the strategy control. No extra loading row is inserted.
+Completion restores the toolbar; read failures show static red text.
 Cancel, tab switching, browsing, and quit remain available during these reads;
 Push, Retry, Fetch, and target editing wait for the current snapshot. File lists
 and Diff load in the background with their own loading text. Newer Roots, target,
@@ -967,6 +978,12 @@ path. Mouse row selection never starts a Git write.
 
 Branch paints before Git reads finish. The first visit shows **Loading branches…**;
 returning to the same Roots keeps the cached tree browsable with **Refreshing branches…**.
+The status temporarily replaces the **Branch** column heading, prefixed by the
+same blue spinner as Generate message and advanced every 100 ms. Text stays
+muted and shortens when necessary; Upstream, Last Commit, and View Options
+retain their own space. Refresh adds no row, so the cached tree, scroll position,
+and mouse targets stay in place. Completion restores the heading; a failed
+read stops animation and shows a static red error above the retained tree.
 Tabs, Actions, help, and quit remain available while reading. Branch actions are
 disabled until the current list is ready. Changing Roots hides the old tree
 immediately and discards any result from the previous scope.

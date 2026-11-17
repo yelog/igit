@@ -7,6 +7,7 @@ use unicode_width::UnicodeWidthStr;
 
 mod compare;
 mod creation;
+mod loading;
 mod navigation;
 mod presentation;
 mod smart_checkout;

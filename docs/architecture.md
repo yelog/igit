@@ -189,6 +189,17 @@ first Commit and Conflicts reads synchronous, then calls
 [enable_background_loading](../src/shell/refresh.rs) before entering the launch
 tab. Startup still defers Log history until the first Log entry; that initial
 load runs on a worker while workspace navigation and quit remain available.
+
+[ui/loading.rs](../src/ui/loading.rs) owns the presentation-only indicator shared
+by Push and Branch reads and workspace Pull/Fetch dialogs. Shell ticks each panel
+independently of snapshot installation, requesting a visible-tab redraw only when the 100 ms frame changes
+or an active indicator stops. The indicator uses `IconMode::spinner`, matching
+Commit message generation, and fits labels to terminal cells. It resets when the
+current read completes or is canceled; errors do not animate. Update dialogs use
+the same glyph without a process label and keep ticking during execution; their
+visible execution stage requests a poll at most every 100 ms. Git workers,
+generation checks, and write guards are unchanged.
+
 [refresh.rs](../src/shell/refresh.rs) records one dirty bit per main tab and
 processes it only when that panel has no blocking review/editor/selection/drag,
 the Git operation is idle, and no overlay or key sequence owns input. Queued
@@ -492,9 +503,9 @@ retain their local-only responsibility.
 Workspace Pull and Fetch build a read-only plan from global Roots. The dialog
 opens immediately with repository names from the existing Context; the plan and
 display comparison are prepared on a background worker with at most four bounded
-readers from [core/loading.rs](../src/core/loading.rs). Rows remain `Checking`
-and confirmation stays disabled until the complete snapshot arrives in input
-order. Canceling invalidates late results. Each worktree is checked again before
+readers from [core/loading.rs](../src/core/loading.rs). Rows show animated check
+indicators and confirmation stays disabled until the complete snapshot arrives
+in input order. Canceling invalidates late results. Each worktree is checked again before
 running Git. Pull also revalidates the branch, HEAD, upstream, and resolved
 remote URL; Fetch revalidates the configured remotes.
 After confirmation, Pull resolves its reviewed upstream to an exact OID,
@@ -506,6 +517,14 @@ recursion. Pull inherits the saved application default, while `m/r` overrides
 only the current review. Its `s` selector saves the shared default. Execution
 captures the strategy and the update dialog stays active through completion so
 another workspace write cannot overlap it.
+
+The dialog owns one `ui::loading::Indicator` clock shared by its title, Status
+cells, and the selected repository's Details. Loading and active rows use blue
+glyphs; queued rows use muted glyphs. Presentation omits process labels and uses
+numeric progress, while keeping the internal Checking/Ready/Running outcomes.
+Ready reviews and final results stop animation. Shell advances frames even when
+workers produce no messages, so delayed checks, Git processes, and hooks remain
+visibly active without extra input or Git calls.
 
 Presentation rows retain the reviewed identity, target labels, and repository
 tint. A separate display comparison reads the live current branch, resolves its

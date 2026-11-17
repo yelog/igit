@@ -85,7 +85,8 @@ impl BranchPanel {
             .map(Snapshot::head_label);
         let show_path = self.has_repository_pane();
         let len = self.tree.rows.len();
-        let show_status = len > 0 && self.read_status().is_some();
+        let loading = self.loading();
+        let show_status = len > 0 && !loading && self.read_status().is_some();
         let detail_height = if len > 0 {
             1 + u16::from(narrow) + u16::from(show_path || detached.is_some())
         } else {
@@ -118,8 +119,30 @@ impl BranchPanel {
         self.viewport.area = list;
         self.keep_branch_visible();
         let columns = self.branch_columns(row_width(list, len));
+        let branch_heading = Rect {
+            width: columns
+                .upstream
+                .or(columns.last_commit)
+                .map_or(heading.width, |offset| offset.saturating_sub(1))
+                .min(heading.width),
+            ..heading
+        };
+        let branch_label = if loading {
+            let labels: &[&str] = if self.repos.is_empty() {
+                &["Loading branches…", "Loading…"]
+            } else {
+                &["Refreshing branches…", "Refreshing…", "Refresh…"]
+            };
+            self.read_indicator
+                .line(self.icons, labels, branch_heading.width)
+        } else {
+            Line::raw(" Branch")
+        };
+        f.render_widget(
+            Paragraph::new(branch_label).style(Style::new().fg(MUTED)),
+            branch_heading,
+        );
         for (label, offset) in [
-            (" Branch", Some(0)),
             ("Upstream", columns.upstream),
             ("Last Commit", columns.last_commit),
         ] {
@@ -135,15 +158,20 @@ impl BranchPanel {
             self.draw_row(f, rect, i, columns);
             self.hits.push((rect, Hit::Row(i)));
         }
-        if len == 0 {
+        if len == 0 && !loading {
             f.render_widget(
-                Paragraph::new(self.read_status().unwrap_or("No repositories in Roots"))
-                    .style(Style::new().fg(MUTED)),
+                Paragraph::new(self.read_status().unwrap_or("No repositories in Roots")).style(
+                    Style::new().fg(if self.read_status().is_some() {
+                        idea::RED
+                    } else {
+                        MUTED
+                    }),
+                ),
                 list,
             );
-        } else if let Some(status) = self.read_status() {
+        } else if show_status {
             f.render_widget(
-                Paragraph::new(status).style(Style::new().fg(MUTED)),
+                Paragraph::new(self.read_status().unwrap()).style(Style::new().fg(idea::RED)),
                 status_line,
             );
         }

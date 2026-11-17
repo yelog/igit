@@ -5,6 +5,7 @@ pub(crate) mod help;
 pub(crate) mod icons;
 pub(crate) mod idea;
 pub(crate) mod key_sequence;
+pub(crate) mod loading;
 pub(crate) mod notifications;
 pub(crate) mod panes;
 pub(crate) mod path_copy;

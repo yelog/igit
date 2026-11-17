@@ -220,6 +220,7 @@ impl Shell {
                 a.width,
                 editor.height - 1 - u16::from(!notice.is_empty()),
             );
+            self.remember_backdrop(f);
             self.draw_workspace_overlays(f, hints);
             return;
         }
@@ -359,7 +360,14 @@ impl Shell {
             )
         };
         self.draw_footer(f, foot, &hint, color);
+        self.remember_backdrop(f);
         self.draw_workspace_overlays(f, work);
+    }
+
+    fn remember_backdrop(&mut self, f: &mut Frame) {
+        if self.operation.is_none() {
+            self.backdrop = Some(f.buffer_mut().clone());
+        }
     }
 
     fn draw_footer(&mut self, f: &mut Frame, foot: Rect, hint: &str, color: ratatui::style::Color) {
@@ -420,6 +428,9 @@ impl Shell {
     }
 
     fn draw_workspace_overlays(&mut self, f: &mut Frame, work: Rect) {
+        if self.operation.is_some() {
+            self.draw_operation_backdrop(f);
+        }
         self.draw_popup(f, f.area());
         if let Some(pending) = &self.pending_keys {
             self.key_picker

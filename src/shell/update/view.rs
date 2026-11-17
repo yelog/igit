@@ -154,16 +154,20 @@ fn put(line: &mut Line<'static>, column: Column, text: &str, style: Style) {
 }
 
 impl Dialog {
-    fn status(&self, row: &RepositoryRow) -> (&'static str, Color) {
-        match row.outcome {
-            Outcome::Checking => ("Checking", ACCENT),
-            Outcome::Ready if matches!(self.stage, Stage::Running(_)) => ("Pending", ACCENT),
+    fn status(&self, row: &RepositoryRow, icons: IconMode) -> (String, Color) {
+        let (label, color) = match row.outcome {
+            Outcome::Checking | Outcome::Running => {
+                return (self.indicator.glyph(icons).to_string(), ACCENT);
+            }
+            Outcome::Ready if self.running() => {
+                return (self.indicator.glyph(icons).to_string(), MUTED);
+            }
             Outcome::Ready => ("Ready", MUTED),
-            Outcome::Running => ("Running", ACCENT),
             Outcome::Succeeded => ("OK", GREEN),
             Outcome::Failed(_) => ("Failed", RED),
             Outcome::Skipped(_) => ("Skipped", CONFLICT),
-        }
+        };
+        (label.into(), color)
     }
 
     fn target(&self, row: &RepositoryRow, icons: IconMode, separate_branch: bool) -> String {
@@ -215,6 +219,15 @@ impl Dialog {
         line
     }
 
+    fn progress(&self) -> String {
+        let completed = self
+            .rows
+            .iter()
+            .filter(|row| matches!(row.outcome, Outcome::Succeeded | Outcome::Failed(_)))
+            .count();
+        format!("{}/{}", completed.min(self.ready), self.ready)
+    }
+
     fn counts(&self) -> Line<'static> {
         let skipped = self
             .rows
@@ -225,7 +238,7 @@ impl Dialog {
         if matches!(self.stage, Stage::Loading) {
             line.push_span(Span::styled(
                 format!(
-                    "Checking {} {}",
+                    "{} {}",
                     self.rows.len(),
                     if self.rows.len() == 1 {
                         "repository"
@@ -233,7 +246,7 @@ impl Dialog {
                         "repositories"
                     }
                 ),
-                Style::new().fg(ACCENT),
+                Style::new().fg(MUTED),
             ));
         } else if matches!(self.stage, Stage::Results) {
             let succeeded = self
@@ -256,25 +269,7 @@ impl Dialog {
                 Style::new().fg(if failed > 0 { RED } else { MUTED }),
             ));
         } else if matches!(self.stage, Stage::Running(_)) {
-            let running = self
-                .rows
-                .iter()
-                .filter(|row| matches!(row.outcome, Outcome::Running))
-                .count();
-            let pending = self
-                .rows
-                .iter()
-                .filter(|row| matches!(row.outcome, Outcome::Ready))
-                .count();
-            line.push_span(Span::styled(
-                format!("{running} running"),
-                Style::new().fg(ACCENT),
-            ));
-            line.push_span(Span::styled(" · ", Style::new().fg(MUTED)));
-            line.push_span(Span::styled(
-                format!("{pending} pending"),
-                Style::new().fg(MUTED),
-            ));
+            line.push_span(Span::styled(self.progress(), Style::new().fg(ACCENT)));
         } else {
             line.push_span(Span::styled(
                 format!("{} ready", self.ready),
@@ -332,25 +327,29 @@ impl Dialog {
             (Kind::Fetch, _) => "Fetch Repositories",
             (Kind::Pull, _) => "Update Project",
         };
-        let suffix = match &self.stage {
-            Stage::Loading => "Checking".into(),
-            Stage::Running(_) => "Running".into(),
-            _ => format!(
-                "{} {}",
-                self.rows.len(),
-                if self.rows.len() == 1 {
-                    "repository"
-                } else {
-                    "repositories"
-                }
-            ),
-        };
+        let suffix = format!(
+            "{} {}",
+            self.rows.len(),
+            if self.rows.len() == 1 {
+                "repository"
+            } else {
+                "repositories"
+            }
+        );
+        let mut title_line = Line::from(" ");
+        if self.animation_running() {
+            title_line.push_span(Span::styled(
+                format!("{} ", self.indicator.glyph(icons)),
+                Style::new().fg(ACCENT),
+            ));
+        }
+        title_line.push_span(clipped(
+            &format!("{name} · {suffix}"),
+            usize::from(title.width).saturating_sub(title_line.width()),
+        ));
         f.render_widget(
-            Paragraph::new(clipped(
-                &format!(" {name} · {suffix}"),
-                usize::from(title.width),
-            ))
-            .style(Style::new().fg(FG).bg(TAG).add_modifier(Modifier::BOLD)),
+            Paragraph::new(title_line)
+                .style(Style::new().fg(FG).bg(TAG).add_modifier(Modifier::BOLD)),
             title,
         );
         let heading = if self.kind == Kind::Pull {
@@ -521,8 +520,6 @@ impl Dialog {
             }
         } else {
             let label = match (&self.stage, self.kind, self.strategy) {
-                (Stage::Loading, _, _) => "Checking repository state before review…",
-                (Stage::Running(_), _, _) => "Running Git for reviewed repositories…",
                 (Stage::Results, _, _) => "Select a repository to inspect its result",
                 (_, Kind::Fetch, _) => "All remotes · remote refs only",
                 (_, Kind::Pull, Strategy::Merge) => "Merge incoming changes",
@@ -611,8 +608,8 @@ impl Dialog {
                 }
                 _ => (),
             }
-            let (status, color) = self.status(repo);
-            put(&mut line, columns.status, status, Style::new().fg(color));
+            let (status, color) = self.status(repo, icons);
+            put(&mut line, columns.status, &status, Style::new().fg(color));
             if repo.submodule {
                 put(&mut line, columns.module, "submodule", muted);
             }
@@ -658,7 +655,7 @@ impl Dialog {
             );
         }
         if let Some(row) = self.rows.get(self.pos) {
-            let (status, color) = self.status(row);
+            let (status, color) = self.status(row, icons);
             layout.push(
                 Line::from(vec![
                     Span::styled(
@@ -708,30 +705,23 @@ impl Dialog {
                     Wrap::Word,
                 );
             }
-            let detail = if matches!(self.stage, Stage::Loading) {
-                if self.kind == Kind::Fetch {
-                    "Checking configured remotes before enabling Fetch."
-                } else {
-                    "Checking the current branch and upstream before enabling Pull."
+            let detail = match &row.outcome {
+                Outcome::Failed(reason) | Outcome::Skipped(reason) => reason.as_str(),
+                Outcome::Succeeded if self.kind == Kind::Fetch => {
+                    "Remote refs refreshed. Working tree unchanged."
                 }
-            } else {
-                match &row.outcome {
-                    Outcome::Failed(reason) | Outcome::Skipped(reason) => reason.as_str(),
-                    Outcome::Succeeded if self.kind == Kind::Fetch => {
-                        "Remote refs refreshed. Working tree unchanged."
-                    }
-                    Outcome::Succeeded if self.strategy == Strategy::Merge => {
-                        "Pull completed using Merge."
-                    }
-                    Outcome::Succeeded => "Pull completed using Rebase.",
-                    _ if self.kind == Kind::Fetch => {
-                        "Refresh remote refs; keep working trees unchanged."
-                    }
-                    _ if self.strategy == Strategy::Merge => {
-                        "Fast-forward when possible; otherwise create a merge commit."
-                    }
-                    _ => "Replay local commits on the upstream branch.",
+                Outcome::Succeeded if self.strategy == Strategy::Merge => {
+                    "Pull completed using Merge."
                 }
+                Outcome::Succeeded => "Pull completed using Rebase.",
+                _ if self.animation_running() => "",
+                _ if self.kind == Kind::Fetch => {
+                    "Refresh remote refs; keep working trees unchanged."
+                }
+                _ if self.strategy == Strategy::Merge => {
+                    "Fast-forward when possible; otherwise create a merge commit."
+                }
+                _ => "Replay local commits on the upstream branch.",
             };
             for line in detail.lines() {
                 layout.push(
@@ -794,18 +784,8 @@ impl Dialog {
         );
         let row = Rect::new(area.x, area.y + 1, area.width, 1);
         if matches!(self.stage, Stage::Running(_)) {
-            let completed = self
-                .rows
-                .iter()
-                .filter(|row| matches!(row.outcome, Outcome::Succeeded | Outcome::Failed(_)))
-                .count();
             f.render_widget(
-                Paragraph::new(format!(
-                    " Updating {} of {} repositories…",
-                    completed.min(self.ready),
-                    self.ready
-                ))
-                .style(Style::new().fg(ACCENT)),
+                Paragraph::new(format!(" {}", self.progress())).style(Style::new().fg(ACCENT)),
                 row,
             );
             return;
@@ -847,25 +827,13 @@ impl Dialog {
         } else {
             "Tab Buttons · Enter Activate"
         };
-        let hint = if loading {
-            format!(
-                " Checking {} {} · {controls}",
-                self.rows.len(),
-                if self.rows.len() == 1 {
-                    "repository"
-                } else {
-                    "repositories"
-                }
-            )
-        } else {
-            [
-                format!(" {} in Roots · {controls}", self.rows.len()),
-                format!(" {} in Roots", self.rows.len()),
-            ]
-            .into_iter()
-            .find(|hint| hint.width() < usize::from(right.saturating_sub(row.x)))
-            .unwrap_or_default()
-        };
+        let hint = [
+            format!(" {} in Roots · {controls}", self.rows.len()),
+            format!(" {} in Roots", self.rows.len()),
+        ]
+        .into_iter()
+        .find(|hint| hint.width() < usize::from(right.saturating_sub(row.x)))
+        .unwrap_or_default();
         if hint.width() < usize::from(right.saturating_sub(row.x)) {
             f.render_widget(
                 Paragraph::new(hint).style(Style::new().fg(MUTED)),
